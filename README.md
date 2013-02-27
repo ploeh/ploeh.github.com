@@ -1,42 +1,19 @@
-# Jekyll-Bootstrap
+# ploeh blog
 
-The quickest way to start and publish your Jekyll powered blog. 100% compatible with GitHub pages
+This repository contains the templates and data for my blog at <http://blog.ploeh.dk>. It is powered by [Jekyll-Bootstrap](http://jekyllbootstrap.com).
 
-## Usage
+## Comments
 
-For all usage and documentation please see: <http://jekyllbootstrap.com>
+As an experiment, all comments for a particular post are kept as part of the post itself.
 
-## Version
+If you wish to comment on a particular post, send me a pull request for that post. If you're in doubt about the format, just look at how previous comments are formatted. For an example of a post with comments, see e.g. [the very first post on this blog](http://blog.ploeh.dk/2009/01/28/LivingInInterestingTimes).
 
-0.2.13 - stable and versioned using [semantic versioning](http://semver.org/).
+## Contributions
 
-## Contributing 
+While *ploeh blog* is my personal blog, I'm happy to accept contributions such as:
 
-This repository tracks 2 projects:
+* Comments (see above)
+* Corrections of typos and the like
+* Look and feel enhancements (better CSS, etc.)
 
-- **Jekyll-Bootstrap Framework.**  
-  The framework for which users should clone and build their blog on top of is available in the master branch.
-  
-  To contribute to the framework please make sure to checkout your branch based on `jb-development`!!
-  This is very important as it allows me to accept your pull request without having to publish a public version release.
-  
-  Small, atomic Features, bugs, etc.   
-  Use the `jb-development` branch but note it will likely change fast as pull requests are accepted.   
-  Please rebase as often as possible when working.   
-  Work on small, atomic features/bugs to avoid upstream commits affecting/breaking your development work.
-  
-  For Big Features or major API extensions/edits:   
-  This is the one case where I'll accept pull-requests based off the master branch.
-  This allows you to work in isolation but it means I'll have to manually merge your work into the next public release.
-  Translation : it might take a bit longer so please be patient! (but sincerely thank you).
- 
-- **Jekyll-Bootstrap Documentation Website.**    
-  The documentation website at <http://jekyllbootstrap.com> is maintained in the gh-pages branch.
-  Please fork and contribute documentation additions to this branch only.
-
-The master and gh-pages branch do not share the same ancestry. Please treat them as completely separate git repositories!
-
-
-## License
-
-[Creative Commons](http://creativecommons.org/licenses/by-nc-sa/3.0/)
+On the other hand, I don't intend to turn *ploeh blog* into a site with 'guest bloggers', so don't bother sending an unsolicited pull request for a completely new post.
