@@ -1,0 +1,248 @@
+---
+layout: post
+tags: [Dependency Injection, Software Design]
+date: 2012-03-26 15:53:31
+title: "IQueryable is Tight Coupling"
+---
+{% include JB/setup %}
+
+<div id="post">
+	<p>From time to time I encounter people who attempt to express an API in terms of <a href="http://msdn.microsoft.com/en-us/library/bb351562.aspx">IQueryable&lt;T&gt;</a>. That's almost always a bad idea. In this post, I'll explain why.</p> <p>In short, the IQueryable&lt;T&gt; interface is one of the best examples of a <a href="http://martinfowler.com/bliki/HeaderInterface.html">Header Interface</a> that .NET has to offer. It's almost impossible to fully implement it.</p> <blockquote> <p>Please note that this post is about the problematic aspects of designing an API around the IQueryable&lt;T&gt; interface. It's not an attack on the interface itself, which has its place in the BCL. It's also not an attack on all the wonderful LINQ methods available on <a href="http://msdn.microsoft.com/en-us/library/9eekhta0.aspx">IEnumerable&lt;T&gt;</a>.</p></blockquote> <p>You can say that IQueryable&lt;T&gt; is one big <a href="http://en.wikipedia.org/wiki/Liskov_substitution_principle">Liskov Substitution Principle</a> (LSP)violation just waiting to happen. In the next two section, I will apply <a href="http://en.wikipedia.org/wiki/Postel%27s_law">Postel's law</a> to explain why that is.</p> <p><strong>Consuming IQueryable&lt;T&gt;</strong></p> <p>The first part of Postel's law applied to API design states that an API should be <em>liberal in what it accepts</em>. In other words, we are talking about input, so an API that consumes IQueryable&lt;T&gt; would take this generalized shape:</p> <div style="font-family: consolas, 'Courier New'; background: white; color: black; font-size: 10pt"><pre style="margin: 0px"><span style="color: #2b91af">IFoo</span> SomeMethod(<span style="color: #2b91af">IQueryable</span>&lt;<span style="color: #2b91af">Bar</span>&gt; q);</pre></div>
+<p>Is that a <em>liberal</em> requirement? It must certainly is not. Such an interface <em>demands</em> of any caller that they must be able to supply an implementation of IQueryable&lt;Bar&gt;. According to the LSP we must be able to supply <em>any</em> implementation without changing the correctness of the program. That goes for both the implementer of IQueryable&lt;Bar&gt; as well as the implementation of SomeMethod.</p>
+<p>At this point it's important to keep in mind the <em>purpose</em> of IQueryable&lt;T&gt;: it's <a href="http://msdn.microsoft.com/en-us/library/bb351562.aspx">intended for implementation by query providers</a>. In other words, this isn't just some sequence of Bar instances which can be filtered and projected; no, this is a query <em>expression</em> which is intended to be <em>translated</em> into a query somewhere else  -  most often some dialect of SQL.</p>
+<p>That's quite a demand to put on the caller.</p>
+<p>It's certainly a powerful interface (or so it would seem), but is it really necessary? Does SomeMethod really need to be able to perform <em>arbitrarily complex</em> queries against a data source?</p>
+<p>In one recent discussion, it turns out that all the developer really wanted to do was to be able to <a href="https://github.com/ploeh/cqrs-journey-code/commit/7b912136b470b75f418eadae605669c3489f53f9">select based on a handful of simple criteria</a>. In another case, the developer only wanted to do simple paging.</p>
+<p>Such requirements could be modeled much simpler without making huge demands on the caller. In both cases, we could provide specialized <a href="http://martinfowler.com/eaaCatalog/queryObject.html">Query Objects</a> instead, or perhaps even simpler just a set of specialized queries:</p>
+<div style="font-family: consolas, 'Courier New'; background: white; color: black; font-size: 10pt"><pre style="margin: 0px"><span style="color: #2b91af">IFoo</span> FindById(<span style="color: blue">int</span> fooId);</pre><pre style="margin: 0px">&nbsp;</pre><pre style="margin: 0px"><span style="color: #2b91af">IFoo</span> FindByCorrelationId(<span style="color: blue">int</span> correlationId);</pre></div>
+<p>Or, in the case of paging:</p>
+<div style="font-family: consolas, 'Courier New'; background: white; color: black; font-size: 10pt"><pre style="margin: 0px"><span style="color: #2b91af">IEnumerable</span>&lt;<span style="color: #2b91af">IFoo</span>&gt; GetFoos(<span style="color: blue">int</span> page);</pre></div>
+<p>This is certainly much more <em>liberal</em> in that it requires the caller to supply only the required information in order to implement the methods. Designing APIs in terms of <a href="http://martinfowler.com/bliki/RoleInterface.html">Role Interfaces</a> instead of Header Interfaces makes the APIs much more flexible. This will enable you to respond to change.</p>
+<p><strong>Exposing IQueryable&lt;T&gt;</strong></p>
+<p>The other part of Postel's law states that an API should be <em>conservative in what it sends</em>. In other words, a method must guarantee that the data it returns conforms rigorously to the contract between caller and implementer.</p>
+<p>A method returning IQueryable&lt;T&gt; would take this generalized shape:</p>
+<div style="font-family: consolas, 'Courier New'; background: white; color: black; font-size: 10pt"><pre style="margin: 0px"><span style="color: #2b91af">IQueryable</span>&lt;<span style="color: #2b91af">Bar</span>&gt; GetBars();</pre></div>
+<p>When designing APIs, a huge part of the contract is defined by the interface (or base class). Thus, the return type of a method specifies a conservative guarantee about the returned data. In the case of returning IQueryable&lt;Bar&gt; the method thus <em>guarantees</em> that it will return a complete implementation of IQueryable&lt;Bar&gt;.</p>
+<p>Is that conservative?</p>
+<p>Once again invoking the LSP, a consumer must be able to do <em>anything</em> allowed by IQueryable&lt;Bar&gt; without changing the correctness of the program.</p>
+<p>That's a big honking promise to make.</p>
+<p>Who can keep that promise?</p>
+<p><strong>Current Implementations</strong></p>
+<p>Implementing IQueryable&lt;T&gt; is a huge undertaking. If you don't believe me, just take a look at the official <a href="http://blogs.msdn.com/b/mattwar/archive/2008/11/18/linq-links.aspx">Building an IQueryable provider</a> series of blog posts. Even so, the interface is so flexible and expressive that with a single exception, it's always possible to write a query that a given provider can't translate.</p>
+<p>Have you ever worked with LINQ to Entities or another ORM and received a NotSupportedException? <a href="https://www.google.dk/search?q=linq+notsupportedexception">Lots of people have</a>. In fact, with a single exception, it's my firm belief that all existing implementations violate the LSP (in fact, I challenge my readers to refer me to a real, publicly available implementation of IQueryable&lt;T&gt; that can accept <em>any</em> expression I throw at it, and I'll ship a free copy of <a href="http://affiliate.manning.com/idevaffiliate.php?id=1150_236">my book</a> to the first reader to do so).</p>
+<p>Furthermore, the subset of features that each implementation supports varies from query provider to query provider. An expression that can be translated by the Entity framework may not work with Microsoft's OData query provider.</p>
+<p>The only implementation that fully implements IQueryable&lt;T&gt; is the <a href="http://msdn.microsoft.com/en-us/library/cc190116.aspx">in-memory implementation</a> (and referring to this one does not earn you a free book). Ironically, this implementation can be considered a <a href="http://en.wikipedia.org/wiki/Null_Object_pattern">Null Object</a> implementation and goes against the whole purpose of the IQueryable&lt;T&gt; interface exactly because it <em>doesn't</em> translate the expression to another language.</p>
+<p><strong>Why This Matters</strong></p>
+<p>You may think this is all a theoretical exercise, but it actually does matter. When writing <a href="http://www.amazon.com/gp/product/0132350882/ref=as_li_ss_tl?ie=UTF8&amp;tag=ploeh-20&amp;linkCode=as2&amp;camp=1789&amp;creative=390957&amp;creativeASIN=0132350882">Clean Code</a>, it's important to design an API in such a way that it's clear what it does.</p>
+<p>An interface like this makes false guarantees:</p>
+<div style="font-family: consolas, 'Courier New'; background: white; color: black; font-size: 10pt"><pre style="margin: 0px"><span style="color: blue">public</span> <span style="color: blue">interface</span> <span style="color: #2b91af">IRepository</span></pre><pre style="margin: 0px">{</pre><pre style="margin: 0px">&nbsp;&nbsp;&nbsp; <span style="color: #2b91af">IQueryable</span>&lt;T&gt; Query&lt;T&gt;();</pre><pre style="margin: 0px">}</pre></div>
+<p>According to the LSP and Postel's law, it would seem to guarantee that you can write <em>any</em> query expression (no matter how complex) against the returned instance, and it would always work.</p>
+<p>In practice, this is never going to happen.</p>
+<p>Programmers who define such interfaces invariably have a specific ORM in mind, and they implicitly tend to stay within the bounds they know are safe for that specific ORM. This is a leaky abstraction.</p>
+<p>If you have a specific ORM in mind, then be explicit about it. Don't hide it behind an interface. It creates the illusion that you can replace one implementation with another. In practice, that's impossible. Imagine attempting to provide an implementation over an Event Store.</p>
+<p>The cake is a lie.</p>
+</div>
+	
+<hr>
+<div id="comments">
+<h2 id="comments-header">
+	Comments
+</h2>
+	<div class="comment">
+	<div class="comment-author"><a href="http://antix.co.uk">Anthony Johnston</a></div>
+	<div class="comment-content">The differences between the different providers is even more subtle than NotSupportedException's<br>
+If you have the following query you get different results with the EF LINQ provider and the LINQ to Objects provider<br>
+<br>
+var r = from x in context.Xs select new { x.Y.Z }<br>
+<br>
+dependant on the type of join between the sets or if Y is null <br>
+<br>
+makes in-memory testing difficult<br>
+</div>
+	<div class="comment-date">2012-03-26 19:24</div>
+</div><div class="comment">
+	<div class="comment-author">Sergio Romero</div>
+	<div class="comment-content">I will look for the implementation of IQueryable&lt;T&gt; that does not violate the principle but, what if I already own your book? :)<br>
+<br>
+P.S. Kudos by the way. I love every single piece of it.</div>
+	<div class="comment-date">2012-03-26 22:12</div>
+</div><div class="comment">
+	<div class="comment-author">Vytautas</div>
+	<div class="comment-content">While swapping implementations from a specific ORM to an event store is a major undertaking, it is not very difficult to swap one persistence mechanism to another when you query persistent view models (which are usually found in the same type of applications where you can find an event store). They usually have automatic properties and (next to) no relations so queries on them are relatively simple to not throw many NotSupportedExceptions.<br>
+<br>
+Also, having a generic repository as an intermediate step between an ORM and a specific repository lets you unit test specific repositories and/or use them with multiple persistence mechanisms (which is sometimes desirable). Despite the leaks, this &quot;pattern&quot; does have some uses in my book when used VERY carefully (although it is misused in 99 cases out of 100 when you see it).</div>
+	<div class="comment-date">2012-03-26 22:43</div>
+</div><div class="comment">
+	<div class="comment-author"><a href="http://www.joncurtis.co.uk">Jon</a></div>
+	<div class="comment-content">With your suggested approach, don't you just end up with a large interface of different queries? If not, how do you decide to split them up? Wouldn't it be better to have a more general purpose IQuery &lt; T &gt;.Execute()?</div>
+	<div class="comment-date">2012-03-26 23:17</div>
+</div><div class="comment">
+	<div class="comment-author"><a href="http://dev-frame.com">Amir</a></div>
+	<div class="comment-content">I've created an IRepository interface which doesn't consume or expose any IQueryable object. But I've created a separate library (abstraction) on the top of this abstract IRepository and name it &quot;EntityRepository&quot; which is abstract, implements the IRepository and is dedicated to EF. EntityRepository and its derived types may consume or expose IQueryable.<br>
+ Everybody who wants to implement the repositories using EF would use EntityRepository and everybody who wants to use other ORMs can create his own derived abstraction from IRepository.<br>
+<br>
+But the consumer codes in my library just use the IRepository inteface (Ex. A CRUD ViewModel base class).<br>
+<br>
+It it correct?</div>
+	<div class="comment-date">2012-03-27 21:42</div>
+</div><div class="comment">
+	<div class="comment-author"><a href="http://blog.ploeh.dk/">Mark Seemann</a></div>
+	<div class="comment-content">Amir, that sounds correct. IQueryable is a useful tool, but it can be somewhat misleading as part of an API (interfaces or base classes). On concrete classes it's less misleading.</div>
+	<div class="comment-date">2012-03-28 07:03</div>
+</div><div class="comment">
+	<div class="comment-author">Matt Warren</div>
+	<div class="comment-content">You should take a look at some of Bart De Smet's stuff, he talks about IQueryable and it's problems.<br>
+<br>
+See http://bartdesmet.net/blogs/bart/archive/2008/08/15/the-most-funny-interface-of-the-year-iqueryable-lt-t-gt.aspx and also take a look at the section 9min 30 secs into this talk http://channel9.msdn.com/Events/PDC/PDC10/FT10</div>
+	<div class="comment-date">2012-03-28 12:47</div>
+</div><div class="comment">
+	<div class="comment-author">Daniel Cazzulino</div>
+	<div class="comment-content">-- IFoo SomeMethod(IQueryable{Bar} q);<br>
+<br>
+Who on Earth defines an API that *takes* an IQueryable? Nobody I know, and<br>
+I've never had the need to. So the first half of the post is kinda<br>
+irrelevant ;)<br>
+<br>
+-- Implementing IQueryable{T} is a huge undertaking.<br>
+<br>
+That's why NOBODY has to. The ORM you use will (THEY will take the huge<br>
+undertaking and they have, go look for EF and NHibernate and even RavenDB<br>
+who do provide such an API), as well as Linq to Objects for your testing<br>
+needs.<br>
+<br>
+So, the IRepository.Query{T} is doing *exactly* what its definition<br>
+promises: &quot;Mediates between the domain and data mapping layers using a<br>
+collection-like interface for accessing domain objects.&quot; (<br>
+http://martinfowler.com/eaaCatalog/repository.html)<br>
+<br>
+In the ORM-implemented case, it goes against the data mapping layer, in the<br>
+Linq to Objects case, it does directly over the collection of objects.<br>
+<br>
+It's the PERFECT abstraction to make code that goes against a DB/repository<br>
+unit-testable. (not that it frees you from having full integration<br>
+end-to-end tests that go against the *real* repository to make sure you're<br>
+not using any unsupported constructs against the in-memory version).<br>
+<br>
+IQueryable{T} got rid of an entire slew of useless interfaces to abstract<br>
+the real repository. We should wholeheartedly embrace it and move forward,<br>
+instead of longing for the days when we had to do all that manually ;)</div>
+	<div class="comment-date">2012-03-28 16:19</div>
+</div><div class="comment">
+	<div class="comment-author">Daniel Cazzulino</div>
+	<div class="comment-content">-- Imagine attempting to provide an implementation over an Event Store.<br>
+<br>
+That's the thing, if this interface is used in the read side of a CQRS<br>
+system, there's no event store there. Views need flexible queryability. No?</div>
+	<div class="comment-date">2012-03-28 16:20</div>
+</div><div class="comment">
+	<div class="comment-author"><a href="http://www.liquidelectron.com">Josh Elster</a></div>
+	<div class="comment-content">I'm with kzu here -- I'm not really buying into your claim that IQueryable is a bad (leaky, etc) abstraction using the logic you provide. A method returning an IQueryable is *only* providing a guarantee that it describes a query over a set of objects. Nothing more. It gives no guarantees that the query can be executed, only what the query looks like. <br>
+<br>
+Saying this:<br>
+<br>
+public IQueryable{Customer} GetActiveCustomers() {<br>
+    return CustomersDb.Where(x =&gt; x.IsActive).ToList().AsQueryable();<br>
+}<br>
+<br>
+tells consumers that the return value of the method is a representation of how the results will be materialized when the query is executed. Saying this, OTOH:<br>
+<br>
+public IEnumerable{Customer} GetActiveCustomers() {<br>
+    return CustomersDb.Where(x =&gt; x.IsActive).ToList();<br>
+}<br>
+<br>
+explicitly tells consumers that you are returning the *results* of a query, and it's none of the consuming code's business to know how it got there. <br>
+<br>
+Materialization of those query results is what you seemed to be focused on, and that's not IQueryable's task. That's the task of the specific LINQ provider. IQueryable's job is only to *describe* queries, not actually execute them. </div>
+	<div class="comment-date">2012-03-28 17:21</div>
+</div><div class="comment">
+	<div class="comment-author">Ethan J. Brown</div>
+	<div class="comment-content">Completely agree with Mark here - IQueryable in, for instance, a repository interface may seem like a natural fit, but in fact it's a very very bad idea.<br>
+<br>
+A repository interface should be explicit about the operations it provides over the set of data, and should not open the door to arbitrary querying that is not part of the applications overall design / architecture.  YAGNI<br>
+<br>
+I know that this may fly in the face of those who are used to arbitrary late-bound SQL style query flexibility and code-gen'd ORMs, but this type of setup is not one that's conducive to performance or scaling in the long term.  ORMs may be good to get something up and running without a lot of effort (or thought into how the data is used), but they rapidly show their cracks / leaks over time.  This is why you see sites like StackOverflow as they reach scale adopt MicroORMs that are closer to the metal like Dapper instead of using EF, L2S or NHibernate.  (Other great Micro ORMs are Massive, OrmLite, and PetaPoco to name just a few.)<br>
+<br>
+<br>
+Is it work to be explicit in your contracts around data access?  Absolutely... but this is a better long-term design decision when you factor in testability and performance goals.  How do you test the perf characteristics of an API that doesn't have well-defined operations?  Well... you can't really.<br>
+<br>
+Also -- consider stores that are *not* SQL based as Mark alludes to.  We're using Riak, where querying capabilities are limited in scope and there are performance trade-offs to certain types of operations on secondary indices.  We accept this tradeoff b/c the operational characteristics of Riak are unparalleled and it has great latency characteristics when retrieving data.  We need to be explicit about how we allow data to be retrieved in our data access layer because some things are a no-go in our underlying store (for instance, listing keys is extremely expensive at the moment in Riak).<br>
+<br>
+Bind yourself to IQueryable and you've handcuffed yourself.  IQueryable is simply not a fit in a lot of cases, and in others it's total overkill... data access is not one size fits all.  Embrace the polyglot!</div>
+	<div class="comment-date">2012-03-29 14:09</div>
+</div><div class="comment">
+	<div class="comment-author">Daniel</div>
+	<div class="comment-content">Thanks for your blog post. One big problem with APIs that are based on IQueryable is testability, see this question for example: http://stackoverflow.com/questions/9921647/unit-testing-with-queries-defined-in-extension-methods.<br>
+<br>
+However, I don't yet see how to design an easy to use and read API with query objects. Maybe you could provide a repository implementation that works without IQueryable but is still readable and easy to use?</div>
+	<div class="comment-date">2012-03-29 14:35</div>
+</div><div class="comment">
+	<div class="comment-author"><a href="http://www.nikosbaxevanis.com/bonus-bits/">Nikos Baxevanis</a></div>
+	<div class="comment-content">Daniel, according to your blog post http://blogs.clariusconsulting.net/kzu/how-to-design-a-unit-testable-domain-model-with-entity-framework-code-first/ you seem to do quite a lot of work to make the code testable, even re-implementing the Include method. Claiming that IQueryable is the &quot;perfect&quot; abstraction here doesn't convince me.</div>
+	<div class="comment-date">2012-03-29 14:39</div>
+</div><div class="comment">
+	<div class="comment-author">Daniel</div>
+	<div class="comment-content">What do you think about the API outlined in this post: http://stackoverflow.com/a/9943907/572644<br>
+</div>
+	<div class="comment-date">2012-03-30 15:29</div>
+</div><div class="comment">
+	<div class="comment-author"><a href="http://blog.ploeh.dk/">Mark Seemann</a></div>
+	<div class="comment-content">Looks good, Daniel. I'd love to hear your experience with this once you've tried it on for some time :)</div>
+	<div class="comment-date">2012-03-30 16:15</div>
+</div><div class="comment">
+	<div class="comment-author"><a href="http://josh.mouch.name">Joshua Mouch</a></div>
+	<div class="comment-content">I agree that it can be annoying when you try to materialize a IQueryable to find that something in the query is not supported by the referenced QueryProvider.<br>
+<br>
+However, exposing IQueryable in an API is so powerful that it's worth this minor annoyance.</div>
+	<div class="comment-date">2012-03-30 21:35</div>
+</div><div class="comment">
+	<div class="comment-author">Steven Pena</div>
+	<div class="comment-content">Excellent points - couldn't agree more. Even when a method of IQueryable has been implemented, you can't even guarantee the same behavior. For example - look at &quot;Contains&quot;. The EF Linq provider uses %, which will match any case, while the LinqToObjects provider will match by case. I tend to use IQueryable in my DAL and surface up a more meaningful and controlled API through my Repositories. This prevents that leaky abstraction and allows me to control the behavior of that persistence layer (caching, eager loading of aggregates...)</div>
+	<div class="comment-date">2012-03-31 14:46</div>
+</div><div class="comment">
+	<div class="comment-author">Nathan Brown</div>
+	<div class="comment-content">What does this say for things like ASP.Net Web API?  It is asking you to expose your data through an IQueryable.  I tried to use the OData stuff that was using IQueryable and could never get it to fully work with NHibernate because of specific unsupported query structures.<br>
+<br>
+I like the idea of the OData or Web API queries, but would rather they just expose the query parameters and let us build adapters from the query to the datastore as relevant.</div>
+	<div class="comment-date">2012-03-31 20:24</div>
+</div><div class="comment">
+	<div class="comment-author"><a href="http://www.servicestack.net/mythz_blog/">Demis Bellot</a></div>
+	<div class="comment-content">Completely agree with this. IQueryable/OData is an anti-pattern in the making - especially for external Web APIs, which is why it will never be an out-of-the-box option in ServiceStack: http://stackoverflow.com/questions/9577938/odata-with-servicestack<br>
+<br>
+The whole idea of web service interfaces is to expose a technology-agnostic interoperable API to the outside world.<br>
+<br>
+Exposing an IQueryable/OData endpoint effectively couples your services to using OData indefinitely as you wont be able to feasibly determine what 'query space' existing clients are binded to, i.e. what existing queries/tables/views/properties you need to freeze/support indefinitely. This is an issue when exposing any implementation at the surface area of your API, as it limits your ability to add your own custom logic on it, e.g. Authorization, Caching, Monitoring, Rate-Limiting, etc. And because OData is really slow, you'll hit performance/scaling problems with it early. The lack of control over the endpoint, means you're effectively heading for a rewrite: https://coldie.net/?tag=servicestack<br>
+<br>
+Lets see how feasible is would be to move off an oData provider implementation by looking at an existing query from Netflix's OData api:<br>
+<br>
+http://odata.netflix.com/Catalog/Titles?$filter=Type%20eq%20'Movie'%20and%20(Rating%20eq%20'G'%20or%20Rating%20eq%20'PG-13')<br>
+<br>
+This service is effectively now coupled to a Table/View called 'Titles' with a column called 'Type'.<br>
+<br>
+And how it would be naturally written if you weren't using OData:<br>
+<br>
+http://api.netflix.com/movies?ratings=G,PG-13<br>
+<br>
+Now if for whatever reason you need to replace the implementation of the existing service (e.g. a better technology platform has emerged, it runs too slow and you need to move this dataset over to a NoSQL/Full-TextIndexing-backed sln) how much effort would it take to replace the OData impl (which is effectively binded to an RDBMS schema and OData binary impl) to the more intuitive impl-agnostic query below? It's not impossible, but as it's prohibitively difficult to implement an OData API for a new technology, that rewriting + breaking existing clients would tend to be the preferred option. <br>
+<br>
+Letting internal implementations dictate the external facing url structure is a sure way to break existing clients when things need to change. This is why you should expose your services behind Cool URIs, i.e. logical permanent urls (that are unimpeded by implementation) that do not change, as you generally don't want to limit the technology choices of your services.<br>
+<br>
+It might be a good option if you want to deliver adhoc 'exploratory services' on it, but it's not something I'd ever want external clients binded to in a production system. And if I'm only going to limit its use to my local intranet what advantages does it have over just giving out a read-only connection string? which will allow others use with their favourite Sql Explorer, Reporting or any other tools that speaks SQL.</div>
+	<div class="comment-date">2012-07-31 07:42</div>
+</div><div class="comment">
+	<div class="comment-author"><a href="http://clariusconsulting.net/kzu">Daniel Cazzulino</a></div>
+	<div class="comment-content">@Nikos &quot;re-implementing the Include method&quot;: you mean that one-liner??<br>
+<br>
+The testable interface abstraction allows for one-liners in the ORM-bound implementation, as well as the testable fake. Doesn't get any simpler than that.<br>
+<br>
+That hardly seems like complicated stuff to me.</div>
+	<div class="comment-date">2012-08-31 17:44</div>
+</div><div class="comment">
+	<div class="comment-author"><a href="http://clariusconsulting.net/kzu">Daniel Cazzulino</a></div>
+	<div class="comment-content">@Demis +1. Exposing OData is a different thing altogether. Not totally convinced with that either myself.</div>
+	<div class="comment-date">2012-08-31 17:46</div>
+</div><div class="comment">
+	<div class="comment-author">Ron</div>
+	<div class="comment-content">@Demis, couldn't you use a service pattern to address those issues?</div>
+	<div class="comment-date">2013-02-21 17:49</div>
+</div>
+</div>

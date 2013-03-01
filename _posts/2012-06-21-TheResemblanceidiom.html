@@ -1,0 +1,245 @@
+---
+layout: post
+tags: [Unit Testing]
+date: 2012-06-21 10:42:17
+title: "The Resemblance idiom"
+---
+{% include JB/setup %}
+
+<div id="post">
+	<p>
+  <em>In this post I describe a unit testing trick which can be used to make assertions more readable.</em>
+</p>
+<p>
+  Many TDD or unit testing experts (e.g. <a href="http://osherove.com/">Roy Osherove</a>) give the advice that a unit test <a href="http://osherove.com/blog/2005/4/14/try-to-avoid-multiple-asserts-in-a-single-unit-test.html">should only contain a single assertion</a>. This is a pretty good piece of advice, but sometimes a <em>single assertion</em> is best interpreted as a <a href="http://osherove.com/blog/2011/2/9/multiple-mocks-asserts-and-hidden-results.html">single logical assertion</a>.
+</p>
+<p>
+  When it comes to state-based testing, you can often write a <a href="http://xunitpatterns.com/Custom%20Assertion.html">Custom Assertion</a> to encapsulate multiple assertions into a single logical assertion. For interaction-based testing (i.e. using mock objects) this can be a bit harder.
+</p>
+<p>
+  In order to write readable unit tests with single assertions, I sometimes use an idiom that I'll describe here. Since I've never seen it described anywhere else, I can't reasonably call it a design pattern, so I'll stick with the less universal term <em>idiom</em> - I call it the <em>Resemblance</em> idiom. In short, it introduces a test-specific override of an object's equality method.
+</p>
+<p><b>Motivating example</b></p>
+<p>
+  Assume that you're TDD'ing this method:
+</p>
+<p>
+  </p><div style="font-family: Consolas, 'Courier New'; font-size: 10pt; color: black; background: white;">
+<pre style="margin: 0px;">[<span style="color: #2b91af;">HttpPost</span>]</pre>
+<pre style="margin: 0px;"><span style="color: blue;">public</span> <span style="color: #2b91af;">ViewResult</span> Post(<span style="color: #2b91af;">BookingViewModel</span> model)</pre>
+<pre style="margin: 0px;">{</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; <span style="color: blue;">this</span>.channel.Send(model.MakeReservation());</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; <span style="color: blue;">return</span> <span style="color: blue;">this</span>.View(<span style="color: #a31515;">"Receipt"</span>, model);</pre>
+<pre style="margin: 0px;">}</pre>
+</div>
+<p></p>
+<p>
+  Obviously, when TDD'ing, the method isn't going to have any implementation before the test has been written, but for educational purposes, in this case I'm <em>showing</em> you the implementation before the test - I still <em>wrote</em> the tests first. This is the implementation you'd like to arrive at - particularly this line of code:
+</p>
+<p>
+  </p><div style="font-family: Consolas, 'Courier New'; font-size: 10pt; color: black; background: white;">
+<pre style="margin: 0px;"><span style="color: blue;">this</span>.channel.Send(model.MakeReservation());</pre>
+</div>
+<p></p>
+<p>
+  The challenge here is that the MakeReservation method returns an instance of RequestReservationCommand, which is a data-carrying class (some would call it a <a href="http://en.wikipedia.org/wiki/Data_transfer_object">DTO</a>) that doesn't override <a href="http://msdn.microsoft.com/en-us/library/bsc2ak47.aspx">Equals</a>. One option is to override Equals, but that would lead to <a href="http://xunitpatterns.com/Test%20Logic%20in%20Production.html#Equality%20Pollution">Equality Pollution</a>, since the equality semantics of RequestReservationCommand isn't going to match what you need in order to write the test.
+</p>
+<p>
+  Using <a href="http://code.google.com/p/moq/">Moq</a>, your first take might look something like this:
+</p>
+<p>
+  </p><div style="font-family: Consolas, 'Courier New'; font-size: 10pt; color: black; background: white;">
+<pre style="margin: 0px;">[<span style="color: #2b91af;">Theory</span>, <span style="color: #2b91af;">AutoWebData</span>]</pre>
+<pre style="margin: 0px;"><span style="color: blue;">public</span> <span style="color: blue;">void</span> PostSendsOnChannel(</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; [<span style="color: #2b91af;">Frozen</span>]<span style="color: #2b91af;">Mock</span>&lt;<span style="color: #2b91af;">IChannel</span>&lt;<span style="color: #2b91af;">RequestReservationCommand</span>&gt;&gt; channelMock,</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; <span style="color: #2b91af;">BookingController</span> sut,</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; <span style="color: #2b91af;">BookingViewModel</span> model)</pre>
+<pre style="margin: 0px;">{</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; sut.Post(model);</pre>
+<pre style="margin: 0px;">&nbsp;</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; <span style="color: blue;">var</span> expected = model.MakeReservation();</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; channelMock.Verify(c =&gt;</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; c.Send(<span style="color: #2b91af;">It</span>.Is&lt;<span style="color: #2b91af;">RequestReservationCommand</span>&gt;(cmd =&gt;</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; cmd.Date == expected.Date &amp;&amp;</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; cmd.Email == expected.Email &amp;&amp;</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; cmd.Name == expected.Name &amp;&amp;</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; cmd.Quantity == expected.Quantity)));</pre>
+<pre style="margin: 0px;">}</pre>
+</div>
+<p></p>
+<p>
+  This works, but is awkward. First of all, I'd prefer a more readable test than this. Secondly, what happens if, in the future, someone adds a new property to the RequestReservationCommand class? If you have a lot of tests like this one, should they all be updated to include the new property in the comparison?
+</p>
+<p><b>Attempted fix</b></p>
+<p>
+  The first fix you might attempt involves extracting the comparison to a helper method like this one:
+</p>
+<p>
+  </p><div style="font-family: Consolas, 'Courier New'; font-size: 10pt; color: black; background: white;">
+<pre style="margin: 0px;"><span style="color: blue;">private</span> <span style="color: blue;">static</span> <span style="color: blue;">bool</span> Equals(<span style="color: #2b91af;">RequestReservationCommand</span> expected,</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; <span style="color: #2b91af;">RequestReservationCommand</span> actual)</pre>
+<pre style="margin: 0px;">{</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; <span style="color: blue;">return</span> actual.Date == expected.Date &amp;&amp;</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; actual.Email == expected.Email &amp;&amp;</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; actual.Name == expected.Name &amp;&amp;</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; actual.Quantity == expected.Quantity;</pre>
+<pre style="margin: 0px;">}</pre>
+</div>
+<p></p>
+<p>
+  This is better because at least it gives you a central method where you can manage which properties should be included in the comparison, but from a test invocation perspective it's still a bit unwieldy:
+</p>
+<p>
+  </p><div style="font-family: Consolas, 'Courier New'; font-size: 10pt; color: black; background: white;">
+<pre style="margin: 0px;">[<span style="color: #2b91af;">Theory</span>, <span style="color: #2b91af;">AutoWebData</span>]</pre>
+<pre style="margin: 0px;"><span style="color: blue;">public</span> <span style="color: blue;">void</span> PostSendsOnChannel(</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; [<span style="color: #2b91af;">Frozen</span>]<span style="color: #2b91af;">Mock</span>&lt;<span style="color: #2b91af;">IChannel</span>&lt;<span style="color: #2b91af;">RequestReservationCommand</span>&gt;&gt; channelMock,</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; <span style="color: #2b91af;">BookingController</span> sut,</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; <span style="color: #2b91af;">BookingViewModel</span> model)</pre>
+<pre style="margin: 0px;">{</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; sut.Post(model);</pre>
+<pre style="margin: 0px;">&nbsp;</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; <span style="color: blue;">var</span> expected = model.MakeReservation();</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; channelMock.Verify(c =&gt;</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; c.Send(<span style="color: #2b91af;">It</span>.Is&lt;<span style="color: #2b91af;">RequestReservationCommand</span>&gt;(cmd =&gt;</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; Equals(expected, cmd))));</pre>
+<pre style="margin: 0px;">}</pre>
+</div>
+<p></p>
+<p>
+  You're still stuck with the It.Is noise and a lambda expression. Being a static helper method, it's also not very object-oriented. Perhaps you don't care about that, but by not being object-oriented, it's also not very composable. This can come back to bite you if you want to compare complex object graphs, because it's dificult to compose static methods. There's a another way which provides a better alternative.
+</p>
+<p><b>Resemblance</b></p>
+<p>
+  The trick is to recall that ultimately, most unit testing is about determining whether the actual outcome is <em>equal</em> to the expected outcome. Since the Equals method is virtual, you can simply create a test-specific child class that overrides the Equals method. This is what I call a Resemblance.
+</p>
+<p>
+  </p><div style="font-family: Consolas, 'Courier New'; font-size: 10pt; color: black; background: white;">
+<pre style="margin: 0px;"><span style="color: blue;">private</span> <span style="color: blue;">class</span> <span style="color: #2b91af;">RequestReservationCommandResemblance</span> : <span style="color: #2b91af;">RequestReservationCommand</span></pre>
+<pre style="margin: 0px;">{</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; <span style="color: blue;">public</span> RequestReservationCommandResemblance(<span style="color: #2b91af;">RequestReservationCommand</span> source)</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; : <span style="color: blue;">base</span>(source.Date, source.Email, source.Name, source.Quantity)</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; {</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; }</pre>
+<pre style="margin: 0px;">&nbsp;</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; <span style="color: blue;">public</span> <span style="color: blue;">override</span> <span style="color: blue;">bool</span> Equals(<span style="color: blue;">object</span> obj)</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; {</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; <span style="color: blue;">var</span> other = obj <span style="color: blue;">as</span> <span style="color: #2b91af;">RequestReservationCommand</span>;</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; <span style="color: blue;">if</span> (other != <span style="color: blue;">null</span>)</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; <span style="color: blue;">return</span> <span style="color: blue;">object</span>.Equals(<span style="color: blue;">this</span>.Date, other.Date)</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; &amp;&amp; <span style="color: blue;">object</span>.Equals(<span style="color: blue;">this</span>.Email, other.Email)</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; &amp;&amp; <span style="color: blue;">object</span>.Equals(<span style="color: blue;">this</span>.Name, other.Name)</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; &amp;&amp; <span style="color: blue;">object</span>.Equals(<span style="color: blue;">this</span>.Quantity, other.Quantity);</pre>
+<pre style="margin: 0px;">&nbsp;</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; <span style="color: blue;">return</span> <span style="color: blue;">base</span>.Equals(obj);</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; }</pre>
+<pre style="margin: 0px;">&nbsp;</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; <span style="color: blue;">public</span> <span style="color: blue;">override</span> <span style="color: blue;">int</span> GetHashCode()</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; {</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; <span style="color: blue;">return</span> <span style="color: blue;">this</span>.Date.GetHashCode()</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; ^ <span style="color: blue;">this</span>.Email.GetHashCode()</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; ^ <span style="color: blue;">this</span>.Name.GetHashCode()</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; ^ <span style="color: blue;">this</span>.Quantity.GetHashCode();</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; }</pre>
+<pre style="margin: 0px;">}</pre>
+</div>
+<p></p>
+<p>
+  Notice that the RequestReservationCommandResemblance class derives from RequestReservationCommand in order to override Equals (and GetHashCode for good measure). This looks a bit more complicated than the previous attempt at a fix, but it's much more object-oriented and composable, and most importantly: the test is much easier to read because almost all the noise can be removed:
+</p>
+<p>
+  </p><div style="font-family: Consolas, 'Courier New'; font-size: 10pt; color: black; background: white;">
+<pre style="margin: 0px;">[<span style="color: #2b91af;">Theory</span>, <span style="color: #2b91af;">AutoWebData</span>]</pre>
+<pre style="margin: 0px;"><span style="color: blue;">public</span> <span style="color: blue;">void</span> PostSendsOnChannel(</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; [<span style="color: #2b91af;">Frozen</span>]<span style="color: #2b91af;">Mock</span>&lt;<span style="color: #2b91af;">IChannel</span>&lt;<span style="color: #2b91af;">RequestReservationCommand</span>&gt;&gt; channelMock,</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; <span style="color: #2b91af;">BookingController</span> sut,</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; <span style="color: #2b91af;">BookingViewModel</span> model)</pre>
+<pre style="margin: 0px;">{</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; sut.Post(model);</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; <span style="color: blue;">var</span> expected = <span style="color: blue;">new</span> <span style="color: #2b91af;">RequestReservationCommandResemblance</span>(model.MakeReservation());</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; channelMock.Verify(c =&gt; c.Send(expected));</pre>
+<pre style="margin: 0px;">}</pre>
+</div>
+<p></p>
+<p>
+  Notice in particular how you're now able to state exactly <em>what</em> you care about, instead of <em>how</em> you care about it:
+</p>
+<p>
+  </p><div style="font-family: Consolas, 'Courier New'; font-size: 10pt; color: black; background: white;">
+<pre style="margin: 0px;">channelMock.Verify(c =&gt; c.Send(expected));</pre>
+</div>
+<p></p>
+<p>
+  You may still feel that the overhead of creating a new test-specific class just for this purpose doesn't quite justify the increased readability and composability, but stay tuned - <a href="http://blog.ploeh.dk/2012/06/22/ResemblanceAndLikeness.aspx">I have more tricks to show you</a>.
+</p>
+</div>
+	
+<hr>
+<div id="comments">
+<h2 id="comments-header">
+	Comments
+</h2>
+	<div class="comment">
+	<div class="comment-author"><a href="http://vaskir.blogspot.com">Vasily Kirichenko</a></div>
+	<div class="comment-content">Although this idiom allows changing the algorithm of value objects equality from one test case to another (however, introducing a bunch of derived classes may be a bit boring), it has very poor diagnostics characteristics (if a test fails, we can't say what property(s) is mismatched). <br>
+<br>
+&quot;One situation we want to avoid, however, is when we can’t diagnose a test<br>
+failure that has happened. The last thing we should have to do is crack open the<br>
+debugger and step through the tested code to find the point of disagreement.&quot;, GOOS</div>
+	<div class="comment-date">2012-06-21 15:05</div>
+</div><div class="comment">
+	<div class="comment-author"><a href="http://blog.ploeh.dk">Mark Seemann</a></div>
+	<div class="comment-content">There's that, but none of the options presented here solve that problem - all of them are going to throw an exception by the Verify method if the correct method call wasn't made.<br>
+<br>
+In GOOS they are better off because they use Hamcrest, and their mocking library understands Hamcrest matchers. That's not the situation in .NET (yet).<br>
+<br>
+The only way around this that I can think of is to call the Verify method four times - one for each property above. IMO that would be sacrificing either readability or maintainability to optimize for a failure scenario which should only occur rarely. I prefer to optimize for readability instead. YMMV.</div>
+	<div class="comment-date">2012-06-21 17:09</div>
+</div><div class="comment">
+	<div class="comment-author"><a href="http://blog.svick.org">svick</a></div>
+	<div class="comment-content">If you always want to compare all properties, wouldn't using Reflection solve the problem here?<br>
+<br>
+Or something like<br>
+<br>
+IEqualityComparer[RequestReservationCommand] CreateRequestReservationCommandComparer()<br>
+{<br>
+    return CreateComparer[RequestReservationCommand](<br>
+        c =&gt; c.Date, c =&gt; c.Email, c =&gt; c.Name, c =&gt; c.Quantity<br>
+    );<br>
+}<br>
+<br>
+Although I'm not sure how composable that would be.<br>
+<br>
+BTW, I can't seem to post any comment containing the less than sign, it says:<br>
+<br>
+An error has been encountered while processing the page. We have logged the error condition and are working to correct the problem. We apologize for any inconvenience. </div>
+	<div class="comment-date">2012-06-21 19:22</div>
+</div><div class="comment">
+	<div class="comment-author"><a href="http://blog.ploeh.dk">Mark Seemann</a></div>
+	<div class="comment-content">As I wrote: stay tuned :)<br>
+<br>
+(and yes: the comment engine here is really crappy - sorry about that)</div>
+	<div class="comment-date">2012-06-21 19:42</div>
+</div><div class="comment">
+	<div class="comment-author">Daniel Hilgarth</div>
+	<div class="comment-content">When using resemblance Assert.Equal is not working. You need to use Assert.IsTrue(expected.Equals(actual)) instead or make the resemblance class implement IEqualityComparer{T}.<br>
+Do you have a solution for that?</div>
+	<div class="comment-date">2012-10-01 17:18</div>
+</div><div class="comment">
+	<div class="comment-author"><a href="http://blog.ploeh.dk">Mark Seemann</a></div>
+	<div class="comment-content">I don't have a <em>direct</em> solution for that particular issue, but I find the Resemblance idiom most useful when dealing with Indirect Input and Output, as in the example above. In other words, it's mostly useful when dealing with Mock objects, because the <em>have</em> to deal exclusively with equality.<br>
+<br>
+When it comes to direct assertions, like Assert.Equal, I'd love it if we had something like Hamcrest Matchers in .NET (actually, there <em>is</em> a .NET port, but last time I looked, it seemed abandonded). The next best thing is often a custom IEqualityComparer, but that doesn't necessarily solve the pretty print error reporting need.<br>
+<br>
+Sometimes, it's nice to have both, so one can implement a custom IEqualityComparer and then use that class to also implement a Resemblance.<br>
+<br>
+FWIW, the Likeness class described in <a href="http://blog.ploeh.dk/2012/06/22/ResemblanceAndLikeness.aspx">the next blog post</a> is built that way. It also includes a ShouldEqual method as a very concrete way of providing more readable error reporting...</div>
+	<div class="comment-date">2012-10-01 21:28</div>
+</div><div class="comment">
+	<div class="comment-author">Daniel Hilgarth</div>
+	<div class="comment-content">Thanks for the comment. Likeness couldn't be used in that particular case as the condition for equality was rather complex with nested properties. You can actually see it in the HttpActionContextResemblence in the pull request to Hyprlinkr: https://github.com/dhilgarth/Hyprlinkr/blob/de27a39477a747f56ae23fd8717bb8ef24c56bea/Hyprlinkr.UnitTest/HttpActionContextResemblance.cs<br>
+<br>
+I used the approach with an implementation of IEqualityComparer</div>
+	<div class="comment-date">2012-10-02 15:02</div>
+</div>
+</div>

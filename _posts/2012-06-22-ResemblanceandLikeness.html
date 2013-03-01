@@ -1,0 +1,174 @@
+---
+layout: post
+tags: [AutoFixture, Unit Testing]
+date: 2012-06-22 14:35:04
+title: "Resemblance and Likeness"
+---
+{% include JB/setup %}
+
+<div id="post">
+	<p>
+  In a previous post I described the <a href="http://blog.ploeh.dk/2012/06/21/TheResemblanceIdiom.aspx">Resemblance idiom</a>. In this post I present a class which can be used to automate the process of creating a Resemblance.
+</p>
+<p>
+  The Resemblance idiom enables you to write readable unit tests, but the disadvantage is that you will have to write (and maintain) quite a few test-specific Resemblance classes. If you're a Coding Neat Freak like me, you'll also have to override GetHashCode in every Resemblance, just because you're overriding Equals. If you're still looking for ways to torment yourself, you'll realize that the typical Resemblance implementation of Equals contains branching logic, so ideally, it should be unit tested too. (Yes, I <em>do</em> occasionally unit test my unit testing helper classes. <a href="http://autofixture.codeplex.com/">AutoFixture</a>, which is essentially one big unit test helper, is currently covered by some three thousand tests.)
+</p>
+<p>
+  In that light, wouldn't it be nice if you were able to automate the process of defining Resemblance classes? With the Likeness class, you can. Likeness is currently bundled with AutoFixture, so you get it if you install the <a href="http://nuget.org/packages/AutoFixture">AutoFixture NuGet package</a> or if you download the AutoFixture zip file from <a href="http://autofixture.codeplex.com/">its CodePlex site</a>. The Likeness class can be found in an assembly named Ploeh.SemanticComparison. In the future, I plan on packaging this as a separate NuGet package, but currently, it's included with AutoFixture.
+</p>
+<p><b>Likeness</b></p>
+<p>
+  Before I show you how to turn a Likeness into a Resemblance, I think a very short introduction to Likeness is in order. A couple of years ago <a href="http://blog.ploeh.dk/2010/06/29/IntroducingAutoFixtureLikeness.aspx">I introduced Likeness</a> on my blog, but I think a re-introduction is in order. In the context of the unit test from <a href="http://blog.ploeh.dk/2012/06/21/TheResemblanceIdiom.aspx">the previous blog post</a>, instead of manually writing a test like this:
+</p>
+<p>
+  <div style="font-family: Consolas, 'Courier New'; font-size: 10pt; color: black; background: white;">
+<pre style="margin: 0px;">[<span style="color: #2b91af;">Theory</span>, <span style="color: #2b91af;">AutoWebData</span>]</pre>
+<pre style="margin: 0px;"><span style="color: blue;">public</span> <span style="color: blue;">void</span> PostSendsOnChannel(</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; [<span style="color: #2b91af;">Frozen</span>]<span style="color: #2b91af;">Mock</span>&lt;<span style="color: #2b91af;">IChannel</span>&lt;<span style="color: #2b91af;">RequestReservationCommand</span>&gt;&gt; channelMock,</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; <span style="color: #2b91af;">BookingController</span> sut,</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; <span style="color: #2b91af;">BookingViewModel</span> model)</pre>
+<pre style="margin: 0px;">{</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; sut.Post(model);</pre>
+<pre style="margin: 0px;">&nbsp;</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; <span style="color: blue;">var</span> expected = model.MakeReservation();</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; channelMock.Verify(c =&gt;</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; c.Send(<span style="color: #2b91af;">It</span>.Is&lt;<span style="color: #2b91af;">RequestReservationCommand</span>&gt;(cmd =&gt;</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; cmd.Date == expected.Date &amp;&amp;</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; cmd.Email == expected.Email &amp;&amp;</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; cmd.Name == expected.Name &amp;&amp;</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; cmd.Quantity == expected.Quantity)));</pre>
+<pre style="margin: 0px;">}</pre>
+</div>
+</p>
+<p>
+  Likeness will do it for you, using Reflection to match properties according to name and type. By default, Likeness compares <em>all</em> properties of the destination instance. This will not work in this test, because the RequestReservationCommand also includes an Id property which is a Guid which is never going to be the same across different instances:
+</p>
+<p>
+  <div style="font-family: Consolas, 'Courier New'; font-size: 10pt; color: black; background: white;">
+<pre style="margin: 0px;"><span style="color: blue;">public</span> MakeReservationCommand(</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; <span style="color: #2b91af;">DateTime</span> date, <span style="color: blue;">string</span> email, <span style="color: blue;">string</span> name, <span style="color: blue;">int</span> quantity)</pre>
+<pre style="margin: 0px;">{</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; <span style="color: blue;">this</span>.date = date;</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; <span style="color: blue;">this</span>.email = email;</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; <span style="color: blue;">this</span>.name = name;</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; <span style="color: blue;">this</span>.quantity = quantity;</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; <span style="color: blue;">this</span>.id = <span style="color: #2b91af;">Guid</span>.NewGuid();</pre>
+<pre style="margin: 0px;">}</pre>
+</div>
+</p>
+<p>
+  Notice that the above test exludes the Id property. It's not very clear that this is going on, so a Test Reader may think that this is an accidental omission. With Likeness, this becomes explicit:
+</p>
+<p>
+  <div style="font-family: Consolas, 'Courier New'; font-size: 10pt; color: black; background: white;">
+<pre style="margin: 0px;">[<span style="color: #2b91af;">Theory</span>, <span style="color: #2b91af;">AutoWebData</span>]</pre>
+<pre style="margin: 0px;"><span style="color: blue;">public</span> <span style="color: blue;">void</span> PostSendsOnChannel(</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; [<span style="color: #2b91af;">Frozen</span>]<span style="color: #2b91af;">Mock</span>&lt;<span style="color: #2b91af;">IChannel</span>&lt;<span style="color: #2b91af;">MakeReservationCommand</span>&gt;&gt; channelMock,</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; <span style="color: #2b91af;">BookingController</span> sut,</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; <span style="color: #2b91af;">BookingViewModel</span> model)</pre>
+<pre style="margin: 0px;">{</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; sut.Post(model);</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; <span style="color: blue;">var</span> expected = model.MakeReservation()</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; .AsSource().OfLikeness&lt;<span style="color: #2b91af;">MakeReservationCommand</span>&gt;()</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; .Without(d =&gt; d.Id);</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; channelMock.Verify(c =&gt;</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; c.Send(<span style="color: #2b91af;">It</span>.Is&lt;<span style="color: #2b91af;">MakeReservationCommand</span>&gt;(x =&gt;</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; expected.Equals(x))));</pre>
+<pre style="margin: 0px;">}</pre>
+</div>
+</p>
+<p>
+  Notice how the Without method explicitly states that the Id property should be excluded from the comparison. By convention, all other properties on the target type (MakeReservationCommand, which in this case is the same as the source type) must be equal to each other.
+</p>
+<p>
+  The AsSource().OfLikeness extension method chain creates an instance of Likeness&lt;MakeReservationCommand,&nbsp;MakeReservationCommand&gt;, which isn't the same as an instance of MakeReservationCommand. Thus, you are still forced to use the slightly awkward It.Is syntax to express what equality means:
+</p>
+<p>
+<div style="font-family: Consolas, 'Courier New'; font-size: 10pt; color: black; background: white;">
+<pre style="margin: 0px;">channelMock.Verify(c =&gt;</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; c.Send(<span style="color: #2b91af;">It</span>.Is&lt;<span style="color: #2b91af;">MakeReservationCommand</span>&gt;(x =&gt;</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; expected.Equals(x))));</pre>
+</div>
+</p>
+<p>
+  If a Likeness could be used as a Resemblance, the test would be more readable.
+</p>
+<p><b>Likeness as Resemblance</b></p>
+<p>
+  The definition of the Likeness class is this:
+</p>
+<p>
+  <div style="font-family: Consolas, 'Courier New'; font-size: 10pt; color: black; background: white;">
+<pre style="margin: 0px;"><span style="color: blue;">public</span> <span style="color: blue;">class</span> <span style="color: #2b91af;">Likeness</span>&lt;TSource, TDestination&gt; : <span style="color: #2b91af;">IEquatable</span>&lt;TDestination&gt;</pre>
+</div>
+</p>
+<p>
+  While it implements IEquatable&lt;TDestination&gt; it <em>isn't</em> a TDestination. That's the reason for the It.Is syntax above.
+</p>
+<p>
+  Thanks to <a href="http://nikosbaxevanis.com/2012/02/20/dynamic-proxy-overriding-equals-in-autofixture-likeness/">awesome work by Nikos Baxevanis</a>, a Likeness instance can create a dynamic proxy of TDestination, as long as TDestination is non-sealed and doesn't seal the Equals method. The method is called CreateProxy:
+</p>
+<p>
+  <div style="font-family: Consolas, 'Courier New'; font-size: 10pt; color: black; background: white;">
+<pre style="margin: 0px;"><span style="color: blue;">public</span> TDestination CreateProxy();</pre>
+</div>
+</p>
+<p>
+  This effectively turns the Likeness into a Resemblance by dynamically emitting a derived class that overrides Equals in the way that the Likeness instance (re)defines equality. With that, you can rewrite the unit test so that it's both readable and maintainable:
+</p>
+<p>
+  <div style="font-family: Consolas, 'Courier New'; font-size: 10pt; color: black; background: white;">
+<pre style="margin: 0px;">[<span style="color: #2b91af;">Theory</span>, <span style="color: #2b91af;">AutoWebData</span>]</pre>
+<pre style="margin: 0px;"><span style="color: blue;">public</span> <span style="color: blue;">void</span> PostSendsOnChannel(</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; [<span style="color: #2b91af;">Frozen</span>]<span style="color: #2b91af;">Mock</span>&lt;<span style="color: #2b91af;">IChannel</span>&lt;<span style="color: #2b91af;">RequestReservationCommand</span>&gt;&gt; channelMock,</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; <span style="color: #2b91af;">BookingController</span> sut,</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; <span style="color: #2b91af;">BookingViewModel</span> model)</pre>
+<pre style="margin: 0px;">{</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; sut.Post(model);</pre>
+<pre style="margin: 0px;">&nbsp;</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; <span style="color: blue;">var</span> expected = model.MakeReservation()</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; .AsSource().OfLikeness&lt;<span style="color: #2b91af;">RequestReservationCommand</span>&gt;()</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; .Without(d =&gt; d.Id)</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; .CreateProxy();</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; channelMock.Verify(c =&gt; c.Send(expected));</pre>
+<pre style="margin: 0px;">}</pre>
+</div>
+</p>
+<p>
+  The only difference in the definition of the <em>expected</em> variable is the additional call to CreateProxy. This changes the type of <em>expected</em> so that it's no longer Likeness&lt;MakeReservationCommand,&nbsp;MakeReservationCommand&gt;, but rather MakeReservationCommand (actually, a dynamically created sub-type of MakeReservationCommand). This enables you to write a readable assertion:
+</p>
+<p>
+  <div style="font-family: Consolas, 'Courier New'; font-size: 10pt; color: black; background: white;">
+<pre style="margin: 0px;">channelMock.Verify(c =&gt; c.Send(expected));</pre>
+</div>
+</p>
+<p>
+  This is exactly the same assertion as the assertion used with the Resemblance idiom described in the previous post. Thus, Likeness has now been turned into a Resemblance, and you no longer have to manually create and maintain concrete Resemblance classes.
+</p>
+</div>
+	
+<hr>
+<div id="comments">
+<h2 id="comments-header">
+	Comments
+</h2>
+	<div class="comment">
+	<div class="comment-author"><a href="http://www.skov-boisen.dk">Simon Skov Boisen</a></div>
+	<div class="comment-content">Great stuff - I took a look at the CreateProxy method and I must say that is some pretty hairy (and impressive) reflection and il.Emit code! How do one figure out exactly which IL needs to be emitted in order to create the dynamic proxy? Do you inspect the IL of a manually generated proxy and then use that as a guidance? (I realize you didn't write the code, but maybe you have some insight?) :)</div>
+	<div class="comment-date">2012-07-05 09:43</div>
+</div><div class="comment">
+	<div class="comment-author"><a href="http://blog.ploeh.dk">Mark Seemann</a></div>
+	<div class="comment-content">Nah, I don't have any insights on that. Nikos Baxevanis wrote that, and I trust that he got it right (as he did with so much other crazy stuff). However, perhaps I can coax him to provide an answer here :)</div>
+	<div class="comment-date">2012-07-05 10:03</div>
+</div><div class="comment">
+	<div class="comment-author"><a href="http://nikosbaxevanis.com">Nikos Baxevanis</a></div>
+	<div class="comment-content">Hi Simon, definitely, a good starting point is to manually generate the code and then inspect the disassembled IL. Then, you can use the types in the System.Reflection.Emit namespace to create the (proxy) type. What this proxy generator supports, but usually others don't, is the ability to emit a proxy even for a type with no-default constructor. At that point, you can't manually generate and inspect the disassembled IL for all the possible combinations for (above three) number of arguments in the constructor. However, after loading the (third) constructor argument you keep loading additional arguments by referencing their index (lines 90-114 in the source, commit 8fff809). Finally, you need to create and return an instance of the newly created proxy. Since the proxy does not necessarily contains a default constructor there are some additional steps involved for discovering and choosing a compatible constructor with the source type. Definitely, there should be some points for improvement so if you have any suggestions there are more than welcome. :) Hope that helps.</div>
+	<div class="comment-date">2012-07-05 13:24</div>
+</div><div class="comment">
+	<div class="comment-author">James Nail</div>
+	<div class="comment-content">Hi Mark,<br>
+Once again, you guys have done it.  I've used foo.AsSource().OfLikeness() before, but the CreateProxy trick solved the exact problem I was having.<br>
+I'm continually impressed with the power you've packed into this relatively small tool (AutoFixture).</div>
+	<div class="comment-date">2012-07-06 11:32</div>
+</div>
+</div>

@@ -1,0 +1,77 @@
+---
+layout: post
+tags: [ASP.NET MVC, Dependency Injection, Services]
+date: 2012-04-17 17:17:05
+title: "Injecting HttpControllerContext With the ASP.NET Web API"
+---
+{% include JB/setup %}
+
+<div id="post">
+	<p>The <a href="http://www.asp.net/web-api">ASP.NET Web API</a> (beta) defines a class called HttpControllerContext. As the name implies, it provides a context for a Controller. This article describes how to inject an instance of this class into a Service.</p> <p><strong>The Problem</strong></p> <p>A Service may need an instance of the HttpControllerContext class. For an example, see the <a href="http://blog.ploeh.dk/2012/04/17/HyperlinkingWithTheASPNETWebAPI.aspx">RouteLinker class in my previous post</a>. A Controller, on the other hand, may depend on such a Service:</p> <div style="font-family: consolas, 'Courier New'; background: white; color: black; font-size: 10pt"><pre style="margin: 0px"><span style="color: blue">public</span> CatalogController(<span style="color: #2b91af">IResourceLinker</span> resourceLinker)</pre></div>
+<p>How can a CatalogController instance be wired up with an instance of RouteLinker, which again requires an instance of HttpControllerContext? In contrast to the existing ASP.NET MVC API, there's no easy way to read the current context. There's no HttpControllerContext.Current method or any other easy way (that I have found) to refer to an HttpControllerContext as part of the <a href="http://blog.ploeh.dk/2011/07/28/CompositionRoot.aspx">Composition Root</a>.</p>
+<p>True: it's easily available as a property on a Controller, but at the time of composition, there's no Controller instance (yet). A Controller instance is exactly what the Composition Root is attempting to create. This sounds like a circular reference problem. Fortunately, it's not.</p>
+<p><strong>The Solution</strong></p>
+<p>For Poor Man's DI, the solution is relatively simple. As <a href="http://blog.ploeh.dk/2012/03/20/RobustDIWithTheASPNETWebAPI.aspx">I've previously described</a>, by default the responsibility of creating Controller instances is handled by an instance of IHttpControllerActivator. This is, essentially, the Composition Root (at least for all Controllers).</p>
+<p>The Create method of that interface takes exactly the HttpControllerContext required by RouteLinker  -  or, put differently: the framework will supply an instance every time it invokes the Create method. Thus, a custom IHttpControllerActivator solves the problem:</p>
+<div style="font-family: consolas, 'Courier New'; background: white; color: black; font-size: 10pt"><pre style="margin: 0px"><span style="color: blue">public</span> <span style="color: blue">class</span> <span style="color: #2b91af">PoorMansCompositionRoot</span> : <span style="color: #2b91af">IHttpControllerActivator</span></pre><pre style="margin: 0px">{</pre><pre style="margin: 0px">&nbsp;&nbsp;&nbsp; <span style="color: blue">public</span> <span style="color: #2b91af">IHttpController</span> Create(</pre><pre style="margin: 0px">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <span style="color: #2b91af">HttpControllerContext</span> controllerContext,</pre><pre style="margin: 0px">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <span style="color: #2b91af">Type</span> controllerType)</pre><pre style="margin: 0px">&nbsp;&nbsp;&nbsp; {</pre><pre style="margin: 0px">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <span style="color: blue">if</span> (controllerType == <span style="color: blue">typeof</span>(<span style="color: #2b91af">CatalogController</span>))</pre><pre style="margin: 0px">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; {</pre><pre style="margin: 0px">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <span style="color: blue">var</span> url = <span style="color: #2b91af">HttpContext</span>.Current.Request.Url;</pre><pre style="margin: 0px">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <span style="color: blue">var</span> baseUri =</pre><pre style="margin: 0px">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <span style="color: blue">new</span> <span style="color: #2b91af">UriBuilder</span>(</pre><pre style="margin: 0px">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; url.Scheme,</pre><pre style="margin: 0px">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; url.Host,</pre><pre style="margin: 0px">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; url.Port).Uri;</pre><pre style="margin: 0px">&nbsp;</pre><pre style="margin: 0px">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <span style="color: blue">return</span> <span style="color: blue">new</span> <span style="color: #2b91af">CatalogController</span>(</pre><pre style="margin: 0px">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <span style="color: blue">new</span> <span style="color: #2b91af">RouteLinker</span>(</pre><pre style="margin: 0px">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; baseUri,</pre><pre style="margin: 0px">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; controllerContext));</pre><pre style="margin: 0px">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; }</pre><pre style="margin: 0px">&nbsp;</pre><pre style="margin: 0px">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <span style="color: green">// Handle other types here...</span></pre><pre style="margin: 0px">&nbsp;&nbsp;&nbsp; }</pre><pre style="margin: 0px">}</pre></div>
+<p>The <em>controllerContext</em> parameter is simply passed on to the RouteLinker constructor.</p>
+<p>The only thing left is to register the PoorMansCompositionRoot with the ASP.NET Web API. This can be done in Global.asax by using the GlobalConfiguration.Configuration.ServiceResolver.SetResolver method, as described in <a href="http://blog.ploeh.dk/2012/03/20/RobustDIWithTheASPNETWebAPI.aspx">my previous post</a>. Just resolve IHttpControllerActivator to an instance of PoorMansCompositionRoot.</p>
+</div>
+	
+<hr>
+<div id="comments">
+<h2 id="comments-header">
+	Comments
+</h2>
+	<div class="comment">
+	<div class="comment-author">mick delaney</div>
+	<div class="comment-content">this is a nightmare really... has there been a discussion on the web api forums? <br>
+http://forums.asp.net/1246.aspx/1?Web+API<br>
+i think i might create one and reference this article directly if thats ok?<br>
+<br>
+i upvoted your uservoice issue and there seems to be another one more generally on DI for asp.net http://aspnet.uservoice.com/forums/41199-general-asp-net/suggestions/487734-put-ioc-front-and-centre<br>
+<br>
+doesn't seem like they listen to anyone though.... <br>
+<br>
+<br>
+</div>
+	<div class="comment-date">2012-04-20 11:35</div>
+</div><div class="comment">
+	<div class="comment-author"><a href="http://blog.ploeh.dk/">Mark Seemann</a></div>
+	<div class="comment-content">Yes, please go ahead :)</div>
+	<div class="comment-date">2012-04-20 11:58</div>
+</div><div class="comment">
+	<div class="comment-author">mick delaney</div>
+	<div class="comment-content">i've started it off from here. <br>
+<br>
+will add some more examples to the thread over the weekend<br>
+<br>
+http://forums.asp.net/p/1795175/4943052.aspx/1?p=True&amp;t=634705120844896186</div>
+	<div class="comment-date">2012-04-20 15:49</div>
+</div><div class="comment">
+	<div class="comment-author"><a href="http://byterot.blogspot.com">Ali</a></div>
+	<div class="comment-content">It is an interesting problem.<br>
+<br>
+I would also like to look at it differently. ControllerContext is a volatile object with its lifetime spanning only a single method. It is true that we typically limit the lifetime of a controller to a single method but it can be different.<br>
+<br>
+One major difference here is that ControllerContext is not a classic dependency since it is added AFTER the object creation by the framework and not provided by the DI frameqork. As such I could resort to an Initialise method on my RouteLinker object, making it responsibility of controller to provide such volatile information.<br>
+</div>
+	<div class="comment-date">2012-04-23 11:09</div>
+</div><div class="comment">
+	<div class="comment-author"><a href="http://blog.ploeh.dk/">Mark Seemann</a></div>
+	<div class="comment-content">Ali, that's not an approach I like. First of all because an Initialize method would introduce a <a href="http://blog.ploeh.dk/2011/05/24/DesignSmellTemporalCoupling.aspx">Temporal Coupling</a>, but also because it would mean that one would potentially need to pass the HttpControllerContext through a lot of intermediary layers in order to invoke that Initialize method on a very low-level dependency. That's API pollution.</div>
+	<div class="comment-date">2012-04-23 11:24</div>
+</div><div class="comment">
+	<div class="comment-author"><a href="http://byterot.blogspot.com">Ali</a></div>
+	<div class="comment-content">Well, I know that you are an authority in the subject. So I probably need to go away, read your links and then have a think about it. Thanks anyway, and keep up the good work.</div>
+	<div class="comment-date">2012-04-23 18:32</div>
+</div><div class="comment">
+	<div class="comment-author"><a href="http://blog.ploeh.dk/2012/04/17/InjectingHttpControllerContextWi">Dmitry</a></div>
+	<div class="comment-content">I realize that this article is more general, but specifically for IResourceLinker, would it make more sense to just pass HttpControllerContext as a second parameter from controller action. What would be the downside of this approach?</div>
+	<div class="comment-date">2012-05-02 16:03</div>
+</div><div class="comment">
+	<div class="comment-author"><a href="http://blog.ploeh.dk/">Mark Seemann</a></div>
+	<div class="comment-content">Dmitry, that would mean that you'd need to pass the parameter through each and every method through all intermediary layers (see also my answer above). This would seriously pollute the API.</div>
+	<div class="comment-date">2012-05-02 16:10</div>
+</div>
+</div>

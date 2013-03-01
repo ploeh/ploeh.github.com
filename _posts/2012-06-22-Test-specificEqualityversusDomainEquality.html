@@ -1,0 +1,87 @@
+---
+layout: post
+tags: [Unit Testing]
+date: 2012-06-22 17:22:25
+title: "Test-specific Equality versus Domain Equality"
+---
+{% include JB/setup %}
+
+<div id="post">
+	<p>
+  As a reaction to my two <a href="http://blog.ploeh.dk/2012/06/21/TheResemblanceIdiom.aspx">previous</a> <a href="http://blog.ploeh.dk/2012/06/22/ResemblanceAndLikeness.aspx">blog posts</a>, Joe Miller asks on Twitter:
+</p>
+<p>
+  <a href="https://twitter.com/lilshieste/status/216180824398241793">If a test needs to check a "special" type of equality, isn't that special equality actually part of the domain?</a>
+</p>
+<p>
+  That's a fair question which I'd like to answer here.
+</p>
+<p>
+  You should definitely strive towards having domain objects with strong equality semantics. Many things (including unit testing) becomes easier when domain objects override <a href="http://msdn.microsoft.com/en-us/library/bsc2ak47.aspx">Equals</a> in a meaningful manner. By all means should you prefer that over any Resemblance or Likeness craziness.
+</p>
+<p>
+  What is meaningful equality for a domain object? Personally, I find the guidance provided by <a href="http://www.amazon.com/gp/product/0321125215/ref=as_li_ss_tl?ie=UTF8&amp;tag=ploeh-20&amp;linkCode=as2&amp;camp=1789&amp;creative=390957&amp;creativeASIN=0321125215">Domain-Driven Design</a> indispensable:
+</p>
+<p>
+  </p><ul>
+    <li>If the domain object is an <em>Entity</em>, two objects are equal if their IDs are equal. No other properties should be compared.</li>
+    <li>If the domain object is a <em>Value Object</em>, two object are equal if (all) their encapsulated data is equal.</li>
+    <li>If the domain object is a <em>Service</em>, by default I'd say that the default reference equality is often the most correct (i.e. don't override Equals).</li>
+  </ul>
+<p></p>
+<p>
+  Now consider the very common case of mapping layers, or the slightly related scenario of an Anti-corruption Layer. In such cases, the code translates Entities to and from other representations. How do we unit test such mapping code?
+</p>
+<p>
+  If we were to rely on the domain object's built-in equality, we would only be testing that the <em>identity</em> of the Entity is as expected, but not whether or not the mapping code properly maps all the other data. In such cases we need <a href="http://xunitpatterns.com/test-specific%20equality.html">Test-specific Equality</a>, and that's exactly what Resemblances and Likenesses provide.
+</p>
+<p>
+  In the <a href="http://blog.ploeh.dk/2012/06/21/TheResemblanceIdiom.aspx">previous example</a>, this is exactly what happens. The <a href="http://xunitpatterns.com/SUT.html">SUT</a> produces a new instance of the RequestReservationCommand:
+</p>
+<p>
+  </p><div style="font-family: Consolas, 'Courier New'; font-size: 10pt; color: black; background: white;">
+<pre style="margin: 0px;">[<span style="color: #2b91af;">HttpPost</span>]</pre>
+<pre style="margin: 0px;"><span style="color: blue;">public</span> <span style="color: #2b91af;">ViewResult</span> Post(<span style="color: #2b91af;">BookingViewModel</span> model)</pre>
+<pre style="margin: 0px;">{</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; <span style="color: blue;">this</span>.channel.Send(model.MakeReservation());</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; <span style="color: blue;">return</span> <span style="color: blue;">this</span>.View(<span style="color: #a31515;">"Receipt"</span>, model);</pre>
+<pre style="margin: 0px;">}</pre>
+</div>
+<p></p>
+<p>
+  The MakeReservation method is implemented like this:
+</p>
+<p>
+  </p><div style="font-family: Consolas, 'Courier New'; font-size: 10pt; color: black; background: white;">
+<pre style="margin: 0px;"><span style="color: blue;">public</span> <span style="color: #2b91af;">RequestReservationCommand</span> MakeReservation()</pre>
+<pre style="margin: 0px;">{</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; <span style="color: blue;">return</span> <span style="color: blue;">new</span> <span style="color: #2b91af;">RequestReservationCommand</span>(</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; <span style="color: blue;">this</span>.Date, <span style="color: blue;">this</span>.Email, <span style="color: blue;">this</span>.Name, <span style="color: blue;">this</span>.Quantity);</pre>
+<pre style="margin: 0px;">}</pre>
+</div>
+<p></p>
+<p>
+  Notice that nowhere does the code specify the identity of the RequestReservationCommand instance. This is done by the RequestReservationCommand constructor itself, because it's a domain rule that (unless deserialized) each command has a unique ID.
+</p>
+<p>
+  Thus, from the unit test, you have absolutely no chance of knowing what the ID will be (it's a GUID). You could argue back and forth on whether the RequestReservationCommand class is an Entity or a Value Object, but in both cases, Domain Equality would involve comparing IDs, and those will <em>never</em> match. Therefore, the correct Test-specific Equality is to compare the values without the Id property.
+</p>
+</div>
+	
+<hr>
+<div id="comments">
+<h2 id="comments-header">
+	Comments
+</h2>
+	<div class="comment">
+	<div class="comment-author"><a href="http://twitter.com/yreynhout">Yves Reynhout</a></div>
+	<div class="comment-content">As far as the &quot;Guid Generation&quot; goes, I like to control that part using the following code (optionally accompanied by some sort of scoping) in the bits where I'm interested in controlling it: <a href="http://pastie.org/4154395">some_code</a></div>
+	<div class="comment-date">2012-06-26 15:33</div>
+</div><div class="comment">
+	<div class="comment-author"><a href="http://blog.ploeh.dk">Mark Seemann</a></div>
+	<div class="comment-content">Well, that's an Ambient Context (<a href="http://affiliate.manning.com/idevaffiliate.php?id=1150_236">Dependency Injection in .NET</a>, p. 118), and while it enables you to assign an expected Guid value from a unit test, from a <em>conceptual</em> perspective I don't think it's the correct solution for a test like this one.<br>
+<br>
+From a behavioral point of view, we don't really care about the value of the ID (the Guid). From other tests we know that a new instance of a command will always have a unique ID. It's part of the command's invariants. Thus, we <em>know</em> that the ID is going to be unique, so having to configure an Ambient Context is only going to add noise to a unit test.</div>
+	<div class="comment-date">2012-06-26 18:09</div>
+</div>
+</div>

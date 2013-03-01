@@ -1,0 +1,111 @@
+---
+layout: post
+tags: [ASP.NET MVC]
+date: 2009-12-01 07:37:01
+title: "Global Error Handling in ASP.NET MVC"
+---
+{% include JB/setup %}
+
+<div id="post">
+	<p>ASP.NET MVC comes with an error-handling feature that enables you to show nice error Views to your users instead of the dreaded Yellow Screen of Death. The most prominently described technique involves attributing either you Controller or a single Controller action, like we see in the AccountController created by the Visual Studio project template.</p> <div style="font-family: consolas; background: white; color: black; font-size: 10pt"> <p style="margin: 0px">[<span style="color: #2b91af">HandleError</span>]</p> <p style="margin: 0px"><span style="color: blue">public</span> <span style="color: blue">class</span> <span style="color: #2b91af">AccountController</span> : <span style="color: #2b91af">Controller</span> { }</p></div> <p>That sure is easy, but I don't like it for a number of reasons:</p> <ul> <li>Even though you can derive from HandleErrorAttribute, it's impossible to inject any dependencies into Attributes because they must be fully constructed at compile-time. That makes it really difficult to log errors to an interface.  <li>It violates the DRY principle. Although it can be applied at the Controller level, I still must remember to attribute all of my Controllers with the HandleErrorAttribute.</li></ul> <p>Another approach is to override Controller.OnException. That solves the DI problem, but not the DRY problem.</p> <p>Attentive readers may now point out that I can define a base Controller that implements the proper error handling, and require that all my Controllers derive from this base Controller, but that doesn't satisfy me:</p> <p>First of all, it still violates the DRY principle. Whether I have to remember to apply a [HandleError] attribute or derive from a : MyBaseController amounts to the same thing. I (and all my team members) have to remember this always. It's unnecessary project friction.</p> <p>The second thing that bugs me about this approach is that I really do <em>favor composition over inheritance</em>. Error handling is a <em>cross-cutting concern</em>, so why should all my Controllers have to derive from a base controller to enable this? That is absurd.</p> <p>Fortunately, ASP.NET MVC offers a third way.</p> <p>The key lies in the Controller base class and how it deals with IExceptionFilters (which HandleErrorAttribute implements). When a Controller action is invoked, this actually happens through an IActionInvoker. The default ControllerActionInvoker is responsible for gathering the list of IExceptionFilters, so the first thing we can do is to derive from that and override its GetFilters method:</p> <div style="font-family: consolas; background: white; color: black; font-size: 10pt"> <p style="margin: 0px"><span style="color: blue">public</span> <span style="color: blue">class</span> <span style="color: #2b91af">ErrorHandlingActionInvoker</span> :</p> <p style="margin: 0px">&nbsp;&nbsp;&nbsp; <span style="color: #2b91af">ControllerActionInvoker</span></p> <p style="margin: 0px">{</p> <p style="margin: 0px">&nbsp;&nbsp;&nbsp; <span style="color: blue">private</span> <span style="color: blue">readonly</span> <span style="color: #2b91af">IExceptionFilter</span> filter;</p> <p style="margin: 0px">&nbsp;</p> <p style="margin: 0px">&nbsp;&nbsp;&nbsp; <span style="color: blue">public</span> ErrorHandlingActionInvoker(</p> <p style="margin: 0px">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <span style="color: #2b91af">IExceptionFilter</span> filter)</p> <p style="margin: 0px">&nbsp;&nbsp;&nbsp; {</p> <p style="margin: 0px">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <span style="color: blue">if</span> (filter == <span style="color: blue">null</span>)</p> <p style="margin: 0px">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; {</p> <p style="margin: 0px">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <span style="color: blue">throw</span> <span style="color: blue">new</span> <span style="color: #2b91af">ArgumentNullException</span>(<span style="color: #a31515">"filter"</span>);</p> <p style="margin: 0px">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; }</p> <p style="margin: 0px">&nbsp;</p> <p style="margin: 0px">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <span style="color: blue">this</span>.filter = filter;</p> <p style="margin: 0px">&nbsp;&nbsp;&nbsp; }</p> <p style="margin: 0px">&nbsp;</p> <p style="margin: 0px">&nbsp;&nbsp;&nbsp; <span style="color: blue">protected</span> <span style="color: blue">override</span> <span style="color: #2b91af">FilterInfo</span> GetFilters(</p> <p style="margin: 0px">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <span style="color: #2b91af">ControllerContext</span> controllerContext,</p> <p style="margin: 0px">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <span style="color: #2b91af">ActionDescriptor</span> actionDescriptor)</p> <p style="margin: 0px">&nbsp;&nbsp;&nbsp; {</p> <p style="margin: 0px">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <span style="color: blue">var</span> filterInfo = </p> <p style="margin: 0px">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <span style="color: blue">base</span>.GetFilters(controllerContext, </p> <p style="margin: 0px">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; actionDescriptor);</p> <p style="margin: 0px">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; filterInfo.ExceptionFilters.Add(<span style="color: blue">this</span>.filter);</p> <p style="margin: 0px">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <span style="color: blue">return</span> filterInfo;</p> <p style="margin: 0px">&nbsp;&nbsp;&nbsp; }</p> <p style="margin: 0px">}</p></div> <p>Here I'm simply injecting an IExceptionFilter instance into this class, so I'm not tightly binding it to any particular implementation  -  it will work with any IExceptionFilter we give it, so it simply serves the purpose of adding the filter at the right stage so that it can deal with otherwise unhandled exceptions. It's pure infrastructure code.</p> <p>Notice that I first invoke base.GetFilters and then add the injected filter to the returned list of filters. This allows the normal ASP.NET MVC IExceptionFilters to attempt to deal with the error first.</p> <p>This ErrorHandlingActionInvoker is only valuable if we can assign it to each and every Controller in the application. This can be done using a custom ControllerFactory:</p> <div style="font-family: consolas; background: white; color: black; font-size: 10pt"> <p style="margin: 0px"><span style="color: blue">public</span> <span style="color: blue">class</span> <span style="color: #2b91af">ErrorHandlingControllerFactory</span> : </p> <p style="margin: 0px">&nbsp;&nbsp;&nbsp; <span style="color: #2b91af">DefaultControllerFactory</span></p> <p style="margin: 0px">{</p> <p style="margin: 0px">&nbsp;&nbsp;&nbsp; <span style="color: blue">public</span> <span style="color: blue">override</span> <span style="color: #2b91af">IController</span> CreateController(</p> <p style="margin: 0px">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <span style="color: #2b91af">RequestContext</span> requestContext,</p> <p style="margin: 0px">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <span style="color: blue">string</span> controllerName)</p> <p style="margin: 0px">&nbsp;&nbsp;&nbsp; {</p> <p style="margin: 0px">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <span style="color: blue">var</span> controller = </p> <p style="margin: 0px">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <span style="color: blue">base</span>.CreateController(requestContext,</p> <p style="margin: 0px">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; controllerName);</p> <p style="margin: 0px">&nbsp;</p> <p style="margin: 0px">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <span style="color: blue">var</span> c = controller <span style="color: blue">as</span> <span style="color: #2b91af">Controller</span>;</p> <p style="margin: 0px">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <span style="color: blue">if</span> (c != <span style="color: blue">null</span>)</p> <p style="margin: 0px">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; {</p> <p style="margin: 0px">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; c.ActionInvoker = </p> <p style="margin: 0px">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <span style="color: blue">new</span> <span style="color: #2b91af">ErrorHandlingActionInvoker</span>(</p> <p style="margin: 0px">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <span style="color: blue">new</span> <span style="color: #2b91af">HandleErrorAttribute</span>());</p> <p style="margin: 0px">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; }</p> <p style="margin: 0px">&nbsp;</p> <p style="margin: 0px">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <span style="color: blue">return</span> controller;</p> <p style="margin: 0px">&nbsp;&nbsp;&nbsp; }</p> <p style="margin: 0px">}</p></div> <p>Notice that I'm simply deriving from the DefaultControllerFactory and overriding the CreateController method to assign the ErrorHandlingActionInvoker to the created Controller.</p> <p>In this example, I have chosen to inject the HandleErrorAttribute into the ErrorHandlingActionInvoker instance. This seems weird, but it's the HandleErrorAttribute that implements the default error handling logic in ASP.NET MVC, and since it implements IExceptionFilter, it works like a charm.</p> <p>The only thing left to do is to wire up the custom ErrorHandlingControllerFactory in global.asax like this:</p> <div style="font-family: consolas; background: white; color: black; font-size: 10pt"> <p style="margin: 0px"><span style="color: #2b91af">ControllerBuilder</span>.Current.SetControllerFactory(</p> <p style="margin: 0px">&nbsp;&nbsp;&nbsp; <span style="color: blue">new</span> <span style="color: #2b91af">ErrorHandlingControllerFactory</span>());</p></div> <p>Now any Controller action that throws an exception is gracefully handled by the injected IExceptionFilter. Since the filter is added as the last in the list of ExceptionFilters, any normal [HandleError] attribute and Controller.OnException override gets a chance to deal with the exception first, so this doesn't even change behavior of existing code.</p> <p>If you are trying this out on your own development machine, remember that you must modify your web.config like so:</p> <div style="font-family: consolas; background: white; color: black; font-size: 10pt"> <p style="margin: 0px"><span style="color: blue">&lt;</span><span style="color: #a31515">customErrors</span><span style="color: blue"> </span><span style="color: red">mode</span><span style="color: blue">=</span>"<span style="color: blue">On</span>"<span style="color: blue"> /&gt;</span></p></div> <p>If you run in the RemoteOnly mode, you will still see the Yellow Screen of Death on your local box.</p>
+</div>
+	
+<hr>
+<div id="comments">
+<h2 id="comments-header">
+	Comments
+</h2>
+	<div class="comment">
+	<div class="comment-author"><a href="http://erikzaadi.com">Erik</a></div>
+	<div class="comment-content">Very nice article..<br>
+</div>
+	<div class="comment-date">2009-12-04 17:25</div>
+</div><div class="comment">
+	<div class="comment-author"><a href="http://eduncan911.com">Eric Duncan</a></div>
+	<div class="comment-content">Excellent!  I like this for the same reason of DRY as well!  I've implemented this in our project now as well!<br>
+<br>
+One question, just to confirm your dependency injection concern: During your CreateController() override, I would have to obtain an instance of ErrorHandlingActionInvoker() from my IoC container, right?<br>
+<br>
+Feels kind of dirty doing it there.  Well, it would feel even dirtier if i had to reference a property from the controller to get an instance of what I want.<br>
+<br>
+Just wondering what you ended up with for your dependency injection pattern of this error handler.<br>
+<br>
+</div>
+	<div class="comment-date">2010-01-30 01:23</div>
+</div><div class="comment">
+	<div class="comment-author"><a href="http://blog.ploeh.dk/">Mark Seemann</a></div>
+	<div class="comment-content">You are correct that in our production applications, we don't manually request the ErrorHandlingActionInvoker from the container and assign it to the property. Rather, we simply configure the container to automatically set the ActionInvoker property as part of wiring up any Controller.<br>
+<br>
+<a href="http://blog.ploeh.dk/2009/12/14/WiringASPNETMVCErrorHandlingWithCastleWindsor.aspx">This follow-up post</a> provides an example.</div>
+	<div class="comment-date">2010-01-30 10:27</div>
+</div><div class="comment">
+	<div class="comment-author"><a href="http://jvance.com">Jarrett Vance</a></div>
+	<div class="comment-content">I've tried extending the view model to have some of my custom data needed by master page and I keep getting empty result.  Any ideas?</div>
+	<div class="comment-date">2010-03-15 22:42</div>
+</div><div class="comment">
+	<div class="comment-author"><a href="http://blog.ploeh.dk/">Mark Seemann</a></div>
+	<div class="comment-content">I'm not sure I understand how your question relates particularly to this blog post, so I'll need more details than that to be able to say anything meaningful.<br>
+<br>
+May I suggest asking your question on <a href="http://stackoverflow.com/">Stack Overflow</a>? That site has good facilities for asking development-related questions, including syntax highlighting. You are welcome to point me to any questions you may have, and I'll take a look and answer if I have anything to add.</div>
+	<div class="comment-date">2010-03-15 23:17</div>
+</div><div class="comment">
+	<div class="comment-author">petrux</div>
+	<div class="comment-content">Great post!!! I was wondering... is it possible to handle the authentication issue the same way? I mean: is it possible to handle it dealing with controllers? Or is it a bad practice and shall I deal with this stuff in the service/busines layer?<br>
+<br>
+Bye bye and... sorry for my broken English! :-)<br>
+petrux from Italy</div>
+	<div class="comment-date">2011-03-01 09:56</div>
+</div><div class="comment">
+	<div class="comment-author">RonJ</div>
+	<div class="comment-content">Mark, Your code works up to a point. When an exception occurs in a controller's HttpGet method the method SystemError is reached. However, when an exception occurs in a controller's HttpPost method the exception &quot;A public action method 'SystemError' was not found on controller 'Cmrs_Web.Controllers.CalmErrorController'.&quot; is raised on the line of code &quot;httpHandler.ProcessRequest(this.Context);&quot; in global.asa.cs<br>
+<br>
+Here is the global.asa.cs code:<br>
+        protected void Application_Error(object sender, EventArgs e)<br>
+        {<br>
+            // Log the exception to CALM<br>
+            Guid errorLogNumber = new Guid();<br>
+            var error = Server.GetLastError();<br>
+            string logMessage = Calm.Logging.Utilities.FormatException(error);<br>
+            Response.Clear();<br>
+            Server.ClearError();<br>
+            if (Logger.IsFatalOn)<br>
+            {<br>
+                errorLogNumber = Logger.Fatal(error);<br>
+            }<br>
+<br>
+            // Put CALM Error Id into session so CalmError controller can get it for displaying in view<br>
+            Session.Add(&quot;CalmErrorId&quot;, errorLogNumber.ToString());<br>
+<br>
+            // Display Error View<br>
+            string path = Request.Path;<br>
+            this.Context.RewritePath(&quot;~/CalmError/SystemError&quot;);<br>
+            IHttpHandler httpHandler = new MvcHttpHandler();<br>
+            httpHandler.ProcessRequest(this.Context);<br>
+            this.Context.RewritePath(path, false);<br>
+        }<br>
+<br>
+Here is simplified code for the Controller (device is a simple object with 6 properties - forceErr I manually set to false/true then ran a Debug session)<br>
+        [HttpGet]<br>
+        public ActionResult CreateManualAsset()<br>
+        {<br>
+            bool forceErr = false;<br>
+            if (forceErr)<br>
+            {<br>
+                throw new Exception(&quot;forced error in CreateManualAsset post&quot;);<br>
+            }<br>
+          return this.View(&quot;Manual Asset&quot;);<br>
+        }<br>
+<br>
+        [HttpPost]<br>
+        public ActionResult CreateManualAsset(Device device)<br>
+        {<br>
+            bool forceErr = false;<br>
+            if (forceErr)<br>
+            {<br>
+                throw new Exception(&quot;forced error in CreateManualAsset post&quot;);<br>
+            }<br>
+          return this.View(&quot;Manual Asset&quot;);<br>
+        }</div>
+	<div class="comment-date">2012-07-27 20:53</div>
+</div>
+</div>

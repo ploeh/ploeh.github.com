@@ -1,0 +1,160 @@
+---
+layout: post
+tags: [AutoFixture, Unit Testing]
+date: 2012-07-31 18:31:11
+title: "The order of AutoFixture Customizations matter"
+---
+{% include JB/setup %}
+
+<div id="post">
+	<p>
+	<em>This post answers a FAQ about ordering of AutoFixture Customizations</em>
+</p>
+<p>
+	With <a href="https://github.com/AutoFixture/AutoFixture">AutoFixture</a> you can <a href="http://blog.ploeh.dk/2011/03/18/EncapsulatingAutoFixtureCustomizations.aspx">encapsulate common Customizations</a> using the Customize method and the ICustomization interface. However, customizations may 'compete' for the same requests in the sense that more than one customization is able to handle a request.
+</p>
+<p>
+	As an example, consider a request for something as basic as IEnumerable&lt;T&gt;. By default, AutoFixture can't create instances of IEnumerable&lt;T&gt;, but more than one customization can.
+</p>
+<p>
+	As <a href="http://blog.ploeh.dk/2011/02/08/CreatingGeneralPopulatedListsWithAutoFixture.aspx">previously described</a> the MultipleCustomization handles requests for sequences just fine:
+</p>
+<p>
+	</p><div style="font-family: Consolas; font-size: 10pt; color: black; background: white;">
+<pre style="margin: 0px;"><span style="color: blue;">var</span> fixture = <span style="color: blue;">new</span> <span style="color: #2b91af;">Fixture</span>().Customize(<span style="color: blue;">new</span> <span style="color: #2b91af;">MultipleCustomization</span>());</pre>
+<pre style="margin: 0px;"><span style="color: blue;">var</span> seq = fixture.CreateAnonymous&lt;<span style="color: #2b91af;">IEnumerable</span>&lt;<span style="color: blue;">int</span>&gt;&gt;();</pre>
+</div>
+<p></p>
+<p>
+	However, the <a href="http://blog.ploeh.dk/2010/08/19/AutoFixtureAsAnAutomockingContainer.aspx">AutoMoqCustomization</a> can also (sort of) create sequences:
+</p>
+<p>
+	</p><div style="font-family: Consolas; font-size: 10pt; color: black; background: white;">
+<pre style="margin: 0px;"><span style="color: blue;">var</span> fixture = <span style="color: blue;">new</span> <span style="color: #2b91af;">Fixture</span>().Customize(<span style="color: blue;">new</span> <span style="color: #2b91af;">AutoMoqCustomization</span>());</pre>
+<pre style="margin: 0px;"><span style="color: blue;">var</span> seq = fixture.CreateAnonymous&lt;<span style="color: #2b91af;">IEnumerable</span>&lt;<span style="color: blue;">int</span>&gt;&gt;();</pre>
+</div>
+<p></p>
+<p>
+	However, in this case, the <em>implementation</em> of IEnumerable&lt;int&gt; is a dynamic proxy, so it's not much of a sequence after all.
+</p>
+<p>
+	<b>Mocking IEnumerable&lt;T&gt;</b>
+</p>
+<p>
+	Here I need to make a little digression on why that is, because this seems to confuse a lot of people. Consider what a dynamic mock object is: it's a dynamic proxy which implements an interface (or abstract base class). It doesn't have a lot of implemented <em>behavior</em>. Dynamic mocks do what we tell them through their configuration APIs (such as the Setup methods for Moq). If we don't tell them what to do, they must fall back on some sort of default implementation. When the AutoMoqCustomization is used, it sets Mock&lt;T&gt;.DefaultValue to DefaultValue.Mock, which means that the default behavior is to return a new dynamic proxy for reference types.
+</p>
+<p>
+	Here's how an unconfigured dymamic proxy of IEnumerable&lt;T&gt; will behave: the interface only has two (very similar) methods:
+</p>
+<p>
+</p><div style="font-family: Consolas; font-size: 10pt; color: black; background: white;">
+<pre style="margin: 0px;"><span style="color: blue;">public</span> <span style="color: blue;">interface</span> <span style="color: #2b91af;">IEnumerable</span>&lt;<span style="color: blue;">out</span> T&gt; : IEnumerable</pre>
+<pre style="margin: 0px;">{</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; <span style="color: #2b91af;">IEnumerator</span>&lt;T&gt; GetEnumerator();</pre>
+<pre style="margin: 0px;">}</pre>
+</div>
+<p></p>
+<p>
+	Via IEnumerable the interface also defines the non-generic GetEnumerator method, but it's so similar to the generic GetEnumerator method that the following discussion applies for both.
+</p>
+<p>
+	When you iterate over IEnumerable&lt;T&gt; using foreach, or when you use LINQ, the first thing that happens is that the GetEnumerator method is called. An unconfigured dynamic mock will respond by returning another dynamic proxy implementing IEnumerator&lt;T&gt;. This interface directly and indirectly defines these methods:
+</p>
+<p>
+	</p><div style="font-family: Consolas; font-size: 10pt; color: black; background: white;">
+<pre style="margin: 0px;">T Current { <span style="color: blue;">get</span>; }</pre>
+<pre style="margin: 0px;">&nbsp;</pre>
+<pre style="margin: 0px;"><span style="color: blue;">object</span> IEnumerator.Current { <span style="color: blue;">get</span>; }</pre>
+<pre style="margin: 0px;">&nbsp;</pre>
+<pre style="margin: 0px;"><span style="color: blue;">bool</span> MoveNext();</pre>
+<pre style="margin: 0px;">&nbsp;</pre>
+<pre style="margin: 0px;"><span style="color: blue;">void</span> Reset();</pre>
+<pre style="margin: 0px;">&nbsp;</pre>
+<pre style="margin: 0px;"><span style="color: blue;">void</span> Dispose();</pre>
+</div>
+<p></p>
+<p>
+	Iterating over a sequence will typically start by invoking the MoveNext method. Since the dynamic proxy is unconfigured, it has to fall back to default behavior. For booleans the default value is false, so the return value of a call to MoveNext would be false. This means that there are no more elements in the sequence. Iteration stops even before it begins. In effect, such an implementation would look like an empty sequence.
+</p>
+<p>
+	OK, back to AutoFixture.
+</p>
+<p>
+	<b>Ordering Customizations</b>
+</p>
+<p>
+	Frequently I receive questions like this:
+</p>
+<blockquote>
+	<p>
+		"Creating lists with AutoFixture seems inconsistent. When MultipleCustomization comes before AutoMoqCustomization, lists are popuplated, but the other way around they are empty. Is this a bug?"
+	</p>
+</blockquote>
+<p>
+	No, this is by design. By now, you can probably figure out why.
+</p>
+<p>
+	Still, lets look at the symptoms. Both of these tests pass:
+</p>
+<p>
+	</p><div style="font-family: Consolas; font-size: 10pt; color: black; background: white;">
+<pre style="margin: 0px;">[<span style="color: #2b91af;">Fact</span>]</pre>
+<pre style="margin: 0px;"><span style="color: blue;">public</span> <span style="color: blue;">void</span> OnlyMultipleResolvingSequence()</pre>
+<pre style="margin: 0px;">{</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; <span style="color: blue;">var</span> fixture = <span style="color: blue;">new</span> <span style="color: #2b91af;">Fixture</span>().Customize(<span style="color: blue;">new</span> <span style="color: #2b91af;">MultipleCustomization</span>());</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; <span style="color: blue;">var</span> seq = fixture.CreateAnonymous&lt;<span style="color: #2b91af;">IEnumerable</span>&lt;<span style="color: blue;">int</span>&gt;&gt;();</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; <span style="color: #2b91af;">Assert</span>.NotEmpty(seq);</pre>
+<pre style="margin: 0px;">}</pre>
+<pre style="margin: 0px;">&nbsp;</pre>
+<pre style="margin: 0px;">[<span style="color: #2b91af;">Fact</span>]</pre>
+<pre style="margin: 0px;"><span style="color: blue;">public</span> <span style="color: blue;">void</span> OnlyAutoMoqResolvingSequence()</pre>
+<pre style="margin: 0px;">{</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; <span style="color: blue;">var</span> fixture = <span style="color: blue;">new</span> <span style="color: #2b91af;">Fixture</span>().Customize(<span style="color: blue;">new</span> <span style="color: #2b91af;">AutoMoqCustomization</span>());</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; <span style="color: blue;">var</span> seq = fixture.CreateAnonymous&lt;<span style="color: #2b91af;">IEnumerable</span>&lt;<span style="color: blue;">int</span>&gt;&gt;();</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; <span style="color: #2b91af;">Assert</span>.Empty(seq);</pre>
+<pre style="margin: 0px;">}</pre>
+</div>
+<p></p>
+<p>
+	Notice that in the first test, the sequence is <em>not</em> empty, whereas in the second test, the sequence <em>is</em> empty. This is because the MultipleCustomization produces a 'proper' sequence, while the AutoMoqCustomization produces a dynamic proxy of IEnumerable&lt;int&gt; as described above. At this point, this should hardly be surprising.
+</p>
+<p>
+	The same obvervations can be made when both Customizations are in use:
+</p>
+<p>
+	</p><div style="font-family: Consolas; font-size: 10pt; color: black; background: white;">
+<pre style="margin: 0px;">[<span style="color: #2b91af;">Fact</span>]</pre>
+<pre style="margin: 0px;"><span style="color: blue;">public</span> <span style="color: blue;">void</span> WrongOrderResolvingSequence()</pre>
+<pre style="margin: 0px;">{</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; <span style="color: blue;">var</span> fixture = <span style="color: blue;">new</span> <span style="color: #2b91af;">Fixture</span>().Customize(</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; <span style="color: blue;">new</span> <span style="color: #2b91af;">CompositeCustomization</span>(</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; <span style="color: blue;">new</span> <span style="color: #2b91af;">AutoMoqCustomization</span>(),</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; <span style="color: blue;">new</span> <span style="color: #2b91af;">MultipleCustomization</span>()));</pre>
+<pre style="margin: 0px;">&nbsp;</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; <span style="color: blue;">var</span> seq = fixture.CreateAnonymous&lt;<span style="color: #2b91af;">IEnumerable</span>&lt;<span style="color: blue;">int</span>&gt;&gt;();</pre>
+<pre style="margin: 0px;">&nbsp;</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; <span style="color: #2b91af;">Assert</span>.Empty(seq);</pre>
+<pre style="margin: 0px;">}</pre>
+<pre style="margin: 0px;">&nbsp;</pre>
+<pre style="margin: 0px;">[<span style="color: #2b91af;">Fact</span>]</pre>
+<pre style="margin: 0px;"><span style="color: blue;">public</span> <span style="color: blue;">void</span> CorrectOrderResolvingSequnce()</pre>
+<pre style="margin: 0px;">{</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; <span style="color: blue;">var</span> fixture = <span style="color: blue;">new</span> <span style="color: #2b91af;">Fixture</span>().Customize(</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; <span style="color: blue;">new</span> <span style="color: #2b91af;">CompositeCustomization</span>(</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; <span style="color: blue;">new</span> <span style="color: #2b91af;">MultipleCustomization</span>(),&nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; </pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; <span style="color: blue;">new</span> <span style="color: #2b91af;">AutoMoqCustomization</span>()));</pre>
+<pre style="margin: 0px;">&nbsp;</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; <span style="color: blue;">var</span> seq = fixture.CreateAnonymous&lt;<span style="color: #2b91af;">IEnumerable</span>&lt;<span style="color: blue;">int</span>&gt;&gt;();</pre>
+<pre style="margin: 0px;">&nbsp;</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; <span style="color: #2b91af;">Assert</span>.NotEmpty(seq);</pre>
+<pre style="margin: 0px;">}</pre>
+</div>
+<p></p>
+<p>
+	Both of these tests also pass. In the first test the sequence is empty, and in the second it contains elements. This is because the first Customization 'wins'.
+</p>
+<p>
+	In general, a Customization may potentially be able to handle a lot of requests. For instance, the AutoMoqCustomization can handle all requests for interfaces and abstract base classes. Thus, multiple Customizations may be able to handle a request, so AutoFixture needs a conflict resolution strategy. That strategy is simply that the first Customization which can handle a request gets to do that, and the other Customizations are never invoked. You can use this feature to put specific Customizations in front of more catch-all Customizations. That's essentially what happens when you put MultipleCustomization in front of AutoMoqCustomization.
+</p>
+</div>
+	

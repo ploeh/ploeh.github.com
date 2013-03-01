@@ -1,0 +1,132 @@
+---
+layout: post
+tags: [Dependency Injection, Software Design]
+date: 2011-12-19 14:04:55
+title: "Factory Overload"
+---
+{% include JB/setup %}
+
+<div id="post">
+	<p>Recently I received a question from <a href="http://kellabyte.com/">Kelly Sommers</a> about good ways to refactor away from Factory Overload. Basically, she's working in a code base where there's an explosion of <a href="http://en.wikipedia.org/wiki/Abstract_factory_pattern">Abstract Factories</a> which seems to be counter-productive. In this post I'll take a look at the example problem and propose a set of alternatives.</p> <p align="left">An <a href="http://en.wikipedia.org/wiki/Abstract_factory_pattern">Abstract Factory</a> (and its close relative Product Trader) can serve as a <a href="http://stackoverflow.com/questions/2280170/why-do-we-need-abstract-factory-design-pattern/2280289#2280289">solution to various challenges</a> that come up when writing loosely coupled code (chapter 6 of <a href="http://affiliate.manning.com/idevaffiliate.php?id=1150_236">my book</a> describes the most common scenarios). However, introducing an Abstract Factory may be a <a href="http://en.wikipedia.org/wiki/Leaky_abstraction">leaky abstraction</a>, so don't do it blindly. For example, an Abstract Factory is <a href="http://stackoverflow.com/questions/4648318/dependency-injection-new-instance-required-in-several-of-a-classes-methods/4650050#4650050">rarely the best approach to address lifetime management concerns</a>. In other words, the Abstract Factory has to make sense as a pure model element.</p> <p align="left">That's not the case in the following example.</p> <p align="left"><strong>Problem Statement</strong></p> <p align="left">The question centers around a code base that integrates with a database closely guarded by DBA police. Apparently, every single database access must happen through a set of <em>very</em> fine-grained stored procedures.</p> <p align="left">For example, to update the first name of a user, a set of stored procedures exist to support this scenario, <em>depending on the context of the current application user:</em></p> <table border="1" cellspacing="0" cellpadding="2" width="400"> <tbody> <tr> <td valign="top" width="135"><strong>User type</strong></td> <td valign="top" width="146"><strong>Stored procedure</strong></td> <td valign="top" width="117"><strong>Parameter name</strong></td></tr> <tr> <td valign="top" width="135">Admin</td> <td valign="top" width="157">update_admin_firstname</td> <td valign="top" width="148">adminFirstName</td></tr> <tr> <td valign="top" width="135">Guest</td> <td valign="top" width="157">update_guest_firstname</td> <td valign="top" width="148">guestFirstName</td></tr> <tr> <td valign="top" width="135">Regular</td> <td valign="top" width="157">update_regular_firstname</td> <td valign="top" width="148">regularFirstName</td></tr> <tr> <td valign="top" width="135">Restricted</td> <td valign="top" width="157">update_restricted_firstname</td> <td valign="top" width="148">restrictedFirstName</td></tr></tbody></table> <p>As this table demonstrates, not only is there a stored procedure for each user context, but the parameter name differs as well. However, in this particular case it <em>seems</em> as though there's a pattern to the names.</p> <blockquote> <p>If this pattern is consistent, I think the easiest way to address these variations would be to algorithmically build the strings from a couple of templates.</p></blockquote> <p>However, this is not the route taken by Kelly's team, so I assume that things are more complicated than that; apparently, a templated approach is not viable, so for the rest of&nbsp; this article I'm going to assume that it's necessary to write at least <em>some</em> code to address each case individually.</p> <p>The current solution that Kelly's team has implemented is to use an Abstract Factory (Product Trader) to translate the user type into an appropriate IUserFirstNameModifier instance. From the consuming code, it looks like this:</p> <div style="font-family: ; background: white; color: "><pre style="margin: 0px"><span style="color: "><font color="#0000ff"><font style="font-size: 10pt">var</font></font></span><font style="font-size: 10pt"> modifier = factory.Create(<span style="color: "><font color="#2b91af">UserTypes</font></span>.Admin);</font></pre><pre style="margin: 0px"><font style="font-size: 10pt">modifier.Commit(<span style="color: "><font color="#a31515">"first"</font></span>);</font></pre></div>
+<p>where the factory variable is an instance of the IUserFirstNameModifierFactory interface. This is certainly loosely coupled, but looks like a leaky abstraction. Why is a factory needed? It seems that its single responsibility is to translate a UserTypes instance (an enum) into an IUserFirstNameModifier. There's a code smell buried here  -  try to spot it before you read on :)</p>
+<p><strong>Proposed Solution</strong></p>
+<p>Kelly herself suggests an alternative involving a concrete Builder which can create instances of a single concrete UserFirstNameModifier with or without an implicit conversion:</p>
+<div style="font-family: ; background: white; color: "><pre style="margin: 0px"><span style="color: "><font style="font-size: 10pt" color="#008000">// Implicit conversion.</font></span></pre><pre style="margin: 0px"><span style="color: "><font color="#2b91af"><font style="font-size: 10pt">UserFirstNameModifier</font></font></span><font style="font-size: 10pt"> modifier1 = </font></pre><pre style="margin: 0px"><font style="font-size: 10pt">&nbsp;&nbsp;&nbsp; builder.WithUserType(<span style="color: "><font color="#2b91af">UserTypes</font></span>.Guest);</font></pre><pre style="margin: 0px"><font style="font-size: 10pt">&nbsp;</font></pre><pre style="margin: 0px"><span style="color: "><font style="font-size: 10pt" color="#008000">// Without implicit conversion.</font></span></pre><pre style="margin: 0px"><span style="color: "><font color="#0000ff"><font style="font-size: 10pt">var</font></font></span><font style="font-size: 10pt"> modifier2 = builder</font></pre><pre style="margin: 0px"><font style="font-size: 10pt">&nbsp;&nbsp;&nbsp; .WithUserType(<span style="color: "><font color="#2b91af">UserTypes</font></span>.Restricted)</font></pre><pre style="margin: 0px"><font style="font-size: 10pt">&nbsp;&nbsp;&nbsp; .Create();</font></pre></div>
+<p>While this may seem to reduce the number of classes involved, it has several drawbacks:</p>
+<ul>
+<li>First of all, the Fluent Builder pattern implies that you can forgo invoking any of the WithXyz methods (WithUserType) and just accept all the default values encapsulated in the builder. This again implies that there's a default user type, which may or may not make sense in that particular domain. Looking at Kelly's code, UserTypes is an enum (and thus has a default value), so if WithUserType isn't invoked, the Create method defaults to UserTypes.Admin. That's a bit too implicit for my taste. 
+<li>Since all involved classes are now concrete, the proposed solution isn't extensibile (and by corollary hard to unit test). 
+<li>The builder is essentially a big switch statement.</li></ul>
+<p>Both the current implementation and the proposed solution involves passing an enum as a method parameter to a different class. If you've read and memorized <a href="http://www.amazon.com/gp/product/0201485672/ref=as_li_ss_tl?ie=UTF8&amp;tag=ploeh-20&amp;linkCode=as2&amp;camp=1789&amp;creative=390957&amp;creativeASIN=0201485672">Refactoring</a> you should by now have recognized both a code smell and the remedy.</p>
+<p><strong>Alternative 1a: Make UserType Polymorphic</strong></p>
+<p>The code smell is <a href="http://c2.com/cgi/wiki?FeatureEnvySmell">Feature Envy</a> and a possible refactoring is to <a href="http://martinfowler.com/refactoring/catalog/replaceTypeCodeWithStateStrategy.html">replace the enum with a Strategy</a>. In order to do that, an IUserType interface is introduced:</p>
+<div style="font-family: ; background: white; color: "><pre style="margin: 0px"><span style="color: "><font color="#0000ff"><font style="font-size: 10pt">public</font></font></span><font style="font-size: 10pt"> <span style="color: "><font color="#0000ff">interface</font></span> </font><span style="color: "><font style="font-size: 10pt" color="#2b91af">IUserType</font></span></pre><pre style="margin: 0px"><font style="font-size: 10pt">{</font></pre><pre style="margin: 0px"><font style="font-size: 10pt">&nbsp;&nbsp;&nbsp; <span style="color: "><font color="#2b91af">IUserFirstNameModifer</font></span> CreateUserFirstNameModifier();</font></pre><pre style="margin: 0px"><font style="font-size: 10pt">}</font></pre></div>
+<p>Usage becomes as simple as this:</p>
+<div style="font-family: ; background: white; color: "><pre style="margin: 0px"><span style="color: "><font color="#0000ff"><font style="font-size: 10pt">var</font></font></span><font style="font-size: 10pt"> modifier = userType.CreateUserFirstNameModifier();</font></pre></div>
+<p>Obviously, more methods can be added to IUserType to support other update operations, but care should be taken to avoid creating a <a href="http://martinfowler.com/bliki/HeaderInterface.html">Header Interface</a>.</p>
+<p>While this solution is much more object-oriented, I'm still not quite happy with it, because apparently, the context is a <a href="http://abdullin.com/cqrs">CQRS</a> style architecture. Since an update operation is essentially a Command, then why model the implementation along the lines of a Query? Both Abstract Factory and Factory Method patterns represent Queries, so it seems redundant in this case. It should be possible to apply the <a href="http://en.wikipedia.org/wiki/Hollywood_principle_%28computer_programming%29">Hollywood Principle</a> here.</p>
+<p><strong>Alternative 1b: Tell, Don't Ask</strong></p>
+<p>Why have the user type <em>return</em> an modifier? Why can't it perform the update itself? The IUserType interface should be changed to something like this:</p>
+<div style="font-family: ; background: white; color: "><pre style="margin: 0px"><span style="color: "><font color="#0000ff"><font style="font-size: 10pt">public</font></font></span><font style="font-size: 10pt"> <span style="color: "><font color="#0000ff">interface</font></span> </font><span style="color: "><font style="font-size: 10pt" color="#2b91af">IUserType</font></span></pre><pre style="margin: 0px"><font style="font-size: 10pt">{</font></pre><pre style="margin: 0px"><font style="font-size: 10pt">&nbsp;&nbsp;&nbsp; <span style="color: "><font color="#0000ff">void</font></span> CommitUserFirtName(<span style="color: "><font color="#0000ff">string</font></span> firstName);</font></pre><pre style="margin: 0px"><font style="font-size: 10pt">}</font></pre></div>
+<p>This makes it easier for the consumer to commit the user's first name because it can be done directly on the IUserType instance instead of first creating the modifier.</p>
+<p>It also makes it much easier to unit test the consumer because there's no longer a mix of Command and Queries within the same method. From <a href="http://www.amazon.com/gp/product/0321503627/ref=as_li_ss_tl?ie=UTF8&amp;tag=ploeh-20&amp;linkCode=as2&amp;camp=1789&amp;creative=390957&amp;creativeASIN=0321503627">Growing Object-Oriented Software</a> we know that Queries should be modeled with <a href="http://xunitpatterns.com/Test%20Stub.html">Stubs</a> and Commands with <a href="http://xunitpatterns.com/Mock%20Object.html">Mocks</a>, and if you've ever tried mixing the two you know that it's a sort of interaction that should be minimized.</p>
+<p><strong>Alternative 2a: Distinguish by Type</strong></p>
+<p>While I personally like alternative 1b best, it may not be practical in all situations, so it's always valuable to examine other alternatives.</p>
+<p>The root cause of the problem is that there's a lot of stored procedures. I want to reiterate that I still think that the absolutely easiest solution would be to generate a SqlCommand from a string template, but given that this article assumes that this isn't possible or desirable, it follows that code must be written for each stored procedure.</p>
+<p>Why not simply define an interface for each one? As an example, to update the user's first name in the context of being an ‘Admin' user, this <a href="http://martinfowler.com/bliki/RoleInterface.html">Role Interface</a> can be used:</p>
+<div style="font-family: ; background: white; color: "><pre style="margin: 0px"><span style="color: "><font color="#0000ff"><font style="font-size: 10pt">public</font></font></span><font style="font-size: 10pt"> <span style="color: "><font color="#0000ff">interface</font></span> </font><span style="color: "><font style="font-size: 10pt" color="#2b91af">IUserFirstNameAdminModifier</font></span></pre><pre style="margin: 0px"><font style="font-size: 10pt">{</font></pre><pre style="margin: 0px"><font style="font-size: 10pt">&nbsp;&nbsp;&nbsp; <span style="color: "><font color="#0000ff">void</font></span> Commit(<span style="color: "><font color="#0000ff">string</font></span> firstName);</font></pre><pre style="margin: 0px"><font style="font-size: 10pt">}</font></pre></div>
+<p>Similar interfaces can be defined for the other user types, such as IUserFirstNameRestrictedModifier, IUserFirstNameGuestModifier and so on.</p>
+<p>This is a very simple solution; it's easy to implement, but risks violating the <a href="http://codemanship.co.uk/parlezuml/blog/?postid=934">Reused Abstractions Principle</a> (RAP).</p>
+<p><strong>Alternative 2b: Distinguish by Generic Type</strong></p>
+<p>The problem with introducing interfaces like IUserFirstNameAdminModifier, IUserFirstNameRestrictedModifier, IUserFirstNameGuestModifier etc. is that they differ only by name. The Commit method is the same for all these interfaces, so this seems to violate the RAP. It'd be better to merge all these interfaces into a single interface, which is what Kelly's team is currently doing. However, the problem with this is that the type carries no information about the <em>role</em> that the modifier is playing.</p>
+<p>Another alternative is to turn the modifier interface into a generic interface like this:</p>
+<div style="font-family: ; background: white; color: "><pre style="margin: 0px"><span style="color: "><font color="#0000ff"><font style="font-size: 10pt">public</font></font></span><font style="font-size: 10pt"> <span style="color: "><font color="#0000ff">interface</font></span> <span style="color: "><font color="#2b91af">IUserFirstNameModifier</font></span>&lt;T&gt; </font></pre><pre style="margin: 0px"><font style="font-size: 10pt">&nbsp;&nbsp;&nbsp; <span style="color: "><font color="#0000ff">where</font></span> T : </font><span style="color: "><font style="font-size: 10pt" color="#2b91af">IUserType</font></span></pre><pre style="margin: 0px"><font style="font-size: 10pt">{</font></pre><pre style="margin: 0px"><font style="font-size: 10pt">&nbsp;&nbsp;&nbsp; <span style="color: "><font color="#0000ff">void</font></span> Commit(<span style="color: "><font color="#0000ff">string</font></span> firstName);</font></pre><pre style="margin: 0px"><font style="font-size: 10pt">}</font></pre></div>
+<p>The IUserType is a <a href="http://en.wikipedia.org/wiki/Marker_interface_pattern">Marker Interface</a>, so .NET purists are not going to like this solution, since <a href="http://msdn.microsoft.com/en-us/library/ms229022.aspx">the .NET Type Design Guidelines recommend against using Marker Interfaces</a>. However, it's impossible to constrain a generic type argument against an attribute, so the party line solution is out of the question.</p>
+<p>This solution ensures that consumers can now have dependencies on IUserFirstNameModifier&lt;AdminUserType&gt;, IUserFirstNameModifier&lt;RestrictedUserType&gt;, etc.</p>
+<p>However, the need for a marker interface gives off another odeur.</p>
+<p><strong>Alternative 3: Distinguish by Role</strong></p>
+<p>The problem at the heart of alternative 2 is that it attempts to use the <em>type</em> of the interfaces as an indicator of the roles that Services play. It's seems that making the type distinct works against the RAP, but when the RAP is applied, the type becomes ambiguous.</p>
+<p>However, as <a href="http://www.tedneward.com/">Ted Neward</a> <a href="http://msdn.microsoft.com/en-us/magazine/hh205754.aspx">points out</a> in his excellent series on <a href="http://msdn.microsoft.com/en-us/magazine/ff955611.aspx">Multiparadigmatic .NET</a>, the type is only one axis of variability among many. Perhaps, in this case, it may be much easier to use the <em>name</em> of the dependency to communicate its role instead of the type.</p>
+<p>Given a single, ambiguous IUserFirstNameModifier interface (just as in the original problem statement), a consumer can distinguish between the various roles of modifiers by their names:</p>
+<div style="font-family: ; background: white; color: "><pre style="margin: 0px"><span style="color: "><font color="#0000ff"><font style="font-size: 10pt">public</font></font></span><font style="font-size: 10pt"> <span style="color: "><font color="#0000ff">partial</font></span> <span style="color: "><font color="#0000ff">class</font></span> </font><span style="color: "><font style="font-size: 10pt" color="#2b91af">SomeConsumer</font></span></pre><pre style="margin: 0px"><font style="font-size: 10pt">{</font></pre><pre style="margin: 0px"><font style="font-size: 10pt">&nbsp;&nbsp;&nbsp; <span style="color: "><font color="#0000ff">private</font></span> <span style="color: "><font color="#0000ff">readonly</font></span> <span style="color: "><font color="#2b91af">IUserFirstNameModifier</font></span> adminModifier;</font></pre><pre style="margin: 0px"><font style="font-size: 10pt">&nbsp;&nbsp;&nbsp; <span style="color: "><font color="#0000ff">private</font></span> <span style="color: "><font color="#0000ff">readonly</font></span> <span style="color: "><font color="#2b91af">IUserFirstNameModifier</font></span> guestModifier;</font></pre><pre style="margin: 0px"><font style="font-size: 10pt">&nbsp;</font></pre><pre style="margin: 0px"><font style="font-size: 10pt">&nbsp;&nbsp;&nbsp; <span style="color: "><font color="#0000ff">public</font></span> SomeConsumer(</font></pre><pre style="margin: 0px"><font style="font-size: 10pt">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <span style="color: "><font color="#2b91af">IUserFirstNameModifier</font></span> adminModifier,</font></pre><pre style="margin: 0px"><font style="font-size: 10pt">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <span style="color: "><font color="#2b91af">IUserFirstNameModifier</font></span> guestModifier)</font></pre><pre style="margin: 0px"><font style="font-size: 10pt">&nbsp;&nbsp;&nbsp; {</font></pre><pre style="margin: 0px"><font style="font-size: 10pt">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <span style="color: "><font color="#0000ff">this</font></span>.adminModifier = adminModifier;</font></pre><pre style="margin: 0px"><font style="font-size: 10pt">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <span style="color: "><font color="#0000ff">this</font></span>.guestModifier = guestModifier;</font></pre><pre style="margin: 0px"><font style="font-size: 10pt">&nbsp;&nbsp;&nbsp; }</font></pre><pre style="margin: 0px"><font style="font-size: 10pt">&nbsp;</font></pre><pre style="margin: 0px"><font style="font-size: 10pt">&nbsp;&nbsp;&nbsp; <span style="color: "><font color="#0000ff">public</font></span> <span style="color: "><font color="#0000ff">void</font></span> DoSomething()</font></pre><pre style="margin: 0px"><font style="font-size: 10pt">&nbsp;&nbsp;&nbsp; {</font></pre><pre style="margin: 0px"><font style="font-size: 10pt">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <span style="color: "><font color="#0000ff">if</font></span> (<span style="color: "><font color="#0000ff">this</font></span>.UseAdmin)</font></pre><pre style="margin: 0px"><font style="font-size: 10pt">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <span style="color: "><font color="#0000ff">this</font></span>.adminModifier.Commit(<span style="color: "><font color="#a31515">"first"</font></span>);</font></pre><pre style="margin: 0px"><font style="font-size: 10pt">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; </font><span style="color: "><font style="font-size: 10pt" color="#0000ff">else</font></span></pre><pre style="margin: 0px"><font style="font-size: 10pt">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <span style="color: "><font color="#0000ff">this</font></span>.guestModifier.Commit(<span style="color: "><font color="#a31515">"first"</font></span>);</font></pre><pre style="margin: 0px"><font style="font-size: 10pt">&nbsp;&nbsp;&nbsp; }</font></pre><pre style="margin: 0px"><font style="font-size: 10pt">}</font></pre></div>
+<p>Now it's entirely up to the <a href="http://blog.ploeh.dk/2011/07/28/CompositionRoot.aspx">Composition Root</a> to compose SomeConsumer with the correct modifiers, and while this can be done manually, it's an excellent case for a DI Container and a bit of Convention over Configuration.</p>
+<p><strong>Conclusion</strong></p>
+<p>I'm sure that if I'd spent more time analyzing the problem I could have come up with more alternatives, but this post is becoming long enough already.</p>
+<p>Of the alternatives I've suggested here, I prefer 1b or 3, depending on the exact requirements.</p>
+</div>
+	
+<hr>
+<div id="comments">
+<h2 id="comments-header">
+	Comments
+</h2>
+	<div class="comment">
+	<div class="comment-author"><a href="http://www.dotninjas.dk/">Jakob Christensen</a></div>
+	<div class="comment-content">Nice work, Mark.<br>
+<br>
+Personally I prefer 1b over 3. The if-statement in option 3 looks a bit suspicious to me as one day it might give rise to some maintenance if more user types have to be supported by the SomeConsumer type, so I am afraid it may violate the open/closed principle.  Option 1b looks more straight forward to me.</div>
+	<div class="comment-date">2011-12-21 13:48</div>
+</div><div class="comment">
+	<div class="comment-author">Travis</div>
+	<div class="comment-content">wow, those dba enforced sprocs and security measures are friction no developer should have to face<br>
+<br>
+sorry, way OT</div>
+	<div class="comment-date">2011-12-21 18:52</div>
+</div><div class="comment">
+	<div class="comment-author">Emanuel Pasat</div>
+	<div class="comment-content">I have a similar situation and it might be a good ocassion to clarify it.<br>
+I'm trying to implement a visitor pattern over a list of visitees object, constructed with a factory.<br>
+<br>
+A visitee requires some external services, so, it might be resonable to have them injected already by IOC in the _factory (VisiteeFactory). isLast is an example of other contextual information, outside of dto, but required to create other visitee types.<br>
+Given that is a bounded context, how can I improve this design?<br>
+<br>
+Pseudocode follows:<br>
+<br>
+IVisiteeFactory <br>
+{<br>
+	VisiteeAdapterBase Create(Dto dto, bool isLast);<br>
+}<br>
+<br>
+VisiteeFactory : IVisiteeFactory <br>
+{<br>
+	ctor VisiteeFactory(IExternalService service)<br>
+<br>
+	public VisiteeAdapterBase Create(Dto dto, bool isLast) <br>
+	{<br>
+		// lot of switches and ifs to determine the type of VisiteeAdapterBase<br>
+		if (isLast &amp;&amp; dto.Type == &quot;1&quot;) {<br>
+			return new Type1VisiteeAdapter(... dto props...);<br>
+		}<br>
+<br>
+	}<br>
+}<br>
+<br>
+ConsumerCtor(VisiteeFactory factory, List&lt;Dto&gt; dtoList) <br>
+{<br>
+	// guards<br>
+	_factory = factory;<br>
+	_dtoList = dtoList;<br>
+}<br>
+ConsumerDoStuff<br>
+{<br>
+	foreach (var dto in _dtoList) {<br>
+		// isLast is additional logic, outside of dto<br>
+		var visiteeAdapter = _factory.Create(dto, isLast);<br>
+		visiteeAdapter.Accept(visitor);<br>
+	}<br>
+}<br>
+<br>
+</div>
+	<div class="comment-date">2011-12-22 11:06</div>
+</div><div class="comment">
+	<div class="comment-author"><a href="http://twitter.com/BlackTigerX">Eber I</a></div>
+	<div class="comment-content">Too many classes/interfaces, why not use a simple lookup table?</div>
+	<div class="comment-date">2012-01-09 07:48</div>
+</div><div class="comment">
+	<div class="comment-author"><a href="http://blog.ploeh.dk">Mark Seemann</a></div>
+	<div class="comment-content">Eber, let me quoute myself from this particular post: &quot;I think the easiest way to address these variations would be to algorithmically build the strings from a couple of templates&quot;. A lookup table falls into that category, so I agree that such a thing would be easier if at all possible.<br>
+<br>
+The whole premise of the rest of the post is that for some reason, it's more complicated than that...</div>
+	<div class="comment-date">2012-01-09 20:58</div>
+</div>
+</div>
