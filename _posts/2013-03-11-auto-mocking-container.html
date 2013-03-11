@@ -1,0 +1,408 @@
+---
+layout: post
+title: "Auto-mocking Container"
+date: 2013-03-11 07:37:00 UTC
+tags: [Unit Testing, Dependency Injection, Castle Windsor]
+---
+{% include JB/setup %}
+
+<div id="post">
+	<p>
+		<em>A unit test pattern</em>
+	</p>
+	<p>
+		This article describes a unit test pattern called an Auto-mocking Container. It can be used as a solution to the problem:
+	</p>
+	<p class="text-center">
+		<em>How can unit tests be decoupled from Dependency Injection mechanics?</em>
+	</p>
+	<p class="text-center">
+		<strong>By using a heuristic composition engine to compose dynamic Test Doubles into the System Under Test</strong>
+	</p>
+	<p class="text-center">
+		<img src="/content/binary/auto-mocking-container-pattern-sequence-diagram.png">
+	</p>
+	<p>
+		A major problem with unit tests is to make sure that they are robust in the face of a changing system. One of the most common problems programmers have with unit tests is the so-called <a href="http://xunitpatterns.com/Fragile%20Test.html">Fragile Test</a> smell. Every time you attempt to refactor your code, tests break.
+	</p>
+	<p>
+		There are various reasons why that happens and the <em>Auto-mocking Container</em> pattern does not help in all cases, but a common reason that tests break is when you change the constructor of your System Under Test (SUT). In such cases, the use of an Auto-mocking Container can help.
+	</p>
+	<p>
+		<strong>How it works</strong>
+	</p>
+	<p>
+		In order to decouple a unit test from the mechanics of creating an instance of the SUT, the test code can repurpose a Dependency Injection (DI) Container to compose it. The DI Container must be customizable to the extent that it can automatically compose dynamic Test Doubles (mocks/stubs) into the SUT.
+	</p>
+	<p>
+		It's important to notice that this technique is a pure unit testing concern. Even if you use an Auto-mocking Container in your unit test, you don't have to use a DI Container in your production code - or you can use a different DI Container than the one you've chosen to repurpose as an Auto-mocking Container.
+	</p>
+	<p>
+		When a test case wants to exercise the SUT, it needs an instance of the SUT. Instead of creating the SUT directly by invoking its constructor, the test case uses an Auto-mocking Container to create the SUT instance. The Auto-mocking Container automatically supplies dynamic mocks in place of all the SUT's dependencies, freeing the test writer from explicitly dealing with this concern.
+	</p>
+	<p>
+		This decouples each test case from the mechanics of how the SUT is created, making the test more robust. Even if the SUT's constructor is refactored, the test case remains unimpacted because the Auto-mocking Container dynamically deals with the changed constructor signature.
+	</p>
+	<p>
+		<strong>When to use it</strong>
+	</p>
+	<p>
+		Use an Auto-mocking Container when you are unit testing classes which utilize DI (particularly Constructor Injection). In a fully loosely coupled system, <a href="http://blog.ploeh.dk/2011/02/28/Interfacesareaccessmodifiers">constructors are implementation details</a>, which means that you may decide to change constructor signatures as part of refactoring.
+	</p>
+	<p>
+		Particularly early in a code base's lifetime, the system and its internal design may be in flux. In order to enable refactoring, it's important to be able to change constructor signatures without worrying about breaking tests. In such cases, an Auto-mocking Container can be of great help.
+	</p>
+	<p>
+		In well-established code bases, introducing an Auto-mocking Container is unlikely to be of much benefit, as the code is assumed to be more stable.
+	</p>
+	<p>
+		Auto-mocking Containers are also less ideally suited for code-bases which rely more on a functional programming style with Value Objects and data flow algorithms, and less on DI.
+	</p>
+	<p>
+		<strong>Implementation details</strong>
+	</p>
+	<p>
+		Use an existing DI Container, but repurpose it as an Auto-mocking Container. Normal DI Containers don't serve dynamic mock objects by default, so you'll need to pick a DI Container which is sufficiently extensible to enable you to change its behavior as desired.
+	</p>
+	<p>
+		In order to extend the DI Container with the ability to serve dynamic mock objects, you must also pick a suitable dynamic mock library. The Auto-mocking Container is nothing more than a 'Glue Library' that connects the behavior of the DI Container with the behavior of the dynamic mock library.
+	</p>
+	<p>
+		Some open source projects exist that provide pre-packaged Glue Libraries as Auto-mocking Containers by combining two other libraries, but with good DI Containers and dynamic mock libraries, it's a trivial effort to produce the Auto-mocking Container as part of the unit test infrastructure.
+	</p>
+	<p>
+		<strong>Motivating example</strong>
+	</p>
+	<p>
+		In order to understand how unit tests can become tightly coupled to the construction mechanics of SUTs, imagine that you are developing a simple shopping basket web service using Test-Driven Development (TDD).
+	</p>
+	<p>
+		To keep the example simple, imagine that the shopping basket is going to be a CRUD service exposed over HTTP. The framework you've chosen to use is based on the concept of a Controller that handles incoming requests and serves responses. In order to get started, you write the first (ice breaker) unit test:
+	</p>
+	<p>
+		<div style="font-family: Consolas; font-size: 10pt; color: black; background: white;">
+<pre style="margin: 0px;">[<span style="color: #2b91af;">Fact</span>]</pre>
+<pre style="margin: 0px;"><span style="color: blue;">public</span> <span style="color: blue;">void</span> SutIsController()</pre>
+<pre style="margin: 0px;">{</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; <span style="color: blue;">var</span> sut = <span style="color: blue;">new</span> <span style="color: #2b91af;">BasketController</span>();</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; <span style="color: #2b91af;">Assert</span>.IsAssignableFrom&lt;<span style="color: #2b91af;">IHttpController</span>&gt;(sut);</pre>
+<pre style="margin: 0px;">}</pre>
+</div>
+	</p>
+	<p>
+		This is a straight-forward unit test which prompts you to create the BasketController class.
+	</p>
+	<p>
+		The next thing you want to do is to enable clients to add new items to the basket. In order to do so, you write the next test:
+	</p>
+	<p>
+		<div style="font-family: Consolas; font-size: 10pt; color: black; background: white;">
+<pre style="margin: 0px;">[<span style="color: #2b91af;">Fact</span>]</pre>
+<pre style="margin: 0px;"><span style="color: blue;">public</span> <span style="color: blue;">void</span> PostSendsCorrectEvent()</pre>
+<pre style="margin: 0px;">{</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; <span style="color: blue;">var</span> channelMock = <span style="color: blue;">new</span> <span style="color: #2b91af;">Mock</span>&lt;<span style="color: #2b91af;">ICommandChannel</span>&gt;();</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; <span style="color: blue;">var</span> sut = <span style="color: blue;">new</span> <span style="color: #2b91af;">BasketController</span>(channelMock.Object);</pre>
+<pre style="margin: 0px;">&nbsp;</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; <span style="color: blue;">var</span> item = <span style="color: blue;">new</span> <span style="color: #2b91af;">BasketItemModel</span> { ProductId = 1234, Quantity = 3 };</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; sut.Post(item);</pre>
+<pre style="margin: 0px;">&nbsp;</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; <span style="color: blue;">var</span> expected = item.AddToBasket();</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; channelMock.Verify(c =&gt; c.Send(expected));</pre>
+<pre style="margin: 0px;">}</pre>
+</div>
+	</p>
+	<p>
+		In order to make this test compile you need to add this constructor to the BasketController class:
+	</p>
+	<p>
+		<div style="font-family: Consolas; font-size: 10pt; color: black; background: white;">
+<pre style="margin: 0px;"><span style="color: blue;">private</span> <span style="color: #2b91af;">ICommandChannel</span> channel;</pre>
+<pre style="margin: 0px;">&nbsp;</pre>
+<pre style="margin: 0px;"><span style="color: blue;">public</span> BasketController(<span style="color: #2b91af;">ICommandChannel</span> channel)</pre>
+<pre style="margin: 0px;">{</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; <span style="color: blue;">this</span>.channel = channel;</pre>
+<pre style="margin: 0px;">}</pre>
+</div>
+	</p>
+	<p>
+		However, this breaks the first unit test, and you have to go back and fix the first unit test in order to make the test suite compile:
+	</p>
+	<p>
+		<div style="font-family: Consolas; font-size: 10pt; color: black; background: white;">
+<pre style="margin: 0px;">[<span style="color: #2b91af;">Fact</span>]</pre>
+<pre style="margin: 0px;"><span style="color: blue;">public</span> <span style="color: blue;">void</span> SutIsController()</pre>
+<pre style="margin: 0px;">{</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; <span style="color: blue;">var</span> channelDummy = <span style="color: blue;">new</span> <span style="color: #2b91af;">Mock</span>&lt;<span style="color: #2b91af;">ICommandChannel</span>&gt;();</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; <span style="color: blue;">var</span> sut = <span style="color: blue;">new</span> <span style="color: #2b91af;">BasketController</span>(channelDummy.Object);</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; <span style="color: #2b91af;">Assert</span>.IsAssignableFrom&lt;<span style="color: #2b91af;">IHttpController</span>&gt;(sut);</pre>
+<pre style="margin: 0px;">}</pre>
+</div>
+	</p>
+	<p>
+		In this example only a single unit test broke, but it gets progressively worse as you go along.
+	</p>
+	<p>
+		Satisfied with your implementation so far, you now decide to implement a feature where the client of the service can read the basket. This is supported by the HTTP GET method, so you write this unit test to drive the feature into existence:
+	</p>
+	<p>
+		<div style="font-family: Consolas; font-size: 10pt; color: black; background: white;">
+<pre style="margin: 0px;">[<span style="color: #2b91af;">Fact</span>]</pre>
+<pre style="margin: 0px;"><span style="color: blue;">public</span> <span style="color: blue;">void</span> GetReturnsCorrectResult()</pre>
+<pre style="margin: 0px;">{</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; <span style="color: green;">// Arrange&nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; </span></pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; <span style="color: blue;">var</span> readerStub = <span style="color: blue;">new</span> <span style="color: #2b91af;">Mock</span>&lt;<span style="color: #2b91af;">IBasketReader</span>&gt;();</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; <span style="color: blue;">var</span> expected = <span style="color: blue;">new</span> <span style="color: #2b91af;">BasketModel</span>();</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; readerStub.Setup(r =&gt; r.GetBasket()).Returns(expected);</pre>
+<pre style="margin: 0px;">&nbsp;</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; <span style="color: blue;">var</span> channelDummy = <span style="color: blue;">new</span> <span style="color: #2b91af;">Mock</span>&lt;<span style="color: #2b91af;">ICommandChannel</span>&gt;().Object;</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; <span style="color: blue;">var</span> sut = <span style="color: blue;">new</span> <span style="color: #2b91af;">BasketController</span>(channelDummy, readerStub.Object);</pre>
+<pre style="margin: 0px;">&nbsp;</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; <span style="color: green;">// Act</span></pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; <span style="color: blue;">var</span> response = sut.Get();</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; <span style="color: blue;">var</span> actual = response.Content.ReadAsAsync&lt;<span style="color: #2b91af;">BasketModel</span>&gt;().Result;</pre>
+<pre style="margin: 0px;">&nbsp;</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; <span style="color: green;">// Assert</span></pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; <span style="color: #2b91af;">Assert</span>.Equal(expected, actual);</pre>
+<pre style="margin: 0px;">}</pre>
+</div>
+	</p>
+	<p>
+		This test introduces yet another dependency into the SUT, forcing you to change the BasketController constructor to this:
+	</p>
+	<p>
+		<div style="font-family: Consolas; font-size: 10pt; color: black; background: white;">
+<pre style="margin: 0px;"><span style="color: blue;">private</span> <span style="color: #2b91af;">ICommandChannel</span> channel;</pre>
+<pre style="margin: 0px;"><span style="color: blue;">private</span> <span style="color: #2b91af;">IBasketReader</span> reader;</pre>
+<pre style="margin: 0px;">&nbsp;</pre>
+<pre style="margin: 0px;"><span style="color: blue;">public</span> BasketController(<span style="color: #2b91af;">ICommandChannel</span> channel, <span style="color: #2b91af;">IBasketReader</span> reader)</pre>
+<pre style="margin: 0px;">{</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; <span style="color: blue;">this</span>.channel = channel;</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; <span style="color: blue;">this</span>.reader = reader;</pre>
+<pre style="margin: 0px;">}</pre>
+</div>
+	</p>
+	<p>
+		Alas, this breaks both previous unit tests and you have to revisit them and fix them before you can proceed.
+	</p>
+	<p>
+		In this simple example, fixing a couple of unit tests in order to introduce a new dependency doesn't sound like much, but if you already have hundreds of tests, the prospect of breaking dozens of tests each time you wish to refactor by moving dependencies around can seriously hamper your productivity.
+	</p>
+	<p>
+		<strong>Refactoring notes</strong>
+	</p>
+	<p>
+		The problem is that the tests are too tightly coupled to the mechanics of how the SUT is constructed. The irony is that although you <em>somehow</em> need to create instances of the SUT, you shouldn't really care about <em>how</em> it happens.
+	</p>
+	<p>
+		If you closely examine the tests in the motivating example, you will notice that the SUT is created in the Arrange phase of the test. This phase of the test is also called the Fixture Setup phase; it's where you put all the initialization code which is required before you can interact with the SUT. To be brutally honest, the code that goes into the Arrange phase is just a necessary evil. You should care only about the Act and Assert phases - after all, these tests don't test the constructors. In other words, what happens in the Arrange phase is mostly incidental, so it's unfortunate if that part of a test is holding you back from refactoring. You need a way to decouple the tests from the constructor signature, while still being able to manipulate the injected dynamic mock objects.
+	</p>
+	<p>
+		There are various ways to achieve that goal. A common approach is to declare the SUT and its dependencies as class fields and compose them all as part of a test class' Implicit Setup . This can be an easy way to address the issue, but carries with it all the disadvantages of the <a href="http://xunitpatterns.com/Implicit%20Setup.html">Implicit Setup</a> pattern. Additionally, it can lead to an explosion of fields and low cohesion of the test class itself.
+	</p>
+	<p>
+		Another approach is to build the SUT with a helper method. However, if the SUT has more than one dependency, you may need to create a lot of overloads of such helper methods, in order to manipulate only the dynamic mocks you may care about in a given test case. This tends to lead towards the <a href="http://martinfowler.com/bliki/ObjectMother.html">Object Mother</a> <a href="http://www.natpryce.com/articles/000714.html">(anti-)pattern</a>.
+	</p>
+	<p>
+		A good alternative is an Auto-mocking Container to decouple the tests from the constructor signature of the SUT.
+	</p>
+	<p>
+		<strong>Example: Castle Windsor as an Auto-mocking Container</strong>
+	</p>
+	<p>
+		In this example you repurpose <a href="http://www.castleproject.org/">Castle Windsor</a> as an Auto-mocking Container. Castle Windsor is one among many DI Containers for .NET with a pretty good extensibility model. This can be used to turn the standard WindsorContainer into an Auto-mocking Container. In this case you will combine it with <a href="https://code.google.com/p/moq/">Moq</a> in order to automatically create dynamic mocks every time you need an instance of an interface.
+	</p>
+	<p>
+		It only takes two small classes to make this happen. The first class is a so-called SubDependencyResolver that translates requests for an interface into a request for a mock of that interface:
+	</p>
+	<p>
+		<div style="font-family: Consolas; font-size: 10pt; color: black; background: white;">
+<pre style="margin: 0px;"><span style="color: blue;">public</span> <span style="color: blue;">class</span> <span style="color: #2b91af;">AutoMoqResolver</span> : <span style="color: #2b91af;">ISubDependencyResolver</span></pre>
+<pre style="margin: 0px;">{</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; <span style="color: blue;">private</span> <span style="color: blue;">readonly</span> <span style="color: #2b91af;">IKernel</span> kernel;</pre>
+<pre style="margin: 0px;">&nbsp;</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; <span style="color: blue;">public</span> AutoMoqResolver(<span style="color: #2b91af;">IKernel</span> kernel)</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; {</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; <span style="color: blue;">this</span>.kernel = kernel;</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; }</pre>
+<pre style="margin: 0px;">&nbsp;</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; <span style="color: blue;">public</span> <span style="color: blue;">bool</span> CanResolve(</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; <span style="color: #2b91af;">CreationContext</span> context,</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; <span style="color: #2b91af;">ISubDependencyResolver</span> contextHandlerResolver,</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; <span style="color: #2b91af;">ComponentModel</span> model,</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; <span style="color: #2b91af;">DependencyModel</span> dependency)</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; {</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; <span style="color: blue;">return</span> dependency.TargetType.IsInterface;</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; }</pre>
+<pre style="margin: 0px;">&nbsp;</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; <span style="color: blue;">public</span> <span style="color: blue;">object</span> Resolve(</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; <span style="color: #2b91af;">CreationContext</span> context,</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; <span style="color: #2b91af;">ISubDependencyResolver</span> contextHandlerResolver,</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; <span style="color: #2b91af;">ComponentModel</span> model,</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; <span style="color: #2b91af;">DependencyModel</span> dependency)</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; {</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; <span style="color: blue;">var</span> mockType = <span style="color: blue;">typeof</span>(<span style="color: #2b91af;">Mock</span>&lt;&gt;).MakeGenericType(dependency.TargetType);</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; <span style="color: blue;">return</span> ((<span style="color: #2b91af;">Mock</span>)<span style="color: blue;">this</span>.kernel.Resolve(mockType)).Object;</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; }</pre>
+<pre style="margin: 0px;">}</pre>
+</div>
+	</p>
+	<p>
+		The ISubDependencyResolver interface is a Castle Windsor extensibility point. It follows the Tester-Doer pattern, which means that the WindsorContainer will first call the CanResolve method, and subsequently only call the Resolve method if the return value from CanResolve was <code>true</code>.
+	</p>
+	<p>
+		In this implementation you return <code>true</code> if and only if the requested dependency is an interface. When this is the case, you construct a generic type of Moq's Mock&lt;T&gt; class. For example, in the code above, if <code>dependency.TargetType</code> is the interface ICommandChannel, the <code>mockType</code> variable becomes the type Mock&lt;ICommandChannel&gt;.
+	</p>
+	<p>
+		The next line of code asks the kernel to resolve that type (e.g. Mock&lt;ICommandChannel&gt;). The resolved instance is cast to Mock in order to access and return the value of its Object property. If you ask the kernel for an instance of Mock&lt;ICommandChannel&gt;, it'll return an instance of that type, and its Object property will then be an instance of ICommandChannel. This is the dynamic mock object you need in order to compose a SUT with automatic Test Doubles.
+	</p>
+	<p>
+		The other class wires everything together:
+	</p>
+	<p>
+		<div style="font-family: Consolas; font-size: 10pt; color: black; background: white;">
+<pre style="margin: 0px;"><span style="color: blue;">public</span> <span style="color: blue;">class</span> <span style="color: #2b91af;">ShopFixture</span> : <span style="color: #2b91af;">IWindsorInstaller</span></pre>
+<pre style="margin: 0px;">{</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; <span style="color: blue;">public</span> <span style="color: blue;">void</span> Install(</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; <span style="color: #2b91af;">IWindsorContainer</span> container,</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; <span style="color: #2b91af;">IConfigurationStore</span> store)</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; {</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; container.Kernel.Resolver.AddSubResolver(</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; <span style="color: blue;">new</span> <span style="color: #2b91af;">AutoMoqResolver</span>(</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; container.Kernel));</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; container.Register(<span style="color: #2b91af;">Component</span></pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; .For(<span style="color: blue;">typeof</span>(<span style="color: #2b91af;">Mock</span>&lt;&gt;)));</pre>
+<pre style="margin: 0px;">&nbsp;</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; container.Register(<span style="color: #2b91af;">Classes</span></pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; .FromAssemblyContaining&lt;Shop.<span style="color: #2b91af;">MvcApplication</span>&gt;()</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; .Pick()</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; .WithServiceSelf()</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; .LifestyleTransient());</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; }</pre>
+<pre style="margin: 0px;">}</pre>
+</div>
+	</p>
+	<p>
+		This is an IWindsorInstaller, which is simply a way of packaging Castle Windsor configuration together in a class. In the first line you add the AutoMoqResolver. In the next line you register the open generic type Mock&lt;&gt;. This means that the WindsorContainer knows about any generic variation of Mock&lt;T&gt; you might want to create. Recall that AutoMockResolver asks the kernel to resolve an instance of Mock&lt;T&gt; (e.g. Mock&lt;ICommandChannel&gt;). This registration makes this possible.
+	</p>
+	<p>
+		Finally, the ShopFixture scans through all public types in the SUT assembly and registers their concrete types. This is all it takes to turn Castle Windsor into an Auto-mocking Container.
+	</p>
+	<p>
+		Once you've done that, you can start TDD'ing, and you should rarely (if ever) have to go back to the ShopFixture to tweak anything.
+	</p>
+	<p>
+		The first test you write is equivalent to the first test in the previous motivating example:
+	</p>
+	<p>
+		<div style="font-family: Consolas; font-size: 10pt; color: black; background: white;">
+<pre style="margin: 0px;">[<span style="color: #2b91af;">Fact</span>]</pre>
+<pre style="margin: 0px;"><span style="color: blue;">public</span> <span style="color: blue;">void</span> SutIsController()</pre>
+<pre style="margin: 0px;">{</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; <span style="color: blue;">var</span> container = <span style="color: blue;">new</span> <span style="color: #2b91af;">WindsorContainer</span>().Install(<span style="color: blue;">new</span> <span style="color: #2b91af;">ShopFixture</span>());</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; <span style="color: blue;">var</span> sut = container.Resolve&lt;<span style="color: #2b91af;">BasketController</span>&gt;();</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; <span style="color: #2b91af;">Assert</span>.IsAssignableFrom&lt;<span style="color: #2b91af;">IHttpController</span>&gt;(sut);</pre>
+<pre style="margin: 0px;">}</pre>
+</div>
+	</p>
+	<p>
+		First you create the container and install the ShopFixture. This is going to be the first line of code in all of your tests.
+	</p>
+	<p>
+		Next, you ask the container to resolve an instance of BasketController. At this point there's only a default constructor, so Auto-mocking hasn't even kicked in yet, but you get an instance of the SUT against which you can make your assertion.
+	</p>
+	<p>
+		Now it's time to write the next test, equivalent to the second test in the motivating example:
+	</p>
+	<p>
+		<div style="font-family: Consolas; font-size: 10pt; color: black; background: white;">
+<pre style="margin: 0px;">[<span style="color: #2b91af;">Fact</span>]</pre>
+<pre style="margin: 0px;"><span style="color: blue;">public</span> <span style="color: blue;">void</span> PostSendsCorrectEvent()</pre>
+<pre style="margin: 0px;">{</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; <span style="color: blue;">var</span> container = <span style="color: blue;">new</span> <span style="color: #2b91af;">WindsorContainer</span>().Install(<span style="color: blue;">new</span> <span style="color: #2b91af;">ShopFixture</span>());</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; <span style="color: blue;">var</span> sut = container.Resolve&lt;<span style="color: #2b91af;">BasketController</span>&gt;();</pre>
+<pre style="margin: 0px;">&nbsp;</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; <span style="color: blue;">var</span> item = <span style="color: blue;">new</span> <span style="color: #2b91af;">BasketItemModel</span> { ProductId = 1234, Quantity = 3 };</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; sut.Post(item);</pre>
+<pre style="margin: 0px;">&nbsp;</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; <span style="color: blue;">var</span> expected = item.AddToBasket();</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; container</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; .Resolve&lt;<span style="color: #2b91af;">Mock</span>&lt;<span style="color: #2b91af;">ICommandChannel</span>&gt;&gt;()</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; .Verify(c =&gt; c.Send(expected));</pre>
+<pre style="margin: 0px;">}</pre>
+</div>
+	</p>
+	<p>
+		Here an interesting thing happens. Notice that the first two lines of code are the same as in the previous test. You don't need to define the mock object before creating the SUT. In fact, you can exercise the SUT without ever referencing the mock.
+	</p>
+	<p>
+		In the last part of the test you need to verify that the SUT interacted with the mock as expected. At that time you can ask the container to resolve the mock and verify against it. This can be done in a single method call chain, so you don't even have to declare a variable for the mock.
+	</p>
+	<p>
+		This is possible because the ShopFixture registers all Mock&lt;T&gt; instances with the so-called Singleton lifestyle. The Singleton lifestyle shouldn't be confused with the Singleton design pattern. It means that every time you ask a container instance for an instance of a type, you will get back the same instance. In Castle Windsor, this is the default lifestyle, so this code:
+	</p>
+	<p>
+		<div style="font-family: Consolas; font-size: 10pt; color: black; background: white;">
+<pre style="margin: 0px;">container.Register(<span style="color: #2b91af;">Component</span></pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; .For(<span style="color: blue;">typeof</span>(<span style="color: #2b91af;">Mock</span>&lt;&gt;)));</pre>
+</div>
+	</p>
+	<p>
+		is equivalent to this:
+	</p>
+	<p>
+		<div style="font-family: Consolas; font-size: 10pt; color: black; background: white;">
+<pre style="margin: 0px;">container.Register(<span style="color: #2b91af;">Component</span></pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; .For(<span style="color: blue;">typeof</span>(<span style="color: #2b91af;">Mock</span>&lt;&gt;))</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; .LifestyleSingleton());</pre>
+</div>
+	</p>
+	<p>
+		When you implement the Post method on BasketController by injecting ICommandChannel into its constructor, the test is going to pass. This is because when you ask the container to resolve an instance of BasketController, it will need to first resolve an instance of ICommandChannel.
+	</p>
+	<p>
+		<img src="/content/binary/auto-mocking-windsor-container-sequence-diagram.png">
+	</p>
+	<p>
+		This is done by the AutoMoqResolver, which in turn asks the kernel for an instance of Mock&lt;ICommandChannel&gt;. The Object property is the dynamically generated instance of ICommandChannel, which is injected into the BasketController instance ultimately returned by the container.
+	</p>
+	<p>
+		When the test case subsequently asks the container for an instance of Mock&lt;ICommandChannel&gt; the same instance is reused because it's configured with the Singleton lifestyle.
+	</p>
+	<p>
+		More importantly, while the second test prompted you to change the constructor signature of BasketController, this change didn't break the existing test.
+	</p>
+	<p>
+		You can now write the third test, equivalent to the third test in the motivating example:
+	</p>
+	<p>
+		<div style="font-family: Consolas; font-size: 10pt; color: black; background: white;">
+<pre style="margin: 0px;">[<span style="color: #2b91af;">Fact</span>]</pre>
+<pre style="margin: 0px;"><span style="color: blue;">public</span> <span style="color: blue;">void</span> GetReturnsCorrectResult()</pre>
+<pre style="margin: 0px;">{</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; <span style="color: blue;">var</span> container = <span style="color: blue;">new</span> <span style="color: #2b91af;">WindsorContainer</span>().Install(<span style="color: blue;">new</span> <span style="color: #2b91af;">ShopFixture</span>());</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; <span style="color: blue;">var</span> sut = container.Resolve&lt;<span style="color: #2b91af;">BasketController</span>&gt;();</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; <span style="color: blue;">var</span> expected = <span style="color: blue;">new</span> <span style="color: #2b91af;">BasketModel</span>();</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; container.Resolve&lt;<span style="color: #2b91af;">Mock</span>&lt;<span style="color: #2b91af;">IBasketReader</span>&gt;&gt;()</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; .Setup(r =&gt; r.GetBasket())</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; .Returns(expected);&nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; </pre>
+<pre style="margin: 0px;">&nbsp;</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; <span style="color: blue;">var</span> response = sut.Get();</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; <span style="color: blue;">var</span> actual = response.Content.ReadAsAsync&lt;<span style="color: #2b91af;">BasketModel</span>&gt;().Result;</pre>
+<pre style="margin: 0px;">&nbsp;</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; <span style="color: #2b91af;">Assert</span>.Equal(expected, actual);</pre>
+<pre style="margin: 0px;">}</pre>
+</div>
+	</p>
+	<p>
+		Once more you change the constructor of BasketController, this time to inject an IBasketReader into it, but none of the existing tests break.
+	</p>
+	<p>
+		This example demonstrated how to repurpose Castle Windsor as an Auto-mocking Container. It's important to realize that this is still a pure unit testing concern. It doesn't require you to use Castle Windsor in your production code.
+	</p>
+	<p>
+		Other DI Containers can be repurposed as Auto-mocking Containers as well. <a href="http://stackoverflow.com/a/2462443/126014">One option is Autofac</a>, and while not strictly a DI Container, <a href="http://blog.ploeh.dk/2010/08/19/AutoFixtureasanauto-mockingcontainer">another option is AutoFixture</a>.
+	</p>
+	<p>
+		<em>This article first appeared in the <a href="http://skillsmatter.com/go/open-source-journal">Open Source Journal</a> 2012 issue 4. It is reprinted here with kind permission.</em>
+	</p>
+</div>
