@@ -1,0 +1,76 @@
+---
+layout: post
+title: "How to automatically populate properties with AutoMoq"
+date: 2013-04-08 05:55 UTC
+tags: [AutoFixture]
+---
+{% include JB/setup %}
+
+<div id="post">
+	<p>
+		<em>This post explains how to automatically populate properties when using AutoFixture.AutoMoq.</em>
+	</p>
+	<p>
+		In <a href="http://blog.ploeh.dk/2013/04/05/how-to-configure-automoq-to-set-up-all-properties">a previous blog post</a> I described how to configure <a href="http://blog.ploeh.dk/2010/08/19/AutoFixtureasanauto-mockingcontainer/">AutoFixture.AutoMoq</a> to set up all mock instances to have 'normal' property behavior. This enables you to assign and retrieve values from properties defined by interfaces, but still doesn't fill those properties with values.
+	</p>
+	<p>
+		Apparently, <a href="https://autofixture.codeplex.com/workitem/4245">people want to do that</a>, so here's how to do it with the AutoMoq glue library.
+	</p>
+	<p>
+		This solution builds upon the PropertiesPostprocessor described in my previous blog post. All you have to do is define a different Customization for <a href="https://github.com/AutoFixture/AutoFixture">AutoFixture</a> so that, instead of using the AutoMoqPropertiesCustomization described in the previous post, you'll need a variation:
+	</p>
+	<p>
+		<div style="font-family: Consolas; font-size: 10pt; color: black; background: white;">
+<pre style="margin: 0px;"><span style="color: blue;">public</span> <span style="color: blue;">class</span> <span style="color: #2b91af;">AutoPopulatedMoqPropertiesCustomization</span> : <span style="color: #2b91af;">ICustomization</span></pre>
+<pre style="margin: 0px;">{</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; <span style="color: blue;">public</span> <span style="color: blue;">void</span> Customize(<span style="color: #2b91af;">IFixture</span> fixture)</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; {</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; fixture.Customizations.Add(</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; <span style="color: blue;">new</span> <span style="color: #2b91af;">PropertiesPostprocessor</span>(</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; <span style="color: blue;">new</span> <span style="color: #2b91af;">MockPostprocessor</span>(</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; <span style="color: blue;">new</span> <span style="color: #2b91af;">MethodInvoker</span>(</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; <span style="color: blue;">new</span> <span style="color: #2b91af;">MockConstructorQuery</span>()))));</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; fixture.ResidueCollectors.Add(</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; <span style="color: blue;">new</span> <span style="color: #2b91af;">Postprocessor</span>(</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; <span style="color: blue;">new</span> <span style="color: #2b91af;">MockRelay</span>(),</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; <span style="color: blue;">new</span> <span style="color: #2b91af;">AutoPropertiesCommand</span>(</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; <span style="color: blue;">new</span> <span style="color: #2b91af;">PropertiesOnlySpecification</span>())));</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; }</pre>
+<pre style="margin: 0px;">&nbsp;</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; <span style="color: blue;">private</span> <span style="color: blue;">class</span> <span style="color: #2b91af;">PropertiesOnlySpecification</span> : <span style="color: #2b91af;">IRequestSpecification</span></pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; {</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; <span style="color: blue;">public</span> <span style="color: blue;">bool</span> IsSatisfiedBy(<span style="color: blue;">object</span> request)</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; {</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; <span style="color: blue;">return</span> request <span style="color: blue;">is</span> <span style="color: #2b91af;">PropertyInfo</span>;</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; }</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; }</pre>
+<pre style="margin: 0px;">}</pre>
+</div>
+	</p>
+	<p>
+		The PropertiesPostprocessor assigned to the Fixture's Customizations has the same configuration as shown in AutoMoqPropertiesCustomization, but the object graph passed to the Fixture's ResidueCollectors is different. It's still a MockRelay, but now <a href="http://en.wikipedia.org/wiki/Decorator_pattern">decorated</a> with a Postprocessor instance, configured with an AutoPropertiesCommand instance, which is the class in AutoFixture responsible for implementing the AutoProperties feature.
+	</p>
+	<p>
+		The only thing special about this configuration is that you need to pass a PropertiesOnlySpecification to the AutoPropertiesCommand instance. This is because, by default, AutoPropertiesCommand attempts to fill both properties and fields of a generated instance (we call that a <em>specimen</em>), but it turns out that when you ask <a href="https://github.com/Moq">Moq</a> to generate an instance of an interface, the generated type has a lot of public fields that you don't want to mess with. The PropertiesOnlySpecification class filters the population algorithm so that it only attempts to populate public properties.
+	</p>
+	<p>
+		This test passes:
+	</p>
+	<p>
+		<div style="font-family: Consolas; font-size: 10pt; color: black; background: white;">
+<pre style="margin: 0px;">[<span style="color: #2b91af;">Fact</span>]</pre>
+<pre style="margin: 0px;"><span style="color: blue;">public</span> <span style="color: blue;">void</span> AutoPopulatedProperties()</pre>
+<pre style="margin: 0px;">{</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; <span style="color: blue;">var</span> fixture = <span style="color: blue;">new</span> <span style="color: #2b91af;">Fixture</span>().Customize(</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; <span style="color: blue;">new</span> <span style="color: #2b91af;">AutoPopulatedMoqPropertiesCustomization</span>());</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; <span style="color: blue;">var</span> h = fixture.Create&lt;<span style="color: #2b91af;">IHasProperties</span>&gt;();</pre>
+<pre style="margin: 0px;">&nbsp;</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; <span style="color: #2b91af;">Assert</span>.NotEqual(<span style="color: blue;">default</span>(<span style="color: blue;">string</span>), h.Text);</pre>
+<pre style="margin: 0px;">&nbsp;&nbsp;&nbsp; <span style="color: #2b91af;">Assert</span>.NotEqual(<span style="color: blue;">default</span>(<span style="color: blue;">int</span>), h.Number);</pre>
+<pre style="margin: 0px;">}</pre>
+</div>
+	</p>
+	<p>
+		With the described AutoPopulatedMoqPropertiesCustomization, AutoFixture will populate all writable properties on interfaces generated by Moq. I still don't think this is a good idea, which is why it isn't the default behavior for AutoFixture, but as you can tell, it's not too hard to do.
+	</p>
+</div>
