@@ -1,0 +1,91 @@
+---
+layout: post
+title: "REST lesson learned: Avoid 204 responses"
+date: 2013-04-30 10:46 UTC
+tags: [Software Design, Services, REST]
+---
+{% include JB/setup %}
+
+<div id="post">
+	<p>
+		<em>Avoid 204 responses if you're building a HATEOAS application.</em>
+	</p>
+	<p>
+		This is a <a href="http://blog.ploeh.dk/2013/04/29/rest-lessons-learned">lesson about REST API design that I learned while building non-trivial REST APIs</a>. In order to be as supportive of the client as possible, a REST API should not return 204 (No Content) responses.
+	</p>
+	<p>
+		From the service's perspective, a 204 (No Content) response may be a perfectly valid response to a POST, PUT or DELETE request. Particularly, for a DELETE request it seems very appropriate, because what else can you say?
+	</p>
+	<p>
+		However, from the perspective of a proper <a href="http://en.wikipedia.org/wiki/HATEOAS">HATEOAS</a>-aware client, a 204 response is problematic because there are no links to follow. When hypermedia acts as the engine of application state, when there are no links, there's no state. In other words, a 204 response throws away all application state.
+	</p>
+	<p>
+		If a client encounters a 204 response, it can either give up, go to the entry point of the API, or go back to the previous resource it visited. Neither option is particularly good.
+	</p>
+	<p>
+		Giving up is not a good option if there's still work to do. Essentially, this is equivalent to a crashing client.
+	</p>
+	<p>
+		Going to the entry point of the API <em>may</em> allow the client to move on, doing what it was doing, but state may still be lost.
+	</p>
+	<p>
+		Going back (the equivalent of using your browser's <em>back</em> button) may be the best option, but has a couple of problems: First, if the client just did a DELETE, the previous resource in the history may now be gone (it was just deleted). The client would have to go back twice to arrive at a proper resource. Second, while your browser has built-in history, a programmatic HTTP client probably hasn't. You could add that feature to your client, but it would require more work. Once more, it would require the <em>client</em> to maintain state, which means that you'd be moving state from hypermedia to the client. It's just not a HATEOAS-compliant approach.
+	</p>
+	<p>
+		A good REST API should make it easy to be a client. While this is only a variation of <a href="http://en.wikipedia.org/wiki/Robustness_principle">Postel's law</a>, I also like to think of this in terms or courtesy. The service has a lot of information available to it, so it might as well be courteous and help the client by sharing appropriate pieces of information.
+	</p>
+	<p>
+		Instead of a 204 (No Content) response, tell the client what it can do now.
+	</p>
+	<p>
+		<strong>Responding to POST requests</strong>
+	</p>
+	<p>
+		An HTTP POST request often represents some sort of <a href="http://en.wikipedia.org/wiki/Command%E2%80%93query_separation">Command</a> - that is: an intent to produce side effects. If the service handles the request synchronously, it should return the result of invoking the Command.
+	</p>
+	<p>
+		A common POST action is to create a new resource. At the very least, the REST API should return a 201 (Created) with a proper Location header. That's all described in detail in the <a href="http://amzn.to/YFnkRg">RESTful Web Services Cookbook</a>.
+	</p>
+	<p>
+		Even if the API decides to handle the request asynchronously, it can provide one or more links. Actually, the <a href="http://www.w3.org/Protocols/rfc2616/rfc2616-sec10.html#sec10.2.3">specification of 202 (Accepted)</a> says that the "entity returned with this response SHOULD include an indication of the request's current status and [...] a pointer to a status monitor". That sounds like a link to me.
+	</p>
+	<p>
+		<strong>Responding to PUT requests</strong>
+	</p>
+	<p>
+		An HTTP PUT request is often intended to update the state of a particular resource. Instead of returning 204 (No Content), the API should be courteous and return the new state of the resource. You may think that this is redundant because the client just transferred the state of the resource <em>to</em> the service, so why pay transmission costs to get the resource back <em>from</em> the service?
+	</p>
+	<p>
+		Even if a client PUTs the entire state of a resource to the API, the API may still have information about the resource not available to the client. The most universal example is probably the resource's ETag. If the client wishes to do further processing on the resource, it's likely going to need the ETag value sooner or later.
+	</p>
+	<p>
+		The representation of the resource may also include optional or denormalized data that the client may not have. If that data is optional, the client can make a PUT without it, but it might want that data to display to a user, so it would have to read the latest state of the resource regardless.
+	</p>
+	<p>
+		<strong>Responding to DELETE requests</strong>
+	</p>
+	<p>
+		A DELETE request represents the intent to delete a resource. Thus, if the service successfully handles a DELETE request, what else can it do than returning a 204 (No Content)? After all, the resource has just been removed.
+	</p>
+	<p>
+		A resource is often a member of a collection, or otherwise 'owned' by a container. As an example, <code>http://foo.ploeh.dk/api/tags/rock</code> represents a "rock" <em>tag</em>, but another way of looking at it is that the <code>/rock</code> resource is contained within the <code>tags</code> container (which is itself a resource). This should be familiar to <a href="http://tools.ietf.org/html/rfc5023">Atom Pub</a> users.
+	</p>
+	<p>
+		Imagine that you want to delete the <code>http://foo.ploeh.dk/api/tags/rock</code> resource. In order to accomplish that goal, you issue a DELETE request against it. If all your client gets back is a 204 (No Content), it's just lost its context. Where does it go from there? Unless you keep state on the client, you don't know where you came from.
+	</p>
+	<p>
+		Instead of returning 204 (No Content), the API should be helpful and suggest places to go. In this example I think one obvious link to provide is to <code>http://foo.ploeh.dk/api/tags</code> - the container from which the client just deleted a resource. Perhaps the client wishes to delete more resources, so that would be a helpful link.
+	</p>
+	<p>
+		<strong>Responding to GET requests</strong>
+	</p>
+	<p>
+		Returning 204 (No Content) as a response to a GET request is a bit weird, but probably not <em>completely</em> unheard of. Such a resource would represent a flag or semaphore, where the <em>existence</em> of the resource (as opposed to a 404 (Not Found)) signifies something. However, consider being helpful to the client and at least provide a link it can use to move on.
+	</p>
+	<p>
+		<strong>Summary</strong>
+	</p>
+	<p>
+		Technically, responding with 204 (No Content) is perfectly valid, but if a REST API does that, its clients lose their current context. A service should be helpful and inform clients where they can go from the current resource. This will make client development easier, and only puts a small burden on the service.
+	</p>
+</div>
