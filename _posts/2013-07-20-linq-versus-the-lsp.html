@@ -1,0 +1,155 @@
+---
+layout: post
+title: "LINQ versus the LSP"
+date: 2013-07-20 21:00 UTC
+tags: [Software Design]
+---
+{% include JB/setup %}
+
+<div id="post">
+	<p>
+		<em>This post examines the conflict between Iterators, LINQ, and the Liskov Substitution Principle.</em>
+	</p>
+	<p>
+		As a reaction to my <a href="http://blog.ploeh.dk/2013/07/08/defensive-coding">my previous post on Defensive Coding</a>, one of my readers sent me this question:
+	</p>
+	<blockquote>
+		<p>
+			"[One] very prominent scenario of defensive coding is used when the input argument is IEnumerable&lt;T&gt;
+		</p>
+		<p>
+			<div style="font-family: Consolas; font-size: 10pt; color: black; background: white;">
+<pre style="margin: 0px;"><span style="color: blue;">public</span> <span style="color: blue;">class</span> <span style="color: #2b91af;">Publisher</span>
+{
+&nbsp;&nbsp;&nbsp; <span style="color: blue;">public</span> Publisher(<span style="color: #2b91af;">IEnumerable</span>&lt;<span style="color: #2b91af;">Subscriber</span>&gt; subscribers)
+&nbsp;&nbsp;&nbsp; {
+&nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; <span style="color: green;">// defensive copy -&gt; good or bad?</span>
+&nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; <span style="color: blue;">this</span>.subscribers = subscribers.ToArray();
+&nbsp;&nbsp;&nbsp; }
+&nbsp;
+&nbsp;&nbsp;&nbsp; <span style="color: green;">//&nbsp; &#8230;</span>
+}</pre>
+</div>
+		</p>
+		<p>
+			"You could argue: when the intention is to use IEnumerable&lt;T&gt;, the receiver shall not to believe this sequence is immutable. You could indicate an immutable sequence with ICollection for instance. In the example above, the caller might add a new subscriber silently to its own list and have it automatically injected into the 'publisher' (maybe that's the intention from the perspective of the caller). However, a defensive copy breaks this behavior because the injected sequence is now no longer under control of the caller. This shows how simple an implementation detail can change the behavior on the client.
+		</p>
+		<p>
+			"The reason you often see code like this is because we like immutable objects and second because of the unknown performance impact of IEnumerable. Once you take a copy of the input you can predict the performance of your class otherwise you can't.
+		</p>
+		<p>
+			"I tend to say it's 'bad' to take defensive copy (after reading many of your blog posts), but would be happy to hear your opinion on that."
+		</p>
+	</blockquote>
+	<p>
+		This question warrants an in-depth answer.
+	</p>
+	<p>
+		<strong>Encapsulation</strong>
+	</p>
+	<p>
+		IEnumerable&lt;T&gt; is one of the most misunderstood interfaces in .NET. It carries very few guarantees, and many method calls on it may actually break the <a href="http://en.wikipedia.org/wiki/Liskov_substitution_principle">Liskov Substitution Principle</a> (LSP). ToArray is one of them, because it assumes that the sequence produced by the Iterator is finite, <em>which it may not be</em>. Thus, if you invoke ToArray on an infinite Iterator, you will eventually get an exception.
+	</p>
+	<p>
+		It doesn't really matter whether you call ToArray in the constructor, or in the class method(s) where you use the injected IEnumerable&lt;T&gt;. However, from a Fail First perspective, and in order to <a href="http://blog.ploeh.dk/2011/05/24/Poka-yokeDesignFromSmelltoFragrance">protect the class' invariant</a>, if the class <em>requires</em> the sequence to be finite, you could argue that you should invoke ToArray (or ToList) in the constructor. However, this breaks <a href="http://blog.vuscode.com">Nikola Malovic</a>'s <a href="http://blog.vuscode.com/malovicn/archive/2009/10/16/inversion-of-control-single-responsibility-principle-and-nikola-s-laws-of-dependency-injection.aspx">4th law of IoC</a>: <a href="http://blog.ploeh.dk/2011/03/03/InjectionConstructorsshouldbesimple">constructors should do no work</a>. This should make you stop and ponder: if you <em>require</em> an array, you should state that requirement up front:
+	</p>
+	<p>
+		<div style="font-family: Consolas; font-size: 10pt; color: black; background: white;">
+<pre style="margin: 0px;"><span style="color: blue;">public</span> <span style="color: blue;">class</span> <span style="color: #2b91af;">Publisher</span>
+{
+&nbsp;&nbsp;&nbsp; <span style="color: blue;">public</span> Publisher(<span style="color: #2b91af;">Subscriber</span>[] subscribers)
+&nbsp;&nbsp;&nbsp; {
+&nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; <span style="color: blue;">this</span>.subscribers = subscribers;
+&nbsp;&nbsp;&nbsp; }
+&nbsp;
+&nbsp;&nbsp;&nbsp; <span style="color: green;">//&nbsp; &#8230;</span>
+}</pre>
+</div>
+	</p>
+	<p>
+		Notice that instead of requesting IEnumerable&lt;T&gt;, this version requests an array and simply assigns the array to a private field.
+	</p>
+	<p>
+		However, the problem is that an array isn't <em>quite</em> the same as an Iterator; the most profound difference is that the Publisher class is actually able to mutate the array by replacing elements within the array. This could be a problem if the array is shared with other clients.
+	</p>
+	<p>
+		Another problem is that if the Publisher doesn't <em>need</em> the ability to mutate the array, it now breaks the <a href="http://en.wikipedia.org/wiki/Robustness_principle">Robustness Principle</a>, because a finite Iterator would have been <em>good enough</em> for its needs, but still, it puts an unwarranted demand on its clients.
+	</p>
+	<p>
+		Asking for <a href="http://msdn.microsoft.com/en-us/library/92t2ye13.aspx">ICollection&lt;T&gt;</a>, as my reader suggests, is an even greater violation of the Robustness Principle, because that interface adds <em>seven</em> new methods on top of IEnumerable&lt;T&gt; - three of which are <em>only</em> about mutation. The rest of the methods have been made redundant by LINQ.
+	</p>
+	<p>
+		<strong>LINQ and the LSP</strong>
+	</p>
+	<p>
+		In a <a href="http://blog.ploeh.dk/2012/03/26/IQueryableTisTightCoupling">previous post, I've talked about the conflict between IQueryable and the LSP</a>, but even constraining the discussion to LINQ to Objects, it turns out that LINQ has lots of built-in LSP violations.
+	</p>
+	<p>
+		Recall the essence of the LSP: <em>you should be able to pass any implementation of an interface to a client without changing the correctness of the system</em>. While 'correctness' is application-specific, the lowest common denominator must be that if a method works for one implementation, it mustn't throw exceptions for another implementation. However, consider these two implementations of IEnumerable&lt;string&gt;:
+	</p>
+	<p>
+		<div style="font-family: Consolas; font-size: 10pt; color: black; background: white;">
+<pre style="margin: 0px;"><span style="color: blue;">new</span>[] { <span style="color: #a31515;">"foo"</span>, <span style="color: #a31515;">"bar"</span>, <span style="color: #a31515;">"baz"</span> };</pre>
+</div>
+	</p>
+	<p>
+		and this one:
+	</p>
+	<p>
+		<div style="font-family: Consolas; font-size: 10pt; color: black; background: white;">
+<pre style="margin: 0px;"><span style="color: blue;">public</span> <span style="color: blue;">class</span> <span style="color: #2b91af;">InfiniteStrings</span> : <span style="color: #2b91af;">IEnumerable</span>&lt;<span style="color: blue;">string</span>&gt;
+{
+&nbsp;&nbsp;&nbsp; <span style="color: blue;">public</span> <span style="color: #2b91af;">IEnumerator</span>&lt;<span style="color: blue;">string</span>&gt; GetEnumerator()
+&nbsp;&nbsp;&nbsp; {
+&nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; <span style="color: blue;">while</span> (<span style="color: blue;">true</span>)
+&nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; <span style="color: blue;">yield</span> <span style="color: blue;">return</span> <span style="color: #a31515;">"foo"</span>;
+&nbsp;&nbsp;&nbsp; }
+&nbsp;
+&nbsp;&nbsp;&nbsp; System.Collections.<span style="color: #2b91af;">IEnumerator</span> System.Collections.<span style="color: #2b91af;">IEnumerable</span>.GetEnumerator()
+&nbsp;&nbsp;&nbsp; {
+&nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; <span style="color: blue;">return</span> <span style="color: blue;">this</span>.GetEnumerator();
+&nbsp;&nbsp;&nbsp; }
+}</pre>
+</div>
+	</p>
+	<p>
+		As I've already discussed, invoking ToArray (or ToList) on these two implementations changes the correctness of the system, because the second implementation (the infinite Iterator) will cause an exception to be thrown. In fact, as far as I can tell, the only LSP-compliant LINQ methods are:
+		<ul>
+			<li>Any()</li>
+			<li>AsEnumerable()</li>
+			<li>Concat(IEnumerable&lt;T&gt;)</li>
+			<li>DefaultIfEmpty()</li>
+			<li>DefaultIfEmpty(T)</li>
+			<li>Distinct (maybe...)</li>
+			<li>Distinct(IEqualityComparer&lt;T&gt;) (maybe...)</li>
+			<li>ElementAt(int)</li>
+			<li>ElementAtOrDefault(int)</li>
+			<li>First()</li>
+			<li>FirstOrDefault()</li>
+			<li>OfType&lt;TResult&gt;()</li>
+			<li>Select(Func&lt;TSource, TResult&gt;)</li>
+			<li>Select(Func&lt;TSource, int, TResult&gt;)</li>
+			<li>SelectMany(Func&lt;TSource, IEnumerable&lt;TResult&gt;&gt;)</li>
+			<li>SelectMany(Func&lt;TSource, int, IEnumerable&lt;TResult&gt;&gt;)</li>
+			<li>SelectMany(Func&lt;TSource, IEnumerable&lt;TCollection&gt;&gt;, Func&lt;TSource, TCollection, TResult&gt;)</li>
+			<li>SelectMany(Func&lt;TSource, int, IEnumerable&lt;TCollection&gt;&gt;, Func&lt;TSource, TCollection, TResult&gt;)</li>
+			<li>Single()</li>
+			<li>SingleOrDefault()</li>
+			<li>Skip(int)</li>
+			<li>Take(int)</li>
+			<li>Where(Func&lt;TSource, bool&gt;)</li>
+			<li>Where(Func&lt;TSource, int, bool&gt;)</li>
+			<li>Zip(IEnumerable&lt;TSecond&gt;, Func&lt;TFirst, TSecond, TResult&gt;)</li>
+		</ul>
+		If you can get by with this subset of LINQ, you should be safe. If not, you're back at the choice of either accepting IEnumerable&lt;T&gt;, or requesting an array; break the LSP or break the Robustness Principle.
+	</p>
+	<p>
+		This actually demonstrates a need for a 'Finite Iterator' interface, and I have to admit that, before researching for this article, I'd never heard about <a href="http://msdn.microsoft.com/en-us/library/hh881542.aspx">IReadOnlyCollection&lt;T&gt;</a>, but there it is; it's seems to be a new interface in .NET 4.5. I think I'll begin to use this interface some more!
+	</p>
+	<p>
+		<strong>Summary</strong>
+	</p>
+	<p>
+		The bottom line is that defensive copying of IEnumerable&lt;T&gt; into arrays should be avoided. If you can get by with the LSP-compliant subset of LINQ, then all is good (but consider writing a couple of unit tests that involve infinite Iterators). If you require a finite sequence and you're on .NET 4.5, require IReadOnlyCollection&lt;T&gt; as an argument instead of IEnumerable&lt;T&gt;. If you require a finite sequence and you're not on .NET 4.5, ask for an array as an argument (and consider adding some unit tests that verify that your implementation doesn't mutate the array).
+	</p>
+</div>
