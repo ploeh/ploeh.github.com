@@ -1,0 +1,105 @@
+---
+layout: post
+title: "DI and events: Third-party Connect"
+date: 2013-09-08 08:08 UTC
+tags: [Dependency Injection]
+---
+{% include JB/setup %}
+
+<div id="post">
+	<p>
+		<em>Instead of using Constructor Injection to subscribe to events on a dependency, you can let a third party connect the subscriber to the publisher.</em>
+	</p>
+	<p>
+		In the <a href="http://blog.ploeh.dk/2013/09/06/di-and-events-constructor-subscription">previous article</a> in my <a href="http://blog.ploeh.dk/2013/09/06/dependency-injection-and-events">series about Dependency Injection and events</a>, you saw an example of how injecting a dependency that raises events violates <a href="http://blog.vuscode.com/">Nikola Malovic</a>'s <a href="http://blog.vuscode.com/malovicn/archive/2009/10/16/inversion-of-control-single-responsibility-principle-and-nikola-s-laws-of-dependency-injection.aspx">4th law of IoC</a>: <a href="http://blog.ploeh.dk/2011/03/03/InjectionConstructorsshouldbesimple">Injection Constructors should perform no work</a>.
+	</p>
+	<p>
+		In this article, you'll see the first of several alternatives.
+	</p>
+	<p>
+		<strong>Third-party Connect</strong>
+	</p>
+	<p>
+		Take a step back and recall why you're using Dependency Injection in the first place. Hopefully, you use Dependency Injection because it provides the decoupling necessary to make your code more maintainable (and thus, you and your colleagues more productive). However, events are <em>already</em> a mechanism for decoupling. In .NET, events are simply a (limited) baked-in implementation of the <a href="http://en.wikipedia.org/wiki/Observer_pattern">Observer pattern</a>.
+	</p>
+	<p>
+		Perhaps it's helpful if we consider alternative names for Dependency Injection. <a href="http://www.natpryce.com">Nat Pryce</a> prefers the term <a href="http://www.natpryce.com/articles/000783.html">Third-party Connect</a>, and I think that there's much sense in that name. Instead of focusing on the <em>injection</em> part, or even <em>Inversion of Control</em>, the term <em>Third-party Connect</em> focuses on the fact that when you decouple two objects, you need a third party to connect them with each other. In a well-designed application, this third party will often be the <a href="http://blog.ploeh.dk/2011/07/28/CompositionRoot">Composition Root</a>.
+	</p>
+	<p>
+		If you already have a third party connecting NeedyClass with IDependency, <em>must</em> you use Constructor Injection?
+	</p>
+	<p>
+		<strong>Further decoupling</strong>
+	</p>
+	<p>
+		Apparently, if you consider the code in <a href="http://blog.ploeh.dk/2013/09/06/di-and-events-constructor-subscription">the previous article</a>, NeedyClass is required to do something whenever a particular IDependency instance raises its ItHappened event. What if, instead of injecting IDependency and subscribing a private event handler, you were to expose a public method that implements the same logic as that private event handler?
+	</p>
+	<p>
+		<div style="font-family: Consolas; font-size: 10pt; color: black; background: white;">
+<pre style="margin: 0px;"><span style="color: blue;">public</span> <span style="color: blue;">class</span> <span style="color: #2b91af;">NeedyClass</span>
+{
+&nbsp;&nbsp;&nbsp; <span style="color: blue;">public</span> <span style="color: blue;">void</span> DoSomethingInteresting()
+&nbsp;&nbsp;&nbsp; {
+&nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; <span style="color: green;">// Handle event here</span>
+&nbsp;&nbsp;&nbsp; }
+}</pre>
+</div>
+	</p>
+	<p>
+		Notice how much simpler this implementation is, compared with the previous version. Nothing is injected, there are no interfaces in play. Such a class is very easy to unit test as well, so I think this looks very promising.
+	</p>
+	<p>
+		Doesn't this design break encapsulation? Not more than before. Remember, in the previous implementation, you could always inject an implementation of IDependency that enabled you to raise the ItHappened event, and thereby invoke the private event handler in NeedyClass. This new design just makes it a bit easier to invoke the method. Keep in mind that encapsulation isn't about public versus private members; <a href="http://blog.ploeh.dk/2011/05/24/Poka-yokeDesignFromSmelltoFragrance">encapsulation is about invariants</a>.
+	</p>
+	<p>
+		This version of NeedyClass doesn't actually expose a public 'event handler', since the DoSomethingInteresting method doesn't match the event handler signature. Thus, if you use a static code analysis tool, it's not going to complain about a public event handler. The DoSomethingInteresting method is a method just like any other method. This design is much more decoupled than before, because NeedyClass knows <em>nothing</em> about IDependency. Hopefully, it makes sense as a stand-alone class with its own API. This makes it more reusable.
+	</p>
+	<p>
+		At this point, <em>NeedyClass</em> is no longer an appropriate name, but let's keep it for now.
+	</p>
+	<p>
+		<strong>Subscription</strong>
+	</p>
+	<p>
+		In order to connect NeedyClass with IDependency, the third party (e.g. the Composition Root) can subscribe the DoSomethingInteresting method to the ItHappened event:
+	</p>
+	<p>
+		<div style="font-family: Consolas; font-size: 10pt; color: black; background: white;">
+<pre style="margin: 0px;"><span style="color: blue;">var</span> nc = <span style="color: blue;">new</span> <span style="color: #2b91af;">NeedyClass</span>();
+dependency.ItHappened += (s, e) =&gt; nc.DoSomethingInteresting();</pre>
+</div>
+	</p>
+	<p>
+		The advantage of this design is that it's much more decoupled than before. NeedyClass knows nothing about IDependency, and IDependency knows nothing about NeedyClass. However, one disadvantage is that it's easy to forget to connect these two objects with each other; the compiler no longer offers any help.
+	</p>
+	<p>
+		If both objects are long-lived objects (i.e. have the <em>Singleton</em> lifetime style), you probably only need to write and invoke that connection code once, in the Composition Root. In this case, one or two <a href="http://xunitpatterns.com/Smoke%20Test.html">Smoke Tests</a> should prevent any regressions.
+	</p>
+	<p>
+		However, if one or both of these objects have shorter lifetimes, you may want to encapsulate the creation of NeedyClass in some sort of Factory. Still, unless you make the NeedyClass constructor internal or private, programmers may forget to use the Factory, so this can still be a fragile solution.
+	</p>
+	<p>
+		<strong>Unsubscription</strong>
+	</p>
+	<p>
+		Another problem that this Third-party Connect solution shares with Constructor Subscription is that you still need to think about disconnecting the two objects, once you're done with them. This isn't hard to do.
+	</p>
+	<p><div style="font-family: Consolas; font-size: 10pt; color: black; background: white;">
+<pre style="margin: 0px;"><span style="color: #2b91af;">EventHandler</span> handler = (s, e) =&gt; nc.DoSomethingInteresting();
+dependency.ItHappened += handler;
+&nbsp;
+<span style="color: green;">// Do something interesting here</span>
+&nbsp;
+dependency.ItHappened -= handler;</pre>
+</div>
+	</p>
+	<p>
+		While not particularly difficult, it does require you to take the extra step of assigning the event handler to a variable you can later use to unsubscribe. Still, the worst part of this attempt at a solution is probably that, just like you'll need to remember to subscribe NeedyClass to the event, you must also remember to unsubscribe it. At least, in this case, there's a better symmetry, because you must remember to both subscribe and unsubscribe, whereas with Constructor Subscription, you only needed to remember to unsubscribe (or dispose, as it were).
+	</p>
+	<p>
+		<strong>Conclusion</strong>
+	</p>
+	<p>
+		Using Third-party Connect leads to a simpler, but more <a href="http://amzn.to/19W4JHk">Fragile design</a>. Still, I often find that the extreme simplicity of the involved classes trumps the fragility of the design; if I <em>had</em> to choose between Third-party Connect and Constructor Subscription, I'd select Third-party Connect. Fortunately, these aren't the only options available to you; in future articles, I'll approach a better alternative.
+	</p>
+</div>
