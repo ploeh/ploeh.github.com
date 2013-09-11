@@ -1,0 +1,193 @@
+---
+layout: post
+title: "DI and events: Composition"
+date: 2013-09-11 09:35 UTC
+tags: [Dependency Injection]
+---
+{% include JB/setup %}
+
+<div id="post">
+	<p>
+		<em>
+			With Reactive Extensions, and a bit of composition, you can publish and subscribe to events in a structurally safe way.
+		</em>
+	</p>
+	<p>
+		Previously, in my <a href="http://blog.ploeh.dk/2013/09/06/dependency-injection-and-events">series about Dependency Injection and events</a>, you learned <a href="http://blog.ploeh.dk/2013/09/11/di-and-events-reactive-extensions">how to connect a publisher and a subscriber</a> via a third party (often the <a href="http://blog.ploeh.dk/2011/07/28/CompositionRoot">Composition Root</a>).
+	</p>
+	<p>
+		The problem with that approach is that while it's loosely coupled, it's too easy to forget to connect the publisher and the subscriber. It's also possible to forget to unsubscribe. In neither case can the compiler help you.
+	</p>
+	<p>
+		However, the advantage of using <a href="https://rx.codeplex.com">Reactive Extensions</a> over .NET events is that IObserver&lt;T&gt; is <em>composable</em>. That turns out to be quite an important distinction!
+	</p>
+	<p>
+		<strong>The problem with IObservable&lt;T&gt;</strong>
+	</p>
+	<p>
+		While I consider IObserver&lt;T&gt; to be an extremely versatile interface, I consider IObservable&lt;T&gt; to be of limited usefulness. Consider its definition:
+	</p>
+	<p>
+		<div style="font-family: Consolas; font-size: 10pt; color: black; background: white;">
+<pre style="margin: 0px;"><span style="color: blue;">public</span> <span style="color: blue;">interface</span> <span style="color: #2b91af;">IObservable</span>&lt;<span style="color: blue;">out</span> T&gt;
+{
+&nbsp;&nbsp;&nbsp; <span style="color: #2b91af;">IDisposable</span> Subscribe(<span style="color: #2b91af;">IObserver</span>&lt;T&gt; observer);
+}</pre>
+</div>
+	</p>
+	<p>
+		The idea is that the publisher (the <em>Observable</em>) receives a subscriber (the <em>Observer</em>) via Method Injection. When the method completes, the subscriber is considered subscribed to the publisher's events, until the subscriber disposes of the returned subscription reference.
+	</p>
+	<p>
+		There's a couple of problems with this design:
+		<ul>
+			<li>It's too easy to forget to invoke the Subscribe method. This is not a problem if you're writing a system in which publishers dynamically subscribe to event streams, but it's problematic if your system <em>relies</em> on certain publishers and subscribers to be connected.</li>
+			<li>It implies mutation in the publisher, because the publisher must somehow keep a list of all its subscribers.</li>
+			<li>It breaks <a href="http://en.wikipedia.org/wiki/Command%E2%80%93query_separation">Command Query Separation</a> (CQS).</li>
+			<li>Since it implies mutation, it's not thread-safe by default.</li>
+		</ul>
+		Fortunately, it's possible to work with IObserver&lt;T&gt; while completely ignoring IObservable&lt;T&gt;.
+	</p>
+	<p>
+		<strong>From Method Injection to Constructor Injection</strong>
+	</p>
+	<p>
+		As you learned in the <a href="http://blog.ploeh.dk/2013/09/11/di-and-events-reactive-extensions">last</a> <a href="http://blog.ploeh.dk/2013/09/08/di-and-events-third-party-connect">couple of articles</a>, the subscriber should <em>not</em> require any dependency in order to react to events. Yet, if Method Injection via IObservable&lt;T&gt; isn't a good approach either, then what's left?
+	</p>
+	<p>
+		Good old Constructor Injection.
+	</p>
+	<p>
+		The important realization is that it's not the <em>subscriber</em> (NeedyClass, in previous examples) that requires a dependency - it's the <em>publisher!</em>
+	</p>
+	<p>
+		Imagine that until now, you've had a publisher implementing IObservable&lt;T&gt;. In keeping with the running example throughout <a href="http://blog.ploeh.dk/2013/09/06/dependency-injection-and-events">this series</a>, this was the publisher that originally implemented IDependency. Thus, it's still called RealDependency. For simplicity's sake, assume that its implementation is as simple as this:
+	</p>
+	<p>
+		<div style="font-family: Consolas; font-size: 10pt; color: black; background: white;">
+<pre style="margin: 0px;"><span style="color: blue;">public</span> <span style="color: blue;">class</span> <span style="color: #2b91af;">RealDependency</span> : <span style="color: #2b91af;">IObservable</span>&lt;<span style="color: #2b91af;">Unit</span>&gt;
+{
+&nbsp;&nbsp;&nbsp; <span style="color: blue;">private</span> <span style="color: blue;">readonly</span> <span style="color: #2b91af;">Subject</span>&lt;<span style="color: #2b91af;">Unit</span>&gt; subject;
+&nbsp;
+&nbsp;&nbsp;&nbsp; <span style="color: blue;">public</span> RealDependency()
+&nbsp;&nbsp;&nbsp; {
+&nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; <span style="color: blue;">this</span>.subject = <span style="color: blue;">new</span> <span style="color: #2b91af;">Subject</span>&lt;<span style="color: #2b91af;">Unit</span>&gt;();
+&nbsp;&nbsp;&nbsp; }
+&nbsp;
+&nbsp;&nbsp;&nbsp; <span style="color: blue;">public</span> <span style="color: blue;">void</span> MakeItHappen()
+&nbsp;&nbsp;&nbsp; {
+&nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; <span style="color: blue;">this</span>.subject.OnNext(<span style="color: #2b91af;">Unit</span>.Default);
+&nbsp;&nbsp;&nbsp; }
+&nbsp;
+&nbsp;&nbsp;&nbsp; <span style="color: blue;">public</span> <span style="color: #2b91af;">IDisposable</span> Subscribe(<span style="color: #2b91af;">IObserver</span>&lt;<span style="color: #2b91af;">Unit</span>&gt; observer)
+&nbsp;&nbsp;&nbsp; {
+&nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; <span style="color: blue;">return</span> <span style="color: blue;">this</span>.subject.Subscribe(observer);
+&nbsp;&nbsp;&nbsp; }
+}</pre>
+</div>
+	</p>
+	<p>
+		What if, instead of implementing IObservable&lt;Unit&gt;, this class would use Constructor Injection to request an IObserver&lt;Unit&gt;? Then it would look like this:
+	</p>
+	<p>
+		<div style="font-family: Consolas; font-size: 10pt; color: black; background: white;">
+<pre style="margin: 0px;"><span style="color: blue;">public</span> <span style="color: blue;">class</span> <span style="color: #2b91af;">RealDependency</span>
+{
+&nbsp;&nbsp;&nbsp; <span style="color: blue;">private</span> <span style="color: blue;">readonly</span> <span style="color: #2b91af;">IObserver</span>&lt;<span style="color: #2b91af;">Unit</span>&gt; observer;
+&nbsp;
+&nbsp;&nbsp;&nbsp; <span style="color: blue;">public</span> RealDependency(<span style="color: #2b91af;">IObserver</span>&lt;<span style="color: #2b91af;">Unit</span>&gt; observer)
+&nbsp;&nbsp;&nbsp; {
+&nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; <span style="color: blue;">this</span>.observer = observer;
+&nbsp;&nbsp;&nbsp; }
+&nbsp;
+&nbsp;&nbsp;&nbsp; <span style="color: blue;">public</span> <span style="color: blue;">void</span> MakeItHappen()
+&nbsp;&nbsp;&nbsp; {
+&nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; <span style="color: blue;">this</span>.observer.OnNext(<span style="color: #2b91af;">Unit</span>.Default);
+&nbsp;&nbsp;&nbsp; }
+}</pre>
+</div>
+	</p>
+	<p>
+		That's much simpler, and you just got rid of an entire type (IObservable&lt;Unit&gt;)! Even better, you've also eliminated all use of IDisposable. Oh, and it also conforms to CQS, and is thread-safe.
+	</p>
+	<p>
+		<strong>Connection</strong>
+	</p>
+	<p>
+		The names of the concrete classes are completely off by now, but you can connect publisher (RealDependency) with its subscriber (NeedyClass) from a third party (Composition Root):
+	</p>
+	<p>
+		<div style="font-family: Consolas; font-size: 10pt; color: black; background: white;">
+<pre style="margin: 0px;"><span style="color: blue;">var</span> subscriber = <span style="color: blue;">new</span> <span style="color: #2b91af;">NeedyClass</span>();
+<span style="color: blue;">var</span> publisher = <span style="color: blue;">new</span> <span style="color: #2b91af;">RealDependency</span>(subscriber);</pre>
+</div>
+	</p>
+	<p>
+		Not only is this easy, the statically typed structure of both classes helps you do the right thing: the compiler will issue an error if you don't supply a subscriber to the publisher.
+	</p>
+	<p>
+		But wait, you say: now the publisher is <em>forced</em> to have a single observer. Isn't the whole idea about publish/subscribe that you can have an arbitrary number of subscribers for a given publisher? Yes, it is, and that's still possible.
+	</p>
+	<p>
+		<strong>Composition</strong>
+	</p>
+	<p>
+		More than a single subscriber is easy if you introduce a <a href="http://en.wikipedia.org/wiki/Composite_pattern">Composite</a>:
+	</p>
+	<p>
+		<div style="font-family: Consolas; font-size: 10pt; color: black; background: white;">
+<pre style="margin: 0px;"><span style="color: blue;">public</span> <span style="color: blue;">class</span> <span style="color: #2b91af;">CompositeObserver</span>&lt;T&gt; : <span style="color: #2b91af;">IObserver</span>&lt;T&gt;
+{
+&nbsp;&nbsp;&nbsp; <span style="color: blue;">private</span> <span style="color: blue;">readonly</span> <span style="color: #2b91af;">IEnumerable</span>&lt;<span style="color: #2b91af;">IObserver</span>&lt;T&gt;&gt; observers;
+&nbsp;
+&nbsp;&nbsp;&nbsp; <span style="color: blue;">public</span> CompositeObserver(<span style="color: #2b91af;">IEnumerable</span>&lt;<span style="color: #2b91af;">IObserver</span>&lt;T&gt;&gt; observers)
+&nbsp;&nbsp;&nbsp; {
+&nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; <span style="color: blue;">this</span>.observers = observers;
+&nbsp;&nbsp;&nbsp; }
+&nbsp;
+&nbsp;&nbsp;&nbsp; <span style="color: blue;">public</span> <span style="color: blue;">void</span> OnCompleted()
+&nbsp;&nbsp;&nbsp; {
+&nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; <span style="color: blue;">foreach</span> (<span style="color: blue;">var</span> observer <span style="color: blue;">in</span> <span style="color: blue;">this</span>.observers)
+&nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; observer.OnCompleted();
+&nbsp;&nbsp;&nbsp; }
+&nbsp;
+&nbsp;&nbsp;&nbsp; <span style="color: blue;">public</span> <span style="color: blue;">void</span> OnError(<span style="color: #2b91af;">Exception</span> error)
+&nbsp;&nbsp;&nbsp; {
+&nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; <span style="color: blue;">foreach</span> (<span style="color: blue;">var</span> observer <span style="color: blue;">in</span> <span style="color: blue;">this</span>.observers)
+&nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; observer.OnError(error);
+&nbsp;&nbsp;&nbsp; }
+&nbsp;
+&nbsp;&nbsp;&nbsp; <span style="color: blue;">public</span> <span style="color: blue;">void</span> OnNext(T value)
+&nbsp;&nbsp;&nbsp; {
+&nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; <span style="color: blue;">foreach</span> (<span style="color: blue;">var</span> observer <span style="color: blue;">in</span> <span style="color: blue;">this</span>.observers)
+&nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; observer.OnNext(value);
+&nbsp;&nbsp;&nbsp; }
+}</pre>
+</div>
+	</p>
+	<p>
+		While it looks like a bit of work, this class is <em>so reusable</em> that I wonder why it's not included in the Rx library itself... It enables you to subscribe any number of subscribers to the publisher, e.g. two:
+	</p>
+	<p>
+		<div style="font-family: Consolas; font-size: 10pt; color: black; background: white;">
+<pre style="margin: 0px;"><span style="color: blue;">var</span> sub1 = <span style="color: blue;">new</span> <span style="color: #2b91af;">NeedyClass</span>();
+<span style="color: blue;">var</span> sub2 = <span style="color: blue;">new</span> <span style="color: #2b91af;">AnotherObserver</span>();
+<span style="color: blue;">var</span> publisher = 
+&nbsp;&nbsp;&nbsp; <span style="color: blue;">new</span> <span style="color: #2b91af;">RealDependency</span>(
+&nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; <span style="color: blue;">new</span> <span style="color: #2b91af;">CompositeObserver</span>&lt;<span style="color: #2b91af;">Unit</span>&gt;(
+&nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; <span style="color: blue;">new</span> <span style="color: #2b91af;">IObserver</span>&lt;<span style="color: #2b91af;">Unit</span>&gt;[] { sub1, sub2 }));</pre>
+</div>
+	</p>
+	<p>
+		I'll leave it as an exercise to the reader to figure out how to implement the scenario with <em>no</em> subscribers :)
+	</p>
+	<p>
+		<strong>Conclusion</strong>
+	</p>
+	<p>
+		Sticking to IObserver&lt;T&gt; and simply injecting it into the publishers is much simpler than any other alternative I've described so far. Nonetheless, keep in mind that the reason this simplification works so well is because it assumes that you know all subscribers when you compose your object graph.
+	</p>
+	<p>
+		There's a reason the IObservable&lt;T&gt; interface exists, and that's to support scenarios where publishers and subscribers come and go during the lifetime of an application. The simplification described here doesn't handle that scenario, but if you don't need that flexibility, you can greatly simplify your eventing infrastructure by disposing of IObservable&lt;T&gt; ;)
+	</p>
+</div>
