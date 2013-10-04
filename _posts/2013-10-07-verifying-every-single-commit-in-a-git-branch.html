@@ -1,0 +1,87 @@
+---
+layout: post
+title: "Verifying every single commit in a Git branch"
+date: 2013-10-07 08:38 UTC
+tags: [Productivity]
+---
+{% include JB/setup %}
+
+<div id="post">
+	<p>
+		<em>You can run a validation task for every commit in a Git branch in order to verify the integrity of a Git branch's history.</em>
+	</p>
+	<p>
+		Just like Soviet Union, I occasionally prefer to rewrite history... although I limit myself to rewriting the history of one or more Git branches. When I do that, I'd like to verify that I didn't break anything after an interactive rebase. It actually turns out that this can easily happen. Some commits are left in a state where they either don't compile, or tests fail. Git is happy, but the code isn't. To deal with such situations, I wanted a tool that could verify each and every commit in a branch like this:
+		<ol>
+			<li>Check out a commit.</li>
+			<li>Compile the code.</li>
+			<li>Run all tests.</li>
+			<li>Repeat for the next commit, or stop if there's a failure.</li>
+		</ol>
+		The tool should do this from the first to the last commit in my current branch (e.g. <em>master</em>).
+	</p>
+	<p>
+		<strong>Motivation</strong>
+	</p>
+	<p>
+		If you don't care about my motivation for doing this, you can skip this section and move on to the solution. However, some people might like to point out to me that I shouldn't rewrite the history of my Git repositories - and particularly not of the <em>master</em> branch. I agree, for all repositories where I actually collaborate with other programmers.
+	</p>
+	<p>
+		However, I also use Git locally to produce teaching materials. As an example, if you download the example code for <a href="http://pluralsight.com/training/Authors/Details/mark-seemann">my Pluralsight courses</a>, you'll see that it's all available as Git repositories. I think that's an added benefit for the student, because not only can you see the final result, but you can also see all the steps that lead me there. I even occasionally write commit messages longer than a single line, explaining my thinking as I check in code.
+	</p>
+	<p>
+		Like everyone else, I'm fallible, so often, when I prepare such materials, I end up taking some detours that I feel will confuse students more than it will help. Thus, I have a need to be able to edit my Git repositories. Right now, as an example, I'm working with a repository with 120 commits on the <em>master</em> branch, and I need to make some changes in the beginning of the history.
+	</p>
+	<p>
+		<strong>Solution</strong>
+	</p>
+	<p>
+		With <em>much</em> help from <a href="https://github.com/zeroem">Darrell Hamilton</a>, who ended up providing <a href="https://gist.github.com/zeroem/6822534">this gist</a>, I was able to piece together this bash script:
+	</p>
+	<p>
+		<pre>#!/bin/sh
+COMMITS=$(git --git-dir=BookingApi/.git --work-tree=BookingApi log --oneline  --reverse | cut -d " " -f 1)
+CODE=0
+
+git --git-dir=BookingApi/.git --work-tree=BookingApi reset --hard
+git --git-dir=BookingApi/.git --work-tree=BookingApi clean -xdf
+ 
+for COMMIT in $COMMITS
+do
+    git --git-dir=BookingApi/.git --work-tree=BookingApi checkout $COMMIT
+    # run-tests          
+    ./build.sh
+
+    if [ $? -eq 0 ]
+    then
+        echo $COMMIT - passed
+    else
+        echo $COMMIT - failed
+        exit
+    fi
+
+    git --git-dir=BookingApi/.git --work-tree=BookingApi reset --hard
+    git --git-dir=BookingApi/.git --work-tree=BookingApi clean -xdf
+done
+ 
+git --git-dir=BookingApi/.git --work-tree=BookingApi checkout master</pre>
+	</p>
+	<p>
+		As you can tell, it follows the algorithm outlined above. First, it does a <code>git log</code> to get all the commits in the branch, and then it loops through all of them, one by one. For each commit, it compiles and runs all tests by calling out to a separate <em>build.sh</em> script. If the build and test step succeeds, it cleans up the working directory and moves on to the next step. If the verification step fails, it stops, so that I can examine the problem.
+	</p>
+	<p>
+		(The reason for the use of <code>--git-dir</code> and <code>--work-tree</code> is that I need to run the script from outside the Git repository itself; otherwise, the <code>git clean -xdf</code> step would delete the script files!)
+	</p>
+	<p>
+		This has turned out to work beautifully, and has already caught quite a number of commits that Git could happily rebase, but afterwards either couldn't compile, or had failing tests.
+	</p>
+	<p>
+		Running those tests in a tight loop has also finally provided some work for my multi-core processor:
+	</p>
+	<p>
+		<img src="/content/binary/all-cpus-busy-while-checking-git-branch-history.png">
+	</p>
+	<p>
+		Each run through those 120 commits takes about 20 minutes, so, even though today we have fast compilers, once again, we have <a href="http://xkcd.com/303">an excuse for slacking off</a>.
+	</p>
+</div>
