@@ -1,0 +1,357 @@
+---
+layout: post
+title: "Mocks for Commands, Stubs for Queries"
+date: 2013-10-23 21:45 UTC
+tags: [Unit Testing]
+---
+{% include JB/setup %}
+
+<div id="post">
+	<p>
+		<em>When unit testing, use Mocks for Commands, and Stubs for Queries.</em>
+	</p>
+	<p>
+		A few years ago, I helped an organization adopt Test-Driven Development. One question that kept coming up was when to use <a href="http://xunitpatterns.com/Test%20Stub.html">Stubs</a>, and when to use <a href="http://xunitpatterns.com/Mock%20Object.html">Mocks</a>. (First, you need to understand the <em>conceptual</em> difference between Mocks and Stubs, so go read <a href="http://amzn.to/Up3Oss">xUnit Test Patterns</a>, and then resume reading this blog post once you're done. If you need a shorter introduction, you can read <a href="http://msdn.microsoft.com/en-us/magazine/cc163358.aspx">my MSDN Magazine article on the subject</a>.)
+	</p>
+	<p>
+		After having answered the question on when to use what, a couple of times, I arrived at this simple rule, based on the language of <a href="http://en.wikipedia.org/wiki/Command%E2%80%93query_separation">Command Query Separation</a> (CQS):
+		<ul>
+			<li>Use Mocks for Commands</li>
+			<li>Use Stubs for Queries</li>
+		</ul>
+		This makes lots of sense, because Commands are all about side effects, and Mocks are all about <a href="http://xunitpatterns.com/Behavior%20Verification.html">Behaviour Verification</a>: that is, that side effects occurred. Stubs, on the other hand, mainly exist to 'make happy noises', and one of the ways they have to do that, is to return data from dependencies, when return data is required.
+	</p>
+	<p>
+		This discovery made me really happy, and I planned to blog about it. Then, soon after, I saw the exact same advice in <a href="http://amzn.to/VI81bP">GOOS</a> (ch. 24, p. 278):
+		<blockquote>
+			Allow Queries; Expect Commands
+		</blockquote>
+		That verified that I was on the right track, but on the other hand, since the rule was already described, I didn't see the value of restating what was already public knowledge.
+	</p>
+	<p>
+		A couple of years later, it's clear to me that this rule may be public knowledge, but is certainly isn't <em>common</em> knowledge. This is, without comparison, the most common mistake I see people make, when I review unit tests. Thus, although it has already been said in GOOS, I'll repeat it here.
+		<blockquote>
+			Use Mocks for Commands; Stubs for Queries
+		</blockquote>
+		Through an example, you'll learn why Mocks for Queries are dangerous, and how a technique I call <em>Data Flow Verification</em> can help.
+	</p>
+	<p>
+		<strong>(Anti-)Example: Mocking Queries</strong>
+	</p>
+	<p>
+		In this example, you'll see how easily things can go wrong when you use Mocks for Queries. Assume that you want to test SomeController, that uses an IUserRepository:
+	</p>
+	<p>
+		<div style="font-family: Consolas; font-size: 10pt; color: black; background: white;">
+<pre style="margin: 0px;"><span style="color: blue;">public</span> <span style="color: blue;">interface</span> <span style="color: #2b91af;">IUserRepository</span>
+{
+&nbsp;&nbsp;&nbsp; <span style="color: #2b91af;">User</span> Read(<span style="color: blue;">int</span> userId);
+&nbsp;
+&nbsp;&nbsp;&nbsp; <span style="color: blue;">void</span> Create(<span style="color: blue;">int</span> userId);
+}</pre>
+</div>
+	</p>
+	<p>
+		In the first test, you want to verify that when you invoke SomeController.GetUser, it returns the user from the injected Repository, so you write this unit test:
+	</p>
+	<p>
+		<div style="font-family: Consolas; font-size: 10pt; color: black; background: white;">
+<pre style="margin: 0px;">[<span style="color: #2b91af;">Fact</span>]
+<span style="color: blue;">public</span> <span style="color: blue;">void</span> GetUserReturnsCorrectResult()
+{
+&nbsp;&nbsp;&nbsp; <span style="color: blue;">var</span> expected = <span style="color: blue;">new</span> <span style="color: #2b91af;">User</span>();
+&nbsp;&nbsp;&nbsp; <span style="color: blue;">var</span> td = <span style="color: blue;">new</span> <span style="color: #2b91af;">Mock</span>&lt;<span style="color: #2b91af;">IUserRepository</span>&gt;();
+&nbsp;&nbsp;&nbsp; td.Setup(r =&gt; r.Read(<span style="color: #2b91af;">It</span>.IsAny&lt;<span style="color: blue;">int</span>&gt;())).Returns(expected);
+&nbsp;&nbsp;&nbsp; <span style="color: blue;">var</span> sut = <span style="color: blue;">new</span> <span style="color: #2b91af;">SomeController</span>(td.Object);
+&nbsp;
+&nbsp;&nbsp;&nbsp; <span style="color: blue;">var</span> actual = sut.GetUser(1234);
+&nbsp;
+&nbsp;&nbsp;&nbsp; <span style="color: #2b91af;">Assert</span>.Equal(expected, actual);
+}</pre>
+</div>
+	</p>
+	<p>
+		This test uses <a href="https://code.google.com/p/moq">Moq</a>, but it could have used another dynamic mock library as well, or even hand-written <a href="http://xunitpatterns.com/Test%20Double.html">Test Doubles</a>.
+	</p>
+	<p>
+		The most remarkable characteristic of this test is the <em>unconditional</em> return of a value from the Test Double, as implemented by the use of <code>It.IsAny&lt;int&gt;()</code>. Why you'd do this is a small mystery to me, but I see it time and again when I review unit tests. This is the source of many problems.
+	</p>
+	<p>
+		Using a technique called <a href="http://pluralsight.com/training/Courses/TableOfContents/outside-in-tdd">Devil's Advocate</a>, when reviewing, I usually tell the author that I can make the test pass with this (obviously degenerate) implementation:
+	</p>
+	<p>
+		<div style="font-family: Consolas; font-size: 10pt; color: black; background: white;">
+<pre style="margin: 0px;"><span style="color: blue;">public</span> <span style="color: #2b91af;">User</span> GetUser(<span style="color: blue;">int</span> userId)
+{
+&nbsp;&nbsp;&nbsp; <span style="color: blue;">return</span> <span style="color: blue;">this</span>.userRepository.Read(0);
+}</pre>
+</div>
+	</p>
+	<p>
+		In my experience, this will most likely prompt you to <em>add another</em> test:
+	</p>
+	<p>
+		<div style="font-family: Consolas; font-size: 10pt; color: black; background: white;">
+<pre style="margin: 0px;">[<span style="color: #2b91af;">Theory</span>]
+[<span style="color: #2b91af;">InlineData</span>(1234)]
+[<span style="color: #2b91af;">InlineData</span>(9876)]
+<span style="color: blue;">public</span> <span style="color: blue;">void</span> GetUserCallsRepositoryWithCorrectValue(<span style="color: blue;">int</span> userId)
+{
+&nbsp;&nbsp;&nbsp; <span style="color: blue;">var</span> td = <span style="color: blue;">new</span> <span style="color: #2b91af;">Mock</span>&lt;<span style="color: #2b91af;">IUserRepository</span>&gt;();
+&nbsp;&nbsp;&nbsp; <span style="color: blue;">var</span> sut = <span style="color: blue;">new</span> <span style="color: #2b91af;">SomeController</span>(td.Object);
+&nbsp;
+&nbsp;&nbsp;&nbsp; sut.GetUser(userId);
+&nbsp;
+&nbsp;&nbsp;&nbsp; td.Verify(r =&gt; r.Read(userId));
+}</pre>
+</div>
+	</p>
+	<p>
+		Jolly good attempt, sport! Regrettably, it doesn't protect you against my Devil's Advocate technique; I can implement the GetUser method like this:
+	</p>
+	<p>
+		<div style="font-family: Consolas; font-size: 10pt; color: black; background: white;">
+<pre style="margin: 0px;"><span style="color: blue;">public</span> <span style="color: #2b91af;">User</span> GetUser(<span style="color: blue;">int</span> userId)
+{
+&nbsp;&nbsp;&nbsp; <span style="color: blue;">this</span>.userRepository.Read(userId);
+&nbsp;&nbsp;&nbsp; <span style="color: blue;">return</span> <span style="color: blue;">this</span>.userRepository.Read(0);
+}</pre>
+</div>
+	</p>
+	<p>
+		This is so obviously wrong that you'd be likely to argue that no-one in their right mind would do something like that. While I agree, the fact that this (obviously incorrect) implementation passes all unit tests should inform you about the quality of your unit tests.
+	</p>
+	<p>
+		<strong>Strict Mocks are not the solution</strong>
+	</p>
+	<p>
+		The problem is that the second test method (GetUserCallsRepositoryWithCorrectValue) attempts to use a Mock to verify a Query. This is wrong, as indicated by GOOS.
+	</p>
+	<p>
+		In desperation, some people attempt to resolve their conundrum by tightening the constraints of the Mock. This road leads towards Strict Mocks, and there lies madness. Soon, you'll learn the reason for this.
+	</p>
+	<p>
+		First, you may attempt to constrain the number of times the Read method can be invoked:
+	</p>
+	<p>
+		<div style="font-family: Consolas; font-size: 10pt; color: black; background: white;">
+<pre style="margin: 0px;">[<span style="color: #2b91af;">Theory</span>]
+[<span style="color: #2b91af;">InlineData</span>(1234)]
+[<span style="color: #2b91af;">InlineData</span>(9876)]
+<span style="color: blue;">public</span> <span style="color: blue;">void</span> GetUserCallsRepositoryWithCorrectValue(<span style="color: blue;">int</span> userId)
+{
+&nbsp;&nbsp;&nbsp; <span style="color: blue;">var</span> td = <span style="color: blue;">new</span> <span style="color: #2b91af;">Mock</span>&lt;<span style="color: #2b91af;">IUserRepository</span>&gt;();
+&nbsp;&nbsp;&nbsp; <span style="color: blue;">var</span> sut = <span style="color: blue;">new</span> <span style="color: #2b91af;">SomeController</span>(td.Object);
+&nbsp;
+&nbsp;&nbsp;&nbsp; sut.GetUser(userId);
+&nbsp;
+&nbsp;&nbsp;&nbsp; td.Verify(r =&gt; r.Read(userId), <span style="color: #2b91af;">Times</span>.Once());
+}</pre>
+</div>
+	</p>
+	<p>
+		Notice the addition of the <code>Times.Once()</code> clause in the last line. This instructs Moq that <code>Read(userId)</code> can only be invoked once, and that an exception should be thrown if it's called more than once. Surprisingly, the Devil's Advocate implementation still passes all tests:
+	</p>
+	<p>
+		<div style="font-family: Consolas; font-size: 10pt; color: black; background: white;">
+<pre style="margin: 0px;"><span style="color: blue;">public</span> <span style="color: #2b91af;">User</span> GetUser(<span style="color: blue;">int</span> userId)
+{
+&nbsp;&nbsp;&nbsp; <span style="color: blue;">this</span>.userRepository.Read(userId);
+&nbsp;&nbsp;&nbsp; <span style="color: blue;">return</span> <span style="color: blue;">this</span>.userRepository.Read(0);
+}</pre>
+</div>
+	</p>
+	<p>
+		While this may seem surprising, the reason it passes is that the assertion only states that <code>Read(userId)</code> should be invoked exactly once; it doesn't state anything about <code>Read(0)</code>, as long as <code>userId</code> isn't 0.
+	</p>
+	<p>
+		Second, you attempt to resolve <em>that</em> problem by stating that no matter the input, the Read method must be invoked exactly once:
+	</p>
+	<p>
+		<div style="font-family: Consolas; font-size: 10pt; color: black; background: white;">
+<pre style="margin: 0px;">[<span style="color: #2b91af;">Theory</span>]
+[<span style="color: #2b91af;">InlineData</span>(1234)]
+[<span style="color: #2b91af;">InlineData</span>(9876)]
+<span style="color: blue;">public</span> <span style="color: blue;">void</span> GetUserCallsRepositoryWithCorrectValue(<span style="color: blue;">int</span> userId)
+{
+&nbsp;&nbsp;&nbsp; <span style="color: blue;">var</span> td = <span style="color: blue;">new</span> <span style="color: #2b91af;">Mock</span>&lt;<span style="color: #2b91af;">IUserRepository</span>&gt;();
+&nbsp;&nbsp;&nbsp; <span style="color: blue;">var</span> sut = <span style="color: blue;">new</span> <span style="color: #2b91af;">SomeController</span>(td.Object);
+&nbsp;
+&nbsp;&nbsp;&nbsp; sut.GetUser(userId);
+&nbsp;
+&nbsp;&nbsp;&nbsp; td.Verify(r =&gt; r.Read(<span style="color: #2b91af;">It</span>.IsAny&lt;<span style="color: blue;">int</span>&gt;()), <span style="color: #2b91af;">Times</span>.Once());
+}</pre>
+</div>
+	</p>
+	<p>
+		Notice that the input constraint is loosened to <code>It.IsAny&lt;int&gt;()</code>; combined with <code>Times.Once()</code>, it should ensure that the Read method is invoked exactly once. It does, but the devil is still mocking you (pun intended):
+	</p>
+	<p>
+		<div style="font-family: Consolas; font-size: 10pt; color: black; background: white;">
+<pre style="margin: 0px;"><span style="color: blue;">public</span> <span style="color: #2b91af;">User</span> GetUser(<span style="color: blue;">int</span> userId)
+{
+&nbsp;&nbsp;&nbsp; <span style="color: blue;">return</span> <span style="color: blue;">this</span>.userRepository.Read(0);
+}</pre>
+</div>
+	</p>
+	<p>
+		This is the first degenerate implementation I added, so now you're back where you began: it passes all tests. The new test case (that uses a Mock against a Query) has added no value at all.
+	</p>
+	<p>
+		Third, in utter desperation, you turn to Strict Mocks:
+	</p>
+	<p>
+		<div style="font-family: Consolas; font-size: 10pt; color: black; background: white;">
+<pre style="margin: 0px;">[<span style="color: #2b91af;">Theory</span>]
+[<span style="color: #2b91af;">InlineData</span>(1234)]
+[<span style="color: #2b91af;">InlineData</span>(9876)]
+<span style="color: blue;">public</span> <span style="color: blue;">void</span> GetUserCallsRepositoryWithCorrectValue(<span style="color: blue;">int</span> userId)
+{
+&nbsp;&nbsp;&nbsp; <span style="color: blue;">var</span> td = <span style="color: blue;">new</span> <span style="color: #2b91af;">Mock</span>&lt;<span style="color: #2b91af;">IUserRepository</span>&gt;(<span style="color: #2b91af;">MockBehavior</span>.Strict);
+&nbsp;&nbsp;&nbsp; td.Setup(r =&gt; r.Read(userId)).Returns(<span style="color: blue;">new</span> <span style="color: #2b91af;">User</span>());
+&nbsp;&nbsp;&nbsp; <span style="color: blue;">var</span> sut = <span style="color: blue;">new</span> <span style="color: #2b91af;">SomeController</span>(td.Object);
+&nbsp;
+&nbsp;&nbsp;&nbsp; sut.GetUser(userId);
+&nbsp;
+&nbsp;&nbsp;&nbsp; td.Verify();
+}</pre>
+</div>
+	</p>
+	<p>
+		Notice the use of <code>MockBehavior.Strict</code> in the Mock constructor, as well as the explicit Setup in the <a href="http://xunitpatterns.com/fixture%20setup.html">Fixture Setup</a> phase.
+	</p>
+	<p>
+		Finally, this reigns in the devil; I have no other recourse than to implement the Read method correctly:
+	</p>
+	<p>
+		<div style="font-family: Consolas; font-size: 10pt; color: black; background: white;">
+<pre style="margin: 0px;"><span style="color: blue;">public</span> <span style="color: #2b91af;">User</span> GetUser(<span style="color: blue;">int</span> userId)
+{
+&nbsp;&nbsp;&nbsp; <span style="color: blue;">return</span> <span style="color: blue;">this</span>.userRepository.Read(userId);
+}</pre>
+</div>
+	</p>
+	<p>
+		If the Devil's Advocate technique indicates that a faulty implementation implies a bad test suite, then a correct implementation must indicate a good test suite, right?
+	</p>
+	<p>
+		Not quite, because the use of a Strict Mock makes your tests much less maintainable. You should already know this, but I'll show you an example.
+	</p>
+	<p>
+		Assume that you have a rule that if the User returned by the Read method has an ID of 0, it means that the user doesn't exist, and should be created. (There are various problems with this design, most notably that it violates CQS, but that's another story...)
+	</p>
+	<p>
+		In order to verify that a non-existing User is created during reading, you add this unit test:
+	</p>
+	<p>
+		<div style="font-family: Consolas; font-size: 10pt; color: black; background: white;">
+<pre style="margin: 0px;">[<span style="color: #2b91af;">Fact</span>]
+<span style="color: blue;">public</span> <span style="color: blue;">void</span> UserIsSavedIfItDoesNotExist()
+{
+&nbsp;&nbsp;&nbsp; <span style="color: blue;">var</span> td = <span style="color: blue;">new</span> <span style="color: #2b91af;">Mock</span>&lt;<span style="color: #2b91af;">IUserRepository</span>&gt;();
+&nbsp;&nbsp;&nbsp; td.Setup(r =&gt; r.Read(1234)).Returns(<span style="color: blue;">new</span> <span style="color: #2b91af;">User</span> { Id = 0 });
+&nbsp;&nbsp;&nbsp; <span style="color: blue;">var</span> sut = <span style="color: blue;">new</span> <span style="color: #2b91af;">SomeController</span>(td.Object);
+&nbsp;
+&nbsp;&nbsp;&nbsp; sut.GetUser(1234);
+&nbsp;
+&nbsp;&nbsp;&nbsp; td.Verify(r =&gt; r.Create(1234));
+}</pre>
+</div>
+	</p>
+	<p>
+		This is is fine test that verifies a Command (Create) with a Mock. This implementation passes the test:
+	</p>
+	<p>
+		<div style="font-family: Consolas; font-size: 10pt; color: black; background: white;">
+<pre style="margin: 0px;"><span style="color: blue;">public</span> <span style="color: #2b91af;">User</span> GetUser(<span style="color: blue;">int</span> userId)
+{
+&nbsp;&nbsp;&nbsp; <span style="color: blue;">var</span> u = <span style="color: blue;">this</span>.userRepository.Read(userId);
+&nbsp;&nbsp;&nbsp; <span style="color: blue;">if</span> (u.Id == 0)
+&nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; <span style="color: blue;">this</span>.userRepository.Create(1234);
+&nbsp;&nbsp;&nbsp; <span style="color: blue;">return</span> u;
+}</pre>
+</div>
+	</p>
+	<p>
+		Alas! Although this implementation passes the new test, it <em>breaks an existing test!</em> Can you guess which one? Yes: the test that verifies a Query with a Strict Mock. It breaks because it explicitly states that the only method call allowed on the Repository is the Read method.
+	</p>
+	<p>
+		You can resolve the problem by editing the test:
+	</p>
+	<p>
+		<div style="font-family: Consolas; font-size: 10pt; color: black; background: white;">
+<pre style="margin: 0px;">[<span style="color: #2b91af;">Theory</span>]
+[<span style="color: #2b91af;">InlineData</span>(1234)]
+[<span style="color: #2b91af;">InlineData</span>(9876)]
+<span style="color: blue;">public</span> <span style="color: blue;">void</span> GetUserCallsRepositoryWithCorrectValue(<span style="color: blue;">int</span> userId)
+{
+&nbsp;&nbsp;&nbsp; <span style="color: blue;">var</span> td = <span style="color: blue;">new</span> <span style="color: #2b91af;">Mock</span>&lt;<span style="color: #2b91af;">IUserRepository</span>&gt;(<span style="color: #2b91af;">MockBehavior</span>.Strict);
+&nbsp;&nbsp;&nbsp; td.Setup(r =&gt; r.Read(userId)).Returns(<span style="color: blue;">new</span> <span style="color: #2b91af;">User</span> { Id = userId });
+&nbsp;&nbsp;&nbsp; <span style="color: blue;">var</span> sut = <span style="color: blue;">new</span> <span style="color: #2b91af;">SomeController</span>(td.Object);
+&nbsp;
+&nbsp;&nbsp;&nbsp; sut.GetUser(userId);
+&nbsp;
+&nbsp;&nbsp;&nbsp; td.Verify();
+}</pre>
+</div>
+	</p>
+	<p>
+		Notice that <code>userId</code> was added to the returned User in the Setup for the Strict Mock.
+	</p>
+	<p>
+		Having to edit existing tests is a genuine unit test smell. Not only does it add an unproductive overhead (imagine that many tests break instead of a single one), but it also <a href="http://blog.ploeh.dk/2013/04/02/why-trust-tests">decreases the trustworthiness of your test suite</a>.
+	</p>
+	<p>
+		<strong>Data Flow Verification</strong>
+	</p>
+	<p>
+		The solution is really simple: use a <em>conditional</em> Stub to verify the <em>data flow</em> through the <a href="http://xunitpatterns.com/SUT.html">SUT</a>. Here's the single test you need to arrive at a correct implementation:
+	</p>
+	<p>
+		<div style="font-family: Consolas; font-size: 10pt; color: black; background: white;">
+<pre style="margin: 0px;">[<span style="color: #2b91af;">Theory</span>]
+[<span style="color: #2b91af;">InlineData</span>(1234)]
+[<span style="color: #2b91af;">InlineData</span>(9876)]
+<span style="color: blue;">public</span> <span style="color: blue;">void</span> GetUserReturnsCorrectValue(<span style="color: blue;">int</span> userId)
+{
+&nbsp;&nbsp;&nbsp; <span style="color: blue;">var</span> expected = <span style="color: blue;">new</span> <span style="color: #2b91af;">User</span>();
+&nbsp;&nbsp;&nbsp; <span style="color: blue;">var</span> td = <span style="color: blue;">new</span> <span style="color: #2b91af;">Mock</span>&lt;<span style="color: #2b91af;">IUserRepository</span>&gt;();
+&nbsp;&nbsp;&nbsp; td.Setup(r =&gt; r.Read(userId)).Returns(expected);
+&nbsp;&nbsp;&nbsp; <span style="color: blue;">var</span> sut = <span style="color: blue;">new</span> <span style="color: #2b91af;">SomeController</span>(td.Object);
+&nbsp;
+&nbsp;&nbsp;&nbsp; <span style="color: blue;">var</span> actual = sut.GetUser(userId);
+&nbsp;
+&nbsp;&nbsp;&nbsp; <span style="color: #2b91af;">Assert</span>.Equal(expected, actual);
+}</pre>
+</div>
+	</p>
+	<p>
+		Even when I attempt to use the Devil's Advocate technique, there's no way I can provide a faulty implementation. The method <em>must</em> invoke <code>Read(userId)</code>, because otherwise it can't return <code>expected</code>. If it invokes the Read method with any other value, it may get a User instance, but not <code>expected</code>.
+	</p>
+	<p>
+		The <em>Data Flow Verification</em> test uses a (conditional) Stub to verify a Query. The distinction may seem subtle, but it's important. The Stub doesn't <em>require</em> that <code>Read(userId)</code> is invoked, but is configured in such a way that <em>if</em> (and only if) <code>Read(userId)</code> is invoked, it'll return <code>expected</code>.
+	</p>
+	<p>
+		With the Stub verifying the Query (GetUserReturnsCorrectValue), and the other test that uses a Mock to verify a Command (UserIsSavedIfItDoesNotExist), the final implementation is:
+	</p>
+	<p>
+		<div style="font-family: Consolas; font-size: 10pt; color: black; background: white;">
+<pre style="margin: 0px;"><span style="color: blue;">public</span> <span style="color: #2b91af;">User</span> GetUser(<span style="color: blue;">int</span> userId)
+{
+&nbsp;&nbsp;&nbsp; <span style="color: blue;">var</span> u = <span style="color: blue;">this</span>.userRepository.Read(userId);
+&nbsp;&nbsp;&nbsp; <span style="color: blue;">if</span> (u.Id == 0)
+&nbsp;&nbsp;&nbsp; &nbsp;&nbsp;&nbsp; <span style="color: blue;">this</span>.userRepository.Create(1234);
+&nbsp;&nbsp;&nbsp; <span style="color: blue;">return</span> u;
+}</pre>
+</div>
+	</p>
+	<p>
+		These two tests correctly specify the behaviour of the system in a terse and maintainable way.
+	</p>
+	<p>
+		<strong>Conclusion</strong>
+	</p>
+	<p>
+		<em>Data Flow Verification</em> is remarkably simple, so I'm continually taken aback that people seem to go out of their way to avoid it. Use it to verify Queries with Stubs, and keep the Mocks with the Commands.
+	</p>
+</div>
