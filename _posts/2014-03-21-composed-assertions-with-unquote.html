@@ -1,0 +1,159 @@
+---
+layout: post
+title: "Composed assertions with Unquote"
+date: 2014-03-21 8:52 UTC
+tags: [F#, Unit Testing]
+---
+{% include JB/setup %}
+
+<div id="post">
+  <p>
+    <em>With F# and Unquote, you can write customized, composable assertions.</em>
+  </p>
+  <p>
+    Yesterday, I wrote this unit test:
+  </p>
+  <p>
+    <pre style="font-family:Consolas;font-size:13;color:black;">[&lt;Theory;&nbsp;UnitTestConventions&gt;]
+<span style="color:blue;">let</span>&nbsp;PostReturnsCorrectResult
+&nbsp;&nbsp;&nbsp;&nbsp;(sut&nbsp;:&nbsp;TasksController)
+&nbsp;&nbsp;&nbsp;&nbsp;(task&nbsp;:&nbsp;TaskRendition)&nbsp;=
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;result&nbsp;:&nbsp;IHttpActionResult&nbsp;=&nbsp;sut.Post&nbsp;task
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;verify&nbsp;&lt;@&nbsp;result&nbsp;:?&nbsp;Results.StatusCodeResult&nbsp;@&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;verify&nbsp;&lt;@&nbsp;HttpStatusCode.Accepted&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(result&nbsp;:?&gt;&nbsp;Results.StatusCodeResult).StatusCode&nbsp;@&gt;</pre>
+  </p>
+  <p>
+    For the record, here's the <a href="http://xunitpatterns.com/SUT.html">SUT</a>:
+  </p>
+  <p>
+    <pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">type</span>&nbsp;TasksController()&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">inherit</span>&nbsp;ApiController()
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">member</span>&nbsp;this.Post(task&nbsp;:&nbsp;TaskRendition)&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;this.StatusCode&nbsp;HttpStatusCode.Accepted&nbsp;:&gt;&nbsp;IHttpActionResult</pre>
+  </p>
+  <p>
+    There's not much to look at yet, because at that time, I was just getting started, and as always, I was using Test-Driven Development. The TasksController class is an <a href="http://www.asp.net/web-api">ASP.NET Web API</a> 2 Controller. In this incarnation, it merely accepts an HTTP POST, ignores the input, and returns <a href="http://www.w3.org/Protocols/rfc2616/rfc2616-sec10.html#sec10.2.3">202 (Accepted)</a>.
+  </p>
+  <p>
+    The unit test uses <a href="http://www.nuget.org/packages/AutoFixture.Xunit">AutoFixture.Xunit</a> to create an instance of the SUT and a <a href="http://blog.ploeh.dk/2013/10/15/easy-aspnet-web-api-dtos-with-f-climutable-records">DTO record</a>, but that's not important in this context. It also uses <a href="https://code.google.com/p/unquote">Unquote</a> for assertions, although I've aliased the <code>test</code> function to <code>verify</code>. Although Unquote is an extremely versatile assertion module, I wasn't happy with the assertions I wrote.
+  </p>
+  <p>
+    <strong>What's the problem?</strong>
+  </p>
+  <p>
+    The problem is the duplication of logic. First, it verifies that <code>result</code> is, indeed, an instance of StatusCodeResult. Second, if that's the case, it casts <code>result</code> to StatusCodeResult in order to access its concrete StatusCode property; it feels like I'm almost doing the same thing twice.
+  </p>
+  <p>
+    You may say that this isn't a big deal in a test like this, but in my experience, this is a smell. The example looks innocuous, but soon, I'll find myself writing slightly more complicated assertions, where I need to type check and cast more than once. This can rapidly lead to <a href="http://xunitpatterns.com/Assertion%20Roulette.html">Assertion Roulette</a>.
+  </p>
+  <p>
+    <strong>The xUnit.net approach</strong>
+  </p>
+  <p>
+    For a minute there, I caught myself missing <a href="https://xunit.codeplex.com">xUnit.net</a>'s <code>Assert.IsAssignableFrom&lt;T&gt;</code> method, because it returns a value of type <code>T</code> if the conversion is possible. That would have enabled me to write something like:
+  </p>
+  <p>
+    <pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">let</span>&nbsp;scr&nbsp;=&nbsp;Assert.IsAssignableFrom&lt;Results.StatusCodeResult&gt;&nbsp;result
+Assert.Equal(HttpStatusCode.Accepted,&nbsp;scr.StatusCode)</pre>
+  </p>
+  <p>
+    It <em>seems</em> a little nicer, although in my experience, this quickly turns to spaghetti, too. Still, I found myself wondering if I could do something similar with Unquote.
+  </p>
+  <p>
+    <strong>A design digression</strong>
+  </p>
+  <p>
+    At this point, you are welcome to pull <a href="http://amzn.to/VI81bP">GOOS</a> at me and quote: <em>listen to your tests!</em> If the tests are difficult to write, you should reconsider your design; I agree, but I can't change the API of ASP.NET Web API. In Web API 1, my preferred return type for Controller actions were <a href="http://msdn.microsoft.com/en-us/library/system.net.http.httpresponsemessage.aspx">HttpResponseMessage</a>, but it was actually a bit inconvenient to work with in unit tests. Web API 2 introduces various IHttpActionResult implementations that are easier to unit test. Perhaps this could be better, but it seems like a step in the right direction.
+  </p>
+  <p>
+    In any case, I can't change the API, so coming up with a better way to express the above assertion is warranted.
+  </p>
+  <p>
+    <strong>Composed assertions</strong>
+  </p>
+  <p>
+    To overcome this little obstacle, I wrote this function:
+  </p>
+  <p>
+    <pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">let</span>&nbsp;convertsTo&lt;&#39;a&gt;&nbsp;candidate&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">match</span>&nbsp;box&nbsp;candidate&nbsp;<span style="color:blue;">with</span>
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;:?&nbsp;&#39;a&nbsp;<span style="color:blue;">as</span>&nbsp;converted&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;Some&nbsp;converted
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;_&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;None</pre>
+  </p>
+  <p>
+    (You have to love a language that let's you write <code>match&nbsp;box</code>! There's also a hint of <a href="http://en.wikipedia.org/wiki/Doge_(meme)">such nice</a> over <code>Some&nbsp;converted</code>...)
+  </p>
+  <p>
+    The convertsTo function takes any object as input, and returns an Option containing the converted value, if the conversion is possible; otherwise, it returns None. In other words, the signature of the convertsTo function is <code>obj&nbsp;->&nbsp;'a&nbsp;option</code>.
+  </p>
+  <p>
+    This enables me to write the following Unquote assertion:
+  </p>
+  <p>
+    <pre style="font-family:Consolas;font-size:13;color:black;">[&lt;Theory;&nbsp;UnitTestConventions&gt;]
+<span style="color:blue;">let</span>&nbsp;PostReturnsCorrectResult
+&nbsp;&nbsp;&nbsp;&nbsp;(sut&nbsp;:&nbsp;TasksController)
+&nbsp;&nbsp;&nbsp;&nbsp;(task&nbsp;:&nbsp;TaskRendition)&nbsp;=
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;result&nbsp;:&nbsp;IHttpActionResult&nbsp;=&nbsp;sut.Post&nbsp;task
+&nbsp;&nbsp;&nbsp;&nbsp;verify&nbsp;&lt;@
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;result
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;convertsTo&lt;Results.StatusCodeResult&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;Option.map&nbsp;(<span style="color:blue;">fun</span>&nbsp;x&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;x.StatusCode)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;Option.exists&nbsp;((=)&nbsp;HttpStatusCode.Accepted)&nbsp;@&gt;</pre>
+  </p>
+  <p>
+    While this looks more verbose than my two original assertions, this approach is more <em>composable</em>.
+  </p>
+  <p>
+    The really beautiful part of this is that Unquote can still tell me what goes wrong, if the test doesn't pass. As an example, if I change the SUT to:
+  </p>
+  <p>
+    <pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">type</span>&nbsp;TasksController()&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">inherit</span>&nbsp;ApiController()
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">member</span>&nbsp;this.Post(task&nbsp;:&nbsp;TaskRendition)&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;this.Ok()&nbsp;:&gt;&nbsp;IHttpActionResult</pre>
+  </p>
+  <p>
+    The assertion message is:
+  </p>
+  <p>
+    <pre>System.Web.Http.Results.OkResult |> Dsl.convertsTo |> Option.map (fun x -> x.StatusCode) |> Option.exists ((=) Accepted)
+None |> Option.map (fun x -> x.StatusCode) |> Option.exists ((=) Accepted)
+None |> Option.exists ((=) Accepted)
+false</pre>
+  </p>
+  <p>
+    Notice how, in a <em>series of reductions</em>, Unquote breaks down for me exactly what went wrong. The top line is my original expression. The next line shows me the result of evaluating <code>System.Web.Http.Results.OkResult&nbsp;|&gt;&nbsp;Dsl.convertsTo</code>; the result is None. Already at this point, it should be quite evident what the problem is, but in the next line again, it shows the result of evaluating <code>None&nbsp;|&gt;&nbsp;Option.map&nbsp;(fun&nbsp;x&nbsp;-&gt;&nbsp;x.StatusCode)</code>; again, the result is None. Finally, it shows the result of evaluating <code>None&nbsp;|&gt;&nbsp;Option.exists&nbsp;((=)&nbsp;Accepted)</code>, which is false.
+  </p>
+  <p>
+    Here's another example. Assume that I change the SUT to this:
+  </p>
+  <p>
+    <pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">type</span>&nbsp;TasksController()&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">inherit</span>&nbsp;ApiController()
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">member</span>&nbsp;this.Post(task&nbsp;:&nbsp;TaskRendition)&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;this.StatusCode&nbsp;HttpStatusCode.OK&nbsp;:&gt;&nbsp;IHttpActionResult</pre>
+  </p>
+  <p>
+    In this example, instead of returning the wrong implementation of IHttpActionResult, the SUT does return a StatusCodeResult instance, but with the wrong status code. Unquote is still very helpful:
+  </p>
+  <p>
+    <pre>System.Web.Http.Results.StatusCodeResult |> Dsl.convertsTo |> Option.map (fun x -> x.StatusCode) |> Option.exists ((=) Accepted)
+Some System.Web.Http.Results.StatusCodeResult |> Option.map (fun x -> x.StatusCode) |> Option.exists ((=) Accepted)
+Some OK |> Option.exists ((=) Accepted)
+false</pre>
+  </p>
+  <p>
+    Notice that it still uses a series of reductions to show how it arrives at its conclusion. Again, the first line is the original expression. The next line shows the result of evaluating <code>System.Web.Http.Results.StatusCodeResult&nbsp;|&gt;&nbsp;Dsl.convertsTo</code>, which is <code>Some&nbsp;System.Web.Http.Results.StatusCodeResult</code>. So far so good; this is as required. The third line shows the result of evaluating <code>Some&nbsp;System.Web.Http.Results.StatusCodeResult&nbsp;|&gt;&nbsp;Option.map&nbsp;(fun&nbsp;x&nbsp;-&gt;&nbsp;x.StatusCode)</code>, which is <code>Some&nbsp;OK</code>. Still good. Finally, it shows the result of evaluating <code>Some&nbsp;OK&nbsp;|&gt;&nbsp;Option.exists&nbsp;((=)&nbsp;Accepted)</code>, which is false. The value in the option was HttpStatusCode.OK, but should have been HttpStatusCode.Accepted.
+  </p>
+  <p>
+    <strong>Summary</strong>
+  </p>
+  <p>
+    Unquote is a delight to work with. As <a href="https://code.google.com/p/unquote">the project site</a> explains, it's not an API or a DSL. It just evaluates and <em>reports</em> on the expressions <em>you</em> write. If you already know F#, you already know how to use Unquote, and you can write your assertion expressions as expressive and complex as you want.
+  </p>
+</div>
