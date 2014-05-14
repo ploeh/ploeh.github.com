@@ -1,0 +1,121 @@
+---
+layout: post
+title: "Single Writer Web Jobs on Azure"
+date: 2014-04-30 6:39 UTC
+tags: [Azure, Architecture, Services]
+---
+{% include JB/setup %}
+
+<div id="post">
+  <p>
+    <em>How to ensure a Single Writer in load-balanced Azure deployments</em>
+  </p>
+  <p>
+    In my <a href="http://pluralsight.com/training/Courses/TableOfContents/functional-architecture-fsharp">Functional Architecture with F#</a> Pluralsight course, I describe how using the <a href="http://en.wikipedia.org/wiki/Actor_model">Actor model</a> (F# Agents) can make a concurrent system much simpler to implement, because the Agent can ensure that the system only has a Single Writer. Having a Single Writer eliminates much complexity, because while the writer decides what to write (if at all), nothing changes. Multiple readers can still read data, but as long as the Single Writer can keep up with input, this is a much simpler way to deal with concurrency than the alternatives.
+  </p>
+  <p>
+    However, the problem is that while F# Agents work well on a single machine, they don't (currently) scale. This is particularly notable on Azure, because in order get the guaranteed SLA, you'll need to deploy your application to two or more nodes. If you have an F# Agent running on both nodes, obviously you no longer have a Single Writer, and everything just becomes much more difficult. If only there was a way to ensure a Single Writer in a distributed environment...
+  </p>
+  <p>
+    Fortunately, it looks like the (in-preview) Azure feature <a href="http://azure.microsoft.com/en-us/documentation/articles/web-sites-create-web-jobs">Web Jobs</a> (inadvertently) solves this major problem for us. Web Jobs come in three flavours:
+    <ul>
+      <li>On demand</li>
+      <li>Continuously running</li>
+      <li>Scheduled</li>
+    </ul>
+    If you were to implement your writer as a web Job, the <em>On demand</em> option isn't particularly helpful, because you want the writer to run continuously, or at least very often. How about <em>Continuously running</em>, then?
+  </p>
+  <p>
+    That turns out not to be a particularly useful option as well, because
+    <blockquote>
+      <a href="http://azure.microsoft.com/en-us/documentation/articles/web-sites-create-web-jobs/#CreateContinuous">"If your website runs on more than one instance, a continuously running task will run on all of your instances."</a>
+    </blockquote>
+    On the other hand
+    <blockquote>
+      <a href="http://azure.microsoft.com/en-us/documentation/articles/web-sites-create-web-jobs/#CreateContinuous">"On demand and scheduled tasks run on a single instance selected for load balancing by Microsoft Azure."</a>
+    </blockquote>
+    It sounds like <em>Scheduled</em> Web Jobs is just what we need!
+  </p>
+  <p>
+    There's just one concern that we need to address: what happens if a Scheduled Web Job is taking too long running, in such a way that it hasn't completed when it's time to start it again. For example, what if you run a Scheduled Web Job every minute, but it sometimes takes 90 seconds to complete? If a new process starts executing while the first one is running, you would no longer have a Single Writer.
+  </p>
+  <p>
+    Reading the <a href="http://azure.microsoft.com/en-us/documentation/articles/web-sites-create-web-jobs">documentation</a>, I couldn't find any information about how Azure handles this scenario, so I decided to perform some tests.
+  </p>
+  <p>
+    The <a href="https://github.com/GreanTech/Qaiain">Qaiain</a> email micro-service proved to be a fine tool for the experiment. I slightly modified the code to wait for 90 seconds before exiting:
+  </p>
+  <p>
+    <pre style="font-family:Consolas;font-size:13;color:black;">[&lt;<span style="color:#2b91af;">EntryPoint</span>&gt;]
+<span style="color:blue;">let</span>&nbsp;main&nbsp;argv&nbsp;=&nbsp;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">match</span>&nbsp;queue&nbsp;|&gt;&nbsp;<span style="color:#2b91af;">AzureQ</span>.dequeue&nbsp;<span style="color:blue;">with</span>
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;Some(msg)&nbsp;<span style="color:blue;">-&gt;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;msg.AsString&nbsp;|&gt;&nbsp;<span style="color:#2b91af;">Mail</span>.deserializeMailData&nbsp;|&gt;&nbsp;send
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;queue.DeleteMessage&nbsp;msg
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;_&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;()
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Async</span>.Sleep&nbsp;90000&nbsp;|&gt;&nbsp;<span style="color:#2b91af;">Async</span>.RunSynchronously
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">match</span>&nbsp;queue&nbsp;|&gt;&nbsp;<span style="color:#2b91af;">AzureQ</span>.dequeue&nbsp;<span style="color:blue;">with</span>
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;Some(msg)&nbsp;<span style="color:blue;">-&gt;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;msg.AsString&nbsp;|&gt;&nbsp;<span style="color:#2b91af;">Mail</span>.deserializeMailData&nbsp;|&gt;&nbsp;send
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;queue.DeleteMessage&nbsp;msg
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;_&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;()
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;0&nbsp;<span style="color:green;">//&nbsp;return&nbsp;an&nbsp;integer&nbsp;exit&nbsp;code</span></pre>
+  </p>
+  <p>
+    In addition to that, I also changed how the subject of the email that I would receive would look, in order to capture the process ID of the running application, as well as the time it sent the email:
+  </p>
+  <p>
+    <pre style="font-family:Consolas;font-size:13;color:black;">smtpMsg.Subject&nbsp;&lt;-
+&nbsp;&nbsp;&nbsp;&nbsp;sprintf
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#a31515;">&quot;Process&nbsp;ID:&nbsp;%i,&nbsp;Time:&nbsp;%O&quot;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(Process.GetCurrentProcess().Id)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;DateTimeOffset.Now</pre>
+  </p>
+  <p>
+    My hypothesis was that if Scheduled Web Jobs are well-behaved, a new job wouldn't start if an existing job was already running. Here are the results:
+  </p>
+  <p>
+    <table>
+      <thead>
+        <tr><th>Time</th><th>Process</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>17:31:39</td><td>37936</td></tr>
+        <tr><td>17:33:10</td><td>37936</td></tr>
+        <tr><td>17:33:43</td><td>50572</td></tr>
+        <tr><td>17:35:14</td><td>50572</td></tr>
+        <tr><td>17:35:44</td><td>47632</td></tr>
+        <tr><td>17:37:15</td><td>47632</td></tr>
+        <tr><td>17:37:46</td><td>14260</td></tr>
+        <tr><td>17:39:17</td><td>14260</td></tr>
+        <tr><td>17:39:50</td><td>38464</td></tr>
+        <tr><td>17:41:21</td><td>38464</td></tr>
+        <tr><td>17:41:51</td><td>46052</td></tr>
+        <tr><td>17:43:22</td><td>46052</td></tr>
+        <tr><td>17:43:54</td><td>52488</td></tr>
+        <tr><td>17:45:25</td><td>52488</td></tr>
+        <tr><td>17:45:56</td><td>46816</td></tr>
+        <tr><td>17:47:27</td><td>46816</td></tr>
+        <tr><td>17:47:58</td><td>30244</td></tr>
+        <tr><td>17:49:29</td><td>30244</td></tr>
+        <tr><td>17:50:00</td><td>30564</td></tr>
+        <tr><td>17:51:31</td><td>30564</td></tr>
+      </tbody>
+    </table>
+  </p>
+  <p>
+    This looks great, but it's easier to see if I visualize it:
+  </p>
+  <p>
+    <img src="/content/binary/scheduled-delayed-web-job-observations.png" alt="Scheduled delayed Web Job observations">
+  </p>
+  <p>
+    As you can see, processes do not overlap in time. This is a <strong>highly desirable result</strong>, because it seems to guarantee that we can have a Single Writer running in a distributed, load-balanced system.
+  </p>
+  <p>
+    Azure Web Jobs are currently in preview, so let's hope the Azure team preserve this functionality in the final version. If you care about this, please let the team know.
+  </p>
+</div>

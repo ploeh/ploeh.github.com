@@ -1,0 +1,137 @@
+---
+layout: post
+title: "AutoFixture conventions with Albedo"
+date: 2014-05-01 21:40 UTC
+tags: [AutoFixture, Albedo]
+---
+{% include JB/setup %}
+
+<div id="post">
+  <p>
+    <em>You can use Albedo with AutoFixture to build custom conventions.</em>
+  </p>
+  <p>
+    In a question to one of <a href="http://blog.ploeh.dk/2010/10/19/Convention-basedCustomizationswithAutoFixture">my previous posts</a>, Jeff Soper asks about using custom, string-based conventions for AutoFixture:
+    <blockquote>
+      "I always wince when testing for the ParameterType.Name value [...] It seems like it makes a test that would use this implementation very brittle."
+    </blockquote>
+    Jeff's concern is that when you're explicitly looking for a parameter (or property or field) with a particular name (like "currencyCode"), the unit test suite may become brittle, because if you change the parameter name, the string may retain the old name, and the Customization no longer works.
+  </p>
+  <p>
+    Jeff goes on to say:
+    <blockquote>
+      "This makes me think that I shouldn't need to be doing this, and that a design refactoring of my SUT would be a better option."
+    </blockquote>
+    His concerns can be addressed on several different levels, but in this post, I'll show you how you can leverage <a href="https://github.com/ploeh/Albedo">Albedo</a> to address some of them.
+  </p>
+  <p>
+    If you often find yourself in a situation where you're writing an AutoFixture Customization based on string matching of parameters, properties or fields, you should ask yourself if you're targeting <em>one</em> specific class, or if you're writing a convention? If you often target individual specific classes, you probably need to rethink your strategy, but you can easily run into situations where you need to introduce true conventions in your code base. This can be beneficial, because it'll make your code more consistent.
+  </p>
+  <p>
+    Here's an example from the code base in which I'm currently working. It's a REST service written in F#. To model the JSON going in and out, I've defined some <a href="http://blog.ploeh.dk/2013/10/15/easy-aspnet-web-api-dtos-with-f-climutable-records">Data Transfer Records</a>, and some of them contain dates. However, JSON doesn't deal particularly well with dates, so they're treated as strings. Here's a JSON representation of a comment:
+  </p>
+  <p>
+    <pre>{
+    "author": {
+        "id": "1234",
+        "name": "Mark Seemann",
+        "email": "1234@ploeh.dk"
+    },
+    "createdDate": "2014-04-30T18:14:08.1051775+00:00",
+    "text": "Is this a comment?"
+}</pre>
+  </p>
+  <p>
+    The record is defined like this:
+  </p>
+  <p>
+    <pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">type</span>&nbsp;<span style="color:#2b91af;">CommentRendition</span>&nbsp;=&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;Author&nbsp;:&nbsp;<span style="color:#2b91af;">PersonRendition</span>
+&nbsp;&nbsp;&nbsp;&nbsp;CreatedDate&nbsp;:&nbsp;<span style="color:#2b91af;">string</span>
+&nbsp;&nbsp;&nbsp;&nbsp;Text&nbsp;:&nbsp;<span style="color:#2b91af;">string</span>&nbsp;}</pre>
+  </p>
+  <p>
+    This is a problem for AutoFixture, because it sees <code>CreatedDate</code> as a string, and populates it with an anonymous string. However, much of the code base expects the CreatedDate to be a proper date and time value, which can be parsed into a DateTimeOffset value. This would cause many tests to fail if I didn't change the behaviour.
+  </p>
+  <p>
+    Instead of explicitly targeting the <code>CreatedDate</code> property on the CommentRendition record, I defined a conventions: <em>any parameter, field, or property that ends with "date" and has the type string, should be populated with a valid string representation of a date and time.</em>
+  </p>
+  <p>
+    This is easy to write as a one-off Customization, but then it turned out that I needed an almost similar Customization for IDs: <em>any parameter, field, or property that ends with "id" and has the type string, should be populated with a valid GUID string formatted in a certain way.</em>
+  </p>
+  <p>
+    Because ParameterInfo, PropertyInfo, and FieldInfo share little polymorphic behaviour, it's time to pull out Albedo, which was created for situations like this. Here's a reusable convention which can check any parameter, proeprty, or field for a given name suffix:
+  </p>
+  <p>
+    <pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">type</span>&nbsp;<span style="color:#2b91af;">TextEndsWithConvention</span>(value,&nbsp;found)&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">inherit</span>&nbsp;<span style="color:#2b91af;">ReflectionVisitor</span>&lt;<span style="color:#2b91af;">bool</span>&gt;()
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;proceed&nbsp;x&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">TextEndsWithConvention</span>&nbsp;(value,&nbsp;x&nbsp;||&nbsp;found)&nbsp;:&gt;&nbsp;<span style="color:#2b91af;">IReflectionVisitor</span>&lt;<span style="color:#2b91af;">bool</span>&gt;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;isMatch&nbsp;t&nbsp;(name&nbsp;:&nbsp;<span style="color:#2b91af;">string</span>)&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;t&nbsp;=&nbsp;typeof&lt;<span style="color:#2b91af;">string</span>&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&amp;&amp;&nbsp;name.EndsWith(value,&nbsp;<span style="color:#2b91af;">StringComparison</span>.OrdinalIgnoreCase)
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">override</span>&nbsp;this.Value&nbsp;=&nbsp;found
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">override</span>&nbsp;this.Visit&nbsp;(pie&nbsp;:&nbsp;<span style="color:#2b91af;">ParameterInfoElement</span>)&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;pi&nbsp;=&nbsp;pie.ParameterInfo
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;isMatch&nbsp;pi.ParameterType&nbsp;pi.Name&nbsp;|&gt;&nbsp;proceed
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">override</span>&nbsp;this.Visit&nbsp;(pie&nbsp;:&nbsp;<span style="color:#2b91af;">PropertyInfoElement</span>)&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;pi&nbsp;=&nbsp;pie.PropertyInfo
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;isMatch&nbsp;pi.PropertyType&nbsp;pi.Name&nbsp;|&gt;&nbsp;proceed
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">override</span>&nbsp;this.Visit&nbsp;(fie&nbsp;:&nbsp;<span style="color:#2b91af;">FieldInfoElement</span>)&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;fi&nbsp;=&nbsp;fie.FieldInfo
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;isMatch&nbsp;fi.FieldType&nbsp;fi.Name&nbsp;|&gt;&nbsp;proceed
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:blue;">member</span>&nbsp;Matches&nbsp;value&nbsp;request&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;refraction&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">CompositeReflectionElementRefraction</span>&lt;<span style="color:#2b91af;">obj</span>&gt;(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;[|
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">ParameterInfoElementRefraction</span>&lt;<span style="color:#2b91af;">obj</span>&gt;()&nbsp;:&gt;&nbsp;<span style="color:#2b91af;">IReflectionElementRefraction</span>&lt;<span style="color:#2b91af;">obj</span>&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">PropertyInfoElementRefraction</span>&lt;<span style="color:#2b91af;">obj</span>&gt;()&nbsp;&nbsp;:&gt;&nbsp;<span style="color:#2b91af;">IReflectionElementRefraction</span>&lt;<span style="color:#2b91af;">obj</span>&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">FieldInfoElementRefraction</span>&lt;<span style="color:#2b91af;">obj</span>&gt;()&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;:&gt;&nbsp;<span style="color:#2b91af;">IReflectionElementRefraction</span>&lt;<span style="color:#2b91af;">obj</span>&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|])
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;r&nbsp;=&nbsp;refraction.Refract&nbsp;[request]
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;r.Accept(<span style="color:#2b91af;">TextEndsWithConvention</span>(value,&nbsp;<span style="color:blue;">false</span>)).Value</pre>
+  </p>
+  <p>
+    It simply aggregates a boolean value (<code>found</code>), based on the name and type of various properties, fields, and parameters that comes its way. If there's a match, <code>found</code> will be true; otherwise, it'll be false.
+  </p>
+  <p>
+    The date convention is now trivial:
+  </p>
+  <p>
+    <pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">type</span>&nbsp;<span style="color:#2b91af;">DateStringCustomization</span>()&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;builder&nbsp;=&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">ISpecimenBuilder</span>&nbsp;<span style="color:blue;">with</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">member</span>&nbsp;this.Create(request,&nbsp;context)&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;request&nbsp;|&gt;&nbsp;<span style="color:#2b91af;">TextEndsWithConvention</span>.Matches&nbsp;<span style="color:#a31515;">&quot;date&quot;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">then</span>&nbsp;box&nbsp;((context.Resolve&nbsp;typeof&lt;<span style="color:#2b91af;">DateTimeOffset</span>&gt;).ToString())
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">else</span>&nbsp;<span style="color:#2b91af;">NoSpecimen</span>&nbsp;request&nbsp;|&gt;&nbsp;box&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">interface</span>&nbsp;<span style="color:#2b91af;">ICustomization</span>&nbsp;<span style="color:blue;">with</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">member</span>&nbsp;this.Customize&nbsp;fixture&nbsp;=&nbsp;fixture.Customizations.Add&nbsp;builder</pre>
+  </p>
+  <p>
+    The ID convention is very similar:
+  </p>
+  <p>
+    <pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">type</span>&nbsp;<span style="color:#2b91af;">IdStringCustomization</span>()&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;builder&nbsp;=&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">ISpecimenBuilder</span>&nbsp;<span style="color:blue;">with</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">member</span>&nbsp;this.Create(request,&nbsp;context)&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;request&nbsp;|&gt;&nbsp;<span style="color:#2b91af;">TextEndsWithConvention</span>.Matches&nbsp;<span style="color:#a31515;">&quot;id&quot;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">then</span>&nbsp;box&nbsp;((context.Resolve&nbsp;typeof&lt;<span style="color:#2b91af;">Guid</span>&gt;&nbsp;:?&gt;&nbsp;<span style="color:#2b91af;">Guid</span>).ToString&nbsp;<span style="color:#a31515;">&quot;N&quot;</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">else</span>&nbsp;<span style="color:#2b91af;">NoSpecimen</span>&nbsp;request&nbsp;|&gt;&nbsp;box&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">interface</span>&nbsp;<span style="color:#2b91af;">ICustomization</span>&nbsp;<span style="color:blue;">with</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">member</span>&nbsp;this.Customize&nbsp;fixture&nbsp;=&nbsp;fixture.Customizations.Add&nbsp;builder</pre>
+  </p>
+  <p>
+    With these conventions in place in my entire test suite, I can simply follow them and get correct values. What happens if I refactor one of my fields so that they no longer have the correct suffix? That's likely to break my tests, but that's <em>a good thing</em>, because it alerts me that I deviated from the conventions, and (inadvertently, I should hope) made the production code less consistent.
+  </p>
+</div>
