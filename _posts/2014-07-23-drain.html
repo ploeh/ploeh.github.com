@@ -1,0 +1,174 @@
+---
+layout: post
+title: "Drain"
+date: 2014-07-23 14:25 UTC
+tags: [Software Design, Architecture]
+---
+{% include JB/setup %}
+
+<div id="post">
+  <p>
+    <em>A Drain is an filter abstraction over an Iterator, with the purpose of making out-of-process queries more efficient.</em>
+  </p>
+  <p>
+    For some years now, the <a href="http://codemanship.co.uk/parlezuml/blog/?postid=934">Reused Abstractions Principle</a> has pushed me towards software architectures based upon fewer and fewer abstractions, where each abstraction, on the other hand, is reused over and over again.
+  </p>
+  <p>
+    In my Pluralsight course about <a href="http://pluralsight.com/training/Courses/TableOfContents/functional-architecture-fsharp">A Functional Architecture with F#</a>, I describe how to build an entire mainstream application based on only two abstractions:
+    <ul>
+      <li><a href="http://en.wikipedia.org/wiki/Iterator_pattern">Iterator</a></li>
+      <li><a href="http://en.wikipedia.org/wiki/Observer_pattern">Observer</a></li>
+    </ul>
+    More specifically, I use <a href="https://rx.codeplex.com/">Reactive Extensions</a> for <a href="http://en.wikipedia.org/wiki/Command%E2%80%93query_separation">Commands</a>, and the <a href="http://msdn.microsoft.com/en-us/library/ee353635.aspx">Seq module</a> for <a href="http://en.wikipedia.org/wiki/Command%E2%80%93query_separation">Queries</a> (but if you're on C#, you can use LINQ instead).
+  </p>
+  <p>
+    <strong>The problem</strong>
+  </p>
+  <p>
+    It turns out that these two abstractions are enough to build an entire, mainstream system, but in practice, there's a performance problem. If you have <em>only</em> Iterators, you'll have to read <em>all</em> your data into memory, and then filter in memory. If you have lots of data on storage, this is obviously going to be prohibitively slow, so you'll need a way to select only a subset out of your persistent store.
+  </p>
+  <p>
+    This problem should be familiar to every student of software development. Pure abstractions tend not to survive contact with reality (there are examples in both Object-Oriented, Functional, and Logical or Relational programming), but we should still strive towards keeping abstractions as pure as possible.
+  </p>
+  <p>
+    One proposed solution to the Query Problem is to use something like IQueryable, but unfortunately, <a href="http://blog.ploeh.dk/2012/03/26/IQueryableTisTightCoupling">IQueryable is an extremely poor abstraction</a> (and so are F# query expressions, too).
+  </p>
+  <p>
+    In my experience, the most important feature of IQueryable is the ability to <em>filter</em> before loading data; normally, you can perform projections in memory, but when you read from persistent storage, you need to select your desired subset <em>before</em> loading it into memory.
+  </p>
+  <p>
+    Inspired by talks by <a href="http://bartdesmet.net/bart">Bart De Smet</a>, in my Pluralsight course, I define custom filter interfaces like:
+  </p>
+  <p>
+    <pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">type</span>&nbsp;<span style="color:#2b91af;">IReservations</span>&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">inherit</span>&nbsp;<span style="color:#2b91af;">seq</span>&lt;<span style="color:#2b91af;">Envelope</span>&lt;<span style="color:#2b91af;">Reservation</span>&gt;&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">abstract</span>&nbsp;Between&nbsp;:&nbsp;<span style="color:#2b91af;">DateTime</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:#2b91af;">DateTime</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:#2b91af;">seq</span>&lt;<span style="color:#2b91af;">Envelope</span>&lt;<span style="color:#2b91af;">Reservation</span>&gt;&gt;</pre>
+  </p>
+  <p>
+    or
+  </p>
+  <p>
+    <pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">type</span>&nbsp;<span style="color:#2b91af;">INotifications</span>&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">inherit</span>&nbsp;<span style="color:#2b91af;">seq</span>&lt;<span style="color:#2b91af;">Envelope</span>&lt;<span style="color:#2b91af;">Notification</span>&gt;&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">abstract</span>&nbsp;About&nbsp;:&nbsp;<span style="color:#2b91af;">Guid</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:#2b91af;">seq</span>&lt;<span style="color:#2b91af;">Envelope</span>&lt;<span style="color:#2b91af;">Notification</span>&gt;&gt;</pre>
+  </p>
+  <p>
+    Both of these interfaces derive from IEnumerable&lt;T&gt; and add a single extra method that defines a custom filter. Storage-aware implementations can implement this method by returning a new sequence of only those items on storage that match the filter. Such a method may
+    <ul>
+      <li>make a SQL query against a database</li>
+      <li>make a query against a document database</li>
+      <li>read only some files from the file system</li>
+      <li>etc.</li>
+    </ul>
+    For more details, examples, and full source code, see <a href="http://pluralsight.com/training/Courses/TableOfContents/functional-architecture-fsharp">my Pluralsight course</a>.
+  </p>
+  <p>
+    <strong>Generalized interface</strong>
+  </p>
+  <p>
+    The custom interfaces shown above follow a common template: the interface derives from IEnumerable&lt;T&gt; and adds a single 'filter' method, which filters the sequence based on the input argument(s). In the above examples, IReservations define a Between method with two arguments, while INotifications defines an About method with a single argument.
+  </p>
+  <p>
+    In order to generalize, it's necessary to find a common name for the interface and its single method, as well as deal with variations in method arguments.
+  </p>
+  <p>
+    All the really obvious names like <em>Filter</em>, <em>Query</em>, etc. are already 'taken', so I hit a thesaurus and settled on the name <em>Drain</em>. A Drain can potentially drain a sequence of elements to a smaller sequence.
+  </p>
+  <p>
+    When it comes to variations in input arguments, the solution is to use generics. The Between method that takes two arguments could also be modelled as a method taking a single tuple argument. Eventually, I've arrived at this general definition:
+  </p>
+  <p>
+    <pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">module</span>&nbsp;<span style="color:#2b91af;">Drain</span>&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">type</span>&nbsp;<span style="color:#2b91af;">IDrainable</span>&lt;&#39;a,&nbsp;&#39;b&gt;&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">inherit</span>&nbsp;<span style="color:#2b91af;">seq</span>&lt;&#39;a&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">abstract</span>&nbsp;On&nbsp;:&nbsp;&#39;b&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:#2b91af;">seq</span>&lt;&#39;a&gt;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;on&nbsp;x&nbsp;(d&nbsp;:&nbsp;<span style="color:#2b91af;">IDrainable</span>&lt;&#39;a,&nbsp;&#39;b&gt;)&nbsp;=&nbsp;d.On&nbsp;x</pre>
+  </p>
+  <p>
+    As you can see, I decided to name the extra method <em>On</em>, as well as add an <em>on</em> function, which enables clients to use a Drain like this:
+  </p>
+  <p>
+    <pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">match</span>&nbsp;tasks&nbsp;|&gt;&nbsp;<span style="color:#2b91af;">Drain</span>.on&nbsp;id&nbsp;|&gt;&nbsp;<span style="color:#2b91af;">Seq</span>.toList&nbsp;<span style="color:blue;">with</span>
+</pre>
+  </p>
+  <p>
+    In the above example, <code>tasks</code> is defined as IDrainable&lt;TaskRendition,&nbsp;string&gt;, and <code>id</code> is a string, so the result of draining on the ID is a sequence of TaskRendition records.
+  </p>
+  <p>
+    Here's another example:
+  </p>
+  <p>
+    <pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">match</span>&nbsp;statuses&nbsp;|&gt;&nbsp;<span style="color:#2b91af;">Drain</span>.on(id,&nbsp;conversationId)&nbsp;|&gt;&nbsp;<span style="color:#2b91af;">Seq</span>.toList&nbsp;<span style="color:blue;">with</span>
+</pre>
+  </p>
+  <p>
+    Here, <code>statuses</code> is defined as IDrainable&lt;string&nbsp;*&nbsp;Guid,&nbsp;string&nbsp;*&nbsp;string&gt; - not the most well-designed instance, I admit: I should really introduce some well-named records instead of those tuples, but the point is that you can also drain on multiple values by using a tuple (or a record type) as the value on which to drain.
+  </p>
+  <p>
+    <strong>In-memory implementation</strong>
+  </p>
+  <p>
+    One of the great features of Drains is that an in-memory implementation is easy, so you can add this function to the Drain module:
+  </p>
+  <p>
+    <pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">let</span>&nbsp;ofSeq&nbsp;areEqual&nbsp;s&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;{&nbsp;<span style="color:blue;">new</span>&nbsp;IDrainable&lt;&#39;a,&nbsp;&#39;b&gt;&nbsp;<span style="color:blue;">with</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">member</span>&nbsp;this.On&nbsp;x&nbsp;=&nbsp;s&nbsp;|&gt;&nbsp;Seq.filter&nbsp;(<span style="color:blue;">fun</span>&nbsp;y&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;areEqual&nbsp;y&nbsp;x)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">member</span>&nbsp;this.GetEnumerator()&nbsp;=&nbsp;s.GetEnumerator()
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">member</span>&nbsp;this.GetEnumerator()&nbsp;=&nbsp;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(this&nbsp;:&gt;&nbsp;&#39;a&nbsp;seq).GetEnumerator()&nbsp;:&gt;&nbsp;System.Collections.IEnumerator&nbsp;}</pre>
+  </p>
+  <p>
+    This enables you to take any IEnumerable&lt;T&gt; (seq&lt;'a&gt;) and turn it into an in-memory Drain by supplying an equality function. Here's an example:
+  </p>
+  <p>
+    <pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">let</span>&nbsp;<span style="color:blue;">private</span>&nbsp;toDrainableTasks&nbsp;(tasks&nbsp;:&nbsp;<span style="color:#2b91af;">TaskRendition</span>&nbsp;<span style="color:#2b91af;">seq</span>)&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;tasks
+&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:#2b91af;">Drain</span>.ofSeq&nbsp;(<span style="color:blue;">fun</span>&nbsp;x&nbsp;y&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;x.Id&nbsp;=&nbsp;y)</pre>
+  </p>
+  <p>
+    This little helper function takes a sequence of TaskRendition records and defines the equality function as a comparison on each TaskRendition record's Id property. The result is a drain that you can use to select one or more TaskRendition records based on their IDs.
+  </p>
+  <p>
+    I use this a lot for unit testing.
+  </p>
+  <p>
+    <strong>Empty Drains</strong>
+  </p>
+  <p>
+    It's also easy to define an empty drain, by adding this value to the Drain module:
+  </p>
+  <p>
+    <pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">let</span>&nbsp;empty&lt;&#39;a,&nbsp;&#39;b&gt;&nbsp;=&nbsp;<span style="color:#2b91af;">Seq</span>.empty&lt;&#39;a&gt;&nbsp;|&gt;&nbsp;ofSeq&nbsp;(<span style="color:blue;">fun</span>&nbsp;x&nbsp;(y&nbsp;:&nbsp;&#39;b)&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">false</span>)
+</pre>
+  </p>
+  <p>
+    Here's a usage example:
+  </p>
+  <p>
+    <pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">let</span>&nbsp;mappedUsers&nbsp;=&nbsp;<span style="color:#2b91af;">Drain</span>.empty&lt;<span style="color:#2b91af;">UserMapped</span>,&nbsp;<span style="color:#2b91af;">string</span>&gt;
+</pre>
+  </p>
+  <p>
+    Again, this can be handy when unit testing.
+  </p>
+  <p>
+    <strong>Other implementations</strong>
+  </p>
+  <p>
+    While the in-memory implementation is useful when unit testing, the entire purpose of the Drain abstraction is to enable various implementations to implement the On method to perform a custom selection against a well-known data source. As an example, you could imagine an implementation that translates the input arguments of the On method into a SQL query.
+  </p>
+  <p>
+    If you want to see examples of this, my Pluralsight course demonstrates how to implement IReservations and INotifications with various data stores - I trust you can extrapolate from those examples.
+  </p>
+  <p>
+    <strong>Summary</strong>
+  </p>
+  <p>
+    You can base an entire mainstream application on the two abstractions of Iterator and Observer. However, the problem when it comes to Iterators is that conceptually, you'll need to iterate over <em>all</em> potentially relevant elements in your system - and that may be millions of records!
+  </p>
+  <p>
+    However impure it is to introduce a third interface into the mix, I still prefer to introduce <em>a single</em> generic interface, instead of multiple custom interfaces, because once you and your co-workers understand the Drain abstraction, the cognitive load is still quite low. A Drain is an Iterator with a twist, so in the end, you'll have a system built on 2½ abstractions.
+  </p>
+</div>
