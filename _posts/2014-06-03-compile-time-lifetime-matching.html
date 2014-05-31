@@ -1,0 +1,183 @@
+---
+layout: post
+title: "Compile Time Lifetime Matching"
+date: 2014-06-03 10:06 UTC
+tags: [Dependency Injection]
+---
+{% include JB/setup %}
+
+<div id="post">
+  <p>
+    <em>When using hand-coded object composition, the compiler can help you match service lifetimes.</em>
+  </p>
+  <p>
+    In my previous post, you learned how easy it is to accidentally misconfigure a DI Container to produce <a href="http://blog.ploeh.dk/2014/06/02/captive-dependency">Captive Dependencies</a>, which are dependencies that are being kept around after they should have been released. This can lead to subtle or catastrophic bugs.
+  </p>
+  <p>
+    This problem is associated with DI Containers, because Container registration APIs let you register services out of order, and with any particular lifestyle you'd like:
+  </p>
+  <p>
+    <pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">var</span>&nbsp;builder&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">ContainerBuilder</span>();
+builder.RegisterType&lt;<span style="color:#2b91af;">ProductService</span>&gt;().SingleInstance();
+builder.RegisterType&lt;<span style="color:#2b91af;">CommerceContext</span>&gt;().InstancePerDependency();
+builder.RegisterType&lt;<span style="color:#2b91af;">SqlProductRepository</span>&gt;().As&lt;<span style="color:#2b91af;">IProductRepository</span>&gt;()
+&nbsp;&nbsp;&nbsp;&nbsp;.InstancePerDependency();
+<span style="color:blue;">var</span>&nbsp;container&nbsp;=&nbsp;builder.Build();</pre>
+  </p>
+  <p>
+    In this <a href="http://autofac.org">Autofac</a> example, CommerceContext is registered before SqlProductRepository, even though SqlProductRepository is a 'higher-level' service, but ProductService is registered first, and it's even 'higher-level' than SqlProductRepository. A DI Container doesn't care; it'll figure it out.
+  </p>
+  <p>
+    The compiler doesn't care if the various lifetime configurations make sense. As you learned in my <a href="http://blog.ploeh.dk/2014/06/02/captive-dependency">previous article</a>, this particular configuration combination <em>doesn't</em> make sense, but the compiler can't help you.
+  </p>
+  <p>
+    <strong>Compiler assistance</strong>
+  </p>
+  <p>
+    The overall message in my <a href="http://blog.ploeh.dk/2011/05/24/Poka-yokeDesignFromSmelltoFragrance">Poka-yoke Design article series</a> is that you can often design your types in such a way that they are less forgiving of programming mistakes; this enables the <a href="http://blog.ploeh.dk/2011/04/29/Feedbackmechanismsandtradeoffs">compiler to give you feedback faster than you could otherwise have gotten feedback</a>.
+  </p>
+  <p>
+    If, <a href="http://blog.ploeh.dk/2012/11/06/WhentouseaDIContainer/">instead of using a DI Container, you'd simply hand-code the required object composition</a> (also <a href="http://stackoverflow.com/a/7102651/126014">called <em>Poor Man's DI</em> in my book</a>), the compiler will make it much harder for you to mismatch object lifetimes. Not impossible, but more difficult.
+  </p>
+  <p>
+    As an example, consider a web-based <a href="http://blog.ploeh.dk/2011/07/28/CompositionRoot">Composition Root</a>. Here, the particular IHttpControllerActivator interface belongs to <a href="http://www.asp.net/web-api">ASP.NET Web API</a>, but it could be any Composition Root:
+  </p>
+  <p>
+    <pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">SomeCompositionRoot</span>&nbsp;:&nbsp;<span style="color:#2b91af;">IHttpControllerActivator</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;Singleton-scoped&nbsp;services&nbsp;are&nbsp;declared&nbsp;here...</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;<span style="color:#2b91af;">SomeThreadSafeService</span>&nbsp;singleton;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;SomeCompositionRoot()
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;...&nbsp;and&nbsp;(Singleton-scoped&nbsp;services)&nbsp;are&nbsp;initialised&nbsp;here.</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.singleton&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">SomeThreadSafeService</span>();
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">IHttpController</span>&nbsp;Create(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">HttpRequestMessage</span>&nbsp;request,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">HttpControllerDescriptor</span>&nbsp;controllerDescriptor,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Type</span>&nbsp;controllerType)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;Per-Request-scoped&nbsp;services&nbsp;are&nbsp;declared&nbsp;and&nbsp;initialized&nbsp;here</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;perRequestService&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">SomeThreadUnsafeService</span>();
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>(controllerType&nbsp;==&nbsp;<span style="color:blue;">typeof</span>(<span style="color:#2b91af;">FooController</span>))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;Transient&nbsp;services&nbsp;are&nbsp;created&nbsp;and&nbsp;directly&nbsp;injected&nbsp;into</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;FooController&nbsp;here:</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">FooController</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">SomeServiceThatMustBeTransient</span>(),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">SomeServiceThatMustBeTransient</span>());
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>(controllerType&nbsp;==&nbsp;<span style="color:blue;">typeof</span>(<span style="color:#2b91af;">BarController</span>))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;Transient&nbsp;service&nbsp;is&nbsp;created&nbsp;and&nbsp;directly&nbsp;injected&nbsp;into</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;BarController&nbsp;here,&nbsp;but&nbsp;Per-Request-scoped&nbsp;services&nbsp;or</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;Singleton-scoped&nbsp;services&nbsp;can&nbsp;be&nbsp;used&nbsp;too.</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">BarController</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.singleton,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;perRequestService,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;perRequestService,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">SomeServiceThatMustBeTransient</span>());
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">throw</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">ArgumentException</span>(<span style="color:#a31515;">&quot;Unexpected&nbsp;type!&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;controllerType&quot;</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+  </p>
+  <p>
+    Notice the following:
+    <ul>
+      <li>There's only going to be a single instance of the SomeCompositionRoot class around, so any object you assign to a <code>readonly</code> field is effectively going to be a Singleton.</li>
+      <li>The Create method is invoked for each request, so if you create objects at the beginning of the Create method, you can reuse them as much as you'd like, but only within that single request. This means that even if you have a service that isn't thread-safe, it's safe to create it at this time. In the example, the BarController depends on two arguments where the Per-Request Service fits, and the instance can be reused. This may seem contrived, but isn't at all if SomeThreadUnsafeService implements more that one (<a href="http://martinfowler.com/bliki/RoleInterface.html">Role</a>) interface.</li>
+      <li>If you need to make a service truly Transient (i.e. it <em>must not</em> be reused at all), you can create it within the constructor of its client. You see an example of this when returning the FooController instance: this example <em>is</em> contrived, but it makes the point: for some unfathomable reason, FooController needs two instances of the same type, but the SomeServiceThatMustBeTransient class must never be shared. It's actually quite rare to have this requirement, but it's easy enough to meet it, if you encounter it.</li>
+    </ul>
+    It's easy to give each service the correct lifetime. Singleton services share the lifetime of the Composition Root, Per-Request services are created each time the Create method is called, and Transient services are created Just-In-Time. All services go out of scope at the correct time, too.
+  </p>
+  <p>
+    <strong>Commerce example</strong>
+  </p>
+  <p>
+    In the <a href="http://blog.ploeh.dk/2014/06/02/captive-dependency">previous article</a>, you saw how easy it is to misconfigure a ProductService, because you'd like it to be a Singleton. When you hand-code the composition, it becomes much easier to spot the mistake. You may start like this:
+  </p>
+  <p>
+    <pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">CommerceCompositionRoot</span>&nbsp;:&nbsp;<span style="color:#2b91af;">IHttpControllerActivator</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;<span style="color:#2b91af;">ProductService</span>&nbsp;productService;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;CommerceCompositionRoot()
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.productService&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">ProductService</span>();
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">IHttpController</span>&nbsp;Create(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">HttpRequestMessage</span>&nbsp;request,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">HttpControllerDescriptor</span>&nbsp;controllerDescriptor,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Type</span>&nbsp;controllerType)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;Implementation&nbsp;follows&nbsp;here...</span>
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+  </p>
+  <p>
+    <em>Fortunately</em>, that doesn't even compile, because ProductService doesn't have a parameterless constructor. With a DI Container, you could define ProductService as a Singleton without a compilation error:
+  </p>
+  <p>
+    <pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">var</span>&nbsp;container&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">StandardKernel</span>();
+container.Bind&lt;<span style="color:#2b91af;">ProductService</span>&gt;().ToSelf().InSingletonScope();</pre>
+  </p>
+  <p>
+    If you attempt to do the same with hand-coded composition, it doesn't compile. This is an excellent example of Poka-Yoke Design: design your system in such a way that the compiler can give you as much feedback as possible.
+  </p>
+  <p>
+    Intellisense will tell you that ProductService has dependencies, so your next step may be this:
+  </p>
+  <p>
+    <pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">public</span>&nbsp;CommerceCompositionRoot()
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.productService&nbsp;=&nbsp;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">ProductService</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">SqlProductRepository</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">CommerceContext</span>()));&nbsp;<span style="color:green;">//&nbsp;Alarm&nbsp;bell!</span>
+}</pre>
+  </p>
+  <p>
+    This <em>will</em> compile, but at this point, an alarm bell should go off. You <em>know</em> that you mustn't share CommerceContext across threads, but you're currently creating a single instance. Now it's much clearer that you're on your way to doing something wrong. In the end, you realise, simply by trial and error, that you can't make any part of the ProductService sub-graph a class field, because the leaf node (CommerceContext) isn't thread-safe.
+  </p>
+  <p>
+    Armed with that knowledge, the next step is to create the entire object graph in the Create method, because that's the only safe implementation left:
+  </p>
+  <p>
+    <pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">IHttpController</span>&nbsp;Create(
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">HttpRequestMessage</span>&nbsp;request,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">HttpControllerDescriptor</span>&nbsp;controllerDescriptor,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Type</span>&nbsp;controllerType)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>(controllerType&nbsp;==&nbsp;<span style="color:blue;">typeof</span>(<span style="color:#2b91af;">HomeController</span>))
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">HomeController</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">ProductService</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">SqlProductRepository</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">CommerceContext</span>())));
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;Handle&nbsp;other&nbsp;controller&nbsp;types&nbsp;here...</span>
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">throw</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">ArgumentException</span>(<span style="color:#a31515;">&quot;Unexpected&nbsp;type!&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;controllerType&quot;</span>);
+}</pre>
+  </p>
+  <p>
+    In this example, you create the object graph in a single statement, theoretically giving all services the Transient lifestyle. In practice, there's no difference between the Per Request and the Transient lifestyle as long as there's only a single instance of each service for each object graph.
+  </p>
+  <p>
+    <strong>Concluding remarks</strong>
+  </p>
+  <p>
+    Some time ago, I wrote an article on <a href="http://blog.ploeh.dk/2012/11/06/WhentouseaDIContainer">when to use a DI Container</a>. In that article, I attempted to explain how going from Poor Man's DI (hand-coded composition) to a DI Container meant loss of compile-time safety, but I may have made an insufficient job of providing enough examples of this effect. The <a href="http://blog.ploeh.dk/2014/06/02/captive-dependency">Captive Dependency</a> configuration error, and this article together, describe one such effect: with Poor Man's DI, lifetime matching is compiler-assisted, but if you refactor to use a DI Container, you lose the compiler's help.
+  </p>
+  <p>
+    Since I wrote the article on when to use a DI Container, I've only <a href="http://stackoverflow.com/a/23312402/126014">strengthened my preference for Poor Man's DI</a>. Unless I'm writing a very complex code base that could benefit from Convention over Configuration, I don't use a DI Container, but since I explicitly architect my systems to be non-complex these days, I haven't used a DI Container in production code for more than 1½ years.
+  </p>
+</div>
