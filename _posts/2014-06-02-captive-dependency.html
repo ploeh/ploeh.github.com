@@ -1,0 +1,210 @@
+---
+layout: post
+title: "Captive Dependency"
+date: 2014-06-02 13:01 UTC
+tags: [Dependency Injection]
+---
+{% include JB/setup %}
+
+<div id="post">
+  <p>
+    <em>A Captive Dependency is a dependency with an incorrectly configured lifetime. It's a typical and dangerous DI Container configuration error.</em>
+  </p>
+  <p>
+    This post is the sixth in a series about <a href="http://blog.ploeh.dk/2011/05/24/Poka-yokeDesignFromSmelltoFragrance">Poka-yoke Design</a>.
+  </p>
+  <p>
+    When you <a href="http://blog.ploeh.dk/2012/11/06/WhentouseaDIContainer">use a Dependency Injection (DI) Container</a>, you should configure it according to the <a href="http://blog.ploeh.dk/2010/09/29/TheRegisterResolveReleasepattern">Register Resolve Release</a> pattern. One aspect of configuration is to manage the lifetime of various services. If you're not careful, though, you may misconfigure lifetimes in such a way that a longer-lived service holds a shorter-lived service captive - often with subtle, but disastrous results. You could call this misconfiguration a <em>Captive Dependency</em>.
+  </p>
+  <p>
+    A major step in applying DI is to <a href="http://blog.ploeh.dk/2011/03/04/Composeobjectgraphswithconfidence">compose object graphs</a>, and service lifetimes in object graphs are hierarchical:
+  </p>
+  <p>
+    <img src="/content/binary/hierarchical-lifetime-nature-of-object-graphs.png" alt="Hierarchical lifetime nature of object graphs">
+  </p>
+  <p>
+    This figure illustrates the configured and <em>effective</em> lifetimes of an object graph. Node A1 should have a Transient lifetime, which is certainly possible. A new instance of C1 should be created Per Request (if the object graph is part of a web application), which is also possible, because A1 has a shorter lifetime than Per Request. Similarly, only a single instance of B3 should ever be created, which is also possible, because the various instances of C1 can reuse the same B3 instance.
+  </p>
+  <p>
+    The A2 node also has a Singleton lifetime, which means that only a single instance should exist of this object. Because A2 holds references to B1 and A3, these two object are also <em>effectively</em> Singletons. It doesn't matter how you'd like the lifetimes of B1 and A3 to be: the fact is that the <em>single instance</em> of A2 holds on to its injected instances of B1 and A3 means that these instances are going to stick around as long as A2. This effect is transitive, so A2 also causes B2 to have an <em>effective</em> Singleton lifetime.
+  </p>
+  <p>
+    This can be problematic if, for example, B1, A3, or B2 aren't thread-safe.
+  </p>
+  <p>
+    <strong>Commerce example</strong>
+  </p>
+  <p>
+    This may make more sense if you see this in a more concrete setting than just an object graph with A1, A2, B1, etc. nodes, so consider the introductory example from <a href="http://amzn.to/12p90MG">my book</a>. It has a ProductService, which depends on an IProductRepository interface (actually, in the book, the Repository is an Abstract Base Class):
+  </p>
+  <p>
+    <pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">ProductService</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;<span style="color:#2b91af;">IProductRepository</span>&nbsp;repository;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;ProductService(<span style="color:#2b91af;">IProductRepository</span>&nbsp;repository)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.repository&nbsp;=&nbsp;repository;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;Other&nbsp;members&nbsp;go&nbsp;here...</span>
+}</pre>
+  </p>
+  <p>
+    One implementation of IProductRepository is SqlProductRepository, which itself depends on an Entity Framework context:
+  </p>
+  <p>
+    <pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">SqlProductRepository</span>&nbsp;:&nbsp;<span style="color:#2b91af;">IProductRepository</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;<span style="color:#2b91af;">CommerceObjectContext</span>&nbsp;context;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;SqlProductRepository(<span style="color:#2b91af;">CommerceObjectContext</span>&nbsp;context)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.context&nbsp;=&nbsp;context;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;IProductRepository&nbsp;members&nbsp;go&nbsp;here...</span>
+}</pre>
+  </p>
+  <p>
+    The CommerceObjectContext class derives from the Entity Framework <a href="http://msdn.microsoft.com/en-us/library/system.data.entity.dbcontext.aspx">DbContext</a> class, which, last time I looked, isn't thread-safe. Thus, when used in a web application, it's very important to create a new instance of the CommerceObjectContext class for every request, because otherwise you may experience errors. What's worse is that these errors will be threading errors, so you'll not discover them when you test your web application on your development machine, but when in production, you'll have multiple concurrent requests, and <em>then</em> the application will crash (or perhaps 'just' lose data, which is even worse).
+  </p>
+  <p>
+    (As a side note I should point out that I've used neither Entity Framework nor the Repository pattern for years now, but the example explains the problem well, in a context familiar to most people.)
+  </p>
+  <p>
+    The ProductService class is a stateless service, and therefore thread-safe, so it's an excellent candidate for the Singleton lifestyle. However, as it turns out, that's not going to work.
+  </p>
+  <p>
+    <strong>NInject example</strong>
+  </p>
+  <p>
+    If you want to configure ProductService and its dependencies using <a href="http://www.ninject.org">Ninject</a>, you might accidentally do something like this:
+  </p>
+  <p>
+    <pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">var</span>&nbsp;container&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">StandardKernel</span>();
+container.Bind&lt;<span style="color:#2b91af;">ProductService</span>&gt;().ToSelf().InSingletonScope();
+container.Bind&lt;<span style="color:#2b91af;">IProductRepository</span>&gt;().To&lt;<span style="color:#2b91af;">SqlProductRepository</span>&gt;();</pre>
+  </p>
+  <p>
+    With Ninject you don't need to register concrete types, so there's no reason to register the CommerceObjectContext class; it wouldn't be necessary to register the ProductService either, if it wasn't for the fact that you'd like it to have the Singleton lifestyle. Ninject's default lifestyle is Transient, so that's the lifestyle of both SqlProductRepository and CommerceObjectContext.
+  </p>
+  <p>
+    As you've probably already predicted, the Singleton lifestyle of ProductService captures both the direct dependency IProductRepository, and the indirect dependency CommerceObjectContext:
+  </p>
+  <p>
+    <pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">var</span>&nbsp;actual1&nbsp;=&nbsp;container.Get&lt;<span style="color:#2b91af;">ProductService</span>&gt;();
+<span style="color:blue;">var</span>&nbsp;actual2&nbsp;=&nbsp;container.Get&lt;<span style="color:#2b91af;">ProductService</span>&gt;();
+ 
+<span style="color:green;">//&nbsp;You&#39;d&nbsp;want&nbsp;this&nbsp;assertion&nbsp;to&nbsp;pass,&nbsp;but&nbsp;it&nbsp;fails</span>
+<span style="color:#2b91af;">Assert</span>.NotEqual(actual1.Repository,&nbsp;actual2.Repository);</pre>
+  </p>
+  <p>
+    The repositories are the same because <code>actual1</code> and <code>actual2</code> are the same instance, so naturally, their constituent components are also the same.
+  </p>
+  <p>
+    This is problematic because CommerceObjectContext (deriving from DbContext) isn't thread-safe, so if you resolve ProductService from multiple concurrent requests (which you could easily do in a web application), you'll have a problem.
+  </p>
+  <p>
+    The immediate fix is to make this entire sub-graph Transient:
+  </p>
+  <p>
+    <pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">var</span>&nbsp;container&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">StandardKernel</span>();
+container.Bind&lt;<span style="color:#2b91af;">ProductService</span>&gt;().ToSelf().InTransientScope();
+container.Bind&lt;<span style="color:#2b91af;">IProductRepository</span>&gt;().To&lt;<span style="color:#2b91af;">SqlProductRepository</span>&gt;();</pre>
+  </p>
+  <p>
+    Actually, since Transient is the default, stating the lifetime is redundant, and can be omitted:
+  </p>
+  <p>
+    <pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">var</span>&nbsp;container&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">StandardKernel</span>();
+container.Bind&lt;<span style="color:#2b91af;">ProductService</span>&gt;().ToSelf();
+container.Bind&lt;<span style="color:#2b91af;">IProductRepository</span>&gt;().To&lt;<span style="color:#2b91af;">SqlProductRepository</span>&gt;();</pre>
+  </p>
+  <p>
+    Finally, since you don't <em>have</em> to register concrete types with Ninject, you can completely omit the ProductService registration:
+  </p>
+  <p>
+    <pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">var</span>&nbsp;container&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">StandardKernel</span>();
+container.Bind&lt;<span style="color:#2b91af;">IProductRepository</span>&gt;().To&lt;<span style="color:#2b91af;">SqlProductRepository</span>&gt;();</pre>
+  </p>
+  <p>
+    This works:
+  </p>
+  <p>
+    <pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">var</span>&nbsp;actual1&nbsp;=&nbsp;container.Get&lt;<span style="color:#2b91af;">ProductService</span>&gt;();
+<span style="color:blue;">var</span>&nbsp;actual2&nbsp;=&nbsp;container.Get&lt;<span style="color:#2b91af;">ProductService</span>&gt;();
+ 
+<span style="color:#2b91af;">Assert</span>.NotEqual(actual1.Repository,&nbsp;actual2.Repository);</pre>
+  </p>
+  <p>
+    While the Captive Dependency error is intrinsically tied to using a DI Container, it's by no means particular to Ninject.
+  </p>
+  <p>
+    <strong>Autofac example</strong>
+  </p>
+  <p>
+    It would be unfair to leave you with the impression that this problem is a problem with Ninject; it's not. All DI Containers I know of have this problem. <a href="http://autofac.org">Autofac</a> is just another example.
+  </p>
+  <p>
+    Again, you'd like ProductService to have the Singleton lifestyle, because it's thread-safe, and it would be more efficient that way:
+  </p>
+  <p>
+    <pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">var</span>&nbsp;builder&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">ContainerBuilder</span>();
+builder.RegisterType&lt;<span style="color:#2b91af;">ProductService</span>&gt;().SingleInstance();
+builder.RegisterType&lt;<span style="color:#2b91af;">SqlProductRepository</span>&gt;().As&lt;<span style="color:#2b91af;">IProductRepository</span>&gt;();
+builder.RegisterType&lt;<span style="color:#2b91af;">CommerceObjectContext</span>&gt;();
+<span style="color:blue;">var</span>&nbsp;container&nbsp;=&nbsp;builder.Build();</pre>
+  </p>
+  <p>
+    Like Ninject, the default lifestyle for Autofac is Transient, so you don't have to explicitly configure the lifetimes of SqlProductRepository or CommerceObjectContext. On the other hand, Autofac requires you to register all services in use, even when they're concrete classes; this is the reason you see a registration statement for CommerceObjectContext as well.
+  </p>
+  <p>
+    The problem is exactly the same as with Ninject:
+  </p>
+  <p>
+    <pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">var</span>&nbsp;actual1&nbsp;=&nbsp;container.Resolve&lt;<span style="color:#2b91af;">ProductService</span>&gt;();
+<span style="color:blue;">var</span>&nbsp;actual2&nbsp;=&nbsp;container.Resolve&lt;<span style="color:#2b91af;">ProductService</span>&gt;();
+ 
+<span style="color:green;">//&nbsp;You&#39;d&nbsp;want&nbsp;this&nbsp;assertion&nbsp;to&nbsp;pass,&nbsp;but&nbsp;it&nbsp;fails</span>
+<span style="color:#2b91af;">Assert</span>.NotEqual(actual1.Repository,&nbsp;actual2.Repository);</pre>
+  </p>
+  <p>
+    The reason is the same as before, as is the solution:
+  </p>
+  <p>
+    <pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">var</span>&nbsp;builder&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">ContainerBuilder</span>();
+builder.RegisterType&lt;<span style="color:#2b91af;">ProductService</span>&gt;();
+builder.RegisterType&lt;<span style="color:#2b91af;">SqlProductRepository</span>&gt;().As&lt;<span style="color:#2b91af;">IProductRepository</span>&gt;();
+builder.RegisterType&lt;<span style="color:#2b91af;">CommerceObjectContext</span>&gt;();
+<span style="color:blue;">var</span>&nbsp;container&nbsp;=&nbsp;builder.Build();
+ 
+<span style="color:blue;">var</span>&nbsp;actual1&nbsp;=&nbsp;container.Resolve&lt;<span style="color:#2b91af;">ProductService</span>&gt;();
+<span style="color:blue;">var</span>&nbsp;actual2&nbsp;=&nbsp;container.Resolve&lt;<span style="color:#2b91af;">ProductService</span>&gt;();
+ 
+<span style="color:#2b91af;">Assert</span>.NotEqual(actual1.Repository,&nbsp;actual2.Repository);</pre>
+  </p>
+  <p>
+    Notice that, because the default lifetime is Transient, you don't have to state it while registering any of the services.
+  </p>
+  <p>
+    <strong>Concluding remarks</strong>
+  </p>
+  <p>
+    You can re-create this problem with any major DI Container. The problem isn't associated with any particular DI Container, but simply the fact that there <a href="http://blog.ploeh.dk/2012/11/06/WhentouseaDIContainer">are trade-offs associated with using a DI Container</a>, and one of the trade-offs is a reduction in <a href="http://blog.ploeh.dk/2011/04/29/Feedbackmechanismsandtradeoffs">compile-time feedback</a>. The way typical DI Container registration APIs work, they can't easily detect this lifetime configuration mismatch.
+  </p>
+  <p>
+    It's been a while since I last did a full survey of the .NET DI Container landscape, and back then (when I wrote my book), no containers could detect this problem. Since then, I believe <a href="http://docs.castleproject.org/Windsor.MainPage.ashx">Castle Windsor</a> has got some Captive Dependency detection built in, but I admit that I'm not up to speed; other containers may have this feature as well.
+  </p>
+  <p>
+    When I wrote my book some years ago, I considered including a description of the Captive Dependency configuration error, but for various reasons, it never made it into the book:
+    <ul>
+      <li>As far as I recall, it was <a href="http://kozmic.net">Krzysztof Koźmic</a> who originally made me aware of this problem. In emails, we debated various ideas for a name, but we couldn't really settle on something catchy. Since I don't like to describe something I can't name, it never really made it into the book.</li>
+      <li>One of the major goals of the book was to explain DI as a set of principles and patterns decoupled from DI Containers. The Captive Dependency problem is specifically associated with DI Containers, so it didn't really fit into the book.</li>
+    </ul>
+    Since then, I've thought of the name <em>Captive Dependency</em>, which may not be super-catchy, but at least accurately describes the problem. A longer-lived object (e.g. a Singleton) holds a shorter-lived object captive, past its due release time. Although the shorter-lived object should be released, it's not, because of a bureaucratic error.
+  </p>
+  <p>
+    In a follow-up post to this, I'll demonstrate why you don't have the same problem when you hand-code your object graphs.
+  </p>
+</div>
