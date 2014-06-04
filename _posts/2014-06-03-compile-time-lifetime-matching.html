@@ -180,4 +180,72 @@ container.Bind&lt;<span style="color:#2b91af;">ProductService</span>&gt;().ToSel
   <p>
     Since I wrote the article on when to use a DI Container, I've only <a href="http://stackoverflow.com/a/23312402/126014">strengthened my preference for Poor Man's DI</a>. Unless I'm writing a very complex code base that could benefit from Convention over Configuration, I don't use a DI Container, but since I explicitly architect my systems to be non-complex these days, I haven't used a DI Container in production code for more than 1½ years.
   </p>
+
+    <div class="comment">
+        <div class="comment-author"><a href="http://stevesspace.com">Steve Leigh</a></div>
+        <div class="comment-content">
+            <p>
+                I don't think it's a problem with the container, but a problem with the registrations.  I use a Autofac as my DI Container
+                registration, and I always have a root application lifetime scope, and a separate scope for each request.  If the product service
+                is registered in the root scope as single instance, it will throw a <code>DependencyResolutionException</code>
+            </p>
+            <p>
+                In this case, I would have the ProductService registered in the root scope as single instance, and the other types in the request scope.
+            </p>
+            <p>
+                If <code>ProductService</code> is resolved, a <code>DependencyResolutionException</code> is thrown, and the
+                app is unusable - "fail fast" is followed.  To fix the issue, the registration needs to be moved to to the request scope.
+            </p>
+            <p>Here's an example of a safe MVC Controller Factory using Autofac.</p>
+            <pre>
+public class AutofacControllerFactory : DefaultControllerFactory
+{
+    private readonly IContainer container;
+    private Dictionary&lt;IController, ILifetimeScope&gt; scopes = new Dictionary&lt;IController, ILifetimeScope&gt;();
+
+    public AutofacControllerFactory()
+    {
+        var builder = new ContainerBuilder();
+        RegisterRootTypes(builder);
+
+        this.container = builder.Build();
+    }
+
+    private void RegisterRootTypes(ContainerBuilder builder)
+    {
+        builder.RegisterType&lt;ProductService&gt;().SingleInstance();
+
+        builder.RegisterAssemblyTypes(GetType().Assembly)
+            .Where(t =&gt; t.Name.Contains("Controller"))
+            .InstancePerLifetimeScope();
+    }
+                
+    protected internal override IController GetControllerInstance(RequestContext requestContext, Type controllerType)
+    {
+        var requestScope = container.BeginLifetimeScope(RegisterRequestTypes);
+        var controller = (IController)requestScope.Resolve(controllerType);
+        scopes[controller] = requestScope;
+        return controller;
+    }
+
+    private void RegisterRequestTypes(ContainerBuilder builder)
+    {
+        builder.RegisterType&lt;CommerceContext&gt;().InstancePerDependency();
+        builder.RegisterType&lt;SqlProductRepository&gt;().As&lt;IProductRepository&gt;()
+            .InstancePerDependency();
+    }
+
+    public override void ReleaseController(IController controller)
+    {
+        scopes[controller].Dispose();
+        scopes.Remove(controller);
+    }
+}
+            </pre>
+            <p>
+                Sorry for the lack of code formatting - I'm not sure what you use to format code
+            </p>
+        </div>
+        <div class="comment-date">2014-06-04 03:20 UTC</div>
+    </div>
 </div>
