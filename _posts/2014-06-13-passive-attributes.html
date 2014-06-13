@@ -1,0 +1,150 @@
+---
+layout: post
+title: "Passive Attributes"
+date: 2014-06-13 9:59 UTC
+tags: [Dependency Injection, ASP.NET Web API]
+---
+{% include JB/setup %}
+
+<div id="post">
+  <p>
+    <em>Passive Attributes are Dependency Injection-friendly.</em>
+  </p>
+  <p>
+    In my article about <a href="http://blog.ploeh.dk/2014/05/19/di-friendly-framework">Dependency Injection-friendly frameworks</a>, towards the end I touched on the importance of defining attributes <em>without</em> behaviour, but I didn't provide a constructive example of how to do this. In this article, I'll outline how to write a Dependency Injection-friendly attribute for use with <a href="http://www.asp.net/web-api">ASP.NET Web API</a>, but as far as I recall, you can do something similar with ASP.NET MVC.
+  </p>
+  <p>
+    <strong>Problem statement</strong>
+  </p>
+  <p>
+    In ASP.NET Web API, you can adorn your Controllers and their methods with various <a href="http://msdn.microsoft.com/en-us/library/system.web.http.filters.filterattribute.aspx">Filter attributes</a>, which is a way to implement cross-cutting concerns, such as <a href="http://msdn.microsoft.com/en-us/library/system.web.http.filters.authorizationfilterattribute.aspx">authorization</a> or <a href="http://msdn.microsoft.com/en-us/library/system.web.http.filters.exceptionfilterattribute.aspx">error handling</a>. The problem with this approach is that attribute instances are created by the run-time, so you can't use proper Dependency Injection (DI) patterns such as Constructor Injection. If an attribute defines behaviour (which many of the Web API attributes do), the most common attempt at writing loosely coupled code is to resort to a static <a href="http://blog.ploeh.dk/2010/02/03/ServiceLocatorisanAnti-Pattern">Service Locator (an anti-pattern)</a>.
+  </p>
+  <p>
+    This again seems to lead framework designers towards attempting to make their frameworks 'DI-friendly' by introducing a <a href="http://blog.ploeh.dk/2014/05/19/conforming-container">Conforming Container (another anti-pattern)</a>.
+  </p>
+  <p>
+    The solution is simple: define attributes without behaviour.
+  </p>
+  <p>
+    <strong>Metering example</strong>
+  </p>
+  <p>
+    Common examples of cross-cutting concerns are authentication, authorization, error handling, logging, and caching. In these days of multi-tenant on-line services, another example would be metering, so that you can bill each user based on consumption.
+  </p>
+  <p>
+    Imagine that you're writing an HTTP API where some actions must be metered, whereas others shouldn't. It might be nice to adorn the metered actions with an attribute to indicate this:
+  </p>
+  <p>
+    <pre style="font-family:Consolas;font-size:13;color:black;">[<span style="color:#2b91af;">Meter</span>]
+<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">IHttpActionResult</span>&nbsp;Get(<span style="color:blue;">int</span>&nbsp;id)</pre>
+  </p>
+  <p>
+    Metering is a good example of a cross-cutting concern with behaviour, because, in order to be useful, you'd need to <em>store</em> the metering records somewhere, so that you can bill your users based on these records.
+  </p>
+  <p>
+    A passive Meter attribute would simply look like this:
+  </p>
+  <p>
+    <pre style="font-family:Consolas;font-size:13;color:black;">[<span style="color:#2b91af;">AttributeUsage</span>(<span style="color:#2b91af;">AttributeTargets</span>.Method,&nbsp;AllowMultiple&nbsp;=&nbsp;<span style="color:blue;">false</span>)]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">MeterAttribute</span>&nbsp;:&nbsp;<span style="color:#2b91af;">Attribute</span>
+{
+}</pre>
+  </p>
+  <p>
+    In order to keep the example simple, this attribute defines no data, and can only be used on methods, but nothing prevents you from adding (primitive) values to it, or extend its usage to classes as well as methods.
+  </p>
+  <p>
+    As you can tell from the example, the MeterAttribute has no behaviour.
+  </p>
+  <p>
+    In order to implement a metering cross-cutting concern, you'll need to define an <a href="http://msdn.microsoft.com/en-us/library/system.web.http.filters.iactionfilter.aspx">IActionFilter</a> implementation, but that's a 'normal' class that can take dependencies:
+  </p>
+  <p>
+    <pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">MeteringFilter</span>&nbsp;:&nbsp;<span style="color:#2b91af;">IActionFilter</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;<span style="color:#2b91af;">IObserver</span>&lt;<span style="color:#2b91af;">MeterRecord</span>&gt;&nbsp;observer;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;MeteringFilter(<span style="color:#2b91af;">IObserver</span>&lt;<span style="color:#2b91af;">MeterRecord</span>&gt;&nbsp;observer)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;(observer&nbsp;==&nbsp;<span style="color:blue;">null</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">throw</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">ArgumentNullException</span>(<span style="color:#a31515;">&quot;observer&quot;</span>);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.observer&nbsp;=&nbsp;observer;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">Task</span>&lt;<span style="color:#2b91af;">HttpResponseMessage</span>&gt;&nbsp;ExecuteActionFilterAsync(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">HttpActionContext</span>&nbsp;actionContext,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">CancellationToken</span>&nbsp;cancellationToken,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:#2b91af;">Task</span>&lt;<span style="color:#2b91af;">HttpResponseMessage</span>&gt;&gt;&nbsp;continuation)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;meterAttribute&nbsp;=&nbsp;actionContext
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.ActionDescriptor
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.GetCustomAttributes&lt;<span style="color:#2b91af;">MeterAttribute</span>&gt;()
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.SingleOrDefault();
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;(meterAttribute&nbsp;==&nbsp;<span style="color:blue;">null</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;continuation();
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;operation&nbsp;=&nbsp;actionContext.ActionDescriptor.ActionName;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;user&nbsp;=&nbsp;actionContext.RequestContext.Principal.Identity.Name;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;started&nbsp;=&nbsp;<span style="color:#2b91af;">DateTimeOffset</span>.Now;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;continuation().ContinueWith(t&nbsp;=&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;completed&nbsp;=&nbsp;<span style="color:#2b91af;">DateTimeOffset</span>.Now;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;duration&nbsp;=&nbsp;completed&nbsp;-&nbsp;started;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;record&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">MeterRecord</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Operation&nbsp;=&nbsp;operation,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;User&nbsp;=&nbsp;user,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Started&nbsp;=&nbsp;started,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Duration&nbsp;=&nbsp;duration
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;};
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.observer.OnNext(record);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;t.Result;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;});
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">bool</span>&nbsp;AllowMultiple
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">get</span>&nbsp;{&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:blue;">true</span>;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+  </p>
+  <p>
+    This MeteringFilter class implements IActionFilter. It looks for the <code>[Meter]</code> attribute. If it doesn't find the attribute on the method, it immediately returns; otherwise, it starts collecting data about the invoked action:
+    <ol>
+      <li>From <code>actionContext.ActionDescriptor</code> it retrieves the name of the operation. If you try this out for yourself, you may find that <code>ActionName</code> alone doesn't provide enough information to uniquely identify the method - it basically just contains the value "Get". However, the <code>actionContext</code> contains enough information about the action that you can easily build up a better string; I just chose to skip doing that in order to keep the example simple.</li>
+      <li>From <code>actionContext.RequestContext.Principal</code> you can get information about the current user. In order to be useful, the user must be authenticated, but if you need to meter the usage of your service, you'll probably not allow anonymous access.</li>
+      <li>Before invoking the <code>continuation</code>, the MeteringFilter records the current time.</li>
+      <li>After the <code>continuation</code> has completed, the MeteringFilter again records the current time and calculates the duration.</li>
+      <li>Finally, it publishes a MeterRecord to an injected dependency.</li>
+    </ol>
+    Notice that MeteringFilter uses normal Constructor Injection, which means that it can <a href="http://blog.ploeh.dk/2011/05/30/DesignSmellDefaultConstructor">protect its invariants</a>. In this example, I'm <a href="http://blog.ploeh.dk/2013/09/11/di-and-events-composition">using IObserver&lt;T&gt; as a dependency</a>, but obviously, you could use any dependency you'd like.
+  </p>
+  <p>
+    <strong>Configuring the service</strong>
+  </p>
+  <p>
+    MeteringFilter is a normal class with behaviour, which you can register as a cross-cutting concern in your Web API service as easily as this:
+  </p>
+  <p>
+    <pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">var</span>&nbsp;filter&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">MeteringFilter</span>(observer);
+config.Filters.Add(filter);</pre>
+  </p>
+  <p>
+    where <code>observer</code> is your preferred implementation of IObserver&lt;MeterRecord&gt;. This example illustrates the <a href="http://blog.ploeh.dk/2014/06/10/pure-di">Pure DI</a> approach, but if you rather prefer to resolve MeteringFilter with your DI Container of choice, you can obviously do this as well.
+  </p>
+  <p>
+    The above code typically goes into your Global.asax file, or at least a class directly or indirectly invoked from Application_Start. This constitutes (part of) the <a href="http://blog.ploeh.dk/2011/07/28/CompositionRoot">Composition Root</a> of your service.
+  </p>
+  <p>
+    <strong>Summary</strong>
+  </p>
+  <p>
+    Both ASP.NET Web API and ASP.NET MVC supports cross-cutting concerns in the shape of filters that you can add to the service. Such filters can look for passive attributes in order to decide whether or not to trigger. The advantage of this approach is that you can use normal Constructor Injection with these filters, which completely eliminates the need for a Service Locator or Conforming Container.
+  </p>
+  <p>
+    The programming model remains the same as with active attributes: if you want a particular cross-cutting concern to apply to a particular method or class, you adorn it with the appropriate attribute. Passive attributes have all the advantages of active attributes, but none of the disadvantages.
+  </p>
+</div>
