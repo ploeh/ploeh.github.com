@@ -1,0 +1,160 @@
+---
+layout: post
+title: "CQS versus server generated IDs"
+date: 2014-08-11 19:40 UTC
+tags: [Software Design]
+---
+{% include JB/setup %}
+
+<div id="post">
+  <p>
+    <em>How can you both follow Command Query Separation and assign unique IDs to Entities when you save them? This post examines some options.</em>
+  </p>
+  <p>
+    In my <a href="http://pluralsight.com/training/Courses/TableOfContents/encapsulation-solid">Encapsulation and SOLID</a> Pluralsight course, I explain why <a href="http://en.wikipedia.org/wiki/Command%E2%80%93query_separation">Command Query Separation</a> (CQS) is an important component of Encapsulation. When first exposed to CQS, many people start to look for edge cases, so a common question is something like this:
+    <blockquote>
+      What would you do if you had a service that saves to a database and returns the ID (which is set by the database)? The Save operation is a Command, but if it returns void, how do I get the ID?
+    </blockquote>
+    This is actually an exercise I've given participants when I've given the course as a workshop, so before you read my proposed solutions, consider taking a moment to see if you can come up with a solution yourself.
+  </p>
+  <p>
+    <strong>Typical, CQS-violating design</strong>    
+  </p>
+  <p>
+    The problem is that in many code bases, you occasionally need to save a brand-new Entity to persistent storage. Since the object is an Entity (as defined in <a href="http://amzn.to/WBCwx7">Domain-Driven Design</a>), it must have a unique ID. If your system is a concurrent system, you can't just pick a number and expect it to be unique... or can you?
+  </p>
+  <p>
+    Instead, many programmers rely on their underlying database to add a unique ID to the Entity when it save it, and then return the ID to client. Accordingly, they introduce designs like this:
+  </p>
+  <p>
+    <pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">interface</span>&nbsp;<span style="color:#2b91af;">IRepository</span>&lt;T&gt;
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">int</span>&nbsp;Create(T&nbsp;item);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;other&nbsp;members</span>
+}</pre>
+  </p>
+  <p>
+    The problem with this design, obviously, is that it violates CQS. The Create method ought to be a Command, but it returns a value. From the perspective of Encapsulation, this is problematic, because if we look only at the method signature, we could be tricked into believing that since it returns a value, the Create method is a Query, and therefore has no side-effects - which it clearly has. That makes it difficult to reason about the code.
+  </p>
+  <p>
+    It's also a leaky abstraction, because most developers or architects implicitly rely on a database implementation to provide the ID. What if an implementation doesn't have the ability to come up with a unique ID? This sounds like a <a href="http://en.wikipedia.org/wiki/Liskov_substitution_principle">Liskov Substitution Principle</a> violation just waiting to happen!
+  </p>
+  <p>
+    <strong>The easiest solution</strong>
+  </p>
+  <p>
+    When I wrote "you can't just pick a number and expect it to be unique", I almost gave away the easiest solution to this problem:
+  </p>
+  <p>
+    <pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">interface</span>&nbsp;<span style="color:#2b91af;">IRepository</span>&lt;T&gt;
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">void</span>&nbsp;Create(<span style="color:#2b91af;">Guid</span>&nbsp;id,&nbsp;T&nbsp;item);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;other&nbsp;members</span>
+}</pre>
+  </p>
+  <p>
+    Just change the ID from an integer to a GUID (or UUID, if you prefer). This <em>does</em> enable clients to come up with a unique ID for the Entity - after all, that's the whole point of GUIDs.
+  </p>
+  <p>
+    Notice how, in this alternative design, the Create method returns void, making it a proper Command. From an encapsulation perspective, this is important because it enables you to immediately identify that this is a method with side-effects - just by looking at the method signature.
+  </p>
+  <p>
+    But wait: what if you <em>do</em> need the ID to be an integer? That's not a problem; there's also a solution for that.
+  </p>
+  <p>
+    <strong>A solution with integer IDs</strong>
+  </p>
+  <p>
+    You may not like the easy solution above, but it <em>is</em> a good solution that fits in a wide variety in situations. Still, there can be valid reasons that using a GUID isn't an acceptable solution:
+    <ul>
+      <li>
+        Some databases (e.g. SQL Server) don't particularly like if you use GUIDs as table keys. You can, but integer keys often perform better, and they are also shorter.
+      </li>
+      <li>
+        Sometimes, the Entity ID isn't only for internal use. Once, I worked on a customer support ticket system, and my suggestion of using a GUID as an ID wasn't met with enthusiasm. When a customer calls in about an existing support case, it isn't reasonable to ask him or her to read an entire GUID; it's simply too error-prone.
+      </li>
+    </ul>
+    In some cases, you just need some human-readable integers as IDs. What can you do?
+  </p>
+  <p>
+    Here's my modified solution:
+  </p>
+  <p>
+    <pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">interface</span>&nbsp;<span style="color:#2b91af;">IRepository</span>&lt;T&gt;
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">void</span>&nbsp;Create(<span style="color:#2b91af;">Guid</span>&nbsp;id,&nbsp;T&nbsp;item);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">int</span>&nbsp;GetHumanReadableId(<span style="color:#2b91af;">Guid</span>&nbsp;id);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;other&nbsp;members</span>
+}</pre>
+  </p>
+  <p>
+    Notice that the Create method is the same as before. The client must still supply a GUID for the Entity, and that GUID may or may not be the 'real' ID of the Entity. However, in addition to the GUID, the system also associates a (human-readable) integer ID with the Entity. Which one is the 'real' ID isn't particularly important; the important part is that there's <em>another</em> method you can use to get the integer ID associated with the GUID: the GetHumanReadableId method.
+  </p>
+  <p>
+    The Create method is a Command, which is only proper, because creating (or saving) the Entity mutates the state of the system. The GetHumanReadableId method, on the other hand, is a Query: you can call it as many times as you like: it doesn't change the state of the system.
+  </p>
+  <p>
+    If you want to store your Entities in a database, you can still do that. When you save the Entity, you save it with the GUID, but you can also let the database engine assign an integer ID; it might even be a monotonically increasing ID (1, 2, 3, 4, etc.). At the same time, you could have a secondary index on the GUID.
+  </p>
+  <p>
+    When a client invokes the GetHumanReadableId method, the database can use the secondary index on the GUID to quickly find the Entity and return its integer ID.
+  </p>
+  <p>
+    <strong>Performance</strong>
+  </p>
+  <p>
+    "But," you're likely to say, "I don't like that! It's bad for performance!"
+  </p>
+  <p>
+    Perhaps. My first impulse is to <a href="http://c2.com/cgi/wiki?PrematureOptimization">quote Donald Knuth</a> at you, but in the end, I may have to yield that my proposed design may result in two out-of-process calls instead of one. Still, I never promised that my solution wouldn't involve a trade-off. Most software design decisions involve trade-offs, and so does this one. You gain better encapsulation for potentially worse performance.
+  </p>
+  <p>
+    Still, the performance drawback may not involve <em>problems</em> as such. First, while having to make two round trips to the database may perform worse than a single one, it may still be fast enough. Second, even if you need to know the (human-readable) integer ID, you <em>may not need to know it when you create it</em>. Sometimes you can get away with saving the Entity in one action, and then you may only need to know what the ID is seconds or minutes later. In this case, separating reads and writes may actually turn out to be an advantage.
+  </p>
+  <p>
+    <strong>Must all code be designed like this?</strong>
+  </p>
+  <p>
+    Even if you disregard your concerns about performance, you may find this design overly complex, and more difficult to use. Do I really recommend that <em>all</em> code should be designed like that?
+  </p>
+  <p>
+    No, I don't recommend that <em>all</em> code should be designed according to the CQS principle. As Martin Fowler <a href="http://martinfowler.com/bliki/CommandQuerySeparation.html">points out</a>, in <a href="http://amzn.to/1claOin">Object-Oriented Software Construction</a>, Bertrand Meyer explains how to design an API for a Stack with CQS. It involves a Pop Command, and a Top Query: in order to use it, you would first have to invoke the Top Query to get the item on the top of the stack, and then subsequently invoke the Pop Command to modify the state of the stack.
+  </p>
+  <p>
+    One of the problems with such a design is that it isn't thread-safe. It's also more unwieldy to use than e.g. the standard <a href="http://msdn.microsoft.com/en-us/library/9say334k.aspx">Stack&lt;T&gt;.Pop</a> method.
+  </p>
+  <p>
+    My point with all of this isn't to dictate to you that you should <em>always</em> follow CQS. The point is that you can always come up with a design that does.
+  </p>
+  <p>
+    In my career, I've met many programmers who write a poorly designed class or interface, and then put a little <a href="http://butunclebob.com/ArticleS.TimOttinger.ApologizeIncode">apology</a> on top of it:
+  </p>
+  <p>
+    <pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">interface</span>&nbsp;<span style="color:#2b91af;">IRepository</span>&lt;T&gt;
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;CQS&nbsp;is&nbsp;impossible&nbsp;here,&nbsp;because&nbsp;we&nbsp;need&nbsp;the&nbsp;ID</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">int</span>&nbsp;Create(T&nbsp;item);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;other&nbsp;members</span>
+}</pre>
+  </p>
+  <p>
+    Many times, we don't know of a better way to do things, but it doesn't mean that such a way doesn't exist; we just haven't learned about it yet. In this article, I've shown you how to solve a seemingly impossible design challenge with CQS.
+  </p>
+  <p>
+    Knowing that even a design problem such as this <em>can</em> be solved with CQS should put you in a better position to make an <em>informed</em> decision. You may still decide to violate CQS and define a Create method that returns an integer, but if you've done that, it's because you've weighed the alternatives; not because you thought it impossible.
+  </p>
+  <p>
+    <strong>Summary</strong>
+  </p>
+  <p>
+    It's possible to apply CQS to most problems. As always, there are trade-offs involved, but knowing how to apply CQS, even if, at first glance, it seems impossible, is an important design skill.
+  </p>
+  <p>
+    Personally, I tend to adhere closely to CQS when I do Object-Oriented Design, but I also, occasionally, decide to break that principle. When I do, I do so realising that I'm making a trade-off, and I don't do it lightly.
+  </p>
+</div>
