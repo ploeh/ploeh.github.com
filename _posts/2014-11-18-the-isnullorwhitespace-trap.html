@@ -1,0 +1,198 @@
+---
+layout: post
+title: "The IsNullOrWhiteSpace trap"
+date: 2014-11-18 19:10 UTC
+tags: [Unit Testing, Software Design]
+---
+{% include JB/setup %}
+
+<div id="post">
+  <p>
+    <em>The IsNullOrWhiteSpace method may seem like a useful utility method, but poisons your design perspective.</em>
+  </p>
+  <p>
+    The <a href="http://msdn.microsoft.com/en-us/library/system.string.isnullorwhitespace.aspx">string.IsNullOrWhiteSpace</a> method, together with its older sibling <a href="http://msdn.microsoft.com/en-us/library/system.string.isnullorempty.aspx">string.IsNullOrEmpty</a>, may seem like useful utility methods. In reality, they aren't. In fact, they trick your mind into thinking that null is equivalent to white space, which it isn't.
+  </p>
+  <p>
+    Null isn't equivalent to <em>anything</em>; it's the absence of a value.
+  </p>
+  <p>
+    Various empty and white space strings ("", "&nbsp;", etc), on the other hand, <em>are</em> values, although, perhaps, not particularly interesting values.
+  </p>
+  <p>
+    <strong>Example: search canonicalization</strong>
+  </p>
+  <p>
+    Imagine that you have to write a simple search canonicalization algorithm for a music search service. The problem you're trying to solve is that when users search for music, the may use variations of upper and lower case letters, as well as type the artist name before the song title, or vice versa. In order to make your system as efficient as possible, you may want to cache popular search results, but it means that you'll need to transform each search term into a <a href="http://en.wikipedia.org/wiki/Canonical_form">canonical form</a>.
+  </p>
+  <p>
+    In order to keep things simple, let's assume that you only need to convert all letters to upper case, and order words alphabetically.
+  </p>
+  <p>
+    Here are five test cases, represented as a <a href="http://xunitpatterns.com/Parameterized%20Test.html">Parameterized Test</a>:
+  </p>
+  <p>
+    <pre style="font-family:Consolas;font-size:13;color:black;">[<span style="color:#2b91af;">Theory</span>]
+[<span style="color:#2b91af;">InlineData</span>(<span style="color:#a31515;">&quot;Seven&nbsp;Lions&nbsp;Polarized&quot;</span>&nbsp;&nbsp;,&nbsp;<span style="color:#a31515;">&quot;LIONS&nbsp;POLARIZED&nbsp;SEVEN&quot;</span>&nbsp;&nbsp;)]
+[<span style="color:#2b91af;">InlineData</span>(<span style="color:#a31515;">&quot;seven&nbsp;lions&nbsp;polarized&quot;</span>&nbsp;&nbsp;,&nbsp;<span style="color:#a31515;">&quot;LIONS&nbsp;POLARIZED&nbsp;SEVEN&quot;</span>&nbsp;&nbsp;)]
+[<span style="color:#2b91af;">InlineData</span>(<span style="color:#a31515;">&quot;Polarized&nbsp;seven&nbsp;lions&quot;</span>&nbsp;&nbsp;,&nbsp;<span style="color:#a31515;">&quot;LIONS&nbsp;POLARIZED&nbsp;SEVEN&quot;</span>&nbsp;&nbsp;)]
+[<span style="color:#2b91af;">InlineData</span>(<span style="color:#a31515;">&quot;Au5&nbsp;Crystal&nbsp;Mathematics&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;AU5&nbsp;CRYSTAL&nbsp;MATHEMATICS&quot;</span>)]
+[<span style="color:#2b91af;">InlineData</span>(<span style="color:#a31515;">&quot;crystal&nbsp;mathematics&nbsp;au5&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;AU5&nbsp;CRYSTAL&nbsp;MATHEMATICS&quot;</span>)]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;CanonicalizeReturnsCorrectResult(
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">string</span>&nbsp;searchTerm,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">string</span>&nbsp;expected)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">string</span>&nbsp;actual&nbsp;=&nbsp;<span style="color:#2b91af;">SearchTerm</span>.Canonicalize(searchTerm);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Assert</span>.Equal(expected,&nbsp;actual);
+}</pre>
+  </p>
+  <p>
+    Here's one possible implementation that passes all five test cases:
+  </p>
+  <p>
+    <pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:blue;">string</span>&nbsp;Canonicalize(<span style="color:blue;">string</span>&nbsp;searchTerm)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;searchTerm
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.Split(<span style="color:blue;">new</span>[]&nbsp;{&nbsp;<span style="color:#a31515;">&#39;&nbsp;&#39;</span>&nbsp;})
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.Select(x&nbsp;=&gt;&nbsp;x.ToUpper())
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.OrderBy(x&nbsp;=&gt;&nbsp;x)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.Aggregate((x,&nbsp;y)&nbsp;=&gt;&nbsp;x&nbsp;+&nbsp;<span style="color:#a31515;">&quot;&nbsp;&quot;</span>&nbsp;+&nbsp;y);
+}</pre>
+  </p>
+  <p>
+    This implementation uses the space character to split the string into an array, then converts each sub-string to upper case letters, sorts the sub-strings in ascending order, and finally concatenates them all together to a single string, which is returned.
+  </p>
+  <p>
+    <strong>Continued example: making the implementation more robust</strong>
+  </p>
+  <p>
+    The above implementation is quite naive, because it doesn't properly canonicalize if the user entered extra white space, like these extra test cases:
+  </p>
+  <p>
+    <pre style="font-family:Consolas;font-size:13;color:black;">[<span style="color:#2b91af;">InlineData</span>(<span style="color:#a31515;">&quot;Seven&nbsp;&nbsp;Lions&nbsp;&nbsp;&nbsp;Polarized&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;LIONS&nbsp;POLARIZED&nbsp;SEVEN&quot;</span>)]
+[<span style="color:#2b91af;">InlineData</span>(<span style="color:#a31515;">&quot;&nbsp;Seven&nbsp;&nbsp;Lions&nbsp;Polarized&nbsp;&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;LIONS&nbsp;POLARIZED&nbsp;SEVEN&quot;</span>)]</pre>
+  </p>
+  <p>
+    Notice that these new test cases don't pass with the above implementation, because it doesn't properly remove all the white spaces. Here's a more robust implementation that passes all test cases:
+  </p>
+  <p>
+    <pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:blue;">string</span>&nbsp;Canonicalize(<span style="color:blue;">string</span>&nbsp;searchTerm)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;searchTerm
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.Split(<span style="color:blue;">new</span>[]&nbsp;{&nbsp;<span style="color:#a31515;">&#39;&nbsp;&#39;</span>&nbsp;},&nbsp;<span style="color:#2b91af;">StringSplitOptions</span>.RemoveEmptyEntries)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.Select(x&nbsp;=&gt;&nbsp;x.ToUpper())
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.OrderBy(x&nbsp;=&gt;&nbsp;x)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.Aggregate((x,&nbsp;y)&nbsp;=&gt;&nbsp;x&nbsp;+&nbsp;<span style="color:#a31515;">&quot;&nbsp;&quot;</span>&nbsp;+&nbsp;y);
+}</pre>
+  </p>
+  <p>
+    Notice the addition of <code>StringSplitOptions.RemoveEmptyEntries</code>.
+  </p>
+  <p>
+    <strong>Testing for null</strong>
+  </p>
+  <p>
+    If you consider the above implementation, does it have any other problems?
+  </p>
+  <p>
+    One, fairly obvious, problem is that if <code>searchTerm</code> is null, the method is going to throw a NullReferenceException, because you can't invoke the Split method on null.
+  </p>
+  <p>
+    Therefore, in order to protect the invariants of the method, you must test for null:
+  </p>
+  <p>
+    <pre style="font-family:Consolas;font-size:13;color:black;">[<span style="color:#2b91af;">Fact</span>]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;CanonicalizeNullThrows()
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Assert</span>.Throws&lt;<span style="color:#2b91af;">ArgumentNullException</span>&gt;(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;()&nbsp;=&gt;&nbsp;<span style="color:#2b91af;">SearchTerm</span>.Canonicalize(<span style="color:blue;">null</span>));
+}</pre>
+  </p>
+  <p>
+    In this case, you've decided that null is simply invalid input, and I agree. Searching for null (the absence of a value) isn't meaningful; it must be a defect in the calling code.
+  </p>
+  <p>
+    Often, I see programmers implement their null checks like this:
+  </p>
+  <p>
+    <pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:blue;">string</span>&nbsp;Canonicalize(<span style="color:blue;">string</span>&nbsp;searchTerm)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;(<span style="color:blue;">string</span>.IsNullOrWhiteSpace(searchTerm))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">throw</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">ArgumentNullException</span>(<span style="color:#a31515;">&quot;searchTerm&quot;</span>);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;searchTerm
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.Split(<span style="color:blue;">new</span>[]&nbsp;{&nbsp;<span style="color:#a31515;">&#39;&nbsp;&#39;</span>&nbsp;},&nbsp;<span style="color:#2b91af;">StringSplitOptions</span>.RemoveEmptyEntries)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.Select(x&nbsp;=&gt;&nbsp;x.ToUpper())
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.OrderBy(x&nbsp;=&gt;&nbsp;x)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.Aggregate((x,&nbsp;y)&nbsp;=&gt;&nbsp;x&nbsp;+&nbsp;<span style="color:#a31515;">&quot;&nbsp;&quot;</span>&nbsp;+&nbsp;y);
+}</pre>
+  </p>
+  <p>
+    Notice the use of IsNullOrWhiteSpace. While it passes all tests so far, <em>it's wrong</em> for a number of reasons.
+  </p>
+  <p>
+    <strong>Problems with IsNullOrWhiteSpace</strong>
+  </p>
+  <p>
+    The first problem with this use of IsNullOrWhiteSpace is that it may give client programmers wrong messages. For example, if you pass the empty string ("") as <code>searchTerm</code>, you'll still get an ArgumentNullException. This is misleading, because it gives the wrong message: it states that <code>searchTerm</code> was null when it wasn't (it was "").
+  </p>
+  <p>
+    You may then argue that you could change the implementation to throw an ArgumentException.
+  </p>
+  <p>
+    <pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">if</span>&nbsp;(<span style="color:blue;">string</span>.IsNullOrWhiteSpace(searchTerm))
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">throw</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">ArgumentException</span>(<span style="color:#a31515;">&quot;Empty&nbsp;or&nbsp;null.&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;searchTerm&quot;</span>);</pre>
+  </p>
+  <p>
+    This isn't incorrect per se, but not as explicit as it could have been. In other words, it's not as helpful to the client developer as it could have been. While it may not seem like a big deal in a single method like this, it's sloppy code like this that eventually wear client developers down; it's death by a thousand paper cuts.
+  </p>
+  <p>
+    Moreover, this implementation doesn't follow the <a href="http://en.wikipedia.org/wiki/Robustness_principle">Robustness Principle</a>. Is there any rational reason to reject white space strings?
+  </p>
+  <p>
+    Actually, with a minor tweak, we can make the implementation work with white space as well. Consider these new test cases:
+  </p>
+  <p>
+    <pre style="font-family:Consolas;font-size:13;color:black;">[<span style="color:#2b91af;">InlineData</span>(<span style="color:#a31515;">&quot;&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;&quot;</span>)]
+[<span style="color:#2b91af;">InlineData</span>(<span style="color:#a31515;">&quot;&nbsp;&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;&quot;</span>)]
+[<span style="color:#2b91af;">InlineData</span>(<span style="color:#a31515;">&quot;&nbsp;&nbsp;&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;&quot;</span>)]</pre>
+  </p>
+  <p>
+    These currently fail because of the use of IsNullOrWhiteSpace, but they ought to succeed.
+  </p>
+  <p>
+    The correct implementation of the Canonicalize method is this:
+  </p>
+  <p>
+    <pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:blue;">string</span>&nbsp;Canonicalize(<span style="color:blue;">string</span>&nbsp;searchTerm)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;(searchTerm&nbsp;==&nbsp;<span style="color:blue;">null</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">throw</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">ArgumentNullException</span>(<span style="color:#a31515;">&quot;searchTerm&quot;</span>);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;searchTerm
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.Split(<span style="color:blue;">new</span>[]&nbsp;{&nbsp;<span style="color:#a31515;">&#39;&nbsp;&#39;</span>&nbsp;},&nbsp;<span style="color:#2b91af;">StringSplitOptions</span>.RemoveEmptyEntries)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.Select(x&nbsp;=&gt;&nbsp;x.ToUpper())
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.OrderBy(x&nbsp;=&gt;&nbsp;x)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.Aggregate(<span style="color:#a31515;">&quot;&quot;</span>,&nbsp;(x,&nbsp;y)&nbsp;=&gt;&nbsp;x&nbsp;+&nbsp;<span style="color:#a31515;">&quot;&nbsp;&quot;</span>&nbsp;+&nbsp;y)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.Trim();
+}</pre>
+  </p>
+  <p>
+    First of all, the correct Guard Clause is to test only for null; null is the only invalid value. Second, the method uses another overload of the Aggregate method where an initial seed (in this case "") is used to initialize the Fold operation. Third, the final call to the Trim method ensures that there's no leading or trailing white space.
+  </p>
+  <p>
+    <strong>The IsNullOrWhiteSpace mental model</strong>
+  </p>
+  <p>
+    The overall problem with IsNullOrWhiteSpace and IsNullOrEmpty is that they give you the impression that null is equivalent to white space strings. This is the wrong mental model: white space strings are proper string values that you can very often manipulate just as well as any other string.
+  </p>
+  <p>
+    If you insist on the mental model that white space strings are equivalent to null, you'll tend to put them in the same bucket of 'invalid' data. However, if you take a hard look at the <em>preconditions</em> for your classes, methods, or functions, you'll find that often, a white space string is going to be perfectly acceptable input. Why reject input you can understand? That will only make your code more difficult to use.
+  </p>
+  <p>
+    In testing terms, it's my experience that null rarely falls in the same <a href="http://en.wikipedia.org/wiki/Equivalence_partitioning">Equivalence Class</a> as white space strings. Therefore, it's wrong to implicitly treat them as if they do.
+  </p>
+  <p>
+    The IsNullOrWhiteSpace and IsNullOrEmpty methods imply that null and white space strings are equivalent, and this will often give you the wrong mental model of the boundary cases of your software. Be careful when using these these methods.
+  </p>
+</div>
