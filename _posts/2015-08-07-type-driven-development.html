@@ -1,0 +1,414 @@
+---
+layout: post
+title: "Type Driven Development"
+date: 2015-08-07 12:44 UTC
+tags: [Software Design, F#]
+---
+{% include JB/setup %}
+
+<div id="post">
+  <p>
+    <em>A strong type system can not only prevent errors, but also guide you and provide feedback in your design process.</em>
+  </p>
+  <p>
+    Have you ever worked in a statically typed language (e.g. C# or Java), only to wish that you'd be allowed to focus on <em>what you're doing</em>, instead of having to declare types of arguments and create new classes all the time?
+  </p>
+  <p>
+    Have you, on the other hand, ever worked in a dynamic language (e.g. Javascript) and wished you could get static type checking to prevent a myriad of small, but preventable errors?
+  </p>
+  <p>
+    You can have the best of both worlds, and more! F#'s type system is strong, but non-obtrusive. It enables you to focus on the behaviour of the code you're writing, while still being statically typed.
+  </p>
+  <p>
+    Not only can it prevent syntax and usage errors, but it can even provide guidance on how to proceed with a given problem.
+  </p>
+  <p>
+    This is best explained with an example.
+  </p>
+  <p>
+    <strong>Example problem: simulate a continuously running process as a series of discrete processes</strong>
+  </p>
+  <p>
+    A couple of years ago I had a very particular problem: I <a href="http://blog.ploeh.dk/2014/09/25/faking-a-continuously-polling-consumer-with-scheduled-tasks">needed to simulate a continuously running task using a sequence of discrete processes</a>.
+  </p>
+  <p>
+    In short, I needed to start a process (in reality a simple .exe file) that would act as a <a href="http://www.enterpriseintegrationpatterns.com/PollingConsumer.html">Polling Consumer</a>, but with the twist that it would keep track of time. It would need to run for one minute, and then shut down so that an overall scheduler could start the process again. This was to guarantee that the process would be running on <em>at most</em> one server in a farm.
+  </p>
+  <p>
+    The Polling Consumer should pull a message off a queue and hand it to some dispatcher, which would then make sure that the message was handled by an appropriate handler. This takes time, so makes the whole process more complex.
+  </p>
+  <p>
+    If the Polling Consumer estimates that receiving and handling a message takes 200 milliseconds, and it's 100 milliseconds from shutting down, it shouldn't poll for a message. It would take too long, and it wouldn't be able to shut down in time.
+  </p>
+  <p>
+    My problem was that I didn't know how long it took to handle a message, so the Polling Consumer would have to measure that as well, constantly updating its estimates of how long it takes to handle a message.
+  </p>
+  <p>
+    This wasn't a harder problem that I could <a href="http://blog.ploeh.dk/2014/09/25/faking-a-continuously-polling-consumer-with-scheduled-tasks">originally solve it in a highly coupled imperative fashion</a>. I wasn't happy with that implementation, though, so I'm happy that there's a much more <em>incremental</em> approach to the problem.
+  </p>
+  <p>
+    <strong>A Finite State Machine</strong>
+  </p>
+  <p>
+    The first breakthrough came when I realised that I could model the problem as a finite state machine:
+  </p>
+  <p>
+    <img src="/content/binary/polling-consumer-finite-state-machine.png" alt="Polling Consumer state machine transition diagram"> 
+  </p>
+  <p>
+    The implicit start state is always the <em>Ready</em> state, because when the Polling Consumer starts, it has no message, but plenty of time, so therefore ready for a new message.
+  </p>
+  <p>
+    From the <em>Ready</em> state, the Polling Consumer may decide to poll for a message; if one is received, the new state is the <em>Received</em> state.
+  </p>
+  <p>
+    From the <em>Received</em> state, the only legal transition is back into the <em>Ready</em> state by handling the message.
+  </p>
+  <p>
+    From the <em>Ready</em> state, it may also turn out that there's currently no message in the queue, in which case the new state is the <em>No message</em> state.
+  </p>
+  <p>
+    In the <em>No message</em> state, the Polling Consumer may decide to idle for perhaps five seconds before transitioning back into the <em>Ready</em> state.
+  </p>
+  <p>
+    When in the <em>Ready</em> or <em>No message</em> states, the Polling Consumer may also realise that time is running out, and so decide to quit, in which case the (final) state is the <em>End</em> state.
+  </p>
+  <p>
+    This means that the Polling Consumer needs to measure what it does, and those measurements influence what it decides to do.
+  </p>
+  <p>
+    <strong>Separation of concerns</strong>
+  </p>
+  <p>
+    It sounds like we have a time concern (do I dare say <em>dimension</em>?), and a concern related to <em>doing</em> something. Given multiple concerns, we should separate them
+  </p>
+  <p>
+    The first thing I did was to introduce a <a href="http://blog.ploeh.dk/2014/12/17/good-times-with-f">Timed&lt;'a&gt; generic record type</a>. This represents the result of performing a computation, as well as the times the computation started and stopped. I changed it slightly from the linked article, so here's the updated code for that:
+  </p>
+  <p>
+    <pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">type</span>&nbsp;<span style="color:#2b91af;">Timed</span>&lt;&#39;a&gt;&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Started&nbsp;:&nbsp;<span style="color:#2b91af;">DateTimeOffset</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Stopped&nbsp;:&nbsp;<span style="color:#2b91af;">DateTimeOffset</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Result&nbsp;:&nbsp;&#39;a&nbsp;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">member</span>&nbsp;this.Duration&nbsp;=&nbsp;this.Stopped&nbsp;-&nbsp;this.Started
+ 
+<span style="color:blue;">module</span>&nbsp;<span style="color:#2b91af;">Untimed</span>&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;map&nbsp;f&nbsp;x&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{&nbsp;Started&nbsp;=&nbsp;x.Started;&nbsp;Stopped&nbsp;=&nbsp;x.Stopped;&nbsp;Result&nbsp;=&nbsp;f&nbsp;x.Result&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;withResult&nbsp;newResult&nbsp;x&nbsp;=&nbsp;map&nbsp;(<span style="color:blue;">fun</span>&nbsp;_&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;newResult)&nbsp;x
+ 
+<span style="color:blue;">module</span>&nbsp;<span style="color:#2b91af;">Timed</span>&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;capture&nbsp;clock&nbsp;x&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;now&nbsp;=&nbsp;clock()
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{&nbsp;Started&nbsp;=&nbsp;now;&nbsp;Stopped&nbsp;=&nbsp;now;&nbsp;Result&nbsp;=&nbsp;x&nbsp;}
+&nbsp;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;map&nbsp;clock&nbsp;f&nbsp;x&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;result&nbsp;=&nbsp;f&nbsp;x.Result
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;stopped&nbsp;=&nbsp;clock&nbsp;()
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{&nbsp;Started&nbsp;=&nbsp;x.Started;&nbsp;Stopped&nbsp;=&nbsp;stopped;&nbsp;Result&nbsp;=&nbsp;result&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;timeOn&nbsp;clock&nbsp;f&nbsp;x&nbsp;=&nbsp;x&nbsp;|&gt;&nbsp;capture&nbsp;clock&nbsp;|&gt;&nbsp;map&nbsp;clock&nbsp;f</pre>
+  </p>
+  <p>
+    This enables me to capture timing information about any operation, including the transitions between various states in a finite state machine.
+  </p>
+  <p>
+    The way I modelled the finite state machine for the Polling Consumer explicitly models all states as being instantaneous, while transitioning between states takes time. This means that we can model all transitions as functions that return Timed&lt;'something&gt;.
+  </p>
+  <p>
+    <strong>State data types</strong>
+  </p>
+  <p>
+    The first step is to model the data associated with each state in the finite state machine. This is an iterative process, but here I'll just show you the final result. If you're interested in seeing this design process in more details, you can watch my Pluralsight course <a href="http://www.shareasale.com/r.cfm?u=1017843&b=611266&m=53701&afftrack=&urllink=www%2Epluralsight%2Ecom%2Fcourses%2Ffsharp%2Dtype%2Ddriven%2Ddevelopment">Type-Driven Development with F#</a>.
+  </p>
+  <p>
+    <pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:green;">//&nbsp;Auxiliary&nbsp;types</span>
+<span style="color:blue;">type</span>&nbsp;MessageHandler&nbsp;=&nbsp;<span style="color:#2b91af;">unit</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:#2b91af;">Timed</span>&lt;<span style="color:#2b91af;">unit</span>&gt;
+ 
+<span style="color:green;">//&nbsp;State&nbsp;data</span>
+ 
+<span style="color:blue;">type</span>&nbsp;<span style="color:#2b91af;">ReadyData</span>&nbsp;=&nbsp;<span style="color:#2b91af;">Timed</span>&lt;<span style="color:#2b91af;">TimeSpan</span>&nbsp;<span style="color:#2b91af;">list</span>&gt;
+ 
+<span style="color:blue;">type</span>&nbsp;<span style="color:#2b91af;">ReceivedMessageData</span>&nbsp;=&nbsp;<span style="color:#2b91af;">Timed</span>&lt;<span style="color:#2b91af;">TimeSpan</span>&nbsp;<span style="color:#2b91af;">list</span>&nbsp;*&nbsp;MessageHandler&gt;
+ 
+<span style="color:blue;">type</span>&nbsp;<span style="color:#2b91af;">NoMessageData</span>&nbsp;=&nbsp;<span style="color:#2b91af;">Timed</span>&lt;<span style="color:#2b91af;">TimeSpan</span>&nbsp;<span style="color:#2b91af;">list</span>&gt;</pre>
+  </p>
+  <p>
+    All of these types are simply type aliases, so in fact they aren't strictly necessary. It's just helpful to give things a name from time to time.
+  </p>
+  <p>
+    The auxiliary MessageHandler type is a function that takes nothing (unit) as input, and returns 'timed nothing' as output. You may wonder how that handles a message. The intent is that any MessageHandler function is going to close over a real message: when a client calls it, it handles the message it closes over, and returns the time it took. The reason for this design is that the Polling Consumer doesn't need to 'see' the message; it only needs to know that it was handled, and how long it took. This design keeps the Polling Consumer decoupled from any particular message types.
+  </p>
+  <p>
+    There are three state data types: one for each state.
+  </p>
+  <p>
+    Hey! What about the End state?
+  </p>
+  <p>
+    It turns out that the End state doesn't need any associated data, because once the End state is reached, no more decisions should be made.
+  </p>
+  <p>
+    As promised, the three other states all contain a Timed&lt;'something&gt;. The timing information tells us when the transition into the given state started and stopped.
+  </p>
+  <p>
+    The data for the Ready and No message states are the same: Timed&lt;TimeSpan list&gt;, but notice that the TimeSpan list also appears in the Received state. This list of durations contains the statistics that the Polling Consumer measures. Every time it handles a message, it needs to measure how long it took. All such measurements are collected in this TimeSpan list, which must be passed around in all states so that the data isn't lost.
+  </p>
+  <p>
+    The data for the Received message state is different, because it also contains a MessageHandler. Every time the Polling Consumer receives a message, this message must be composed into a MessageHandler, and the MessageHandler passed as the second element of the state's tuple of data.
+  </p>
+  <p>
+    With all four states defined, we can now define a discriminated union that models a snapshot of the state machine:
+  </p>
+  <p>
+    <pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">type</span>&nbsp;<span style="color:#2b91af;">PollingConsumer</span>&nbsp;=
+|&nbsp;ReadyState&nbsp;<span style="color:blue;">of</span>&nbsp;<span style="color:#2b91af;">ReadyData</span>
+|&nbsp;ReceivedMessageState&nbsp;<span style="color:blue;">of</span>&nbsp;<span style="color:#2b91af;">ReceivedMessageData</span>
+|&nbsp;NoMessageState&nbsp;<span style="color:blue;">of</span>&nbsp;<span style="color:#2b91af;">NoMessageData</span>
+|&nbsp;StoppedState</pre>
+  </p>
+  <p>
+    That is, a PollingConsumer value represents a state of the Polling Consumer state machine.
+  </p>
+  <p>
+    Already at this stage, it should be apparent that F#'s type system is a great thinking tool, because it enables you to define type aliases declaratively, with only a single line of code here and there. Still, the advantage of the type system becomes much more apparent once you start to use these types.
+  </p>
+  <p>
+    <strong>Transitions</strong>
+  </p>
+  <p>
+    With data types defined for each state, the next step of implementing a finite state machine is to define a function for each state. These functions are called <em>transitions</em>, and they should take a concrete state as input, and return a new PollingConsumer value as output. Since there are four concrete states in this example, there must be four transitions. Each should have the type <code>'concreteData&nbsp;-&gt;&nbsp;PollingConsumer</code>, e.g. <code>ReadyData&nbsp;-&gt;&nbsp;PollingConsumer</code>, <code>ReceivedMessageData&nbsp;-&gt;&nbsp;PollingConsumer</code>, etc.
+  </p>
+  <p>
+    As you can see, we're already getting guidance from the type system, because we now know the <em>types</em> of the four transitions we must implement.
+  </p>
+  <p>
+    Let's begin with the simplest one. When the Polling Consumer is Stopped, it should stay Stopped. That's easy. The transition should have the type <code>unit&nbsp;-&gt;&nbsp;PollingConsumer</code>, because there's no data associated with the StoppedState.
+  </p>
+  <p>
+    Your first attempt might look like this:
+  </p>
+  <p>
+    <pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">let</span>&nbsp;transitionFromStopped&nbsp;()&nbsp;:&nbsp;<span style="color:#2b91af;">PollingConsumer</span>&nbsp;=&nbsp;??
+</pre>
+  </p>
+  <p>
+    This obviously doesn't compile because of the question marks (which aren't proper F# syntax). Knowing that you must return a PollingConsumer value, which one (of ReadyState, ReceivedMessageState, NoMessageState, or StoppedState) should you return?
+  </p>
+  <p>
+    Once the Polling Consumer is in the Stopped state, it should stay in the Stopped state, so the answer is easy: this transition should always return the Stopped state:
+  </p>
+  <p>
+    <pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">let</span>&nbsp;transitionFromStopped&nbsp;()&nbsp;:&nbsp;<span style="color:#2b91af;">PollingConsumer</span>&nbsp;=&nbsp;StoppedState
+</pre>
+  </p>
+  <p>
+    It's as easy as that.
+  </p>
+  <p>
+    Since the (unit) input into the function doesn't do anything, we can remove it, effectively turning this particular function into a value:
+  </p>
+  <p>
+    <pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">let</span>&nbsp;transitionFromStopped&nbsp;:&nbsp;<span style="color:#2b91af;">PollingConsumer</span>&nbsp;=&nbsp;StoppedState
+</pre>
+  </p>
+  <p>
+    This is a degenerate case, and not something that always happens.
+  </p>
+  <p>
+    <strong>Another transition</strong>
+  </p>
+  <p>
+    Let's do another transition!
+  </p>
+  <p>
+    Another good example is the transition out of the No message state. This transition must have the type <code>NoMessageData&nbsp;-&gt;&nbsp;PollingConsumer</code>, so you can start typing:
+  </p>
+  <p>
+    <pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">let</span>&nbsp;transitionFromNoMessage&nbsp;(nm&nbsp;:&nbsp;<span style="color:#2b91af;">NoMessageData</span>)&nbsp;:&nbsp;<span style="color:#2b91af;">PollingConsumer</span>&nbsp;=
+</pre>
+  </p>
+  <p>
+    This function takes NoMessageData as input, and returns a PollingConsumer value as output. Now you only need to figure out how to implement it. What should it do?
+  </p>
+  <p>
+    If you look at the state transition diagram, you can see that from the No message state, the Polling Consumer should either decide to quit, or transition back to the Ready state after idling. That's the high-level behaviour we're aiming for, so let's try to put it into code:
+  </p>
+  <p>
+    <pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">let</span>&nbsp;transitionFromNoMessage&nbsp;(nm&nbsp;:&nbsp;<span style="color:#2b91af;">NoMessageData</span>)&nbsp;:&nbsp;<span style="color:#2b91af;">PollingConsumer</span>&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;shouldIdle&nbsp;nm
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">then</span>&nbsp;idle&nbsp;()&nbsp;|&gt;&nbsp;ReadyState
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">else</span>&nbsp;StoppedState</pre>
+  </p>
+  <p>
+    This doesn't compile, because neither <code>shouldIdle</code> nor <code>idle</code> are defined, but this is the overall behaviour we're aiming for.
+  </p>
+  <p>
+    Let's keep it high-level, so we'll simply promote the undefined values to arguments:
+  </p>
+  <p>
+    <pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">let</span>&nbsp;transitionFromNoMessage&nbsp;shouldIdle&nbsp;idle&nbsp;(nm&nbsp;:&nbsp;<span style="color:#2b91af;">NoMessageData</span>)&nbsp;:&nbsp;<span style="color:#2b91af;">PollingConsumer</span>&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;shouldIdle&nbsp;nm
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">then</span>&nbsp;idle&nbsp;()&nbsp;|&gt;&nbsp;ReadyState
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">else</span>&nbsp;StoppedState</pre>
+  </p>
+  <p>
+    This compiles! Notice how type inference enables you to easily introduce new arguments without breaking your flow. In statically typed languages like C# or Java, you'd have to stop and declare the type of the arguments. If the types you need for those arguments doesn't exist, you'd have to go and create them first. That'd often mean creating new interfaces or classes in new files. That breaks your flow when you're actually trying to figure out how to model the high-level behaviour of a system.
+  </p>
+  <p>
+    Often, figuring out how to model the behaviour of a system is an exploratory process, so perhaps you don't get it right in the first attempt. Again, with languages like C# or Java, you'd have to waste a lot of time fiddling with the argument declarations, and perhaps the types you'd have to define in order to declare those arguments.
+  </p>
+  <p>
+    In F#, you can stay focused on the high-level behaviour, and take advantage of type inference to subsequently contemplate if all looks good.
+  </p>
+  <p>
+    In the transitionFromNoMessage function, the <code>shouldIdle</code> argument is inferred to be of the type <code>NoMessageData&nbsp;-&gt;&nbsp;bool</code>. That seems reasonable. It's a function that determines whether or not to idle, based on a NoMessageData value. Recall that NoMessageData is an alias for Timed&lt;TimeSpan&nbsp;list&gt;, and that all transition functions take time and return Timed&lt;'something&gt; in order to capture the time spent in transition. This means that the time data in NoMessageData contains information about when the transition <em>into the No message state</em> started and stopped. That should be plenty of information necessary to make the decision on whether there's time to idle or not. In a future article, you'll see how to implement a shouldIdle function.
+  </p>
+  <p>
+    What about the <code>idle</code> argument, then? As the transitionFromNoMessage function is currently written, this argument is inferred to be of the type <code>unit&nbsp;-&gt;&nbsp;ReadyData</code>. Recall that ReadyData is an alias for Timed&lt;TimeSpan&nbsp;list&gt;; what we're really looking at here, is a function of the type <code>unit&nbsp;-&gt;&nbsp;Timed&lt;TimeSpan&nbsp;list&gt;</code>. In other words, a function that produces a Timed&lt;TimeSpan&nbsp;list&gt; out of thin air! That doesn't sound right. Which TimeSpan&nbsp;list should such a function return? Recall that this list contains the statistics for all the previously handled messages. How can a function produce these statistics given nothing (unit) as input?
+  </p>
+  <p>
+    This seems extra strange, because the statistics are already there, contained in the <code>nm</code> argument, which is a NoMessageData (that is: a Timed&lt;TimeSpan&nbsp;list&gt;) value. The inferred signature of <code>idle</code> suggests that the statistics contained in <code>nm</code> are being ignored.
+  </p>
+  <p>
+    Notice how the type inference gives us an opportunity to <em>contemplate</em> the current implementation. In this case, just by looking at inferred types, we realise that something is wrong.
+  </p>
+  <p>
+    Instead, let's change the transitionFromNoMessage function:
+  </p>
+  <p>
+    <pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">let</span>&nbsp;transitionFromNoMessage&nbsp;shouldIdle&nbsp;idle&nbsp;(nm&nbsp;:&nbsp;<span style="color:#2b91af;">NoMessageData</span>)&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;shouldIdle&nbsp;nm
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">then</span>&nbsp;idle&nbsp;()&nbsp;|&gt;&nbsp;<span style="color:#2b91af;">Untimed</span>.withResult&nbsp;nm.Result&nbsp;|&gt;&nbsp;ReadyState
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">else</span>&nbsp;StoppedState</pre>
+  </p>
+  <p>
+    This seems more reasonable: the function idles, but then takes the timing information from idling, but replaces it with the statistics from <code>nm</code>. The inferred type of <col>idle</col> is now <code>unit&nbsp;-&gt;&nbsp;Timed&lt;'a&gt;</code>. That seems more reasonable. It's any function that returns Timed&lt;'a&gt;, where the timing information indicates when idling started and stopped.
+  </p>
+  <p>
+    This still doesn't look like a pure function, because it relies on the side effect that time passes, but it turns out to be good enough for this purpose.
+  </p>
+  <p>
+    <strong>Higher-order functions</strong>
+  </p>
+  <p>
+    Perhaps one thing is bothering you: I said that the transition out of the No message state should have the type <code>NoMessageData&nbsp;-&gt;&nbsp;PollingConsumer</code>, but the final version of transitionFromNoMessage has the type <code>(NoMessageData&nbsp;-&gt;&nbsp;bool)&nbsp;-&gt;&nbsp;(unit&nbsp;-&gt;&nbsp;Timed&lt;'a&gt;)&nbsp;-&gt;&nbsp;NoMessageData&nbsp;-&gt;&nbsp;PollingConsumer</code>!
+  </p>
+  <p>
+    The transitionFromNoMessage function has turned out to be a <a href="https://en.wikipedia.org/wiki/Higher-order_function">higher-order function</a>, because it takes other functions as arguments.
+  </p>
+  <p>
+    Even though it doesn't exactly have the desired type, it can be partially applied. Imagine that you have two functions named <code>shouldIdle'</code> and <code>idle'</code>, with the appropriate types, you can use them to partially apply the transitionFromNoMessage function:
+  </p>
+  <p>
+    <pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">let</span>&nbsp;transitionFromNoMessage&#39;&nbsp;=&nbsp;transitionFromNoMessage&nbsp;shouldIdle&#39;&nbsp;idle&#39;
+</pre>
+  </p>
+  <p>
+    The transitionFromNoMessage' function has the type <code>NoMessageData&nbsp;-&gt;&nbsp;PollingConsumer</code> - exactly what we need!
+  </p>
+  <p>
+    <strong>All transitions</strong>
+  </p>
+  <p>
+    In this article, you've seen two of the four transitions necessary for defining the behaviour of the Polling Consumer. In total, all four are required:
+    <ul>
+      <li>ReadyData&nbsp;-&gt;&nbsp;PollingConsumer</li>
+      <li>ReceivedMessageData&nbsp;-&gt;&nbsp;PollingConsumer</li>
+      <li>NoMessageData&nbsp;-&gt;&nbsp;PollingConsumer</li>
+      <li>(StoppedData)&nbsp;-&gt;&nbsp;PollingConsumer</li>
+    </ul>
+    In this list, I put StoppedData in parentheses, because this type doesn't actually exist; instead of the fourth function, we have the degenerate transitionFromStopped <em>value</em>.
+  </p>
+  <p>
+    In this article, I will leave it as an exercise to you to implement <code>ReadyData&nbsp;-&gt;&nbsp;PollingConsumer</code> and <code>ReceivedMessageData&nbsp;-&gt;&nbsp;PollingConsumer</code>. If you want to see full implementations of these, as well as a more detailed discussion of this general topic, please watch my <a href="http://www.shareasale.com/r.cfm?u=1017843&b=611266&m=53701&afftrack=&urllink=www%2Epluralsight%2Ecom%2Fcourses%2Ffsharp%2Dtype%2Ddriven%2Ddevelopment">Type-Driven Development with F#</a> Pluralsight course.
+  </p>
+  <p>
+    Imagine that we now have all four transitions. This makes it easy to implement the overall state machine.
+  </p>
+  <p>
+    <strong>State machine</strong>
+  </p>
+  <p>
+    Here's one way to execute the state machine:
+  </p>
+  <p>
+    <pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">let</span>&nbsp;<span style="color:blue;">rec</span>&nbsp;run&nbsp;trans&nbsp;state&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;nextState&nbsp;=&nbsp;trans&nbsp;state
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">match</span>&nbsp;nextState&nbsp;<span style="color:blue;">with</span>
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;StoppedState&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;StoppedState
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;_&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;run&nbsp;trans&nbsp;nextState</pre>
+  </p>
+  <p>
+    This run function has the inferred type <code>(PollingConsumer&nbsp;-&gt;&nbsp;PollingConsumer)&nbsp;-&gt;&nbsp;PollingConsumer&nbsp;-&gt;&nbsp;PollingConsumer</code>. It takes a <code>trans</code> function that turns one PollingConsumer into another, as well as an initial PollingConsumer value. It then proceeds to recursively call the trans function and itself, until it reaches a StoppedState value.
+  </p>
+  <p>
+    How can we implement a <code>PollingConsumer&nbsp;-&gt;&nbsp;PollingConsumer</code> function?
+  </p>
+  <p>
+    That's easy, because we have all four transition functions, so we can use them:
+  </p>
+  <p>
+    <pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">let</span>&nbsp;transition&nbsp;shouldPoll&nbsp;poll&nbsp;shouldIdle&nbsp;idle&nbsp;state&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">match</span>&nbsp;state&nbsp;<span style="color:blue;">with</span>
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;ReadyState&nbsp;r&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;transitionFromReady&nbsp;shouldPoll&nbsp;poll&nbsp;r
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;ReceivedMessageState&nbsp;rm&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;transitionFromReceived&nbsp;rm
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;NoMessageState&nbsp;nm&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;transitionFromNoMessage&nbsp;shouldIdle&nbsp;idle&nbsp;nm
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;StoppedState&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;transitionFromStopped</pre>
+  </p>
+  <p>
+    The <code>transition</code> function has the type <code>(ReadyData&nbsp;-&gt;&nbsp;bool) -&gt;&nbsp;(unit&nbsp;-&gt;&nbsp;Timed<MessageHandler option>) -&gt;&nbsp;(NoMessageData&nbsp;-&gt;&nbsp;bool) -&gt;&nbsp;(unit&nbsp;-&gt;&nbsp;Timed&lt;'a&gt;) -&gt;&nbsp;PollingConsumer -&gt;&nbsp;PollingConsumer</code>. That looks positively horrendous, but it's not so bad; you can partially apply it in order to get a function with the desired type <code>PollingConsumer&nbsp;-&gt;&nbsp;PollingConsumer</code>.
+  </p>
+  <p>
+    <strong>Implicit to-do list</strong>
+  </p>
+  <p>
+    Even though we now have the <code>run</code> and <code>transition</code> functions, we only have the high-level behaviour in place. We still have a lot of implementation details left.
+  </p>
+  <p>
+    This is, in my opinion, one of the benefits of this approach to using the low-friction type system: First, you can focus on the desired <em>behaviour</em> of the system. Then, you address various implementation concerns. It's outside-in development.
+  </p>
+  <p>
+    Another advantage is that at this point, it's quite clear what to do next.
+  </p>
+  <p>
+    The transitionFromNoMessage function clearly states that it needs the functions <code>shouldIdle</code> and <code>idle</code> as arguments. You can't call the function without these arguments, so it's clear that you must supply them.
+  </p>
+  <p>
+    Not only did the type system allow us to introduce these function arguments with low friction, but <em>it also tells us the types they should have</em>.
+  </p>
+  <p>
+    In my <a href="http://www.shareasale.com/r.cfm?u=1017843&b=611266&m=53701&afftrack=&urllink=www%2Epluralsight%2Ecom%2Fcourses%2Ffsharp%2Dtype%2Ddriven%2Ddevelopment">Pluralsight course</a> you can see how the transition out of the Ready state also turns out to be a higher-order function that takes two other functions as arguments.
+  </p>
+  <p>
+    In all, that's four functions we still need to implement before we can use the state machine. It's not going to be possible to partially apply the <code>transition</code> function before these four functions are available.
+  </p>
+  <p>
+    The type system thereby tells us that we still need to implement these four functions:
+    <ul>
+      <li>ReadyData&nbsp;-&gt;&nbsp;bool</li>
+      <li>unit&nbsp;-&gt;&nbsp;Timed&lt;MessageHandler option&gt;</li>
+      <li>NoMessageData&nbsp;-&gt;&nbsp;bool</li>
+      <li>unit&nbsp;-&gt;&nbsp;Timed&lt;'a&gt;</li>
+    </ul>
+    It's almost as though the type system implicitly provides a to-do list. There's no reason to keep such a list on a piece of paper on the side. As long as we still have work to do, we're not going to be able to compile a composition of the <code>run</code> function. Once we can compile a composition of the <code>run</code> function, there are no implementation details left.
+  </p>
+  <p>
+    <strong>Summary</strong>
+  </p>
+  <p>
+    Although this turned out to be quite a lengthy article, it only provides a sketch of the technique. You can see more code details, and a more in-depth discussion of the approach, in my <a href="http://www.shareasale.com/r.cfm?u=1017843&b=611266&m=53701&afftrack=&urllink=www%2Epluralsight%2Ecom%2Fcourses%2Ffsharp%2Dtype%2Ddriven%2Ddevelopment">Type-Driven Development with F#</a> Pluralsight course.
+  </p>
+  <p>
+    The F# type system can be used in ways that C# and Java's type systems cant:
+    <ul>
+      <li><strong>Dependencies</strong> can be introduced <em>just-in-time</em> as function arguments.</li>
+      <li>You can <strong>contemplate</strong> the inferred types to evaluate the soundness of the design.</li>
+      <li>The type system implicitly keeps a <strong>to-do list</strong> for you.</li>
+    </ul>
+    In future articles, I'll demonstrate how to implement some of the missing functions, as well as how to compose the Polling Consumer.
+  </p>
+</div>
