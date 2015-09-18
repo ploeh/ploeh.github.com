@@ -1,0 +1,256 @@
+---
+layout: post
+title: "Temporary Field code smell"
+date: 2015-09-18 11:52 UTC
+tags: [Software Design]
+---
+{% include JB/setup %}
+
+<div id="post">
+	<p>
+		<em>Temporary Field is a well-known code smell. Here's an example and remedy.</em>
+	</p>
+	<p>
+		The <em>Temporary Field</em> code smell was described more than a decade ago, but I keep encountering it when doing code reviews. Despite its vintage, I couldn't find a good example, so I decided to provide one.
+	</p>
+	<p>
+		The code smell is described in <a href="http://amzn.to/YPdQDf">Refactoring</a>:
+	</p>
+	<blockquote>
+		<p>
+			"Sometimes you see an object in which an instance variable is set only in certain circumstances. Such code is difficult to understand, because you expect an object to need all of its variables. [...]
+		</p>
+		<p>
+			"A common case of temporary field occurs when a complicated algorithm needs several variables. Because the programmer didn't want to pass around a huge parameter list (who does?), he put them in fields."
+		</p>
+		<p>
+			- <em><a href="http://amzn.to/YPdQDf">Refactoring</a></em>, Martin Fowler et al., Addison-Wesley 1999. p. 84
+		</p>
+	</blockquote>
+	<p>
+		Unfortunately, <em>Refactoring</em> doesn't provide an example, and I couldn't find I good, self-contained example on the web either.
+	</p>
+	<p>
+		<strong>Example: estimate a duration</strong>
+	</p>
+	<p>
+		In this example, a developer was asked to provide an estimate of a duration, based on a collection of previously observed durations. The requirements are these:
+		<ul>
+			<li>There's a collection of previously observed durations. These must be used as statistics upon which to base the estimate.</li>
+			<li>It's better to estimate too high than too low.</li>
+			<li>Durations are assumed to be <a href="https://en.wikipedia.org/wiki/Normal_distribution">normal distributed</a>.</li>
+			<li>The estimate should be higher than the actual duration in more than 99% of the times.</li>
+			<li>If there are no previous observations, a default estimate must be used as a fall-back mechanism.</li>
+		</ul>
+		Does this sound like a <em>complicated algorithm?</em>
+	</p>
+	<p>
+		It's not that bad, actually. Because the distribution is assumed to be normal, you can find a good estimate by calculating the average, and add three times the <a href="https://en.wikipedia.org/wiki/Standard_deviation">standard deviation</a>.
+	</p>
+	<p>
+		Here's how our developer attempted to solve the problem:
+	</p>
+	<p>
+		<pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">Estimator</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;<span style="color:#2b91af;">TimeSpan</span>&nbsp;defaultEstimate;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:#2b91af;">IReadOnlyCollection</span>&lt;<span style="color:#2b91af;">TimeSpan</span>&gt;&nbsp;durations;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:#2b91af;">TimeSpan</span>&nbsp;average;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:#2b91af;">TimeSpan</span>&nbsp;standardDeviation;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;Estimator(<span style="color:#2b91af;">TimeSpan</span>&nbsp;defaultEstimate)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.defaultEstimate&nbsp;=&nbsp;defaultEstimate;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">TimeSpan</span>&nbsp;CalculateEstimate(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">IReadOnlyCollection</span>&lt;<span style="color:#2b91af;">TimeSpan</span>&gt;&nbsp;durations)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;(durations&nbsp;==&nbsp;<span style="color:blue;">null</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">throw</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">ArgumentNullException</span>(<span style="color:blue;">nameof</span>(durations));
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;(durations.Count&nbsp;==&nbsp;0)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:blue;">this</span>.defaultEstimate;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.durations&nbsp;=&nbsp;durations;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.CalculateAverage();
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.CalculateStandardDeviation();
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;margin&nbsp;=&nbsp;<span style="color:#2b91af;">TimeSpan</span>.FromTicks(<span style="color:blue;">this</span>.standardDeviation.Ticks&nbsp;*&nbsp;3);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:blue;">this</span>.average&nbsp;+&nbsp;margin;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">void</span>&nbsp;CalculateAverage()
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.average&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">TimeSpan</span>.FromTicks(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(<span style="color:blue;">long</span>)<span style="color:blue;">this</span>.durations.Average(ts&nbsp;=&gt;&nbsp;ts.Ticks));
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">void</span>&nbsp;CalculateStandardDeviation()
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;variance&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.durations.Average(ts&nbsp;=&gt;&nbsp;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Math</span>.Pow(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(ts&nbsp;-&nbsp;<span style="color:blue;">this</span>.average).Ticks,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;2));
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.standardDeviation&nbsp;=&nbsp;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">TimeSpan</span>.FromTicks((<span style="color:blue;">long</span>)<span style="color:#2b91af;">Math</span>.Sqrt(variance));
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+	</p>
+	<p>
+		The CalculateEstimate method directly uses the temporary field <code>durations</code>, as well as implicitly the fields <code>average</code> and <code>standardDeviation</code>. The reason for this is to avoid passing parameters around. Both the average and the standard deviation depend on the <code>durations</code>, but the standard deviation also depends on the average.
+	</p>
+	<p>
+		These dependencies are difficult to see in this code snippet:
+	</p>
+	<p>
+		<pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">this</span>.durations&nbsp;=&nbsp;durations;
+<span style="color:blue;">this</span>.CalculateAverage();
+<span style="color:blue;">this</span>.CalculateStandardDeviation();</pre>
+	</p>
+	<p>
+		What if I wanted to switch the order around?
+	</p>
+	<p>
+		<pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">this</span>.durations&nbsp;=&nbsp;durations;
+<span style="color:blue;">this</span>.CalculateStandardDeviation();
+<span style="color:blue;">this</span>.CalculateAverage();</pre>
+	</p>
+	<p>
+		<em>This compiles!</em> It also produces a result if you invoke the CalculateEstimate method. No exception is thrown, but the result returned is incorrect!
+	</p>
+	<p>
+		Not only is this code difficult to understand, it's also brittle. Furthermore, it's not thread-safe.
+	</p>
+	<p>
+		This was most likely done with the best of intentions. After all, in <a href="http://amzn.to/XCJi9X">Clean Code</a> you learn that methods with zero arguments are better than methods with one argument (which are better than methods with two arguments, and so on).
+	</p>
+	<p>
+		There are better ways to factor the code, though.
+	</p>
+	<p>
+		<strong>Extract Class</strong>
+	</p>
+	<p>
+		In <em>Refactoring</em>, the suggested cure is to extract a class that contains only the temporary fields. This refactoring is called <em>Extract Class</em>. Your first step can be to introduce a private, nested class within the containing class. In the case of the example, you might call this class <em>DurationStatistics</em>. It can be used from CalculateEstimate in this way:
+	</p>
+	<p>
+		<pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">TimeSpan</span>&nbsp;CalculateEstimate(
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">IReadOnlyCollection</span>&lt;<span style="color:#2b91af;">TimeSpan</span>&gt;&nbsp;durations)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;(durations&nbsp;==&nbsp;<span style="color:blue;">null</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">throw</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">ArgumentNullException</span>(<span style="color:blue;">nameof</span>(durations));
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;(durations.Count&nbsp;==&nbsp;0)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:blue;">this</span>.defaultEstimate;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;stats&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">DurationStatistics</span>(durations);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;margin&nbsp;=&nbsp;<span style="color:#2b91af;">TimeSpan</span>.FromTicks(stats.StandardDeviation.Ticks&nbsp;*&nbsp;3);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;stats.Average&nbsp;+&nbsp;margin;
+}</pre>
+	</p>
+	<p>
+		It's now much clearer what's going on. You have some statistics based on the <code>durations</code>, and those contain both the average and the standard deviation. The flow of data is also clear: you need the <code>stats</code> to get the average and the standard deviation, and you need <code>stats.StandardDeviation</code> in order to calculate the <code>margin</code>, and the <code>margin</code> before you can calculate the return value. If you attempt to move those lines of code around, it's no longer going to compile.
+	</p>
+	<p>
+		This solution is also thread-safe.
+	</p>
+	<p>
+		Here's the full code of the Estimator class, after the Extract Class refactoring:
+	</p>
+	<p>
+		<pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">Estimator</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;<span style="color:#2b91af;">TimeSpan</span>&nbsp;defaultEstimate;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;Estimator(<span style="color:#2b91af;">TimeSpan</span>&nbsp;defaultEstimate)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.defaultEstimate&nbsp;=&nbsp;defaultEstimate;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">TimeSpan</span>&nbsp;CalculateEstimate(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">IReadOnlyCollection</span>&lt;<span style="color:#2b91af;">TimeSpan</span>&gt;&nbsp;durations)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;(durations&nbsp;==&nbsp;<span style="color:blue;">null</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">throw</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">ArgumentNullException</span>(<span style="color:blue;">nameof</span>(durations));
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;(durations.Count&nbsp;==&nbsp;0)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:blue;">this</span>.defaultEstimate;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;stats&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">DurationStatistics</span>(durations);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;margin&nbsp;=&nbsp;<span style="color:#2b91af;">TimeSpan</span>.FromTicks(stats.StandardDeviation.Ticks&nbsp;*&nbsp;3);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;stats.Average&nbsp;+&nbsp;margin;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">DurationStatistics</span>
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;<span style="color:#2b91af;">IReadOnlyCollection</span>&lt;<span style="color:#2b91af;">TimeSpan</span>&gt;&nbsp;durations;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;<span style="color:#2b91af;">Lazy</span>&lt;<span style="color:#2b91af;">TimeSpan</span>&gt;&nbsp;average;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;<span style="color:#2b91af;">Lazy</span>&lt;<span style="color:#2b91af;">TimeSpan</span>&gt;&nbsp;standardDeviation;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;DurationStatistics(<span style="color:#2b91af;">IReadOnlyCollection</span>&lt;<span style="color:#2b91af;">TimeSpan</span>&gt;&nbsp;durations)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;(durations&nbsp;==&nbsp;<span style="color:blue;">null</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">throw</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">ArgumentNullException</span>(<span style="color:blue;">nameof</span>(durations));
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;(durations.Count&nbsp;==&nbsp;0)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">throw</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">ArgumentException</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#a31515;">&quot;Empty&nbsp;collection&nbsp;not&nbsp;allowed.&quot;</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">nameof</span>(durations));
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.durations&nbsp;=&nbsp;durations;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.average&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Lazy</span>&lt;<span style="color:#2b91af;">TimeSpan</span>&gt;(<span style="color:blue;">this</span>.CalculateAverage);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.standardDeviation&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Lazy</span>&lt;<span style="color:#2b91af;">TimeSpan</span>&gt;(<span style="color:blue;">this</span>.CalculateStandardDeviation);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">TimeSpan</span>&nbsp;Average
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">get</span>&nbsp;{&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:blue;">this</span>.average.Value;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">TimeSpan</span>&nbsp;StandardDeviation
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">get</span>&nbsp;{&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:blue;">this</span>.standardDeviation.Value;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:#2b91af;">TimeSpan</span>&nbsp;CalculateAverage()
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:#2b91af;">TimeSpan</span>.FromTicks(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(<span style="color:blue;">long</span>)<span style="color:blue;">this</span>.durations.Average(ts&nbsp;=&gt;&nbsp;ts.Ticks));
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:#2b91af;">TimeSpan</span>&nbsp;CalculateStandardDeviation()
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;variance&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.durations.Average(ts&nbsp;=&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Math</span>.Pow(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(ts&nbsp;-&nbsp;<span style="color:blue;">this</span>.average.Value).Ticks,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;2));
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:#2b91af;">TimeSpan</span>.FromTicks((<span style="color:blue;">long</span>)<span style="color:#2b91af;">Math</span>.Sqrt(variance));
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+	</p>
+	<p>
+		As you can see, the Estimator class now only has a single read-only field, which ensures that it isn't temporary.
+	</p>
+	<p>
+		The original intent of not passing parameters around is still preserved, so this solution still adheres to that Clean Code principle.
+	</p>
+	<p>
+		The DurationStatistics class lazily calculates the average and standard deviation, and memoizes their results (or rather, that's what Lazy&lt;T&gt; does).
+	</p>
+	<p>
+		Instances of DurationStatistics have a shorter lifetime than the containing Estimator object.
+	</p>
+	<p>
+		The DurationStatistics class is a private, nested class, but a next step might be to pull it out to a public class in its own right. You don't have to do this. Sometimes I leave such classes as private classes, because they only exist to organise the code better; their purpose and behaviour are still narrow in scope, and associated with the containing class. In other cases, such a refactoring may uncover a great way to model a particular type of problem. If that's the case, making it a public class could make the entire code base better, because you've now introduced a reusable concept.
+	</p>
+	<p>
+		<strong>Summary</strong>
+	</p>
+	<p>
+		Class fields are intended to be used by the <em>class</em>. They constitute the data part of <em>data with behaviour</em>. If you have temporary values, either pass them around as arguments, or extract a new class to contain them.
+	</p>
+</div>
