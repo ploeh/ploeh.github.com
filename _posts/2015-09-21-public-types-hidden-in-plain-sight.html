@@ -1,0 +1,214 @@
+---
+layout: post
+title: "Public types hidden in plain sight"
+date: 2015-09-21 14:12 UTC
+tags: [Software Design]
+---
+{% include JB/setup %}
+
+<div id="post">
+	<p>
+		<em>Instead of making types internal to a package, you can hide them in plain sight as public types.</em>
+	</p>
+	<p>
+		When I review object-oriented code, I often see lots of <a href="https://msdn.microsoft.com/en-us/library/7c5ka91b">internal</a> (<a href="https://docs.oracle.com/javase/tutorial/java/javaOO/accesscontrol.html">package-private</a> in Java) classes and members. Sometimes, most of a code base is written at that access level.
+	</p>
+	<p>
+		When I ask for the reasoning behind this, the answer is invariably: <em>encapsulation</em>.
+	</p>
+	<p>
+		Encapsulation is one of the most misunderstood concepts in programming. If you think it's about making everything inaccessible, then there's only one logical conclusion: all your code must have this API:
+	</p>
+	<p>
+		<pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">Program</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:blue;">int</span>&nbsp;Main(<span style="color:blue;">string</span>[]&nbsp;args)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;Everything&nbsp;else&nbsp;goes&nbsp;here!</span>
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+	</p>
+	<p>
+		If you've seen my <a href="http://www.shareasale.com/r.cfm?u=1017843&b=611266&m=53701&afftrack=&urllink=www%2Epluralsight%2Ecom%2Fcourses%2Fencapsulation%2Dsolid">Pluralsight course about encapsulation</a>, you'll know that I prefer Bertrand Meyer's view, as outlined in <a href="http://amzn.to/1claOin">Object-Oriented Software Construction</a>. Essentially, it's about <em>design by contract</em> (pre- and post-conditions).
+	</p>
+	<p>
+		Once I start to ask more pointed questions about enthusiastic use of internal-only access, it turns out that often, the underlying reason is that the developers want to be able to change the design of their internal types and members, without breaking existing clients. A noble goal.
+	</p>
+	<p>
+		Imagine that such a code base has existing clients. While the maintainers can't change the public types without breaking these clients, they can change all internal types as much as they want.
+	</p>
+	<p>
+		Unfortunately, there are disadvantages to this design strategy. You can't easily unit test such code bases. There are ways, but none of them are good.
+	</p>
+	<p>
+		What if, instead of making types internal, you made them public? Are there ways to prevent clients from relying on such types? Yes, plenty of ways.
+	</p>
+	<p>
+		<strong>Public, append-only</strong>
+	</p>
+	<p>
+		My preferred approach to this problem is to <em>make types public anyway</em>. If my overall feeling about a type is that "it seems okay", I make it public, even if I know that there's a risk involved with this.
+	</p>
+	<p>
+		Consider, as an example, the private DurationStatistics class I extracted in <a href="http://blog.ploeh.dk/2015/09/18/temporary-field-code-smell">a recent article</a>. In that article, I kept the class private, because I wanted to discuss visibility in a separate article.
+	</p>
+	<p>
+		You can easily promote the DurationStatistics class to a public class:
+	</p>
+	<p>
+		<pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">DurationStatistics</span>
+</pre>
+	</p>
+	<p>
+		Here you only see the declaration of the class, because the implementation is exactly the same as in <a href="http://blog.ploeh.dk/2015/09/18/temporary-field-code-smell">the other article</a>. The code is moved out of the Estimator class and put into its own file, though.
+	</p>
+	<p>
+		How can you be sure that DurationStatistics is 'done'? How can you be sure that you'll not going to need to change it later?
+	</p>
+	<p>
+		You can't.
+	</p>
+	<p>
+		You can, however, deal with that when it occurs. You can still add new members to the class, but you can't remove members or change the type's name.
+	</p>
+	<p>
+		If you need to <em>change</em> something (thereby breaking compatibility), then <em>don't</em> change it. Instead, <em>add</em> the new type or member, but leave the old artefact in place and <em>deprecate it</em>. In .NET, you can do this by adorning the member or type with the <a href="https://msdn.microsoft.com/en-us/library/system.obsoleteattribute">[Obsolete] attribute</a>. You can even add a message that points clients to the new, preferred way of doing things:
+	</p>
+	<p>
+		<pre style="font-family:Consolas;font-size:13;color:black;">[<span style="color:#2b91af;">Obsolete</span>(<span style="color:#a31515;">&quot;DurationStatistics&nbsp;is&nbsp;being&nbsp;retired&nbsp;(our&nbsp;fault).&nbsp;Use&nbsp;Foo&nbsp;instead.&quot;</span>)]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">DurationStatistics</span></pre>
+	</p>
+	<p>
+		This will cause a compiler warning in all client code using the DurationStatistics class. You should <a href="http://blog.ploeh.dk/2014/12/23/exception-messages-are-for-programmers">make the message as helpful and friendly</a> as possible.
+	</p>
+	<p>
+		This may leave your code with compiler warnings. This is good, because you should work to remove these warnings from your own code base. The only place you should leave them in place is in your unit tests. As long as you have a deprecated type in your published code base, you should also keep it covered by unit tests. This will cause compiler warnings in your unit tests, but you can suppress such warnings explicitly there:
+	</p>
+	<p>
+		<pre style="font-family:Consolas;font-size:13;color:black;">[<span style="color:#2b91af;">Theory</span>]
+[<span style="color:#2b91af;">InlineData</span>(<span style="color:blue;">new</span>[]&nbsp;{&nbsp;1,&nbsp;1,&nbsp;1&nbsp;},&nbsp;1)]
+[<span style="color:#2b91af;">InlineData</span>(<span style="color:blue;">new</span>[]&nbsp;{&nbsp;2,&nbsp;3,&nbsp;4&nbsp;},&nbsp;3)]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;AverageIsCorrect(<span style="color:blue;">int</span>[]&nbsp;seconds,&nbsp;<span style="color:blue;">int</span>&nbsp;expectedSeconds)
+{
+<span style="color:blue;">#pragma</span>&nbsp;<span style="color:blue;">warning</span>&nbsp;<span style="color:blue;">disable</span>&nbsp;618
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;sut&nbsp;=&nbsp;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">DurationStatistics</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;seconds.Select(s&nbsp;=&gt;&nbsp;<span style="color:#2b91af;">TimeSpan</span>.FromSeconds(s)).ToArray());
+<span style="color:blue;">#pragma</span>&nbsp;<span style="color:blue;">warning</span>&nbsp;<span style="color:blue;">restore</span>&nbsp;681
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;actual&nbsp;=&nbsp;sut.Average;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Assert</span>.Equal(expectedSeconds,&nbsp;actual.TotalSeconds);
+}</pre>
+	</p>
+	<p>
+		Keep the 'disable scope' as small as possible, and always remember to restore the warning after disabling it.
+	</p>
+	<p>
+		Perhaps you think that this approach of just making everything public and dealing with the consequences later is an unprofessional, unhygienic, and ugly way to evolve code, but it's really <a href="http://blog.ploeh.dk/2012/01/03/SOLIDisAppend-only">the logical way to produce and publish SOLID code</a>.
+	</p>
+	<p>
+		<strong>Obsolete by default</strong>
+	</p>
+	<p>
+		A variant of the above technique is that instead of making a type or member internal, you can deprecate it right away. This will immediately warn clients that they're doing something they aren't supposed to do.
+	</p>
+	<p>
+		If you ever decide to 'promote' that type to a bona fide member of your API, you can simply remove the [Obsolete] attribute.
+	</p>
+	<p>
+		<strong>Separate namespaces</strong>
+	</p>
+	<p>
+		You can also hide public types in separate namespaces. If you don't document the types in those 'hidden' namespaces, clients will again have to do something explicit to use them.
+	</p>
+	<p>
+		This is a softer way of hiding public types in plain sight, because clients get no compiler warnings if they use those 'hidden' types. Still, it can be quite effective.
+	</p>
+	<p>
+		My experience with maintaining public software (e.g. the <a href="http://blog.ploeh.dk/2009/03/22/AnnouncingAutoFixture">now-more-than-six-year-old</a> <a href="https://github.com/AutoFixture/AutoFixture">AutoFixture</a> project) is that the most common problem is that users don't even find the public types I <em>want</em> them to find! If you knew how many times I've seen people reinvent a feature already available in the API... And that's even when all the interesting stuff is in the same namespace.
+	</p>
+	<p>
+		Putting types in separate namespaces is, in my experience, quite an effective way of hiding them.
+	</p>
+	<p>
+		<strong>Separate libraries</strong>
+	</p>
+	<p>
+		Ultimately, you can put your volatile types in a separate library. In the Estimation example, you can ship the Estimator class (your 'real' public API) in one library, but put DurationStatistics in another library:
+	</p>
+	<p>
+		<img src="/content/binary/estimation-statistics-in-another-library.png" alt="The Estimator class is in the Estimation library, whereas the DurationStatistics are in another library named Estimation.Statistics.">
+	</p>
+	<p>
+		The Estimation library references the Estimation.Statistics library, so it can use all the public types in that library. You can unit test the public types in the Estimation library, but you can also unit test the public types in the Estimation.Statistics library.
+	</p>
+	<p>
+		When you publish your API, you give clients a reference to Estimation, but <em>not</em> to Estimation.Statistics. You still ship Estimation.Statistics as a dependency of your API, but clients shouldn't reference it.
+	</p>
+	<p>
+		Specifically, if you wish to publish your API as a NuGet package, you can use the <a href="https://docs.nuget.org/create/nuspec-reference"><code>&lt;references&gt;</code> element</a> to ensure that only the 'official' library is added to a project:
+	</p>
+	<p>
+		<img src="/content/binary/estimation-library-is-referenced-but-statistics-is-not.png" alt="The library Ploeh.Samples.Estimation is referenced, but Ploeh.Samples.Estimation.Statistics isn't.">
+	</p>
+	<p>
+		In this library, I installed the (local) <em>Estimation</em> NuGet package, and as you can see, only Ploeh.Samples.Estimation is referenced, whereas Ploeh.Samples.Estimation.Statistics isn't. This means that the client can easily use the official API, e.g. to create a new instance of the Estimator class:
+	</p>
+	<p>
+		<pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">this</span>.estimator&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Estimator</span>(<span style="color:#2b91af;">TimeSpan</span>.FromMinutes(1));
+</pre>
+	</p>
+	<p>
+		On the other hand, if a client developer attempts to use the public DurationStatistics class, that's not possible:
+	</p>
+	<p>
+		<img src="/content/binary/duration-statistics-not-available.png" alt="The DurationStatistics class isn't available, and Visual Studio can't even suggest pulling in the appropriate reference.">
+	</p>
+	<p>
+		Not only is DurationStatistics not available, all Visual Studio can suggest is to create it; it can't suggest pulling in the appropriate assembly reference, which is a good thing.
+	</p>
+	<p>
+		The library is still there, it's just not referenced, so Estimator still works at run-time.
+	</p>
+	<p>
+		The trick to set up a NuGet package in this way is to use the <code>&lt;references&gt;</code> element in the .nuspec file:
+	</p>
+	<p>
+		<pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">&lt;?</span><span style="color:#a31515;">xml</span><span style="color:blue;">&nbsp;</span><span style="color:red;">version</span><span style="color:blue;">=</span>&quot;<span style="color:blue;">1.0</span>&quot;<span style="color:blue;">?&gt;</span>
+<span style="color:blue;">&lt;</span><span style="color:#a31515;">package</span><span style="color:blue;">&nbsp;&gt;</span>
+<span style="color:blue;">&nbsp;&nbsp;&lt;</span><span style="color:#a31515;">metadata</span><span style="color:blue;">&gt;</span>
+<span style="color:blue;">&nbsp;&nbsp;&nbsp;&nbsp;&lt;</span><span style="color:#a31515;">id</span><span style="color:blue;">&gt;</span>Estimation<span style="color:blue;">&lt;/</span><span style="color:#a31515;">id</span><span style="color:blue;">&gt;</span>
+<span style="color:blue;">&nbsp;&nbsp;&nbsp;&nbsp;&lt;</span><span style="color:#a31515;">version</span><span style="color:blue;">&gt;</span>1.0.0<span style="color:blue;">&lt;/</span><span style="color:#a31515;">version</span><span style="color:blue;">&gt;</span>
+<span style="color:blue;">&nbsp;&nbsp;&nbsp;&nbsp;&lt;</span><span style="color:#a31515;">authors</span><span style="color:blue;">&gt;</span>Mark&nbsp;Seemann<span style="color:blue;">&lt;/</span><span style="color:#a31515;">authors</span><span style="color:blue;">&gt;</span>
+<span style="color:blue;">&nbsp;&nbsp;&nbsp;&nbsp;&lt;</span><span style="color:#a31515;">owners</span><span style="color:blue;">&gt;</span>Mark&nbsp;Seemann<span style="color:blue;">&lt;/</span><span style="color:#a31515;">owners</span><span style="color:blue;">&gt;</span>
+<span style="color:blue;">&nbsp;&nbsp;&nbsp;&nbsp;&lt;</span><span style="color:#a31515;">requireLicenseAcceptance</span><span style="color:blue;">&gt;</span>false<span style="color:blue;">&lt;/</span><span style="color:#a31515;">requireLicenseAcceptance</span><span style="color:blue;">&gt;</span>
+<span style="color:blue;">&nbsp;&nbsp;&nbsp;&nbsp;&lt;</span><span style="color:#a31515;">description</span><span style="color:blue;">&gt;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;This&nbsp;is&nbsp;an&nbsp;example&nbsp;that&nbsp;demonstrates&nbsp;how&nbsp;dependent&nbsp;libraries&nbsp;can
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;hide&nbsp;public&nbsp;types&nbsp;in&nbsp;plain&nbsp;sight.
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">&lt;/</span><span style="color:#a31515;">description</span><span style="color:blue;">&gt;</span>
+<span style="color:blue;">&nbsp;&nbsp;&nbsp;&nbsp;&lt;</span><span style="color:#a31515;">copyright</span><span style="color:blue;">&gt;</span>Copyright&nbsp;Mark&nbsp;Seemann&nbsp;2015<span style="color:blue;">&lt;/</span><span style="color:#a31515;">copyright</span><span style="color:blue;">&gt;</span>
+<span style="color:blue;">&nbsp;&nbsp;&nbsp;&nbsp;&lt;</span><span style="color:#a31515;">references</span><span style="color:blue;">&gt;</span>
+<span style="color:blue;">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&lt;</span><span style="color:#a31515;">reference</span><span style="color:blue;">&nbsp;</span><span style="color:red;">file</span><span style="color:blue;">=</span>&quot;<span style="color:blue;">Ploeh.Samples.Estimation.dll</span>&quot;<span style="color:blue;">&nbsp;/&gt;</span>
+<span style="color:blue;">&nbsp;&nbsp;&nbsp;&nbsp;&lt;/</span><span style="color:#a31515;">references</span><span style="color:blue;">&gt;</span>
+<span style="color:blue;">&nbsp;&nbsp;&lt;/</span><span style="color:#a31515;">metadata</span><span style="color:blue;">&gt;</span>
+<span style="color:blue;">&nbsp;&nbsp;&lt;</span><span style="color:#a31515;">files</span><span style="color:blue;">&gt;</span>
+<span style="color:blue;">&nbsp;&nbsp;&nbsp;&nbsp;&lt;</span><span style="color:#a31515;">file</span><span style="color:blue;">&nbsp;</span><span style="color:red;">src</span><span style="color:blue;">=</span>&quot;<span style="color:blue;">..\Estimation\bin\Debug\Ploeh.Samples.Estimation.dll</span>&quot;<span style="color:blue;">&nbsp;</span><span style="color:red;">target</span><span style="color:blue;">=</span>&quot;<span style="color:blue;">lib\net45</span>&quot;<span style="color:blue;">&nbsp;/&gt;</span>
+<span style="color:blue;">&nbsp;&nbsp;&nbsp;&nbsp;&lt;</span><span style="color:#a31515;">file</span><span style="color:blue;">&nbsp;</span><span style="color:red;">src</span><span style="color:blue;">=</span>&quot;<span style="color:blue;">..\Estimation\bin\Debug\Ploeh.Samples.Estimation.Statistics.dll</span>&quot;<span style="color:blue;">&nbsp;</span><span style="color:red;">target</span><span style="color:blue;">=</span>&quot;<span style="color:blue;">lib\net45</span>&quot;<span style="color:blue;">&nbsp;/&gt;</span>
+<span style="color:blue;">&nbsp;&nbsp;&lt;/</span><span style="color:#a31515;">files</span><span style="color:blue;">&gt;</span>
+<span style="color:blue;">&lt;/</span><span style="color:#a31515;">package</span><span style="color:blue;">&gt;</span></pre>
+	</p>
+	<p>
+		Notice that both Ploeh.Samples.Estimation.dll and Ploeh.Samples.Estimation.Statistics.dll are included in the NuGet package, but that only Ploeh.Samples.Estimation.dll should be referenced when the NuGet package is added.
+	</p>
+	<p>
+		For good measure I should point out that in order to create these demo files, I only installed the <em>Estimation</em> NuGet package from my local disk (using the -Source switch), so don't go and look for it on <a href="https://www.nuget.org">nuget.org</a>.
+	</p>
+	<p>
+		<strong>Summary</strong>
+	</p>
+	<p>
+		There are plenty of ways to hide public types in plain sight. Often, one or more of these options are better than misusing the internal/package-private access modifier. This doesn't mean that you must never make a class internal, but it means that you should consider the advantages and disadvantages of all options before making such a decision.
+	</p>
+	<p>
+		The main disadvantage of using the <em>internal</em> access modifier is that you can't easily unit test such a class. The options provided here should give you plenty of alternatives that will enable you to easily unit test classes while still hiding them from client developers.
+	</p>
+</div>
