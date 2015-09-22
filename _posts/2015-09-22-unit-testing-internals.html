@@ -1,0 +1,146 @@
+---
+layout: post
+title: "Unit testing internals"
+date: 2015-09-22 11:56 UTC
+tags: [Unit Testing]
+---
+{% include JB/setup %}
+
+<div id="post">
+	<p>
+		<em>FAQ: How should you unit test internals? A: Through the public API.</em>
+	</p>
+	<p>
+		This question seems to come up repeatedly: <em>I have some <a href="https://msdn.microsoft.com/en-us/library/7c5ka91b">internal</a> (<a href="https://docs.oracle.com/javase/tutorial/java/javaOO/accesscontrol.html">package-private</a> in Java) code. How do I unit test it?</em>
+	</p>
+	<p>
+		The short answer is: you unit test it as you unit test all other code: through the public API of the <a href="http://xunitpatterns.com/SUT.html">System Under Test</a> (SUT).
+	</p>
+	<p>
+		<strong>Purpose of automated testing</strong>
+	</p>
+	<p>
+		Details can be interesting, but don't loose sight of the big picture. <em>Why</em> do you test your software with automated tests?
+	</p>
+	<p>
+		Automated testing (as opposed to manual testing) only serves a single purpose: it prevents regressions. Some would say that it demonstrates that the software works correctly, but that's inaccurate. Automated tests can only demonstrate that the software works correctly if the tests are written correctly, but <a href="http://blog.ploeh.dk/2013/04/02/why-trust-tests">that's a different discussion</a>.
+	</p>
+	<p>
+		Assuming that all automated tests are correct, then yes: automated tests also demonstrate that the software works, but it's still regression testing. The tests were written to demonstrate that the software worked correctly once. Running the tests repeatedly only demonstrates that it <em>still</em> works correctly.
+	</p>
+	<p>
+		What does it mean that the software works correctly? When it comes to automated testing, the verification is only as good as the tests. If the tests are good, the verification is strong. If the tests are weak, the verification is weak.
+	</p>
+	<p>
+		Consider the purpose of writing the software you're currently being paid to produce. Is the purpose of the software to pass all tests? Hardly. The purpose of the software is to solve some problem, to make it easier to perform some task, or (if you're writing games) to entertain. The tests are proxies of the actual purpose.
+	</p>
+	<p>
+		It ought to be evident, then, that automated tests should be aligned with the purpose of the software. There's nothing new in this: <a href="http://dannorth.net/blog">Dan North</a> introduced <a href="https://en.wikipedia.org/wiki/Behavior-driven_development">Behaviour Driven Development</a> (BDD) in order to emphasise that testing should be done with the purpose of the software in mind. You should test the <em>behaviour</em> of the software, not its implementation.
+	</p>
+	<p>
+		Various software can have different purposes. The software typically emphasised by BDD tends to be business software that solves a business problem. Often, these are full applications. Other types of software include reusable libraries. These exist to be reusable. Common to all is that they have a reason to exist: they have <em>externally visible</em> behaviour that some consumer cares about.
+	</p>
+	<p>
+		If you want to test a piece of software to prevent regressions, you should make sure that you're testing the externally visible behaviour of the software.
+	</p>
+	<p>
+		<strong>Combinatorics</strong>
+	</p>
+	<p>
+		In an ideal world, then, all automated testing should be done against the public interface of the SUT. If the application is a web application, testing should be done against the HTML and JavaScript. If the application is a mobile app, testing should be done somehow by automating user interaction against its GUI. In reality, these approaches to testing tend to be brittle, so instead, you can resort to <a href="http://martinfowler.com/bliki/SubcutaneousTest.html">subcutaneous testing</a>.
+	</p>
+	<p>
+		Even if you're developing a reusable library, or a command-line executable, if you're doing something even moderately complex, you run into another problem: a combinatorial explosion of possible paths through the code. As <a href="http://www.infoq.com/presentations/integration-tests-scam">J.B. Rainsberger explains much better than I can do</a>, if you combine software modules (e.g. validation, business logic, data access, authentication and authorisation, caching, logging, etc) you can easily have <em>tens of thousands</em> distinct paths through a particular part of you software - all via a single entry point.
+	</p>
+	<p>
+		This isn't related to BDD, or business problems, or agile... It's a <em>mathematical</em> result. There's a reason the <a href="http://martinfowler.com/bliki/TestPyramid.html">Test Pyramid</a> looks like it does.
+	</p>
+	<p>
+		When you combine a procedure with four distinct paths with another with five paths, the number of possible paths isn't (4 + 5 =) nine; it's (4 * 5 =) twenty. As you combine units together, you easily reach tens of thousands distinct paths through your software. (This is basic <a href="https://en.wikipedia.org/wiki/Combinatorics">combinatorics</a>).
+	</p>
+	<p>
+		You aren't going to write tens of thousands of automated tests.
+	</p>
+	<p>
+		In the ideal world, we would like to only test the behaviour of software against its public interface. In the real world, we have to separate any moderately complex software into modules, and instead test the behaviour of those modules in isolation. This prevents the combinatorial explosion.
+	</p>
+	<p>
+		If you cut up your software in an appropriate manner, you'll get modules that are independent of each other. Many books and articles have been written about how to do this. You've probably heard about Layered Application Architecture, Hexagonal Architecture, or Ports and Adapters. The recent interest related to microservices is another (promising) attempt at factoring code into smaller units.
+	</p>
+	<p>
+		You still need to care about the <em>behaviour</em> of those modules. Splitting up your software doesn't change the overall purpose of the software (whatever that is).
+	</p>
+	<p>
+		<strong>Internals</strong>
+	</p>
+	<p>
+		When I do code reviews, often the code is already factored into separate concerns, but internal classes are everywhere. What could be the reason for that?
+	</p>
+	<p>
+		When I ask, answers always fall into one of two categories:
+		<ul>
+			<li>Members (or entire classes) are poorly encapsulated, so the developers don't want to expose these internals for fear of destabilising the system.</li>
+			<li>Types or members are kept hidden in order to protect the code base from backwards compatibility issues.</li>
+		</ul>
+		The first issue is easy to deal with. Consider <a href="http://blog.ploeh.dk/2015/09/18/temporary-field-code-smell">a recent example</a>:
+	</p>
+	<p>
+		<pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">private</span>&nbsp;<span style="color:blue;">void</span>&nbsp;CalculateAverage()
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.average&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">TimeSpan</span>.FromTicks(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(<span style="color:blue;">long</span>)<span style="color:blue;">this</span>.durations.Average(ts&nbsp;=&gt;&nbsp;ts.Ticks));
+}</pre>
+	</p>
+	<p>
+		This CalculateAverage method is marked private because it's unsafe to call it. <code>this.durations</code> can be null, in which case the method would throw an exception. It may <em>feel</em> like a solution to lock down the method with an access modifier, but really it only smells of poor encapsulation. Instead, <a href="http://blog.ploeh.dk/2015/09/18/temporary-field-code-smell">refactor the code to a proper, robust design</a>.
+	</p>
+	<p>
+		There <em>are</em> valid use cases for the <code>private</code> and <code>internal</code> access modifiers, but the majority of the time I see private and internal code, it merely smells of poor design. If you change the design, you could make types and members public, <em>and</em> feel good about it.
+	</p>
+	<p>
+		The other issue, concerns about compatibility, <a href="http://blog.ploeh.dk/2015/09/21/public-types-hidden-in-plain-sight">can be addressed as well</a>. In any case, for most developers, this is essentially a theoretical issue, because most code written isn't for public consumption anyway. If you also control all consumers of your API, you may not need to worry about compatibility. If you need to change the name of a class, just let your favourite refactoring tool do this for you, and all is still good. (I'd still <a href="http://blog.ploeh.dk/2012/12/18/ZookeepersmustbecomeRangers">recommend that you should adopt a Ranger approach to your Zoo software</a>, but that's a different topic.)
+	</p>
+	<p>
+		The bottom line: you don't <em>have</em> to hide most of your code behind access modifiers. There are good alternatives that lead to better designs.
+	</p>
+	<p>
+		<strong>Testing internals</strong>
+	</p>
+	<p>
+		That was a long detour around reasons for testing, as well as software design in general. How, then, do you test internal code?
+	</p>
+	<p>
+		Through the public API. Remember: the reason for testing is to verify that the <em>observable behaviour</em> of the SUT is correct. If a class or member is internal, it isn't visible; it's not <em>observable</em>. It may exist in order to support the public API, but if you explicitly chose to not make it visible, you also stated that it can't be directly observable. You can't have it both ways. (Yes, I know that .NET developers will point the <a href="https://msdn.microsoft.com/en-us/library/system.runtime.compilerservices.internalsvisibletoattribute">[InternalsVisibleTo] attribute</a> out to me, but this attribute isn't a solution; it's part of the problem.)
+	</p>
+	<p>
+		Why would you test something that has no 'official' existence?
+	</p>
+	<p>
+		I think I know the answer to that question. It's because of the combinatorial explosion problem. You want the software to solve a particular problem, and to keep everything else 'below the surface'. Unfortunately, as the complexity of the software grows, you realise (explicitly or implicitly) that you can't cover the entire code base with high-level BDD-style tests. You want to unit test the internals.
+	</p>
+	<p>
+		The problem with doing this is that it's just as brittle as testing through a GUI. Every time you change the internals, you'll have to change your tests.
+	</p>
+	<p>
+		A well-designed system tends to be more stable when it comes to unit testing. A poorly designed system is often characterised by tests that are too coupled to implementation details. As soon as you decide to change something in such a system, you'll need to change the tests as well.
+	</p>
+	<p>
+		Recall that automated testing is regression testing. The only information we get from running tests is whether or not existing tests passed or failed. We don't learn if the tests are correct. How do we know that tests are correct? Essentially, we know because we <a href="http://blog.ploeh.dk/2013/04/02/why-trust-tests">review them, see them fail, and never touch them again</a>. If you constantly have to fiddle with your tests, how do you know they still test the right behaviour?
+	</p>
+	<p>
+		Design your sub-modules well, on the other hand, and test maintenance tends to be much lower. If you have well-designed sub-modules, though, you don't have to make all types internal. Make them public. They are part of your solution.
+	</p>
+	<p>
+		<strong>Summary</strong>
+	</p>
+	<p>
+		A system's public API should enable you to exercise and verify its observable behaviour. That's what you should care about, because that's the SUT's reason to exist. It may have internal types and members, but these are implementation details. They exist to support the system's observable behaviour, so test them through the public API.
+	</p>
+	<p>
+		If you can't get good test coverage of the internal parts through the public API, then why do these internal parts exist? If they exhibit no observable behaviour, couldn't you delete them?
+	</p>
+	<p>
+		If they do exist for a reason, but you somehow can't reach them through the public API, it's a design smell. Address that smell instead of trying to test internals.
+	</p>
+</div>
