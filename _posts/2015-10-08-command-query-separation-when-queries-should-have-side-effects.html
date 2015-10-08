@@ -1,0 +1,183 @@
+---
+layout: post
+title: "Command Query Separation when Queries should have side-effects"
+date: 2015-10-08 15:50 UTC
+tags: [Software Design]
+---
+{% include JB/setup %}
+
+<div id="post">
+	<p>
+		<em>How can you adhere to Command Query Separation if your Domain Model requires Queries to have side-effects?</em>
+	</p>
+	<p>
+		<a href="https://en.wikipedia.org/wiki/Command%E2%80%93query_separation">Command Query Separation</a> (CQS) can be difficult until you get the hang of it; then it's not so difficult - just like most other things in life :)
+	</p>
+	<p>
+		In a previous article, I covered <a href="http://blog.ploeh.dk/2014/08/11/cqs-versus-server-generated-ids">how to retrieve server-generated IDs after Create operations</a>. That article discussed how to prevent Commands from turning into Queries. In the present article, you'll see some examples of how to prevent Queries from turning into Commands.
+	</p>
+	<p>
+		<strong>Context</strong>
+	</p>
+	<p>
+		This article was triggered by a viewer's question related to my <a href="http://www.shareasale.com/r.cfm?u=1017843&b=611266&m=53701&afftrack=&urllink=www%2Epluralsight%2Ecom%2Fcourses%2Fencapsulation%2Dsolid">Encapsulation and SOLID</a> Pluralsight course. As I interpret it, the hypothetical scenario is some school or university exam taking software:
+		<blockquote>
+			"If a student has not submitted a solution to an exercise yet, when and if they look at the exercise hint for the first time, flag that hint as viewed. The points granted to a student's solution will be subtracted by 5 points, if the related hint is flagged as viewed."
+		</blockquote>
+		As stated here, it sounds like a Query (reading the exercise hint) <em>must</em> have a side-effect. This time, we can't easily wave it away by saying that <a href="http://blog.ploeh.dk/2015/09/23/applications-and-their-side-effects">the side-effect is one that the client isn't responsible for, so it'll be OK</a>. If the side-effect had been an audit log, we could have gotten away with that, but here the side-effect is <em>within</em> the Domain Model itself.
+	</p>
+	<p>
+		How can you implement this business requirement while still adhering to CQS? Perhaps you'd like to pause reading for a moment to reflect on this question; then you can compare your notes to mine.
+	</p>
+	<p>
+		Is it even worth applying CQS to this problem, or should we simply give up? After all, the Domain Model seems to <em>inherently</em> associate certain Queries with side-effects.
+	</p>
+	<p>
+		In my opinion, it's exactly in such scenarios that CQS really shines. Otherwise, you're looking at the code as a team developer, and you go: <em>Why did the score just go down? I didn't change anything!</em> You can waste hours when side-effects are implicit. Applying CQS makes side-effects explicit, and as the <a href="https://www.python.org/dev/peps/pep-0020">Zen of Python</a> goes:
+		<blockquote>
+			Explicit is better than implicit.
+		</blockquote>
+		There are various ways to address this apparently impossible problem. You don't <em>have to</em> use any of them, but the first key to choosing your tools is to have something to choose <em>from</em>.
+	</p>
+	<p>
+		<strong>Contextual types</strong>
+	</p>
+	<p>
+		With the requirements given above, we don't know what we're building. Is it a web-based application? An app? A desktop application? Let's, for a while, imagine that we're developing an app or desktop application. In my fevered imagination, this sort of application may have all the questions and hints preloaded in memory, or in files, and continually displays the current score on the screen. There may not be further persistent storage, or perhaps the application publishes the final scores for the exam to a central server once the exam is over. Think occasionally connected clients.
+	</p>
+	<p>
+		In this type of scenario, the most important point is to keep the score up-to-date in memory. This can easily be done with a contextual or 'amplified' type. In this case, we can call it Scored&lt;T&gt;:
+	</p>
+	<p>
+		<pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">sealed</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">Scored</span>&lt;<span style="color:#2b91af;">T</span>&gt;
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;<span style="color:#2b91af;">T</span>&nbsp;Item;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;<span style="color:blue;">int</span>&nbsp;Score;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;Scored(<span style="color:#2b91af;">T</span>&nbsp;item,&nbsp;<span style="color:blue;">int</span>&nbsp;score)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;(item&nbsp;==&nbsp;<span style="color:blue;">null</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">throw</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">ArgumentNullException</span>(<span style="color:blue;">nameof</span>(item));
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.Item&nbsp;=&nbsp;item;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.Score&nbsp;=&nbsp;score;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">Scored</span>&lt;<span style="color:#2b91af;">T</span>&gt;&nbsp;Add(<span style="color:blue;">int</span>&nbsp;scoreDelta)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Scored</span>&lt;<span style="color:#2b91af;">T</span>&gt;(<span style="color:blue;">this</span>.Item,&nbsp;<span style="color:blue;">this</span>.Score&nbsp;+&nbsp;scoreDelta);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">override</span>&nbsp;<span style="color:blue;">bool</span>&nbsp;Equals(<span style="color:blue;">object</span>&nbsp;obj)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;other&nbsp;=&nbsp;obj&nbsp;<span style="color:blue;">as</span>&nbsp;<span style="color:#2b91af;">Scored</span>&lt;<span style="color:#2b91af;">T</span>&gt;;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;(other&nbsp;==&nbsp;<span style="color:blue;">null</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:blue;">base</span>.Equals(obj);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:blue;">object</span>.Equals(<span style="color:blue;">this</span>.Item,&nbsp;other.Item)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&amp;&amp;&nbsp;<span style="color:blue;">object</span>.Equals(<span style="color:blue;">this</span>.Score,&nbsp;other.Score);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">override</span>&nbsp;<span style="color:blue;">int</span>&nbsp;GetHashCode()
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.Item.GetHashCode()&nbsp;^
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.Score.GetHashCode();
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+	</p>
+	<p>
+		The Scored&lt;T&gt; class enables you to carry a score value around within a computation. In order to keep the example as simple as possible, I modelled the score as an integer, but perhaps you should consider <a href="http://blog.ploeh.dk/2015/01/19/from-primitive-obsession-to-domain-modelling">refactoring from Primitive Obsession to Domain Modelling</a>; that's a different story, though.
+	</p>
+	<p>
+		This means you can model your API in such a way that a client <em>must</em> supply the current score in order to retrieve a hint, and the new score is returned together with the hint:
+	</p>
+	<p>
+		<pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">interface</span>&nbsp;<span style="color:#2b91af;">IHintQuery</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Scored</span>&lt;<span style="color:#2b91af;">Hint</span>&gt;&nbsp;Read(<span style="color:blue;">int</span>&nbsp;hintId,&nbsp;<span style="color:blue;">int</span>&nbsp;currentScore);
+}</pre>
+	</p>
+	<p>
+		The Read method is a Query, and there's no implied side-effect by calling it. Since the return type is Scored&lt;Hint&gt;, it should be clear to the client that the score may have changed.
+	</p>
+	<p>
+		An implementation could look like this:
+	</p>
+	<p>
+		<pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">HintQuery</span>&nbsp;:&nbsp;<span style="color:#2b91af;">IHintQuery</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;<span style="color:#2b91af;">IHints</span>&nbsp;hints;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;HintQuery(<span style="color:#2b91af;">IHints</span>&nbsp;hints)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;(hints&nbsp;==&nbsp;<span style="color:blue;">null</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">throw</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">ArgumentNullException</span>(<span style="color:blue;">nameof</span>(hints));
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.hints&nbsp;=&nbsp;hints;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">Scored</span>&lt;<span style="color:#2b91af;">Hint</span>&gt;&nbsp;Read(<span style="color:blue;">int</span>&nbsp;hintId,&nbsp;<span style="color:blue;">int</span>&nbsp;currentScore)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;valFromInner&nbsp;=&nbsp;<span style="color:blue;">this</span>.hints.FirstById(hintId);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Scored</span>&lt;<span style="color:#2b91af;">Hint</span>&gt;(valFromInner,&nbsp;currentScore).Add(-5);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+	</p>
+	<p>
+		The Read method uses an injected (<a href="http://blog.ploeh.dk/2015/09/21/public-types-hidden-in-plain-sight">lower-level</a>) Query interface to read the answer hint, packages the result in a Scored&lt;Hint&gt; value, and subtracts 5 points from the score.
+	</p>
+	<p>
+		Both the score type (int) and Scored&lt;T&gt; are immutable. No side-effects occur while the client reads the answer hint, but the score is nonetheless adjusted.
+	</p>
+	<p>
+		In this scenario, the score travels around in the memory of the application. Perhaps, after the exam is over, the final score can be sent to a central repository for record-keeping. This architecture could work well in client-side implementations, but may be less suitable in stateless web scenarios.
+	</p>
+	<p>
+		<strong>Pessimistic locking</strong>
+	</p>
+	<p>
+		If you're developing a web-based exam-taking system, you may want to be able to use stateless web servers for scalability or redundancy reasons. In such cases, perhaps keeping the score in memory isn't a good idea.
+	</p>
+	<p>
+		You could still use the above model, but the client must remember to save the updated score before returning an HTTP response to the browser. Perhaps you find this unsatisfactorily fail-safe, so here's an alternative: use pessimistic locking.
+	</p>
+	<p>
+		Essentially, you can expose an interface like this:
+	</p>
+	<p>
+		<pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">interface</span>&nbsp;<span style="color:#2b91af;">IHintRepository</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">void</span>&nbsp;UnlockHint(<span style="color:blue;">int</span>&nbsp;hintId);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Hint</span>&nbsp;Read(<span style="color:blue;">int</span>&nbsp;hintId);
+}</pre>
+	</p>
+	<p>
+		If a client attempts to call the Read method without first unlocking the hint, the method will throw an exception. First, you'll have to unlock the hint using the UnlockHint method, which is clearly a Command.
+	</p>
+	<p>
+		This is less discoverable, because you can't tell by the type signature of the Read method that it may fail for that particular reason, but it safely protects the system from accidentally reading the hint without impacting the score.
+	</p>
+	<p>
+		(In type systems with <a href="https://en.wikipedia.org/wiki/Tagged_union">Sum types</a>, you can make the design clearer by statically modelling the return type to be one of several mutually exclusive cases: hint, no hint (<code>hintId</code> doesn't refer to an existing hint), or hint is still locked.)
+	</p>
+	<p>
+		This sort of interface might in fact align well with a good User Experience, because you might want to ask the user if he or she is sure that (s)he wants to see the hint, given the cost. Such a user interface warning would be followed by a call to UnlockHint if the user agrees to the score deduction.
+	</p>
+	<p>
+		An implementation of UnlockHint would leave behind a permanent record that the answer hint was unlocked by a particular user, and that record can then subsequently be used when calculating the final score.
+	</p>
+	<p>
+		<strong>Summary</strong>
+	</p>
+	<p>
+		Sometimes, it can be difficult to see how to both follow CQS <em>and</em> implement the desired business logic. In my experience, it's always possible to recast the problem in such a way that this is possible, but it may take some deliberation before it clicks.
+	</p>
+	<p>
+		Must you always follow CQS? Not necessarily, but if you understand what your options are, then you know what you're saying no to if you decide not to do it. That's quite a different situation from not having any idea about how to apply the principle.
+	</p>
+	<p>
+		In this article, I showed two options for reconciling CQS with a Domain Model where a Query seems to have side-effects.
+	</p>
+</div>
