@@ -1,0 +1,258 @@
+---
+layout: post
+title: "To log or not to log"
+date: 2015-11-30 8:45 UTC
+tags: [F#]
+---
+{% include JB/setup %}
+
+<div id="post">
+	<p>
+		<em>There's no reason to make logging any harder than it has to be. Here's a compositional approach in F#.</em>
+	</p>
+	<p>
+		Logging seems to be one of those cross-cutting concerns on which people tend to spend a lot of effort. For programmers coming from an object-oriented language like C#, finding a sane approach to logging seems to be particularly difficult.
+	</p>
+	<p>
+		In <a href="http://amzn.to/12p90MG">my book about Dependency Injection</a>, I made an effort to explain that logging and other cross-cutting concerns are best addressed by <a href="https://en.wikipedia.org/wiki/Decorator_pattern">Decorators</a> (or dynamic interception). You can use the same design with F# functions.
+	</p>
+	<p>
+		<strong>Example scenario</strong>
+	</p>
+	<p>
+		Consider, as an example, an HTTP API for a restaurant booking system. This example is taken from my <a href="http://bit.ly/1Hhru7l">Test-Driven Development with F#</a> Pluralsight course, but you can see an almost identical example for free in <a href="http://www.infoq.com/presentations/mock-fsharp-tdd">this recording of a BuildStuff talk</a>.
+	</p>
+	<p>
+		The application is composed of small, mostly pure functions:
+	</p>
+	<p>
+		<pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">let</span>&nbsp;imp&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Validate</span>.reservationValid
+&nbsp;&nbsp;&nbsp;&nbsp;&gt;&gt;&nbsp;<span style="color:#2b91af;">Rop</span>.bind&nbsp;(<span style="color:#2b91af;">Capacity</span>.check&nbsp;10&nbsp;<span style="color:#2b91af;">SqlGateway</span>.getReservedSeats)
+&nbsp;&nbsp;&nbsp;&nbsp;&gt;&gt;&nbsp;<span style="color:#2b91af;">Rop</span>.map&nbsp;<span style="color:#2b91af;">SqlGateway</span>.saveReservation</pre>
+	</p>
+	<p>
+		Exactly what each function does isn't important in this context, but here are the types involved:
+		<table>
+			<thead>
+				<tr>
+					<th>Function</th>
+					<th>Type</th>
+				</tr>
+			</thead>
+			<tbody>
+				<tr>
+					<td>imp</td>
+					<td><code>ReservationRendition -&gt; Rop.Result&lt;unit, Error&gt;</code></td>
+				</tr>
+				<tr>
+					<td>Validate.reservationValid</td>
+					<td><code>ReservationRendition -&gt; Rop.Result&lt;Reservation, Error&gt;</code></td>
+				</tr>
+				<tr>
+					<td>Capacity.check</td>
+					<td><code>int -&gt; (DateTimeOffset -&gt; int) -&gt; Reservation -&gt; Rop.Result&lt;Reservation, Error&gt;</code></td>
+				</tr>
+				<tr>
+					<td>SqlGateway.saveReservation</td>
+					<td><code>Reservation -&gt; unit</code></td>
+				</tr>
+			</tbody>
+		</table>
+		where Rop.Result&lt;'success, 'error&gt;, Rop.bind, and Rop.map are as described in <a href="http://fsharpforfunandprofit.com/rop">Scott Wlaschin's Railway Oriented Programming</a>.
+	</p>
+	<p>
+		In short, the <code>imp</code> function validates the input, applies some business rules if the input was valid, and saves the reservation to a database if the business rules allow it.
+	</p>
+	<p>
+		I strongly believe that in any well-designed code base, the core implementation should be independent of cross-cutting concerns such as logging. If the above reservation system is well-designed, it should be possible to retrofit logging onto it without changing the existing functions. Indeed, that turns out to be possible.
+	</p>
+	<p>
+		<strong>Adding logs</strong>
+	</p>
+	<p>
+		You should use an existing logging library such as <a href="http://serilog.net">Serilog</a>, <a href="https://logging.apache.org/log4net">log4net</a>, <a href="http://nlog-project.org">NLog</a>, etc. instead of rolling your own. In this example, imagine that you're using the well-known <em>SomeExternalLoggingLibrary</em>. In order to protect yourself against changes etc. in the external library, you first define your own, application-specific logging module:
+	</p>
+	<p>
+		<pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">module</span>&nbsp;<span style="color:#2b91af;">BookingLog</span>&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;logError&nbsp;=&nbsp;<span style="color:#2b91af;">SomeExternalLoggingLibrary</span>.logError
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;logInformation&nbsp;=&nbsp;<span style="color:#2b91af;">SomeExternalLoggingLibrary</span>.logInformation</pre>
+	</p>
+	<p>
+		Both functions have the type <code>fileName:string -&gt; msg:string -&gt; unit</code>.
+	</p>
+	<p>
+		As a beginning, you can start by logging the final result of executing the <code>imp</code> function. Since it has the type <code>ReservationRendition -&gt; Rop.Result&lt;unit, Error&gt;</code>, if you implement a log function that both accepts and returns <code>Rop.Result&lt;unit, Error&gt;</code>, you can append that to the composition of <code>imp</code>. Start with the logging function itself:
+	</p>
+	<p>
+		<pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">module</span>&nbsp;<span style="color:#2b91af;">BookingLog</span>&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;...</span>
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;logReservationsPost&nbsp;logFile&nbsp;result&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">match</span>&nbsp;result&nbsp;<span style="color:blue;">with</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;Failure(ValidationError&nbsp;msg)&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;logError&nbsp;logFile&nbsp;msg
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;Failure&nbsp;CapacityExceeded&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;logError&nbsp;logFile&nbsp;<span style="color:#a31515;">&quot;Capacity&nbsp;exceeded.&quot;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;Success&nbsp;()&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;logInformation&nbsp;logFile&nbsp;<span style="color:#a31515;">&quot;Reservation&nbsp;saved.&quot;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;result</pre>
+	</p>
+	<p>
+		This function has the type <code>string -&gt; Rop.Result&lt;unit, Error&gt; -&gt; Rop.Result&lt;unit, Error&gt;</code>. It matches on the cases of <code>result</code> and logs something relevant for each case; then it returns <code>result</code> without modifying it.
+	</p>
+	<p>
+		Since the logReservationsPost function both accepts and returns the same type, you can easily append it to the other functions while composing <code>imp</code>:
+	</p>
+	<p>
+		<pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">let</span>&nbsp;imp&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Validate</span>.reservationValid
+&nbsp;&nbsp;&nbsp;&nbsp;&gt;&gt;&nbsp;<span style="color:#2b91af;">Rop</span>.bind&nbsp;(<span style="color:#2b91af;">Capacity</span>.check&nbsp;10&nbsp;<span style="color:#2b91af;">SqlGateway</span>.getReservedSeats)
+&nbsp;&nbsp;&nbsp;&nbsp;&gt;&gt;&nbsp;<span style="color:#2b91af;">Rop</span>.map&nbsp;<span style="color:#2b91af;">SqlGateway</span>.saveReservation
+&nbsp;&nbsp;&nbsp;&nbsp;&gt;&gt;&nbsp;<span style="color:#2b91af;">BookingLog</span>.logReservationsPost&nbsp;logFile</pre>
+	</p>
+	<p>
+		Notice how BookingLog.logReservationsPost is simply added as the last line of composition. This compiles because that function returns its input.
+	</p>
+	<p>
+		Running the application with various input demonstrates that logging works as intended:
+	</p>
+	<p>
+		<pre>Information: Reservation saved.
+Error: Invalid date.
+Information: Reservation saved.
+Error: Capacity exceeded.</pre>
+	</p>
+	<p>
+		You've seen that you can append high-level logging of the final value, but can you also add logging deeper in the guts of the implementation?
+	</p>
+	<p>
+		<strong>Logging business behaviour</strong>
+	</p>
+	<p>
+		Imagine that you need to also log what happens before and after Capacity.check is called. One option is to add a logging function with the same type as Capacity.check, that also Decorates Capacity.check, but I think it's simpler to add two functions that log the values before and after Capacity.check.
+	</p>
+	<p>
+		The type of Capacity.check is <code>int -&gt; (DateTimeOffset -&gt; int) -&gt; Reservation -&gt; Rop.Result&lt;Reservation, Error&gt;</code>, but after partial application, it's only <code>Reservation -&gt; Rop.Result&lt;Reservation, Error&gt;</code>. In order to log what happens before Capacity.check is called, you can add a function that both accepts and returns a Reservation:
+	</p>
+	<p>
+		<pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">let</span>&nbsp;logBeforeCapacityCheck&nbsp;logFile&nbsp;reservation&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;logInformation
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;logFile
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(sprintf
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#a31515;">&quot;Checking&nbsp;capacity&nbsp;for&nbsp;%s...&quot;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(reservation.Date.ToString&nbsp;<span style="color:#a31515;">&quot;d&quot;</span>))
+&nbsp;&nbsp;&nbsp;&nbsp;reservation</pre>
+	</p>
+	<p>
+		This function has the type <code>string -&gt; Reservation -&gt; Reservation</code>, and is placed within the BookingLog module. The logInformation function is used to log the input, which is then returned.
+	</p>
+	<p>
+		Likewise, you can also log what happens after Capacity.check is invoked. Since Capacity.check returns Rop.Result&lt;Reservation, Error&gt;, your log file must take that type as both input and output:
+	</p>
+	<p>
+		<pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">let</span>&nbsp;logAfterCapacityCheck&nbsp;logFile&nbsp;result&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">match</span>&nbsp;result&nbsp;<span style="color:blue;">with</span>
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;Failure(ValidationError&nbsp;msg)&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;logError&nbsp;logFile&nbsp;msg
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;Failure&nbsp;CapacityExceeded&nbsp;<span style="color:blue;">-&gt;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;logError&nbsp;logFile&nbsp;(sprintf&nbsp;<span style="color:#a31515;">&quot;Capacity&nbsp;exceeded.&quot;</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;Success&nbsp;r&nbsp;<span style="color:blue;">-&gt;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;logInformation
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;logFile
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(sprintf&nbsp;<span style="color:#a31515;">&quot;All&nbsp;is&nbsp;good&nbsp;for&nbsp;%s.&quot;</span>&nbsp;(r.Date.ToString&nbsp;<span style="color:#a31515;">&quot;d&quot;</span>))
+&nbsp;&nbsp;&nbsp;&nbsp;result</pre>
+	</p>
+	<p>
+		The logAfterCapacityCheck function has the type <code>string -&gt; Rop.Result&lt;Reservation, Error&gt; -&gt; Rop.Result&lt;Reservation, Error&gt;</code>, and is also placed within the BookingLog module. Like the logReservationsPost function, it matches on <code>result</code> and logs accordingly; then it returns <code>result</code>. Do you see a pattern?
+	</p>
+	<p>
+		Because of these types, you can compose them into <code>imp</code>:
+	</p>
+	<p>
+		<pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">let</span>&nbsp;imp&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Validate</span>.reservationValid
+&nbsp;&nbsp;&nbsp;&nbsp;&gt;&gt;&nbsp;<span style="color:#2b91af;">Rop</span>.map&nbsp;(<span style="color:#2b91af;">BookingLog</span>.logBeforeCapacityCheck&nbsp;logFile)
+&nbsp;&nbsp;&nbsp;&nbsp;&gt;&gt;&nbsp;<span style="color:#2b91af;">Rop</span>.bind&nbsp;(<span style="color:#2b91af;">Capacity</span>.check&nbsp;10&nbsp;<span style="color:#2b91af;">SqlGateway</span>.getReservedSeats)
+&nbsp;&nbsp;&nbsp;&nbsp;&gt;&gt;&nbsp;<span style="color:#2b91af;">BookingLog</span>.logAfterCapacityCheck&nbsp;logFile
+&nbsp;&nbsp;&nbsp;&nbsp;&gt;&gt;&nbsp;<span style="color:#2b91af;">Rop</span>.map&nbsp;<span style="color:#2b91af;">SqlGateway</span>.saveReservation
+&nbsp;&nbsp;&nbsp;&nbsp;&gt;&gt;&nbsp;<span style="color:#2b91af;">BookingLog</span>.logReservationsPost&nbsp;logFile</pre>
+	</p>
+	<p>
+		Notice that BookingLog.logBeforeCapacityCheck and BookingLog.logAfterCapacityCheck are composed around Capacity.check. The final BookingLog.logReservationsPost is also still in effect. Running the application shows that logging still works:
+	</p>
+	<p>
+		<pre>Information: Checking capacity for 27.11.2015...
+Information: All is good for 27.11.2015.
+Information: Reservation saved.</pre>
+	</p>
+	<p>
+		The first two log entries are created by the logs around Capacity.check, whereas the last line is written by BookingLog.logReservationsPost.
+	</p>
+	<p>
+		<strong>Conditional logging</strong>
+	</p>
+	<p>
+		Some programmers are concerned about the performance implications of logging. You may wish to be able to control whether or not to log.
+	</p>
+	<p>
+		The easiest way to do that is to make logging itself conditional:
+	</p>
+	<p>
+		<pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">let</span>&nbsp;logError&nbsp;fileName&nbsp;msg&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;log
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">then</span>&nbsp;SomeExternalLoggingLibrary.logError&nbsp;fileName&nbsp;msg
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">else</span>&nbsp;()
+<span style="color:blue;">let</span>&nbsp;logInformation&nbsp;fileName&nbsp;msg&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;log
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">then</span>&nbsp;SomeExternalLoggingLibrary.logInformation&nbsp;fileName&nbsp;msg
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">else</span>&nbsp;()</pre>
+	</p>
+	<p>
+		where <code>log</code> is a boolean value. If <code>log</code> is false, the above two functions simply return <code>()</code> (unit) without doing anything. This prevents costly IO from happening, so may already be enough of a performance optimisation. As always when performance is the topic: <em>don't assume anything; measure</em>.
+	</p>
+	<p>
+		In reality, you probably want to use more granular flags than a single <code>log</code> flag, so that you can control informational logging independently from error logging, but I'm sure you get the overall idea.
+	</p>
+	<p>
+		<strong>Conditional compilation</strong>
+	</p>
+	<p>
+		Even with boolean flags, you may be concerned that logging adds overhead even when the <code>log</code> flag is false. After all, you still have a function like logBeforeCapacityCheck above: it uses sprintf to format a string, and that may still be too much if it happens too often (again: <em>measure</em>).
+	</p>
+	<p>
+		For the sake of argument, imagine that you've measured the cost of leaving the logging functions logReservationsPost, logBeforeCapacityCheck, and logAfterCapacityCheck in place when <code>log</code> is false, and that you find that you'll need to turn them off in production. That's not a problem. Recall that before you added these functions, the application worked fine without logging. You compose these functions into <code>imp</code> in order to add logging, but you don't have to. You can even make this decision at compile time:
+	</p>
+	<p>
+		<pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">let</span>&nbsp;imp&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Validate</span>.reservationValid
+<span style="color:blue;">#if</span>&nbsp;LOG
+<span style="color:gray;">&nbsp;&nbsp;&nbsp;&nbsp;&gt;&gt;&nbsp;Rop.map&nbsp;(BookingLog.logBeforeCapacityCheck&nbsp;logFile)</span>
+<span style="color:blue;">#endif</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&gt;&gt;&nbsp;<span style="color:#2b91af;">Rop</span>.bind&nbsp;(<span style="color:#2b91af;">Capacity</span>.check&nbsp;10&nbsp;<span style="color:#2b91af;">SqlGateway</span>.getReservedSeats)
+<span style="color:blue;">#if</span>&nbsp;LOG
+<span style="color:gray;">&nbsp;&nbsp;&nbsp;&nbsp;&gt;&gt;&nbsp;BookingLog.logAfterCapacityCheck&nbsp;logFile</span>
+<span style="color:blue;">#endif</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&gt;&gt;&nbsp;<span style="color:#2b91af;">Rop</span>.map&nbsp;<span style="color:#2b91af;">SqlGateway</span>.saveReservation
+<span style="color:blue;">#if</span>&nbsp;LOG
+<span style="color:gray;">&nbsp;&nbsp;&nbsp;&nbsp;&gt;&gt;&nbsp;BookingLog.logReservationsPost&nbsp;logFile</span>
+<span style="color:blue;">#endif</span></pre>
+	</p>
+	<p>
+		Notice the presence of the conditional compilation flag <code>LOG</code>. Only if the application is compiled with the <code>LOG</code> flag will the logging code be compiled into the application; otherwise, it runs without any logging overhead at all.
+	</p>
+	<p>
+		Personally, I've never needed to control logging at this level, so this isn't a recommendation; it's only a demonstration that it's possible. What's much more important to me is that everything you've seen here has required zero changes of the application code. The only code being modified is the <a href="http://blog.ploeh.dk/2011/07/28/CompositionRoot">Composition Root</a>, and I regard the Composition Root as a <a href="http://mikehadlow.blogspot.dk/2012/05/configuration-complexity-clock.html">configuration file</a>.
+	</p>
+	<p>
+		<strong>Summary</strong>
+	</p>
+	<p>
+		In a well-designed application, you should be able to append logging without impacting the core implementation. You can do that by taking a Decorator-like approach to logging, even in a Functional application. Due to the compositional nature of a well-designed code base, you can simply slide log functions in where you need them.
+	</p>
+	<p>
+		Even if you're concerned about the performance implications of logging, there are various ways by which you can easily turn off logging overhead if you don't need it. Only do this if you've measured the performance of your application and found that you need to do so. The point is that if you design the application to be composed from small functions, you can always fine-tune logging performance if you need to. You don't have to do a lot of up-front design to cater specifically to logging, though.
+	</p>
+	<p>
+		In my examples, I deliberately kept things crude in order to make it clear how to approach the problem, but I'm sure <a href="http://fsharpforfunandprofit.com">Scott Wlaschin</a> could teach us how to refactor such code to a sophisticated monadic design.
+	</p>
+	<p>
+		It should also be noted that the approach outlined here leverages F#'s support for impure functions. All the log functions shown here return unit, which is a strong indicator of side-effects. In Haskell, logging would have to happen in an IO context, but that wouldn't impact the overall approach. The boundary of a Haskell application <em>is</em> an IO context, and the Composition Root belongs there.
+	</p>
+</div>
