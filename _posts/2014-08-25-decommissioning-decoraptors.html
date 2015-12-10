@@ -1,0 +1,180 @@
+---
+layout: post
+title: "Decommissioning Decoraptors"
+date: 2014-08-25 10:08 UTC
+tags: [Software Design, Dependency Injection]
+---
+{% include JB/setup %}
+
+<div id="post">
+  <p>
+    <em>How to release objects from within a Decoraptor.</em>
+  </p>
+  <p>
+    In my article about the <a href="http://blog.ploeh.dk/2014/08/24/decoraptor">Decoraptor</a> design pattern, I deliberately ignored the question of decommissioning: what if the short-lived object created inside of the Decoraptor contains one or more <a href="http://msdn.microsoft.com/en-us/library/system.idisposable.aspx">disposable</a> objects?
+  </p>
+  <p>
+    A Decoraptor creates instances of object graphs, and such object graphs may contain disposable objects. These disposable objects may be deeply buried inside of the object graph, and the root object itself may not implement IDisposable.
+  </p>
+  <p>
+    This is a know problem, and the solution is known as well: the object that composes the object graph is the only object with enough knowledge to dispose of any disposable objects within the object graph that it created, so an Abstract Factory should also be able to release objects again:
+  </p>
+  <p>
+    <pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">interface</span>&nbsp;<span style="color:#2b91af;">IFactory</span>&lt;T&gt;
+{
+&nbsp;&nbsp;&nbsp;&nbsp;T&nbsp;Create();
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">void</span>&nbsp;Release(T&nbsp;item);
+}</pre>
+  </p>
+  <p>
+    This is similar to advice I've already given in conjunction with designing <a href="http://blog.ploeh.dk/2014/05/19/di-friendly-framework">DI-Friendly frameworks</a>.
+  </p>
+  <p>
+    <strong>Example: refactored Decoraptor</strong>
+  </p>
+  <p>
+    With the new version of the IFactory&lt;T&gt; interface, you can refactor the Observeraptor class from the <a href="http://blog.ploeh.dk/2014/08/24/decoraptor">Decoraptor article</a>:
+  </p>
+  <p>
+    <pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">Observeraptor</span>&lt;T&gt;&nbsp;:&nbsp;<span style="color:#2b91af;">IObserver</span>&lt;T&gt;
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;<span style="color:#2b91af;">IFactory</span>&lt;<span style="color:#2b91af;">IObserver</span>&lt;T&gt;&gt;&nbsp;factory;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;Observeraptor(<span style="color:#2b91af;">IFactory</span>&lt;<span style="color:#2b91af;">IObserver</span>&lt;T&gt;&gt;&nbsp;factory)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.factory&nbsp;=&nbsp;factory;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;OnCompleted()
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;obs&nbsp;=&nbsp;<span style="color:blue;">this</span>.factory.Create();
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;obs.OnCompleted();
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.factory.Release(obs);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;OnError(<span style="color:#2b91af;">Exception</span>&nbsp;error)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;obs&nbsp;=&nbsp;<span style="color:blue;">this</span>.factory.Create();
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;obs.OnError(error);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.factory.Release(obs);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;OnNext(T&nbsp;value)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;obs&nbsp;=&nbsp;<span style="color:blue;">this</span>.factory.Create();
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;obs.OnNext(value);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.factory.Release(obs);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+  </p>
+  <p>
+    As you can see, each method implementation now performs three steps:
+    <ol>
+      <li>Use the factory to create an instance of IObserver&lt;T&gt;</li>
+      <li>Delegate the method call to the new instance</li>
+      <li>Release the short-lived instance</li>
+    </ol>
+    This informs the factory that the client is done with the instance, and it can let it go out of scope, as well as dispose of any disposable objects that object graph may contain.
+  </p>
+  <p>
+    Some people prefer letting the factory return something that implements IDisposable, so that the Decoraptor can employ a <code>using</code> statement in order to manage the lifetime of the returned object. However, IObserver&lt;T&gt; itself doesn't derive from IDisposable, so if you want to do something like that, you'd need to invent some sort of Scope&lt;T&gt; class, which would implement IDisposable; that's another alternative.
+  </p>
+  <p>
+    <strong>Example: refactored factory</strong>
+  </p>
+  <p>
+    Refactoring the Decoraptor itself to take decommissioning into account is fairly easy, but you also need to implement the Release method on any factory implementations. Furthermore, the factory should be thread-safe, because often, the entire point of introducing a Decoraptor in the first place is to deal with Services that aren't thread-safe.
+  </p>
+  <p>
+    Implementing a thread-safe Composer isn't too difficult, but certainly increases the complexity of it:
+  </p>
+  <p>
+    <pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">SqlMeterFactory</span>&nbsp;:&nbsp;<span style="color:#2b91af;">IFactory</span>&lt;<span style="color:#2b91af;">IObserver</span>&lt;<span style="color:#2b91af;">MeterRecord</span>&gt;&gt;
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">ConcurrentDictionary</span>&lt;<span style="color:#2b91af;">IObserver</span>&lt;<span style="color:#2b91af;">MeterRecord</span>&gt;,&nbsp;<span style="color:#2b91af;">MeteringContext</span>&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;observers;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;SqlMeterFactory()
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.observers&nbsp;=&nbsp;<span style="color:blue;">new</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">ConcurrentDictionary</span>&lt;<span style="color:#2b91af;">IObserver</span>&lt;<span style="color:#2b91af;">MeterRecord</span>&gt;,&nbsp;<span style="color:#2b91af;">MeteringContext</span>&gt;();
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">IObserver</span>&lt;<span style="color:#2b91af;">MeterRecord</span>&gt;&nbsp;Create()
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;ctx&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">MeteringContext</span>();
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;obs&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">SqlMeter</span>(ctx);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.observers[obs]&nbsp;=&nbsp;ctx;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;obs;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;Release(<span style="color:#2b91af;">IObserver</span>&lt;<span style="color:#2b91af;">MeterRecord</span>&gt;&nbsp;item)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">MeteringContext</span>&nbsp;ctx;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;(<span style="color:blue;">this</span>.observers.TryRemove(item,&nbsp;<span style="color:blue;">out</span>&nbsp;ctx))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;ctx.Dispose();
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+  </p>
+  <p>
+    Fortunately, instead of having to handle the complexity of a thread-safe implementation, you can delegate that part to a ConcurrentDictionary.
+  </p>
+  <p>
+    <strong>Disposable graphs</strong>
+  </p>
+  <p>
+    The astute reader may have been wondering about this: shouldn't SqlMeter implement IDisposable? And if so, wouldn't it be easier to simply dispose of it directly, instead of having to deal with a dictionary of root objects as keys, and disposable objects as values?
+  </p>
+  <p>
+    The short answer is that, in this particular example, this would indeed have been a more correct, as well as a simpler, solution. Consider the SqlMeter class:
+  </p>
+  <p>
+    <pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">SqlMeter</span>&nbsp;:&nbsp;<span style="color:#2b91af;">IObserver</span>&lt;<span style="color:#2b91af;">MeterRecord</span>&gt;
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;<span style="color:#2b91af;">MeteringContext</span>&nbsp;ctx;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;SqlMeter(<span style="color:#2b91af;">MeteringContext</span>&nbsp;ctx)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.ctx&nbsp;=&nbsp;ctx;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;OnNext(<span style="color:#2b91af;">MeterRecord</span>&nbsp;value)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.ctx.Records.Add(value);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.ctx.SaveChanges();
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;OnCompleted()&nbsp;{&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;OnError(<span style="color:#2b91af;">Exception</span>&nbsp;error)&nbsp;{&nbsp;}
+}</pre>
+  </p>
+  <p>
+    Since SqlMeter has a class field of the type MeteringContext, and MeteringContext, via deriving from <a href="http://msdn.microsoft.com/en-us/library/system.data.entity.dbcontext.aspx">DbContext</a>, is a disposable object, SqlMeter itself also ought to implement IDisposable.
+  </p>
+  <p>
+    Yes, indeed, it should, and the only reason I didn't do that was for the sake of the example. If SqlMeter had implemented IDisposable, you'd be tempted to implement SqlMeterFactory.Release by simply attempting to downcast the incoming <code>item</code> from IObserver&lt;MeterRecord&gt; to IDisposable, and then, if the cast succeeds, invoke its Dispose method.
+  </p>
+  <p>
+    However, the only reason we know that SqlMeter ought to implement IDisposable is because it has a <a href="http://blog.ploeh.dk/2012/08/31/ConcreteDependencies">concrete dependency</a>. Concrete types can implement IDisposable, but interfaces should not, since IDisposable is an implementation detail. (I do realize that some interfaces defined by the .NET Base Class Library derives from IDisposable, but I consider those Leaky Abstractions. As Nicholas Blumhardt <a href="https://cca.codeplex.com/discussions/82987">put it</a>: "an interface [...] generally shouldn't be disposable. There's no way for the one defining an interface to foresee all possible implementations of it - you can always come up with a disposable implementation of practically any interface.")
+  </p>
+  <p>
+    The point of this discussion is that as soon as a class has an abstract dependency (as opposed to a concrete dependency), the class may or may not be relying on something that is disposable. That's not enough to warrant the class itself to implement the IDisposable interface. For this reason, when an Abstract Factory creates an object graph, the root object of that graph should rarely implement IDisposable, and that's the reason it's not enough to attempt a downcast.
+  </p>
+  <p>
+    This was the reason that I intentionally didn't implement IDisposable on SqlMeter, even though I should have: to demonstrate how a Release method should deal with object graphs where the disposable objects are deeply buried as leaf nodes in the graph. A Release method may not always be able to traverse the graph, so this is the reason that the factory must also have the decommissioning responsibility: only the Composer knows what it composed, so only it knows how to safely dismantle the graph again.
+  </p>
+  <p>
+    <strong>Summary</strong>
+  </p>
+  <p>
+    Throwing IDisposable into the mix always makes things much more complicated, so if you can, try to implement your classes in such a way that they aren't disposable. This is often possible, but if you can't avoid it, you must add a Release method to your Abstract Factory and handle the additional complexity of decommissioning object graphs.
+  </p>
+  <p>
+    Some (but not all!) DI Containers already do this, so that may be one <a href="http://blog.ploeh.dk/2012/11/06/WhentouseaDIContainer">reason to use a DI Container</a>.
+  </p>
+</div>

@@ -1,0 +1,190 @@
+---
+layout: post
+title: "Service Locator violates encapsulation"
+date: 2015-10-26 8:39 UTC
+tags: [Dependency Injection, Software Design]
+---
+{% include JB/setup %}
+
+<div id="post">
+	<p>
+		<em>Service Locator violates encapsulation in statically typed languages because it doesn't clearly communicate preconditions.</em>
+	</p>
+	<p>
+		The horse has been long dead, but some people still want to ride it, so I'll beat it yet again. Over the years, I've made various attempts to explain why <a href="http://blog.ploeh.dk/2010/02/03/ServiceLocatorisanAnti-Pattern">Service Locator is an anti-pattern</a> (e.g. that it <a href="http://blog.ploeh.dk/2014/05/15/service-locator-violates-solid">violates SOLID</a>), but recently it struck me that most of my arguments have been focused on <em>symptoms</em> without ever addressing the fundamental problem.
+	</p>
+	<p>
+		As an example of discussing symptoms, in my <a href="http://blog.ploeh.dk/2010/02/03/ServiceLocatorisanAnti-Pattern">original article</a>, I described how IntelliSense is hurt by the use of Service Locator. In 2010, it never occurred to me that the underlying problem is that <em>encapsulation</em> is violated.
+	</p>
+	<p>
+		Consider my original example:
+	</p>
+	<p>
+		<pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">OrderProcessor</span>&nbsp;:&nbsp;<span style="color:#2b91af;">IOrderProcessor</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;Process(<span style="color:#2b91af;">Order</span>&nbsp;order)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;validator&nbsp;=&nbsp;<span style="color:#2b91af;">Locator</span>.Resolve&lt;<span style="color:#2b91af;">IOrderValidator</span>&gt;();
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;(validator.Validate(order))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;shipper&nbsp;=&nbsp;<span style="color:#2b91af;">Locator</span>.Resolve&lt;<span style="color:#2b91af;">IOrderShipper</span>&gt;();
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;shipper.Ship(order);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+	</p>
+	<p>
+		This is C# code, but it'd be similar in Java or another comparable statically typed language.
+	</p>
+	<p>
+		<strong>Pre- and postconditions</strong>
+	</p>
+	<p>
+		One of the major benefits of encapsulation is <em>abstraction</em>: relieving you of the burden of having to understand <em>every</em> implementation detail of <em>every</em> piece of code in your code base. Well-designed encapsulation enables you to use a class without knowing all the intricate details of how it's implemented. This is done by establishing a contract for interaction.
+	</p>
+	<p>
+		As <a href="http://amzn.to/1claOin">Object-Oriented Software Construction</a> explains, a contract consists of a set of pre- and postconditions for interaction. If the client satisfies the preconditions, the object promises to satisfy the postconditions.
+	</p>
+	<p>
+		In statically typed languages like C# and Java, many preconditions can be expressed with the type system itself, as I've <a href="http://blog.ploeh.dk/2011/05/24/Poka-yokeDesignFromSmelltoFragrance">previously demonstrated</a>.
+	</p>
+	<p>
+		If you look at the public API for the above OrderProcessor class, then what would you think its preconditions are?
+	</p>
+	<p>
+		<pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">OrderProcessor</span>&nbsp;:&nbsp;<span style="color:#2b91af;">IOrderProcessor</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;Process(<span style="color:#2b91af;">Order</span>&nbsp;order)
+}</pre>
+	</p>
+	<p>
+		As far as we can tell, there aren't many preconditions. The only one I can identify from the API is that there ought to be an Order object before you can call the Process method.
+	</p>
+	<p>
+		Yet, if you attempt to use OrderProcessor using <em>only</em> that precondition, it's going to fail at run-time:
+	</p>
+	<p>
+		<pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">var</span>&nbsp;op&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">OrderProcessor</span>();
+op.Process(order);&nbsp;<span style="color:green;">//&nbsp;throws</span></pre>
+	</p>
+	<p>
+		The actual preconditions are:
+		<ul>
+			<li>There ought to be an Order object (this one we already identified).</li>
+			<li>There ought to be an IOrderValidator service in some Locator global directory.</li>
+			<li>There ought to be an IOrderShipper service in some Locator global directory.</li>
+		</ul>
+		Two out of three preconditions were invisible at compile-time.
+	</p>
+	<p>
+		As you can see, Service Locator violates encapsulation because it hides the preconditions for correct use.
+	</p>
+	<p>
+		<strong>Passing arguments</strong>
+	</p>
+	<p>
+		Several people have jokingly identified Dependency Injection as a glorified term for <em>passing arguments</em>, and there may be some truth to that. The easiest way to make the preconditions apparent would be to use the type system to advertise the requirements. After all, we already figured out that an Order object is required. This was evident because Order is an argument to the Process method.
+	</p>
+	<p>
+		Can you make the need for IOrderValidator and IOrderShipper as apparent as the need for the Order object using the same technique? Is the following a possible solution?
+	</p>
+	<p>
+		<pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;Process(
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Order</span>&nbsp;order,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">IOrderValidator</span>&nbsp;validator,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">IOrderShipper</span>&nbsp;shipper)</pre>
+	</p>
+	<p>
+		In some circumstances, this could be all you need to do; now the three preconditions are equally apparent.
+	</p>
+	<p>
+		Unfortunately, often this isn't possible. In this case, OrderProcessor implements the IOrderProcessor interface:
+	</p>
+	<p>
+		<pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">interface</span>&nbsp;<span style="color:#2b91af;">IOrderProcessor</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">void</span>&nbsp;Process(<span style="color:#2b91af;">Order</span>&nbsp;order);
+}</pre>
+	</p>
+	<p>
+		Since the shape of the Process method is already defined, you can't add more arguments to it. You can still make the preconditions visible via the type system by requiring the caller to pass the required objects as arguments, but you'll need to pass them via some other member. The constructor is the safest channel:
+	</p>
+	<p>
+		<pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">OrderProcessor</span>&nbsp;:&nbsp;<span style="color:#2b91af;">IOrderProcessor</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;<span style="color:#2b91af;">IOrderValidator</span>&nbsp;validator;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;<span style="color:#2b91af;">IOrderShipper</span>&nbsp;shipper;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;OrderProcessor(<span style="color:#2b91af;">IOrderValidator</span>&nbsp;validator,&nbsp;<span style="color:#2b91af;">IOrderShipper</span>&nbsp;shipper)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;(validator&nbsp;==&nbsp;<span style="color:blue;">null</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">throw</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">ArgumentNullException</span>(<span style="color:#a31515;">&quot;validator&quot;</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;(shipper&nbsp;==&nbsp;<span style="color:blue;">null</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">throw</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">ArgumentNullException</span>(<span style="color:#a31515;">&quot;shipper&quot;</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.validator&nbsp;=&nbsp;validator;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.shipper&nbsp;=&nbsp;shipper;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;Process(<span style="color:#2b91af;">Order</span>&nbsp;order)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;(<span style="color:blue;">this</span>.validator.Validate(order))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.shipper.Ship(order);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+	</p>
+	<p>
+		With this design, the public API now looks like this:
+	</p>
+	<p>
+		<pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">OrderProcessor</span>&nbsp;:&nbsp;<span style="color:#2b91af;">IOrderProcessor</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;OrderProcessor(<span style="color:#2b91af;">IOrderValidator</span>&nbsp;validator,&nbsp;<span style="color:#2b91af;">IOrderShipper</span>&nbsp;shipper)
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;Process(<span style="color:#2b91af;">Order</span>&nbsp;order)
+}</pre>
+	</p>
+	<p>
+		Now it's clear that all three object are required before you can call the Process method; this version of the OrderProcessor class advertises its preconditions via the type system. You can't even compile client code unless you pass arguments to constructor and method (you can pass null, but that's another discussion).
+	</p>
+	<p>
+		<strong>Summary</strong>
+	</p>
+	<p>
+		Service Locator is an anti-pattern in statically typed, object-oriented languages because it violates encapsulation. The reason is that it hides preconditions for proper usage.
+	</p>
+	<p>
+		If you need an accessible introduction to encapsulation, you should consider watching my <a href="http://bit.ly/encapsulationsolid">Encapsulation and SOLID</a> Pluralsight course. If you wish to learn more about Dependency Injection, you can read my <a href="http://blog.ploeh.dk/2013/10/02/di-in-net-receives-a-jolt-productivity-award">award-winning</a> book <a href="http://amzn.to/12p90MG">Dependency Injection in .NET</a>.
+	</p>
+</div>
+<div id="comments">
+	<hr>
+	<h2 id="comments-header">Comments</h2>
+	<div class="comment">
+		<div class="comment-author"><a href="https://baks.github.io">Arkadiusz K</a></div>
+		<div class="comment-content">
+			<p>If we take a look at the original example, we should notice that terms from multiple domains are interleaving. Therefore, the OrderProcessor is violating <em>context independence</em> as described in <a href="http://amzn.com/0321503627">GOOS</a> book. To become <em>context independent</em> OrderProcessor should make his relationships explicit by allowing to pass them in constructor.</p>
+			<p>It is a slightly different perspective of the problem, but conclusion is the same, because <em>context independence</em> also concerns <em>encapsulation</em>.</p>
+		</div>
+		<div class="comment-date">2015-10-27 20:00 UTC</div>
+	</div>
+		<div class="comment">
+		<div class="comment-author"><a href="https://stackoverflow.com/users/945456/jeff-bridgman">Jeffrey Bridgman</a></div>
+		<div class="comment-content">
+			<p>Is it only the usage of a Service Locator within a class that's an anti-pattern? That is, as long as OrderProcessor makes its dependencies explicit via the constructor, there's nothing wrong with using a Service Locator to get those dependencies when creating a OrderProcessor instance?</p>
+		</div>
+		<div class="comment-date">2015-11-19 23:21 UTC</div>
+	</div>
+	<div class="comment">
+    <div class="comment-author"><a href="http://blog.ploeh.dk">Mark Seemann</a></div>
+    <div class="comment-content">
+    	<p>
+    		Jeffrey, thank you for writing. I'm not sure I fully understand, but perhaps you are considering whether the use of a DI Container as a composition engine is also an anti-pattern?    		
+    	</p>
+    	<p>
+    		If so, <a href="http://blog.ploeh.dk/2011/08/25/ServiceLocatorrolesvs.mechanics">you can use a DI Container from within your Composition Root</a>, but personally, I still prefer <a href="http://blog.ploeh.dk/2014/06/10/pure-di">Pure DI</a>.
+    	</p>
+    </div>
+    <div class="comment-date">2015-11-20 7:06 UTC UTC</div>
+  </div>
+</div>

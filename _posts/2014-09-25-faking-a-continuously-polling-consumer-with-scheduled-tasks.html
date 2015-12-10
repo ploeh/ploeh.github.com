@@ -1,0 +1,213 @@
+---
+layout: post
+title: "Faking a continuously Polling Consumer with scheduled tasks"
+date: 2014-09-25 6:33 UTC
+tags: [Azure, Architecture, F#]
+---
+{% include JB/setup %}
+
+<div id="post">
+  <p>
+    <em>How to (almost) continuously poll a queue when you can only run a task at discrete intervals.</em>
+  </p>
+  <p>
+    In a previous article, I described <a href="http://blog.ploeh.dk/2014/04/30/single-writer-web-jobs-on-azure">how you set up Azure Web Jobs to run only a single instance of a background process</a>. However, the shortest time interval you can currently configure is to run a scheduled task every minute. If you want to use this trick to set up a <a href="http://www.eaipatterns.com/PollingConsumer.html">Polling Consumer</a>, it may seem limiting that you'll have to wait up to a minute before the scheduled task can pull new messages off the queue.
+  </p>
+  <p>
+    <strong>The problem</strong>
+  </p>
+  <p>
+    The problem is this: a Web Job is a command-line executable you can schedule. The most frequent schedule you can set up is once per minute. Thus, once per minute, the executable can start and query a queue in order to see if there are new messages since it last looked.</p>
+  <p>
+    If there are new messages, it can pull these messages off the queue and handle them one by one, until the queue is empty.
+  </p>
+  <p>
+    If there are no new messages, the executable exits. It will then be up to a minute before it will run again. This means that if a message arrives just after the executable exits, it will sit in the queue up to a minute before being handled.
+  </p>
+  <p>
+    At least, that's the naive implementation.
+  </p>
+  <p>
+    <strong>A more sophisticated approach</strong>
+  </p>
+  <p>
+    Instead of exiting immediately, what if the executable was to wait for a small period, and then check again? This means that you'd be able to increase the polling frequency to run much faster than once per minute.
+  </p>
+  <p>
+    If the executable also keeps track of when it started, it can gracefully exit slightly before the minute is up, enabling the task scheduler to start a new process soon after.
+  </p>
+  <p>
+    <strong>Example: a recursive F# implementation</strong>
+  </p>
+  <p>
+    You can implement the above strategy in any language. Here's an F# version. The example code below is the main 'loop' of the program, but a few things have been put into place before that. Most of these are configuration values pulled from the configuration system:
+    <ul>
+      <li>
+        <code>timeout</code> is a TimeSpan value that specifies for how long the executable should run before exiting. This value comes from the configuration system. Since the minimum schedule frequency for Azure Web Jobs is 1 minute, it makes sense to set this value to 1 minute.
+      </li>
+      <li>
+        <code>stopBefore</code> is essentially <code>DateTimeOffset.Now + timeout</code>.
+      </li>
+      <li>
+        <code>estimatedDuration</code> is a TimeSpan containing your (conservative) estimate of how long time it takes to handle a single message. It's only used if there are no messages to be handled in the queue, as the algorithm then has no statistics about the average execution time for each message. This value comes from the configuration system. In a recent system, I just arbitrarily set it to 2 seconds.
+      </li>
+      <li>
+        <code>toleranceFactor</code> is a decimal used as a multiplier in order to produce a margin for when the executable should exit, so that it can exit before <code>stopBefore</code>, instead of idling for too long. This value comes from the configuration system. You'll have to experiment a bit with this value. When I originally deployed the code below, I had it set to <em>2</em>, but it seems like the Azure team changed how Web Jobs are initialized, so currently I have it set to <em>5</em>.
+      </li>
+      <li>
+        <code>idleTime</code> is a TimeSpan that controls how long the executable should sit idly waiting, if there are no messages in the queue. This value comes from the configuration system. In a recent system, I set it to 5 seconds, which means that you may experience up to 5 seconds delay from a message arrives on an empty queue, until it's picked up and handled.
+      </li>
+      <li>
+        <code>dequeue</code> is the function that actually pulls a message off the queue. It has the signature <code>unit&nbsp;->&nbsp;(unit&nbsp;->&nbsp;unit)&nbsp;option</code>. That looks pretty weird, but it means that it's a function that takes no input arguments. If there's a message in the queue, it returns a handler function, which is used to handle the message; otherwise, it returns None.
+      </li>
+    </ul>
+    Obviously, there's quite a bit of code behind that dequeue function (it's actually the heart of the system), but exactly what it does, and how it does it, isn't particularly important in this context. If you want to see an example of how to implement a background process in F#, see my <a href="http://www.shareasale.com/r.cfm?u=1017843&b=611266&m=53701&afftrack=&urllink=pluralsight%2Ecom%2Fcourses%2Ffunctional%2Darchitecture%2Dfsharp">Pluralsight course on Functional Architecture with F#</a>.
+  </p>
+  <p>
+    <pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">let</span>&nbsp;<span style="color:blue;">rec</span>&nbsp;handleUntilTimedOut&nbsp;(durations&nbsp;:&nbsp;<span style="color:#2b91af;">TimeSpan</span>&nbsp;<span style="color:#2b91af;">list</span>)&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;avgDuration&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">match</span>&nbsp;durations&nbsp;<span style="color:blue;">with</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;[]&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;estimatedDuration
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;_&nbsp;<span style="color:blue;">-&gt;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(durations&nbsp;|&gt;&nbsp;<span style="color:#2b91af;">List</span>.sumBy&nbsp;(<span style="color:blue;">fun</span>&nbsp;x&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;x.Ticks))&nbsp;/
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(int64&nbsp;durations.Length)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:#2b91af;">TimeSpan</span>.FromTicks
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;margin&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(decimal&nbsp;avgDuration.Ticks)&nbsp;*&nbsp;toleranceFactor
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;int64
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:#2b91af;">TimeSpan</span>.FromTicks
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;<span style="color:#2b91af;">DateTimeOffset</span>.Now&nbsp;+&nbsp;margin&nbsp;&lt;&nbsp;stopBefore&nbsp;<span style="color:blue;">then</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">match</span>&nbsp;dequeue()&nbsp;<span style="color:blue;">with</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;Some&nbsp;handle&nbsp;<span style="color:blue;">-&gt;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;before&nbsp;=&nbsp;<span style="color:#2b91af;">DateTimeOffset</span>.Now
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;handle()
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;after&nbsp;=&nbsp;<span style="color:#2b91af;">DateTimeOffset</span>.Now
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;duration&nbsp;=&nbsp;after&nbsp;-&nbsp;before
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;newDurations&nbsp;=&nbsp;duration&nbsp;::&nbsp;durations
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;handleUntilTimedOut&nbsp;newDurations
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;_&nbsp;<span style="color:blue;">-&gt;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;<span style="color:#2b91af;">DateTimeOffset</span>.Now&nbsp;+&nbsp;idleTime&nbsp;&lt;&nbsp;stopBefore&nbsp;<span style="color:blue;">then</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Async</span>.Sleep&nbsp;(int&nbsp;idleTime.TotalMilliseconds)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:#2b91af;">Async</span>.RunSynchronously
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;handleUntilTimedOut&nbsp;durations
+ 
+handleUntilTimedOut&nbsp;[]</pre>
+  </p>
+  <p>
+    As you can see, the first thing the handleUntilTimedOut function does is to attempt to calculate the average duration of handling a message. Calculating the average is easy enough if you have at least one observation, but if you have no observations at all, you can't calculate the average. This is the reason the algorithm needs the estimatedDuration to get started.
+  </p>
+  <p>
+    Based on the the average (or estimated) duration, the algorithm next calculates a safety margin. This margin is intended to give the executable a chance to exit in time: if it can see that it's getting too close to the timeout, it'll exit instead of attempting to handle another message, since handling another message may take so much time that it may push it over the timeout limit.
+  </p>
+  <p>
+    If it decides that, based on the margin, it still have time to handle a message, it'll attempt to dequeue a message.
+  </p>
+  <p>
+    If there's a message, it'll measure the time it takes to handle the message, and then append the measured duration to the list of already observed durations, and recursively call itself.
+  </p>
+  <p>
+    If there's no message in the queue, the algorithm will idle for the configured period, and then call itself recursively.
+  </p>
+  <p>
+    Finally, the <code>handleUntilTimedOut []</code> expression kicks off the polling cycle with an empty list of observed durations.
+  </p>
+  <p>
+    <strong>Observations</strong>
+  </p>
+  <p>
+    When appropriately configured, a typical Azure Web Job log sequence looks like this:
+    <ul>
+      <li>1 minute ago (55 seconds running time)</li>
+      <li>2 minutes ago (55 seconds running time)</li>
+      <li>3 minutes ago (56 seconds running time)</li>
+      <li>4 minutes ago (55 seconds running time)</li>
+      <li>5 minutes ago (56 seconds running time)</li>
+      <li>6 minutes ago (58 seconds running time)</li>
+      <li>7 minutes ago (55 seconds running time)</li>
+      <li>8 minutes ago (55 seconds running time)</li>
+      <li>9 minutes ago (58 seconds running time)</li>
+      <li>10 minutes ago (56 seconds running time)</li>
+    </ul>
+    Notice that all Web Jobs complete within 1 minute, leaving time for the next scheduled job to start. In all of those 55ish seconds, the job can continuously pull messages of the queue, if any are present.
+  </p>
+  <p>
+    <strong>Summary</strong>
+  </p>
+  <p>
+    If you have a situation where you need to run a scheduled job (as opposed to a continuously running service or daemon), but you want it to behave like it was a continuously running service, you can make it wait until just before a new scheduled job is about to start, and then exit. This is an approach you can use anywhere you find yourself in that situation - not only on Azure.
+  </p>
+  <p>
+    <strong>Update 2015 August 11:</strong> See my <a href="http://blog.ploeh.dk/2015/08/10/type-driven-development">article about Type Driven Development</a> for an example of how to approach this problem in a well-designed, systematic, iterative fashion.
+  </p>
+</div>
+<div id="comments">
+  <hr>
+  <h2 id="comments-header">Comments</h2>
+    <div class="comment">
+      <div class="comment-author">
+        <a href="http://blog.nikosbaxevanis.com">Nikos Baxevanis</a></div>
+      <div class="comment-content">
+        <p>Indeed, this technique really shines when the task runs at discrete 
+        intervals and the actual job takes <em>less</em> time than each interval.</p>
+
+        <p>For example, if a job takes 20 seconds to complete, then inside a single 
+        task of 1 minute it's possible to run <em>2</em> jobs, using the technique 
+        described in this article. – This is <em>very</em> nice!</p>
+
+        <p><em>FWIW, 
+        <a href="https://skillsmatter.com/skillscasts/6289-type-driven-development">this</a> 
+        talk and <a href="http://blog.ploeh.dk/2014/12/17/good-times-with-f/">this</a> 
+        post seem to be related with the technique shown in this article.</em></p>
+
+        <p>OTOH, in the context of Windows Services, or similar, it's possible to 
+        run a task at even smaller intervals than 1 minute.</p>
+
+        <p>In this case, the trick is to measure how much time it takes to run the 
+        actual job. – Then, schedule the task to run in any period <em>less</em> 
+        than the measured time.</p>
+
+        <hr />
+
+        <p>As an example, if a job takes 1 seconds to complete, schedule the task 
+        to run every 0.5 seconds on a background thread while blocking the 
+        foreground thread:</p>
+
+  <pre><code>open System.Threading
+  open System.Threading.Tasks
+
+  module Scheduler =
+      let run job (period : TimeSpan) =
+          // Start
+          let cancellationTokenSource =
+              new CancellationTokenSource()
+
+          (new Task(fun () -&gt;
+              let token = cancellationTokenSource.Token
+              while not token.IsCancellationRequested do
+                  job()
+                  token.WaitHandle.WaitOne period |&gt; ignore)).Start()
+
+          // Loop
+          Console.WriteLine
+              "Scheduler running. Type \"quit\" or \"exit\" to stop."
+          let stop =
+              let line = Console.ReadLine().ToUpperInvariant()
+              line = "QUIT" || line = "EXIT"
+          while not stop do ()
+
+          // Stop
+          cancellationTokenSource.Cancel()
+
+  module Main =
+      let job () =
+          Console.Write "[."
+          Async.Sleep 1000 |&gt; Async.RunSynchronously
+          Console.WriteLine ".] - OK"
+
+      Scheduler.run job (TimeSpan.FromSeconds 0.5)
+  </code></pre>
+      </div>
+      <div class="comment-date">2015-05-18 05:57 UTC</div>
+    </div>
+</div>

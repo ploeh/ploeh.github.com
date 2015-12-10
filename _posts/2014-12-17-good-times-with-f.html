@@ -1,0 +1,179 @@
+---
+layout: post
+title: "Good times with F#"
+date: 2014-12-17 8:11 UTC
+tags: [F#]
+---
+{% include JB/setup %}
+
+<div id="post">
+  <p>
+    <em>Some operations take time to perform, and you may want to capture that information. This post describes one way to do it.</em>
+  </p>
+  <p>
+    Occasionally, you may find yourself in the situation where your software must make a decision based on how much time it has left. Is there time to handle one more message before shutting down? How much time did the last operation take? What was the time when it started?
+  </p>
+  <p>
+    It can be tempting to simply use <a href="http://msdn.microsoft.com/en-us/library/system.datetime.now.aspx">DateTime.Now</a> or <a href="http://msdn.microsoft.com/en-us/library/system.datetimeoffset.now.aspx">DateTimeOffset.Now</a>, but the problem is that it couples your code to the machine clock. It also tends to interleave timing logic with other logic, so that it becomes difficult to vary these independently. Incidentally, it also tends to make it difficult to unit test the time-dependent code.
+  </p>
+  <p>
+    <strong>Timed&lt;'a&gt;</strong>
+  </p>
+  <p>
+    One alternative to DateTimeOffset.Now that I've recently found useful is to define a Timed&lt;'a&gt; generic type, like this:
+  </p>
+  <p>
+    <pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">type</span>&nbsp;<span style="color:#2b91af;">Timed</span>&lt;&#39;a&gt;&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Started&nbsp;:&nbsp;<span style="color:#2b91af;">DateTimeOffset</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Stopped&nbsp;:&nbsp;<span style="color:#2b91af;">DateTimeOffset</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Result&nbsp;:&nbsp;&#39;a&nbsp;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">member</span>&nbsp;this.Duration&nbsp;=&nbsp;this.Stopped&nbsp;-&nbsp;this.Started</pre>
+  </p>
+  <p>
+    A value of Timed&lt;'a&gt; not only carries with it the result of some computation, but also information about when it started and stopped. It also has a calculated property called Duration, which you can use to examine how long the operation took.
+  </p>
+  <p>
+    <strong>Untimed transformations</strong>
+  </p>
+  <p>
+    Timed&lt;'a&gt; looks like a standard monadic type, and you can also implement standard Bind and Map functions for it:    
+  </p>
+  <p>
+    <pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">module</span>&nbsp;<span style="color:#2b91af;">Untimed</span>&nbsp;=&nbsp;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;bind&nbsp;f&nbsp;x&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;t&nbsp;=&nbsp;f&nbsp;x.Result
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{&nbsp;t&nbsp;<span style="color:blue;">with</span>&nbsp;Started&nbsp;=&nbsp;x.Started&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;map&nbsp;f&nbsp;x&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{&nbsp;Started&nbsp;=&nbsp;x.Started;&nbsp;Stopped&nbsp;=&nbsp;x.Stopped;&nbsp;Result&nbsp;=&nbsp;f&nbsp;x.Result&nbsp;}</pre>
+  </p>
+  <p>
+    Notice, though, that these functions only transforms the Result (and, in the case of Bind, Stopped), but no actual time measurement is taking place; that's the reason I put both functions in a module called Untimed.
+  </p>
+  <p>
+    In the case of the Bind function, the time measurement is implicitly taking place when the <code>f</code> function is executed, because it returns a Timed&lt;'b&gt;. In the Map function, on the other hand, no time measurement takes place at all. The function simply maps Result from one value to another using the <code>f</code> function.
+  </p>
+  <p>
+    So far, I've found no use for the Bind function, and only occasional use for the Untimed.map function. What really matters, after all, is to measure time.
+  </p>
+  <p>
+    <strong>Timing functions</strong>
+  </p>
+  <p>
+    Ultimately, Timed&lt;'a&gt; is only interesting if you measure the time computations take. Here are a few functions I've found useful to do that:
+  </p>
+  <p>
+    <pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">module</span>&nbsp;<span style="color:#2b91af;">Timed</span>&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;capture&nbsp;clock&nbsp;x&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;now&nbsp;=&nbsp;clock()
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{&nbsp;Started&nbsp;=&nbsp;now;&nbsp;Stopped&nbsp;=&nbsp;now;&nbsp;Result&nbsp;=&nbsp;x&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;map&nbsp;clock&nbsp;f&nbsp;x&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;result&nbsp;=&nbsp;f&nbsp;x.Result
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;stopped&nbsp;=&nbsp;clock&nbsp;()
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{&nbsp;Started&nbsp;=&nbsp;x.Started;&nbsp;Stopped&nbsp;=&nbsp;stopped;&nbsp;Result&nbsp;=&nbsp;result&nbsp;}</pre>
+  </p>
+  <p>
+    Notice that both functions take a <code>clock</code> argument. This is a function with the signature <span style="white-space: nowrap"><code>unit -&gt; DateTimeOffset</code></span>, enabling the capture and map functions to get the time. As the name indicates, the capture function is used to capture a value and 'promote' it to a Timed&lt;'a&gt; value. This value can subsequently be used with the map function to measure the time it took to exectute the <code>f</code> function.
+  </p>
+  <p>
+    <strong>Clocks</strong>
+  </p>
+  <p>
+    Using the computer's clock is easy:
+  </p>
+  <p>
+    <pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">let</span>&nbsp;machineClock&nbsp;()&nbsp;=&nbsp;<span style="color:#2b91af;">DateTimeOffset</span>.Now
+</pre>
+  </p>
+  <p>
+    As you can tell, this function returns the value of DateTimeOffset.Now every time it's invoked.
+  </p>
+  <p>
+    You can also implement other clocks, e.g. for unit testing purposes. Here's one (not particularly Functional) way of doing it:
+  </p>
+  <p>
+    <pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">let</span>&nbsp;qlock&nbsp;(q&nbsp;:&nbsp;System.Collections.Generic.<span style="color:#2b91af;">Queue</span>&lt;<span style="color:#2b91af;">DateTimeOffset</span>&gt;)&nbsp;()&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;q.Dequeue()</pre>
+  </p>
+  <p>
+    Obviously, since this clock is based on a Queue, I decided to call it qlock. Using that, you can define an easier-to-use function based on a sequence of DateTimeOffset values:
+  </p>
+  <p>
+    <pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">let</span>&nbsp;seqlock&nbsp;(l&nbsp;:&nbsp;<span style="color:#2b91af;">DateTimeOffset</span>&nbsp;<span style="color:#2b91af;">seq</span>)&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;qlock&nbsp;(System.Collections.Generic.<span style="color:#2b91af;">Queue</span>&lt;<span style="color:#2b91af;">DateTimeOffset</span>&gt;(l))</pre>
+  </p>
+  <p>
+    Here's a fake clock that counts up all the days before Christmas in December (so obviously, I had to name it <em>xlock</em>):
+  </p>
+  <p>
+    <pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">let</span>&nbsp;xlock&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;[1&nbsp;..&nbsp;24]
+&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:#2b91af;">List</span>.map&nbsp;(<span style="color:blue;">fun</span>&nbsp;d&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:#2b91af;">DateTimeOffset</span>(<span style="color:#2b91af;">DateTime</span>(2014,&nbsp;12,&nbsp;d)))
+&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;seqlock</pre>
+  </p>
+  <p>
+    The first time you execute xlock:
+  </p>
+  <p>
+    <pre style="font-family:Consolas;font-size:13;color:black;">(xlock&nbsp;()).ToString(<span style="color:#a31515;">&quot;d&quot;</span>)</pre>
+  </p>
+  <p>
+    you get "01.12.2014", the next time you get "02.12.2014", the third time "03.12.2014", and so on.
+  </p>
+  <p>
+    Such fake clocks are mostly useful for testing, but you could also use them to perform simulations in accelerated time - or perhaps even move time backwards! (Last time I used it, <a href="http://www.worldwidetelescope.org">WorldWide Telescope</a> enabled you to look at the solar system in accelerated time. I don't know how that feature is implemented, but it sounds like a good case for a custom clock. The point of this digression is that depending on your application's need, being able to manipulate time may not be as exotic as it first sounds.)
+  </p>
+  <p>
+    <strong>Measuring the time of execution</strong>
+  </p>
+  <p>
+    These are all the building blocks you need to measure the time it takes to perform an operation. There are various ways to do it, but given a <code>clock</code> of the type <span style="white-space: nowrap"><code>unit -&gt; DateTimeOffset</code></span>, you can close over the clock like this:
+  </p>
+  <p>
+    <pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">let</span>&nbsp;time&nbsp;f&nbsp;x&nbsp;=&nbsp;x&nbsp;|&gt;&nbsp;<span style="color:#2b91af;">Timed</span>.capture&nbsp;clock&nbsp;|&gt;&nbsp;<span style="color:#2b91af;">Timed</span>.map&nbsp;clock&nbsp;f</pre>
+  </p>
+  <p>
+    The <code>time</code> function has the type <span style="white-space: nowrap"><code>('a -&gt; 'b) -&gt; 'a -&gt; Timed&lt;'b&gt;</code></span>, so, if for example you have a function called <code>readCustomerFromDb</code> of the type <span style="white-space: nowrap"><code>int -&gt; Customer option</code></span>, you can time it like this:
+  </p>
+  <p>
+    <pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">let</span>&nbsp;c&nbsp;=&nbsp;time&nbsp;readCustomerFromDb&nbsp;42</pre>
+  </p>
+  <p>
+    This might give you a result like this:
+  </p>
+  <p>
+    <pre style="font-family:Consolas;font-size:13;color:black;">{Started&nbsp;=&nbsp;17.12.2014&nbsp;11:24:38&nbsp;+01:00;
+&nbsp;Stopped&nbsp;=&nbsp;17.12.2014&nbsp;11:24:39&nbsp;+01:00;
+&nbsp;Result&nbsp;=&nbsp;Some&nbsp;{Id&nbsp;=&nbsp;42;&nbsp;Name&nbsp;=&nbsp;<span style="color:#a31515;">&quot;Foo&quot;</span>;};}</pre>
+  </p>
+  <p>
+    As you can tell, the result of querying the database for customer 42 is the customer data, as well as information about when the operation started and stopped.
+  </p>
+  <p>
+    <strong>Concluding remarks</strong>
+  </p>
+  <p>
+    The nice quality of Timed&lt;'a&gt; is that it decouples timing of operations from the result of those operations. This enables you to compose functions without explicitly having to consider how to measure their execution times.
+  </p>
+  <p>
+    It also helps with unit testing, because if you want to test what happens in a function if a previous function ran on a Sunday, or if it took more than three seconds to run, you can simply create a value of Timed&lt;'a&gt; that captures that information:
+  </p>
+  <p>
+    <pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">let</span>&nbsp;c&#39;&nbsp;=&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;Started&nbsp;=&nbsp;<span style="color:#2b91af;">DateTimeOffset</span>(<span style="color:#2b91af;">DateTime</span>(2014,&nbsp;12,&nbsp;14,&nbsp;11,&nbsp;43,&nbsp;11))
+&nbsp;&nbsp;&nbsp;&nbsp;Stopped&nbsp;=&nbsp;<span style="color:#2b91af;">DateTimeOffset</span>(<span style="color:#2b91af;">DateTime</span>(2014,&nbsp;12,&nbsp;14,&nbsp;11,&nbsp;43,&nbsp;15))
+&nbsp;&nbsp;&nbsp;&nbsp;Result&nbsp;=&nbsp;Some&nbsp;{&nbsp;Id&nbsp;=&nbsp;1337;&nbsp;Name&nbsp;=&nbsp;<span style="color:#a31515;">&quot;Ploeh&quot;</span>&nbsp;}&nbsp;}</pre>
+  </p>
+  <p>
+    This value can now be used in a unit test to verify the behaviour in that particular case.
+  </p>
+  <p>
+    In a future post, I will demonstrate how to compose more complex time-sensitive behaviour using Timed&lt;'a&gt; and the associated modules.
+  </p>
+  <p>
+    <em>This post is number 17 in the <a href="http://sergeytihon.wordpress.com/2014/11/24/f-advent-calendar-in-english-2014">2014 F# Advent Calendar</a>.</em>
+  </p>
+</div>

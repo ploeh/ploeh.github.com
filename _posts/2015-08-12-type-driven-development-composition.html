@@ -1,0 +1,149 @@
+---
+layout: post
+title: "Type Driven Development: composition"
+date: 2015-08-12 7:24 UTC
+tags: [F#]
+---
+{% include JB/setup %}
+
+<div id="post">
+  <p>
+    <em>When you develop a system with an outside-in technique like Type Driven Development, you'll eventually have all the required building blocks. Now you need to compose them into an application. This post shows an example.</em>
+  </p>
+  <p>
+    In <a href="http://blog.ploeh.dk/2015/08/10/type-driven-development">my article about Type Driven Development</a>, I demonstrated how to approach a problem in an iterative fashion, using the F# type system to do outside-in development, and in a <a href="http://blog.ploeh.dk/2015/08/11/type-driven-development-implementing-shouldidle">follow-up article</a>, I showed you how to implement one of the inferred methods. In this article, you'll see how to compose all the resulting building blocks into an application.
+  </p>
+  <p>
+    <strong>Building blocks</strong>
+  </p>
+  <p>
+    In the <a href="http://blog.ploeh.dk/2015/08/10/type-driven-development">first article</a>, you learned that apart from the functions defined in that article itself, you'd need four other functions:
+    <ul>
+      <li>ReadyData&nbsp;-&gt;&nbsp;bool</li>
+      <li>unit&nbsp;-&gt;&nbsp;Timed&lt;MessageHandler option&gt;</li>
+      <li>NoMessageData&nbsp;-&gt;&nbsp;bool</li>
+      <li>unit&nbsp;-&gt;&nbsp;Timed&lt;'a&gt;</li>
+    </ul>
+    In the <a href="http://blog.ploeh.dk/2015/08/11/type-driven-development-implementing-shouldidle">article about implementation</a>, you saw how to implement one of these functions: the shouldIdle function.
+  </p>
+  <p>
+    As you can see in my <a href="http://www.shareasale.com/r.cfm?u=1017843&b=611266&m=53701&afftrack=&urllink=www%2Epluralsight%2Ecom%2Fcourses%2Ffsharp%2Dtype%2Ddriven%2Ddevelopment">Type-Driven Development with F#</a> Pluralsight course, some of the other implementations turn out to have function arguments themselves. It's not quite enough with only those four functions. Still, the final number of implementation functions is only 9.
+  </p>
+  <p>
+    Here are all the building blocks (excluding the <a href="http://blog.ploeh.dk/2015/08/10/type-driven-development">types and functions related to Timed&lt;'a&gt;</a>):
+    <ul>
+      <li>run : (PollingConsumer -&gt;&nbsp;PollingConsumer) -&gt;&nbsp;PollingConsumer -&gt;&nbsp;PollingConsumer</li>
+      <li>transition : (ReadyData -&gt;&nbsp;bool) -&gt;&nbsp;(unit -&gt;&nbsp;Timed&lt;MessageHandler option&gt;) -&gt;&nbsp;(NoMessageData -&gt;&nbsp;bool) -&gt;&nbsp;(unit -&gt;&nbsp;Timed&lt;'a&gt;) -&gt;&nbsp;PollingConsumer -&gt;&nbsp;PollingConsumer</li>
+      <li>shouldIdle : TimeSpan -&gt;&nbsp;DateTimeOffset -&gt;&nbsp;NoMessageData -&gt;&nbsp;bool</li>
+      <li>idle : TimeSpan -&gt;&nbsp;unit -&gt;&nbsp;Timed&lt;unit&gt;</li>
+      <li>shouldPoll : (TimeSpan list -&gt;&nbsp;TimeSpan) -&gt;&nbsp;DateTimeOffset -&gt;&nbsp;ReadyData -&gt;&nbsp;bool</li>
+      <li>poll : (unit -&gt;&nbsp;'a option) -&gt;&nbsp;('a -&gt;&nbsp;'b) -&gt;&nbsp;(unit -&gt;&nbsp;DateTimeOffset) -&gt;&nbsp;unit -&gt;&nbsp;Timed&lt;MessageHandler option&gt;</li>
+      <li>calculateExpectedDuration : TimeSpan -&gt;&nbsp;TimeSpan list -&gt;&nbsp;TimeSpan</li>
+      <li>simulatedPollForMessage : Random -&gt;&nbsp;unit -&gt;&nbsp;unit option</li>
+      <li>simulatedHandle : Random -&gt;&nbsp;unit -&gt;&nbsp;unit</li>
+    </ul>
+    You may have noticed that some of these function names are prefixed with <em>simulated</em>. This is because I wrote some functions that only <em>simulate</em> that messages arrive and are handled. That's also the reason for the Random value here and there.
+  </p>
+  <p>
+    <strong>Composition</strong>
+  </p>
+  <p>
+    When the Polling Consumer starts, it can start by figuring out the current time, and calculate some derived values from that and some configuration values, <a href="http://blog.ploeh.dk/2015/08/11/type-driven-development-implementing-shouldidle">as previously explained</a>.
+  </p>
+  <p>
+    <pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">let</span>&nbsp;now&#39;&nbsp;=&nbsp;<span style="color:#2b91af;">DateTimeOffset</span>.Now
+<span style="color:blue;">let</span>&nbsp;stopBefore&#39;&nbsp;=&nbsp;now&#39;&nbsp;+&nbsp;<span style="color:#2b91af;">TimeSpan</span>.FromMinutes&nbsp;1.
+<span style="color:blue;">let</span>&nbsp;estimatedDuration&#39;&nbsp;=&nbsp;<span style="color:#2b91af;">TimeSpan</span>.FromSeconds&nbsp;2.
+<span style="color:blue;">let</span>&nbsp;idleDuration&#39;&nbsp;=&nbsp;<span style="color:#2b91af;">TimeSpan</span>.FromSeconds&nbsp;5.</pre>
+  </p>
+  <p>
+    The <code>estimatedDuration'</code> value is a TimeSpan containing a (conservative) estimate of how long time it takes to handle a single message. It's only used if there are no already observed message handling durations, as the algorithm then has no statistics about the average execution time for each message. This value could come from a configuration system, or a command-line argument. <a href="http://blog.ploeh.dk/2014/09/25/faking-a-continuously-polling-consumer-with-scheduled-tasks">In a recent system, I just arbitrarily set it to 2 seconds</a>.
+  </p>
+  <p>
+    Given these initial values, we can compose all other required functions:
+  </p>
+  <p>
+    <pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">let</span>&nbsp;shouldPoll&#39;&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;shouldPoll&nbsp;(calculateExpectedDuration&nbsp;estimatedDuration&#39;)&nbsp;stopBefore&#39;
+ 
+<span style="color:blue;">let</span>&nbsp;r&#39;&nbsp;=&nbsp;<span style="color:#2b91af;">Random</span>()
+<span style="color:blue;">let</span>&nbsp;handle&#39;&nbsp;=&nbsp;simulatedHandle&nbsp;r&#39;
+<span style="color:blue;">let</span>&nbsp;pollForMessage&#39;&nbsp;=&nbsp;simulatedPollForMessage&nbsp;r&#39;
+<span style="color:blue;">let</span>&nbsp;poll&#39;&nbsp;=&nbsp;poll&nbsp;pollForMessage&#39;&nbsp;handle&#39;&nbsp;<span style="color:#2b91af;">Clocks</span>.machineClock
+ 
+<span style="color:blue;">let</span>&nbsp;shouldIdle&#39;&nbsp;=&nbsp;shouldIdle&nbsp;idleDuration&#39;&nbsp;stopBefore&#39;
+ 
+<span style="color:blue;">let</span>&nbsp;idle&#39;&nbsp;=&nbsp;idle&nbsp;idleDuration&#39;
+ 
+<span style="color:blue;">let</span>&nbsp;transition&#39;&nbsp;=&nbsp;transition&nbsp;shouldPoll&#39;&nbsp;poll&#39;&nbsp;shouldIdle&#39;&nbsp;idle&#39;
+<span style="color:blue;">let</span>&nbsp;run&#39;&nbsp;=&nbsp;run&nbsp;transition&#39;</pre>
+  </p>
+  <p>
+    The composed <code>run'</code> function has the type <code>PollingConsumer -&gt;&nbsp;PollingConsumer</code>. The input PollingConsumer value is the start state, and the function will return another PollingConsumer when it's done. Due to <a href="http://blog.ploeh.dk/2015/08/10/type-driven-development">the way the <code>run</code> function is implemented</a>, this return value is always going to be StoppedState.
+  </p>
+  <p>
+    <strong>Execution</strong>
+  </p>
+  <p>
+    All that's left to do is to execute the <code>run'</code> function with a ReadyState as the initial state:
+  </p>
+  <p>
+    <pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">let</span>&nbsp;result&#39;&nbsp;=&nbsp;run&#39;(ReadyState([]&nbsp;|&gt;&nbsp;<span style="color:#2b91af;">Timed</span>.capture&nbsp;<span style="color:#2b91af;">Clocks</span>.machineClock))
+</pre>
+  </p>
+  <p>
+    A ReadyState value is required as input, and the ReadyState case constructor takes a ReadyData value as input. ReadyData is an alias for Timed&lt;TimeSpan list&gt;. An the beginning, the Polling Consumer hasn't observed any messages, so the TimeSpan list should be empty.
+  </p>
+  <p>
+    The empty <code>TimeSpan list</code> must be converted to <code>Timed&lt;TimeSpan list&gt;</code>, which can be done by piping it into <code>Timed.capture</code>, using the machine clock.
+  </p>
+  <p>
+    When you execute the run' function, it may produce output like this:
+  </p>
+  <p>
+    <pre>Polling
+Sleeping
+Polling
+Sleeping
+Polling
+Handling
+Polling
+Sleeping
+Polling
+Sleeping
+Polling
+Sleeping
+Polling
+Handling
+Polling
+Sleeping
+Polling
+Sleeping
+Polling
+Sleeping
+Polling
+Sleeping
+Polling
+Handling
+Polling
+Handling
+Polling
+Sleeping
+Real: 00:00:59.392, CPU: 00:00:00.031, GC gen0: 0, gen1: 0, gen2: 0</pre>
+  </p>
+  <p>
+    This is because I set up some of the functions to print to the console so that we can see what's going on.
+  </p>
+  <p>
+    Notice that the state machine ran for 59 seconds and 392 milliseconds, exiting just before the minute was up.
+  </p>
+  <p>
+    <strong>Summary</strong>
+  </p>
+  <p>
+    Once you have all the appropriate building blocks, you can compose your desired system and run it. Notice how much this resembles the <a href="http://blog.ploeh.dk/2011/07/28/CompositionRoot">Composition Root</a> pattern, only with functions instead of objects.
+  </p>
+  <p>
+    If you want to see more details about this example, or get access to the full source code, you can watch my <a href="http://www.shareasale.com/r.cfm?u=1017843&b=611266&m=53701&afftrack=&urllink=www%2Epluralsight%2Ecom%2Fcourses%2Ffsharp%2Dtype%2Ddriven%2Ddevelopment">Type-Driven Development with F#</a> Pluralsight course. Please be aware that only certain subscription levels will give you source code access.
+  </p>
+</div>

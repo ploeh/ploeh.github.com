@@ -1,0 +1,157 @@
+---
+layout: post
+title: "Library Bundle Facade"
+date: 2015-01-21 19:22 UTC
+tags: [Software Design, Dependency Injection, Architecture]
+---
+{% include JB/setup %}
+
+<div id="post">
+  <p>
+    <em>Some people want to define a Facade for a bundle of libraries. Is that a good idea?</em>
+  </p>
+  <p>
+    My recent article on <a href="http://blog.ploeh.dk/2015/01/06/composition-root-reuse">Composition Root reuse</a> generated some comments:
+    <blockquote>
+      <p>
+        "What do you think about pushing these factories and builders to a library so that they can be reused by different composition roots?"
+      </p>
+      <p>
+        "We want to share the composition root, because otherwise when a component needs a new dependency and a constructor parameter is added, we'd have to change the same code in two different places."
+      </p>
+    </blockquote>
+    These comments are from two different people, but they provide a decent summary of the concerns being voiced.
+  </p>
+  <p>
+    Is it a good idea to provide one or more <a href="http://en.wikipedia.org/wiki/Facade_pattern">Facades</a>, for example in the form of Factories or Builders, for the libraries making up a <a href="http://blog.ploeh.dk/2011/07/28/CompositionRoot">Composition Root</a>? More specifically, is it a good idea to provide a Factory or Builder that can compose a complete object graph spanning multiple libraries?
+  </p>
+  <p>
+    In this article, I will attempt to answer that question for various cases of library bundles. To make the terminology a bit more streamlined, I'll refer to any Factory or Builder that composes object graphs as a <em>Composer</em>.
+  </p>
+  <p>
+    <strong>Single library</strong>
+  </p>
+  <p>
+    In the case of a single library, I think I've <a href="http://blog.ploeh.dk/2014/05/19/di-friendly-library">already answered the question in the affirmative</a>. There's nothing wrong with including a Facade in the form of a Factory or Builder in order to make that single library easier to use.
+  </p>
+  <p>
+    <strong>Two libraries</strong>
+  </p>
+  <p>
+    When you introduce a second library, things start becoming interesting. If we consider the case of two libraries, for example a Domain Model and a Data Access Library, the Composition Root will need to compose an object graph where some of the objects in the graph are from the Domain Model, and some of the objects are from the Data Access Library.
+  </p>
+  <p>
+    <img src="/content/binary/domain-model-and-data-access-library.png" alt="Domain Model and Data Access Libraries.">
+  </p>
+  <p>
+    In the spirit of <a href="http://amzn.to/19W4JHk">Agile Principles, Patterns, and Practices</a> (APPP), it turns out that simply drawing dependency diagrams can be helpful. From the <a href="http://en.wikipedia.org/wiki/Dependency_inversion_principle">Dependency Inversion Principle</a> (DIP) we know that the "clients [...] own the abstract interfaces" (APPP, chapter 11), which means that for our two example libraries, the dependency graph <em>must</em> look like this:
+  </p>
+  <p>
+    <img src="/content/binary/domain-model-and-data-access-library-dependency-graph.png" alt="Domain Model and Data Access Libraries dependency graph.">
+  </p>
+  <p>
+    At least, if you follow the <a href="http://blog.ploeh.dk/2013/12/03/layers-onions-ports-adapters-its-all-the-same">most common architectures for loosely couple code</a>, the Domain Model is the 'client', so it gets to define the interfaces it needs. Thus, it follows that the Data Access Library, in order to implement those interfaces, must have a compile-time dependency on the Domain Model. That's what the arrow means.
+  </p>
+  <p>
+    From this diagram, it should be clear that you can't put a Factory or Builder in the Domain Model library. If the Composer should compose object graphs from both libraries, it would need to reference both of those libraries, and the Domain Model can't reference the Data Access Library, since that would result in a circular reference.
+  </p>
+  <p>
+    You <em>could</em> put the Composer in the Data Access Library, but that somehow doesn't feel right, and in any case, as we shall see later, this solution can't be generalised to <em>n</em> libraries.
+  </p>
+  <p>
+    A solution that many people reach for, then, is to pull the interfaces out into a separate library, like this:
+  </p>
+  <p>
+    <img src="/content/binary/domain-model-and-data-access-and-interface-libraries.png" alt="Domain Model, Data Access, and interface libraries dependency graph.">
+  </p>
+  <p>
+    It's a bit like cheating, according to the DIP, but it's as decoupled as before. In this diagram, the Domain Model depends on the interfaces because it uses them, while the Data Access Library depends on the interface library because it implements the interfaces. Unfortunately, this doesn't solve the problem at all, because there's still no place to place a Composer without getting into a problem with either the DIP, or circular references (exercise: try it!).
+  </p>
+  <p>
+    A possible option is to keep the libraries as the DIP dictates, and then add a third Composer library:
+  </p>
+  <p>
+    <img src="/content/binary/domain-model-and-data-access-and-composer-libraries.png" alt="Domain Model, Data Access, and Composer libraries dependency graph.">
+  </p>
+  <p>
+    The Composer library references both the Domain Model and the Data Access Library, so it's possible for it to compose object graphs with objects from both libraries. The only purpose of this library, then, is to compose those object graphs, so it'll likely only contain a single class.
+  </p>
+  <p>
+    <strong>Multiple libraries</strong>
+  </p>
+  <p>
+    Does the above conclusions change if you have more than two libraries? Only in the sense that it further restricts your options. As the analysis of the special case with two libraries demonstrated, you only have two options for adding a Composer to your bundle of libraries:
+    <ul>
+      <li>Put the Composer in the Data Access Library</li>
+      <li>Put the Composer in a new dedicated library</li>
+    </ul>
+    A single counter-example with three libraries is enough to demonstrate that the first of these options (putting the Composer in the Data Access Library) isn't a generally available option.
+  </p>
+  <p>
+    Imagine that you have two Data Access Libraries instead of one:
+  </p>
+  <p>
+    <img src="/content/binary/domain-model-and-two-data-access-libraries.png" alt="Domain Model and two Data Access libraries dependency graph.">
+  </p>
+  <p>
+    For instance, the SQL Access Library may implement various interfaces defined by the Domain Model, based on a SQL Server database; and the Web Service Access Library may implement some other interfaces by calling out to some web service.
+  </p>
+  <p>
+    If the Composer must be able to compose object graphs with object from all three libraries, it must reside in a library that references all of the relevant libraries. The Domain Model is still out of the question because you can't have circular references. That leaves one of the two Data Access libraries. It'd be technically possible to e.g. add a reference from the SQL Access Library to the Web Service Access Library, and put the Composer in the SQL Access Library:
+  </p>
+  <p>
+    <img src="/content/binary/domain-model-and-two-data-access-libraries-where-one-data-access-library-references-the-other.png" alt="Domain Model and two Data Access libraries dependency graph, where one Data Access Library references the other.">
+  </p>
+  <p>
+    However, why would you ever do that? It's clearly wrong to let one Data Access library depend on another, and it doesn't help if you reverse the arrow.
+  </p>
+  <p>
+    Thus, the only option left is to add a new Composer library:
+  </p>
+  <p>
+    <img src="/content/binary/domain-model-and-two-data-access-libraries-and-composer.png" alt="Domain Model, two Data Access libraries, and a Composer library dependency graph.">
+  </p>
+  <p>
+    As before, the Composer library has references to all other libraries, and contains a single class that composes object graphs.
+  </p>
+  <p>
+    <strong>Over-engineering</strong>
+  </p>
+  <p>
+    The point of this analysis is to arrive at the conclusion that no matter how you twist and turn, you'll have to add a completely new library with the only purpose of composing object graphs. Is it warranted?
+  </p>
+  <p>
+    If the only motivation for doing this is to avoid duplicated code, I would argue that this looks like over-engineering. In the questions quoted above, it sounds as if the <a href="http://en.wikipedia.org/wiki/Rule_of_three_(computer_programming)">Rule of Three</a> isn't even satisfied. It's always important to <a href="http://blog.ploeh.dk/2014/08/07/why-dry">question your motivations for avoiding duplication</a>. In this case, I'd be wary of introducing so much extra complexity only in order to avoid writing the same lines of code twice - particularly when it's likely that the <a href="http://verraes.net/2014/08/dry-is-about-knowledge">duplication is accidental</a>.
+  </p>
+  <p>
+    <strong>TL;DR</strong>
+  </p>
+  <p>
+    Attempting to provide a reusable Facade to compose object graphs across multiple libraries is hardly worth the trouble. Think twice before you do it.
+  </p>
+</div>
+<div id="comments">
+    <hr />
+    <h2 id="comments-header">Comments</h2>
+    <div class="comment">
+        <div class="comment-author">Kenny Pflug</div>
+        <div class="comment-content">
+            <p>Dear Mark,</p>
+            <p>Thanks again for another wonderful post. I'm one of the guys you mentioned at the beginning of this text and I totally agree with you on this subject.</p>
+            <p>Maybe I wasn't specific enough in my <a href="http://blog.ploeh.dk/2015/01/06/composition-root-reuse/">comment</a> that I didn't mean to introduce factories and builders handling dependencies from two or more assemblies, but only from a single one. The composition root wires the independent subgraphs from the different assemblies together.</p>
+            <p>However, I want to reemphasize the Builder Pattern in this context: it provides default dependencies for the object graph to be created and (usually) a fluent API (i.e. some sort of method chaining) to exchange these dependencies. This has the following consequences for the client programmer using the builder(s): he or she can easily create a default object graph by calling <span style="color:black; font-family: Consolas">new <span style="color: #2b91af">Builder</span>().Build()</span> and still exchange dependencies he or she cares about. This can keep the composition root clean (at least for Arrange phases of tests this is true).</p>
+            <p>Why I'm so excited about this? Because I use this all the time in my automated tests, but haven't really used it in my production composition roots (or seen it in others). After reading this post and <a href="http://blog.ploeh.dk/2015/01/06/composition-root-reuse/">Composition Root Reuse</a>, I will try to incorporate builders more often in my production code.</p>
+            <p>Mark - thank you for making me think about this.</p>
+        </div>
+        <div class="comment-date">2015-01-21 21:20 UTC</div>
+    </div>
+  <div class="comment">
+    <div class="comment-author"><a href="http://blog.ploeh.dk">Mark Seemann</a></div>
+    <div class="comment-content">
+      <p>
+        Kenny, thank you for writing. The <a href="http://blog.ploeh.dk/2014/05/19/di-friendly-library">Builder pattern is indeed a good way to implement Facades for a single library</a>.
+      </p>
+    </div>
+    <div class="comment-date">2015-01-22 07:40 UTC</div>
+  </div>
+</div>
