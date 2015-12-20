@@ -1,0 +1,129 @@
+---
+layout: post
+title: "Integration Testing composed functions"
+date: 2015-12-21 09:05 UTC
+tags: [Unit Testing, F#, ASP.NET Web API]
+---
+{% include JB/setup %}
+
+<div id="post">
+	<p>
+		<em>When you build a system from small functions that you subsequently compose, how do you know that the composition works? Integration testing is one option.</em>
+	</p>
+	<p>
+		Despite its reputation as a niche language for scientific or finance computing, F# is a wonderful language for 'mainstream' software development. You can compose applications from small, <a href="http://blog.ploeh.dk/2015/05/07/functional-design-is-intrinsically-testable">inherently testable</a> functions.
+	</p>
+	<p>
+		<strong>Composition</strong>
+	</p>
+	<p>
+		Once you have your functions as building blocks, you compose them. This is best done in an application's <a href="http://blog.ploeh.dk/2011/07/28/CompositionRoot">Composition Root</a> - no different from Dependency Injection in Object-Oriented Programming.
+	</p>
+	<p>
+		In my <a href="http://www.infoq.com/presentations/mock-fsharp-tdd">(free) Build Stuff talk on Functional TDD with F#</a> (expanded version <a href="http://bit.ly/tddwithfsharp">available on Pluralsight</a>), I demonstrate how to compose such a function:
+	</p>
+	<p>
+		<pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">let</span>&nbsp;<span style="color:navy;">imp</span>&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#4ec9b0;">Validate</span>.<span style="color:navy;">reservation</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&gt;&gt;&nbsp;<span style="color:navy;">bind</span>&nbsp;(<span style="color:#4ec9b0;">Capacity</span>.<span style="color:navy;">check</span>&nbsp;10&nbsp;(<span style="color:#4ec9b0;">SqlGateway</span>.<span style="color:navy;">getReservedSeats</span>&nbsp;connectionString))
+&nbsp;&nbsp;&nbsp;&nbsp;&gt;&gt;&nbsp;<span style="color:navy;">map</span>&nbsp;(<span style="color:#4ec9b0;">SqlGateway</span>.<span style="color:navy;">saveReservation</span>&nbsp;connectionString)</pre>
+	</p>
+	<p>
+		How can you be sure that this composition is correct?
+	</p>
+	<p>
+		<strong>Integration Testing</strong>
+	</p>
+	<p>
+		The answer to that question isn't different from its Object-Oriented counterpart. When you implement small building blocks, you can test them. Call these small building blocks <em>units</em>, and it should be clear that such tests are unit tests. It doesn't matter if units are (small) classes or functions.
+	</p>
+	<p>
+		Unit testing ought to give you confidence that each unit behaves correctly, but unit tests don't tell you how they integrate. Are there issue that only surface when units interact? Are units correctly composed?
+	</p>
+	<p>
+		In my experience, you can develop entire systems based exclusively on unit tests, and the final application can be stable and sturdy without the need for further testing. This depends on circumstances, though. In other cases, you need further testing to gain confidence that the application is correctly composed from its building blocks.
+	</p>
+	<p>
+		You can use a small set of integration tests for that.
+	</p>
+	<p>
+		<strong>Example</strong>
+	</p>
+	<p>
+		In my <a href="http://bit.ly/outside-in-tdd">Outside-In Test-Driven Development</a> Pluralsight course, I demonstrate how to apply the <a href="http://bit.ly/growingoos">GOOS</a> approach to an HTTP API built with <a href="http://www.asp.net/web-api">ASP.NET Web API</a>. One of the techniques I describe is <a href="http://stackoverflow.com/a/22294059/126014">how to integration test the API against its HTTP boundary</a>.
+	</p>
+	<p>
+		In that course, you learn how to test an API implemented in C#, but since the tests are made against the HTTP boundary, the implementation language doesn't matter. Even so, you can also write the tests themselves in F#. Here's an example that exercises the Controller that uses the above <code>imp</code> function:
+	</p>
+	<p>
+		<pre style="font-family:Consolas;font-size:13;color:black;">[&lt;<span style="color:#4ec9b0;">Fact</span>;&nbsp;<span style="color:#4ec9b0;">UseDatabase</span>&gt;]
+<span style="color:blue;">let</span>&nbsp;<span style="color:navy;">``Post&nbsp;returns&nbsp;success``</span>&nbsp;()&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">use</span>&nbsp;client&nbsp;=&nbsp;<span style="color:navy;">createClient</span>()
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;json&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#4ec9b0;">ReservationJson</span>.<span style="color:#4ec9b0;">Root</span>(<span style="color:#a31515;">&quot;2014-10-21&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;Mark&nbsp;Seemann&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;x@example.com&quot;</span>,&nbsp;4)
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;response&nbsp;=&nbsp;client.<span style="color:navy;">PostAsJsonAsync</span>(<span style="color:#a31515;">&quot;reservations&quot;</span>,&nbsp;json).Result
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:navy;">test</span>&nbsp;<span style="background:yellow;">&lt;@&nbsp;</span><span style="background:yellow;">response</span><span style="background:yellow;">.</span><span style="background:yellow;">IsSuccessStatusCode</span><span style="background:yellow;">&nbsp;@&gt;</span></pre>
+	</p>
+	<p>
+		This test creates a new <a href="https://msdn.microsoft.com/en-us/library/system.net.http.httpclient">HttpClient</a> object called <code>client</code>. It then creates a JSON document with some reservation data, and POSTs it to the <em>reservations</em> resource. Finally, it verifies that the response indicated a success.
+	</p>
+	<p>
+		The ReservationJson type was created from a sample JSON document using the <a href="http://fsharp.github.io/FSharp.Data/library/JsonProvider.html">JSON Type Provider</a>. The createClient function is a bit more involved, but follows the same recipe I describe in my course:
+	</p>
+	<p>
+		<pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">let</span>&nbsp;<span style="color:navy;">createClient</span>&nbsp;()&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;baseAddress&nbsp;=&nbsp;<span style="color:#4ec9b0;">Uri</span>&nbsp;<span style="color:#a31515;">&quot;http://localhost:8765&quot;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;config&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#4ec9b0;">HttpSelfHostConfiguration</span>(baseAddress)
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:navy;">configure</span>&nbsp;connStr&nbsp;config
+&nbsp;&nbsp;&nbsp;&nbsp;config.IncludeErrorDetailPolicy&nbsp;&lt;-&nbsp;<span style="color:#4ec9b0;">IncludeErrorDetailPolicy</span>.Always
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;server&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#4ec9b0;">HttpSelfHostServer</span>(config)
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;client&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#4ec9b0;">HttpClient</span>(server)
+&nbsp;&nbsp;&nbsp;&nbsp;client.BaseAddress&nbsp;&lt;-&nbsp;baseAddress
+&nbsp;&nbsp;&nbsp;&nbsp;client</pre>
+	</p>
+	<p>
+		The (impure) <code>configure</code> function is a function defined by the application implementation. Among many other things, it creates the above <code>imp</code> composition. When the test passes, you can trust that <code>imp</code> is correctly composed.
+	</p>
+	<p>
+		<strong>Smoke Testing</strong>
+	</p>
+	<p>
+		You may already have noticed that the ``Post returns success`` test is course-grained and vague. It doesn't attempt to make strong assertions about the posterior state of the system; if the response indicates success, the test passes.
+	</p>
+	<p>
+		The reason for this is that all important behaviour is already covered by unit tests.
+		<ul>
+			<li>Is the response specifically a 201 (Created) response? Covered by unit tests.</li>
+			<li>Does the response have a Location header indicating the address of a newly created resource? Covered by unit test.</li>
+			<li>What happens if the input is malformed? Covered by unit tests.</li>
+			<li>What happens if the system can't accept the request due to business rules? Covered by unit tests.</li>
+			<li>...and so on.</li>
+		</ul>
+		The purpose of the integration test isn't to instil confidence in the implementation; the purpose is to give you confidence that the application is correctly integrated (hence the name). In my experience, a few <a href="https://en.wikipedia.org/wiki/Smoke_testing_(software)">Smoke Tests</a> are enough to achieve that goal.
+	</p>
+	<p>
+		Specifically, it has been my experience that the most common integration issues are related to various configuration errors:
+		<ul>
+			<li>Missing configuration values</li>
+			<li>Wrong configuration values</li>
+			<li>Network errors</li>
+			<li>Security errors</li>
+			<li>... etc.</li>
+		</ul>
+		Common to most of such errors is that they tend to manifest themselves uniformly. For example, in a database-driven application, if the database server is unreachable, <em>nothing</em> works. Therefore, only a single Smoke Test is required in order to tell you whether the application can reach the server or not.
+	</p>
+	<p>
+		In other words: you should have a legion of unit tests covering specific <em>behaviour</em>, and a few integration tests covering common integration issues. You may already have recognised this principle as <a href="http://martinfowler.com/bliki/TestPyramid.html">the Test Pyramid</a>.
+	</p>
+	<p>
+		<strong>Summary</strong>
+	</p>
+	<p>
+		In this article, you saw an example of an integration test against an HTTP API, written in F#. The principle is universal, though. You can compose applications from units. These units can be functions written in F#, or Haskell, or Scala, or they can be classes written in C#, Java, Python, and so on. Composition can be done on functions, or on objects using Dependency Injection.
+	</p>
+	<p>
+		In all of these cases, you can cover the units with unit tests. Issues with composition can be screened by a few smoke tests at the integration level.
+	</p>
+</div>
