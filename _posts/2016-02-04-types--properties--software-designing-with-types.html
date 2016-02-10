@@ -1,0 +1,380 @@
+---
+layout: post
+title: "Types + Properties = Software: designing with types"
+date: 2016-02-04 19:35 UTC
+tags: [Software Design, F#]
+---
+{% include JB/setup %}
+
+<div id="post">
+	<p>
+		<em>Design types so that illegal states are unrepresentable.</em>
+	</p>
+	<p>
+		This article is the first in <a href="">a series of articles that demonstrate how to develop software using types and properties</a>. In this article, you'll see an example of how to design with algebraic data types, and in future articles, you'll see how to specify properties that must hold for the system. This example uses F#, but you can design similar types in Haskell.
+	</p>
+	<p>
+		The source code for this article series is <a href="">available on GitHub</a>.
+	</p>
+	<p>
+		<strong>Tennis</strong>
+	</p>
+	<p>
+		The example used in this series of articles is <a href="http://www.codingdojo.org/cgi-bin/index.pl?KataTennis">the Tennis Kata</a>. Although a tennis match consists of multiple <em>sets</em> that again are played as several <em>games</em>, in the kata, you only have to implement the scoring system for a single game:
+		<ul>
+			<li>Each player can have either of these points in one game: Love, 15, 30, 40.</li>
+			<li>If you have 40 and you win the ball, you win the game. There are, however, special rules.</li>
+			<li>If both have 40, the players are <em>deuce</em>.</li>
+			<ul>
+				<li>If the game is in deuce, the winner of a ball will have advantage and game ball.</li>
+				<li>If the player with advantage wins the ball, (s)he wins the game.</li>
+				<li>If the player without advantage wins, they are back at deuce.</li>
+			</ul>
+		</ul>
+		This problem is easy enough that it's fun to play with, but difficult enough that it's fun to play with.
+	</p>
+	<p>
+		You can take on this problem in many different ways, but in this article, you'll see how F#'s type system can be used to <a href="http://fsharpforfunandprofit.com/posts/designing-with-types-making-illegal-states-unrepresentable">make illegal states unrepresentable</a>. Perhaps you think this is overkill for such a simple problem, but think of the Tennis Kata as a stand-in for a more complex domain problem.
+	</p>
+	<p>
+		<strong>Players</strong>
+	</p>
+	<p>
+		In tennis, there are two players, which we can easily model with a discriminated union:
+	</p>
+	<p>
+		<pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">type</span>&nbsp;<span style="color:#4ec9b0;">Player</span>&nbsp;=&nbsp;<span style="color:navy;">PlayerOne</span>&nbsp;|&nbsp;<span style="color:navy;">PlayerTwo</span>
+</pre>
+	</p>
+	<p>
+		When designing with types, I often experiment with values in FSI (the F# REPL) to figure out if they make sense. For such a simple type as Player, that's not strictly necessary, but I'll show you anyway, take illustrate the point:
+	</p>
+	<p>
+		<pre>&gt; PlayerOne;;
+val it : Player = PlayerOne
+&gt; PlayerTwo;;
+val it : Player = PlayerTwo
+&gt; PlayerZero;;
+
+  PlayerZero;;
+  ^^^^^^^^^^
+
+error FS0039: The value or constructor 'PlayerZero' is not defined
+&gt; PlayerThree;;
+
+  PlayerThree;;
+  ^^^^^^^^^^^
+
+error FS0039: The value or constructor 'PlayerThree' is not defined</pre>
+	</p>
+	<p>
+		As you can see, both <code>PlayerOne</code> and <code>PlayerTwo</code> are values inferred to be of the type Player, whereas both <code>PlayerZero</code> and <code>PlayerThree</code> are illegal expressions.
+	</p>
+	<p>
+		Not only is it possible to represent all valid values, but illegal values are unrepresentable. Success.
+	</p>
+	<p>
+		<strong>Naive point attempt with a type alias</strong>
+	</p>
+	<p>
+		If you're unfamiliar with designing with types, you may briefly consider using a type alias to model players' points:
+	</p>
+	<p>
+		<pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">type</span>&nbsp;<span style="color:#4ec9b0;">Point</span>&nbsp;=&nbsp;<span style="color:#4ec9b0;">int</span>
+</pre>
+	</p>
+	<p>
+		This easily enables you to model some of the legal point values:
+	</p>
+	<p>
+		<pre>&gt; let p : Point = 15;;
+val p : Point = 15
+
+&gt; let p : Point = 30;;
+val p : Point = 30</pre>
+	</p>
+	<p>
+		It looks good so far, but how do you model <em>love</em>? It's not really an integer.
+	</p>
+	<p>
+		Still, both players start with <em>love</em>, so it's intuitive to try to model <em>love</em> as 0:
+	</p>
+	<p>
+		<pre>&gt; let p : Point = 0;;
+val p : Point = 0</pre>
+	</p>
+	<p>
+		It's a hack, but it works.
+	</p>
+	<p>
+		Are illegal values unrepresentable? Hardly:
+	</p>
+	<p>
+		<pre>&gt; let p : Point = 42;;
+val p : Point = 42
+
+&gt; let p : Point = -1337;;
+val p : Point = -1337</pre>
+	</p>
+	<p>
+		With a type alias, it's possible to assign every value that the 'real' type supports. For a 32-bit integer, this means that we have four legal representations (0, 15, 30, 40), and 4,294,967,291 illegal representations of a tennis point. Clearly this doesn't meet the goal of making illegal states unrepresentable.
+	</p>
+	<p>
+		<strong>Second point attempt with a discriminated Union</strong>
+	</p>
+	<p>
+		If you think about the problem for a while, you're likely to come to the realisation that love, 15, 30, and 40 aren't numbers, but rather <em>labels</em>. No arithmetic is performed on them. It's easier to constrain the domain of points with a discriminated union:
+	</p>
+	<p>
+		<pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">type</span>&nbsp;<span style="color:#4ec9b0;">Point</span>&nbsp;=&nbsp;<span style="color:navy;">Love</span>&nbsp;|&nbsp;<span style="color:navy;">Fifteen</span>&nbsp;|&nbsp;<span style="color:navy;">Thirty</span>&nbsp;|&nbsp;<span style="color:navy;">Forty</span>
+</pre>
+	</p>
+	<p>
+		You can play around with values of this Point type in FSI if you will, but there should be no surprises.
+	</p>
+	<p>
+		A Point value isn't a score, though. A score is a representation of a state in the game, with (amongh other options) a point to each player. You can model this with a record:
+	</p>
+	<p>
+		<pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">type</span>&nbsp;<span style="color:#4ec9b0;">PointsData</span>&nbsp;=&nbsp;{&nbsp;PlayerOnePoint&nbsp;:&nbsp;<span style="color:#4ec9b0;">Point</span>;&nbsp;PlayerTwoPoint&nbsp;:&nbsp;<span style="color:#4ec9b0;">Point</span>&nbsp;}
+</pre>
+	</p>
+	<p>
+		You can experiment with this type in FSI, like you can with the other types:
+	</p>
+	<p>
+		<pre>&gt; { PlayerOnePoint = Love; PlayerTwoPoint = Love };;
+val it : PointsData = {PlayerOnePoint = Love;
+                       PlayerTwoPoint = Love;}
+&gt; { PlayerOnePoint = Love; PlayerTwoPoint = Thirty };;
+val it : PointsData = {PlayerOnePoint = Love;
+                       PlayerTwoPoint = Thirty;}
+&gt; { PlayerOnePoint = Thirty; PlayerTwoPoint = Forty };;
+val it : PointsData = {PlayerOnePoint = Thirty;
+                       PlayerTwoPoint = Forty;}</pre>
+	</p>
+	<p>
+		That looks promising. What happens if players are evenly matched?
+	</p>
+	<p>
+		<pre>&gt; { PlayerOnePoint = Forty; PlayerTwoPoint = Forty };;
+val it : PointsData = {PlayerOnePoint = Forty;
+                       PlayerTwoPoint = Forty;}</pre>
+	</p>
+	<p>
+		That works as well, but it shouldn't!
+	</p>
+	<p>
+		<em>Forty-forty</em> isn't a valid tennis score; it's called <em>deuce</em>.
+	</p>
+	<p>
+		Does it matter? you may ask. Couldn't we 'just' say that forty-forty 'means' deuce and get on with it?
+	</p>
+	<p>
+		You could. You should try. I've tried doing this (I've done the Tennis Kata several times, in various languages), and it turns out that it's possible, but it <em>makes the code more complicated</em>. One of the reasons is that deuce is more than a synonym for forty-forty. The score can also be deuce after <em>advantage</em> to one of the players. You can, for example, have a score progression like this:
+		<ul>
+			<li>...</li>
+			<li>Forty-thirty</li>
+			<li>Deuce</li>
+			<li>Advantage to player one</li>
+			<li>Deuce</li>
+			<li>Advantage to player two</li>
+			<li>Deuce</li>
+			<li>...</li>
+		</ul>
+		While you you may prefer to think of the first occurrence of <em>deuce</em> in that list as <em>forty-forty</em>, the next occurrences clearly don't correspond to <em>forty-forty</em>.
+	</p>
+	<p>
+		Additionally, if you're into <a href="http://amzn.to/WBCwx7">Domain-Driven Design</a>, you prefer using the ubiquitous language of the domain. When the tennis domain language says that it's not called <em>forty-forty</em>, but <em>deuce</em>, the code should reflect that.
+	</p>
+	<p>
+		<strong>Final attempt at a point type</strong>
+	</p>
+	<p>
+		Fortunately, you don't have to throw away everything you've done so far. The love-love, fifteen-love, etc. values that you can represent with the above PointsData type are all valid. Only when you approach the boundary value of forty do problems appear.
+	</p>
+	<p>
+		A solution is to remove the offending Forty case from Point. The updated definition of Point is this:
+	</p>
+	<p>
+		<pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">type</span>&nbsp;<span style="color:#4ec9b0;">Point</span>&nbsp;=&nbsp;<span style="color:navy;">Love</span>&nbsp;|&nbsp;<span style="color:navy;">Fifteen</span>&nbsp;|&nbsp;<span style="color:navy;">Thirty</span>
+</pre>
+	</p>
+	<p>
+		You can still represent the 'early' scores using PointsData:
+	</p>
+	<p>
+		<pre>&gt; { PlayerOnePoint = Love; PlayerTwoPoint = Love };;
+val it : PointsData = {PlayerOnePoint = Love;
+                       PlayerTwoPoint = Love;}
+&gt; { PlayerOnePoint = Love; PlayerTwoPoint = Thirty };;
+val it : PointsData = {PlayerOnePoint = Love;
+                       PlayerTwoPoint = Thirty;}</pre>
+	</p>
+	<p>
+		Additionally, the illegal forty-forty state is now unrepresentable:
+	</p>
+	<p>
+		<pre>&gt; { PlayerOnePoint = Forty; PlayerTwoPoint = Forty };;
+
+  { PlayerOnePoint = Forty; PlayerTwoPoint = Forty };;
+  -------------------^^^^^
+
+error FS0039: The value or constructor 'Forty' is not defined</pre>
+	</p>
+	<p>
+		This is much better, apart from the elephant in the room: you also lost the ability to model valid states where only one of the players have forty points:
+	</p>
+	<p>
+		<pre>&gt; { PlayerOnePoint = Thirty; PlayerTwoPoint = Forty };;
+
+  { PlayerOnePoint = Thirty; PlayerTwoPoint = Forty };;
+  --------------------------------------------^^^^^
+
+error FS0039: The value or constructor 'Forty' is not defined</pre>
+	</p>
+	<p>
+		Did we just throw the baby out with the bathwater?
+	</p>
+	<p>
+		Not really, because we weren't close to being done anyway. While we were making progress on modelling the score as a pair of Point values, remaining work includes modelling deuce, advantage and winning the game.
+	</p>
+	<p>
+		<strong>Life begins at forty</strong>
+	</p>
+	<p>
+		At this point, it may be helpful to recap what we have:
+	</p>
+	<p>
+		<pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">type</span>&nbsp;<span style="color:#4ec9b0;">Player</span>&nbsp;=&nbsp;<span style="color:navy;">PlayerOne</span>&nbsp;|&nbsp;<span style="color:navy;">PlayerTwo</span>
+<span style="color:blue;">type</span>&nbsp;<span style="color:#4ec9b0;">Point</span>&nbsp;=&nbsp;<span style="color:navy;">Love</span>&nbsp;|&nbsp;<span style="color:navy;">Fifteen</span>&nbsp;|&nbsp;<span style="color:navy;">Thirty</span>
+ 
+<span style="color:blue;">type</span>&nbsp;<span style="color:#4ec9b0;">PointsData</span>&nbsp;=&nbsp;{&nbsp;PlayerOnePoint&nbsp;:&nbsp;<span style="color:#4ec9b0;">Point</span>;&nbsp;PlayerTwoPoint&nbsp;:&nbsp;<span style="color:#4ec9b0;">Point</span>&nbsp;}</pre>
+	</p>
+	<p>
+		While this enables you to keep track of the score when both players have less than forty points, the following phases of a game still remain:
+		<ul>
+			<li>One of the players have forty points.</li>
+			<li>Deuce.</li>
+			<li>Advantage to one of the players.</li>
+			<li>One of the players won the game.</li>
+		</ul>
+		You can design the first of these with another record type:
+	</p>
+	<p>
+		<pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">type</span>&nbsp;<span style="color:#4ec9b0;">FortyData</span>&nbsp;=&nbsp;{&nbsp;Player&nbsp;:&nbsp;<span style="color:#4ec9b0;">Player</span>;&nbsp;OtherPlayerPoint&nbsp;:&nbsp;<span style="color:#4ec9b0;">Point</span>&nbsp;}
+</pre>
+	</p>
+	<p>
+		This is a record that specifically keeps track of the situation where <em>one</em> of the players have forty points. The Player elements keeps track of which player has forty points, and the OtherPlayerPoint element keeps track of the other player's score. For instance, this value indicates that PlayerTwo has forty points, and PlayerOne has thirty:
+	</p>
+	<p>
+		<pre>&gt; { Player = PlayerTwo; OtherPlayerPoint = Thirty };;
+val it : FortyData = {Player = PlayerTwo;
+                      OtherPlayerPoint = Thirty;}</pre>
+	</p>
+	<p>
+		This is a legal score. Other values of this type exist, but none of them are illegal.
+	</p>
+	<p>
+		<strong>Score</strong>
+	</p>
+	<p>
+		Now you have two distinct types, PointsData and FortyData, that keep track of the score at two different phases of a tennis game. You still need to model the remaining three phases, and somehow turn all of these into a single type. This is an undertaking that can be surprisingly complicated in C# or Java, but is trivial to do with a discriminated union:
+	</p>
+	<p>
+		<pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">type</span>&nbsp;<span style="color:#4ec9b0;">Score</span>&nbsp;=
+|&nbsp;<span style="color:navy;">Points</span>&nbsp;<span style="color:blue;">of</span>&nbsp;<span style="color:#4ec9b0;">PointsData</span>
+|&nbsp;<span style="color:navy;">Forty</span>&nbsp;<span style="color:blue;">of</span>&nbsp;<span style="color:#4ec9b0;">FortyData</span>
+|&nbsp;<span style="color:navy;">Deuce</span>
+|&nbsp;<span style="color:navy;">Advantage</span>&nbsp;<span style="color:blue;">of</span>&nbsp;<span style="color:#4ec9b0;">Player</span>
+|&nbsp;<span style="color:navy;">Game</span>&nbsp;<span style="color:blue;">of</span>&nbsp;<span style="color:#4ec9b0;">Player</span></pre>
+	</p>
+	<p>
+		This Score type states that a score is a value in one of these five cases. As an example, the game starts with both players at (not necessarily <em>in</em>) love:
+	</p>
+	<p>
+		<pre>&gt; Points { PlayerOnePoint = Love; PlayerTwoPoint = Love };;
+val it : Score = Points {PlayerOnePoint = Love;
+                         PlayerTwoPoint = Love;}</pre>
+	</p>
+	<p>
+		If, for example, PlayerOne has forty points, and PlayerTwo has thirty points, you can create this value:
+	</p>
+	<p>
+		<pre>&gt; Forty { Player = PlayerOne; OtherPlayerPoint = Thirty };;
+val it : Score = Forty {Player = PlayerOne;
+                        OtherPlayerPoint = Thirty;}</pre>
+	</p>
+	<p>
+		Notice how both values are of the same type (Score), even though they don't share the same data structure. Other example of valid values are:
+	</p>
+	<p>
+		<pre>&gt; Deuce;;
+val it : Score = Deuce
+&gt; Advantage PlayerTwo;;
+val it : Score = Advantage PlayerTwo
+&gt; Game PlayerOne;;
+val it : Score = Game PlayerOne</pre>
+	</p>
+	<p>
+		This model of the tennis score system enables you to express all legal values, while making illegal states unrepresentable.
+	</p>
+	<p>
+		It's impossible to express that the score is seven-eleven:
+	</p>
+	<p>
+		<pre>&gt; Points { PlayerOnePoint = Seven; PlayerTwoPoint = Eleven };;
+
+  Points { PlayerOnePoint = Seven; PlayerTwoPoint = Eleven };;
+  --------------------------^^^^^
+
+error FS0039: The value or constructor 'Seven' is not defined</pre>
+	</p>
+	<p>
+		It's impossible to state that the score is fifteen-thirty-fifteen:
+	</p>
+	<p>
+		<pre>&gt; Points { PlayerOnePoint = Fifteen; PlayerTwoPoint = Thirty; PlayerThreePoint = Fifteen };;
+
+  Points { PlayerOnePoint = Fifteen; PlayerTwoPoint = Thirty; PlayerThreePoint = Fifteen };;
+  ------------------------------------------------------------^^^^^^^^^^^^^^^^
+
+error FS1129: The type 'PointsData' does not contain a field 'PlayerThreePoint'</pre>
+	</p>
+	<p>
+		It's impossible to express that both players have forty points:
+	</p>
+	<p>
+		<pre>&gt; Points { PlayerOnePoint = Forty; PlayerTwoPoint = Forty };;
+
+  Points { PlayerOnePoint = Forty; PlayerTwoPoint = Forty };;
+  --------------------------^^^^^
+
+error FS0001: This expression was expected to have type
+    Point    
+but here has type
+    FortyData -> Score    
+&gt; Forty { Player = PlayerOne; OtherPlayerPoint = Forty };;
+
+  Forty { Player = PlayerOne; OtherPlayerPoint = Forty };;
+  -----------------------------------------------^^^^^
+
+error FS0001: This expression was expected to have type
+    Point    
+but here has type
+    FortyData -> Score</pre>
+	</p>
+	<p>
+		In the above example, I even attempted to express forty-forty in two different ways, but none of them work.
+	</p>
+	<p>
+		<strong>Summary</strong>
+	</p>
+	<p>
+		You now have a model of the domain that enables you to express valid values, but that makes illegal states unrepresentable. This is half the battle won, without any moving parts. These types govern what can be stated in the domain, but they don't provide any rules for how values can transition from one state to another.
+	</p>
+	<p>
+		This is a task you can take on with Property-Based Testing. Since all values of these types are valid, it's easy to express the properties of a tennis game score. In the next article, you'll see how to start that work.
+	</p>
+</div>
