@@ -1,0 +1,107 @@
+---
+layout: post
+title: "Ad-hoc Arbitraries - now with pipes"
+date: 2016-03-01 08:46 UTC
+tags: [Unit Testing, xUnit.net, F#]
+---
+{% include JB/setup %}
+
+<div id="post">
+	<p>
+		<em>Slightly improved syntax for defining ad-hoc, in-line Arbitraries for FsCheck.Xunit.</em>
+	</p>
+	<p>
+		Last year, I described <a href="http://blog.ploeh.dk/2015/09/08/ad-hoc-arbitraries-with-fscheckxunit">how to define and use ad-hoc, in-line Arbitraries with FsCheck.Xunit</a>. The final example code looked like this:
+	</p>
+	<p>
+		<pre style="font-family:Consolas;font-size:13;color:black;">[&lt;<span style="color:#4ec9b0;">Property</span>(QuietOnSuccess&nbsp;=&nbsp;<span style="color:blue;">true</span>)&gt;]
+<span style="color:blue;">let</span>&nbsp;<span style="color:navy;">``Any&nbsp;live&nbsp;cell&nbsp;with&nbsp;&gt;&nbsp;3&nbsp;live&nbsp;neighbors&nbsp;dies``</span>&nbsp;(cell&nbsp;:&nbsp;<span style="color:#4ec9b0;">int</span>&nbsp;*&nbsp;<span style="color:#4ec9b0;">int</span>)&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;nc&nbsp;=&nbsp;<span style="color:#4ec9b0;">Gen</span>.<span style="color:navy;">elements</span>&nbsp;[4..8]&nbsp;|&gt;&nbsp;<span style="color:#4ec9b0;">Arb</span>.<span style="color:navy;">fromGen</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#4ec9b0;">Prop</span>.<span style="color:navy;">forAll</span>&nbsp;nc&nbsp;(<span style="color:blue;">fun</span>&nbsp;neighborCount&nbsp;<span style="color:blue;">-&gt;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;liveNeighbors&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;cell
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:navy;">findNeighbors</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:navy;">shuffle</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:#4ec9b0;">Seq</span>.<span style="color:navy;">take</span>&nbsp;neighborCount
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:#4ec9b0;">Seq</span>.<span style="color:navy;">toList</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;actual&nbsp;:&nbsp;<span style="color:#4ec9b0;">State</span>&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:navy;">calculateNextState</span>&nbsp;(cell&nbsp;<span style="color:navy;">::</span>&nbsp;liveNeighbors&nbsp;|&gt;&nbsp;<span style="color:navy;">shuffle</span>&nbsp;|&gt;&nbsp;<span style="color:navy;">set</span>)&nbsp;cell
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:navy;">Dead</span>&nbsp;=!&nbsp;actual)</pre>
+	</p>
+	<p>
+		There's one tiny problem with this way of expressing properties using Prop.forAll: the use of brackets to demarcate the anonymous multi-line function. Notice how the opening bracket appears to the left of the <code>fun</code> keyword, while the closing bracket appears eleven lines down, after the end of the expression <code>Dead =! actual</code>.
+	</p>
+	<p>
+		While it isn't pretty, I haven't found it that bad for readability, either. When you're writing the property, however, this syntax is cumbersome.
+	</p>
+	<p>
+		<strong>Issues writing the code</strong>
+	</p>
+	<p>
+		After having written <code>Prop.forAll nc</code>, you start writing <code>(fun neighborCount -> )</code>. After you've typed the closing bracket, you have to move your cursor one place to the left. When entering new lines, you have to keep diligent, making sure that the closing bracket is always to the right of your cursor.
+	</p>
+	<p>
+		If you ever need to use a nested level of brackets within that anonymous function, your vigilance will be tested to its utmost. When I wrote the above property, for example, when I reached the point where I wanted to call the calculateNextState function, I wrote:
+	</p>
+	<p>
+		<pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">let</span>&nbsp;actual&nbsp;:&nbsp;State&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;calculateNextState&nbsp;(</pre>
+	</p>
+	<p>
+		The editor detects that I'm writing an opening bracket, but since I have the closing bracket to the immediate right of the cursor, this is what happens:
+	</p>
+	<p>
+		<pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">let</span>&nbsp;actual&nbsp;:&nbsp;State&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;calculateNextState&nbsp;()</pre>
+	</p>
+	<p>
+		What normally happens when you type an opening bracket is that the editor automatically inserts a closing bracket to the right of your cursor, but in this case, it doesn't do that. There's already a closing bracket immediately to the right of the cursor, and the editor assumes that this bracket belongs to the opening bracket I just typed. What it really should have done was this:
+	</p>
+	<p>
+		<pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">let</span>&nbsp;actual&nbsp;:&nbsp;<span style="color:#4ec9b0;">State</span>&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:navy;">calculateNextState</span>&nbsp;())</pre>
+	</p>
+	<p>
+		The editor doesn't have a chance, though, because at this point, I'm still typing, and the code doesn't compile. None of the alternatives compile at this point. You can't really blame the editor.
+	</p>
+	<p>
+		To make a long story short, enclosing a multi-line anonymous function in brackets is a source of errors. If only there was a better alternative.
+	</p>
+	<p>
+		<strong>Backward pipe</strong>
+	</p>
+	<p>
+		The solution started to dawn on me because I've been learning Haskell for the last half year, and in Haskell, you often use the <code>$</code> operator to get rid of unwanted brackets. <a href="http://stackoverflow.com/q/7183903/126014">F# has an equivalent operator</a>: <code>&lt;|</code>, the backward pipe operator.
+	</p>
+	<p>
+		I rarely use the <code>&lt;|</code> operator in F#, but in this case, it works really well:
+	</p>
+	<p>
+		<pre style="font-family:Consolas;font-size:13;color:black;">[&lt;<span style="color:#4ec9b0;">Property</span>(QuietOnSuccess&nbsp;=&nbsp;<span style="color:blue;">true</span>)&gt;]
+<span style="color:blue;">let</span>&nbsp;<span style="color:navy;">``Any&nbsp;live&nbsp;cell&nbsp;with&nbsp;&gt;&nbsp;3&nbsp;live&nbsp;neighbors&nbsp;dies``</span>&nbsp;(cell&nbsp;:&nbsp;<span style="color:#4ec9b0;">int</span>&nbsp;*&nbsp;<span style="color:#4ec9b0;">int</span>)&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;nc&nbsp;=&nbsp;<span style="color:#4ec9b0;">Gen</span>.<span style="color:navy;">elements</span>&nbsp;[4..8]&nbsp;|&gt;&nbsp;<span style="color:#4ec9b0;">Arb</span>.<span style="color:navy;">fromGen</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#4ec9b0;">Prop</span>.<span style="color:navy;">forAll</span>&nbsp;nc&nbsp;&lt;|&nbsp;<span style="color:blue;">fun</span>&nbsp;neighborCount&nbsp;<span style="color:blue;">-&gt;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;liveNeighbors&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;cell
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:navy;">findNeighbors</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:navy;">shuffle</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:#4ec9b0;">Seq</span>.<span style="color:navy;">take</span>&nbsp;neighborCount
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:#4ec9b0;">Seq</span>.<span style="color:navy;">toList</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;actual&nbsp;:&nbsp;<span style="color:#4ec9b0;">State</span>&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:navy;">calculateNextState</span>&nbsp;(cell&nbsp;<span style="color:navy;">::</span>&nbsp;liveNeighbors&nbsp;|&gt;&nbsp;<span style="color:navy;">shuffle</span>&nbsp;|&gt;&nbsp;<span style="color:navy;">set</span>)&nbsp;cell
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:navy;">Dead</span>&nbsp;=!&nbsp;actual</pre>
+	</p>
+	<p>
+		Notice that there's no longer any need for a closing bracket after <code>Dead =! actual</code>.
+	</p>
+	<p>
+		<strong>Summary</strong>
+	</p>
+	<p>
+		When the last argument passed to a function is another function, you can replace the brackets with a single application of the <code>&lt;|</code> operator. I only use this operator sparingly, but in the case of in-line ad-hoc FsCheck Arbitraries, I find it useful.
+	</p>
+</div>
