@@ -1,0 +1,139 @@
+---
+layout: post
+title: "Composition with an Either computation expression"
+date: 2016-03-21 08:34 UTC
+tags: [F#]
+---
+{% include JB/setup %}
+
+<div id="post">
+	<p>
+		<em>An simple example of a composition using an F# computation expression.</em>
+	</p>
+	<p>
+		In <a href="http://blog.ploeh.dk/2016/03/18/functional-architecture-is-ports-and-adapters">a previous article</a>, you saw how to compose an application feature from functions:
+	</p>
+	<p>
+		<pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">let</span>&nbsp;<span style="color:navy;">imp</span>&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#4ec9b0;">Validate</span>.<span style="color:navy;">reservation</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&gt;&gt;&nbsp;<span style="color:navy;">map</span>&nbsp;(<span style="color:blue;">fun</span>&nbsp;r&nbsp;<span style="color:blue;">-&gt;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#4ec9b0;">SqlGateway</span>.<span style="color:navy;">getReservedSeats</span>&nbsp;connectionString&nbsp;r.Date,&nbsp;r)
+&nbsp;&nbsp;&nbsp;&nbsp;&gt;&gt;&nbsp;<span style="color:navy;">bind</span>&nbsp;(<span style="color:blue;">fun</span>&nbsp;(i,&nbsp;r)&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:#4ec9b0;">Capacity</span>.<span style="color:navy;">check</span>&nbsp;10&nbsp;i&nbsp;r)
+&nbsp;&nbsp;&nbsp;&nbsp;&gt;&gt;&nbsp;<span style="color:navy;">map</span>&nbsp;(<span style="color:#4ec9b0;">SqlGateway</span>.<span style="color:navy;">saveReservation</span>&nbsp;connectionString)</pre>
+	</p>
+	<p>
+		This is awkward because of the need to carry the result of Validate.reservation (<code>r</code>) on to Capacity.check, while also needing it for SqlGateway.getReservedSeats. In this article, you'll see a neater, alternative syntax.
+	</p>
+	<p>
+		<strong>Building blocks</strong>
+	</p>
+	<p>
+		To recapitulate the context, you have this <code>Result</code> discriminated union from <a href="http://fsharpforfunandprofit.com">Scott Wlaschin's</a> article about <a href="http://fsharpforfunandprofit.com/posts/recipe-part2">railway-oriented programming</a>:
+	</p>
+	<p>
+		<pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">type</span>&nbsp;<span style="color:#4ec9b0;">Result</span>&lt;&#39;TSuccess,&#39;TFailure&gt;&nbsp;=&nbsp;
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:navy;">Success</span>&nbsp;<span style="color:blue;">of</span>&nbsp;&#39;TSuccess
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:navy;">Failure</span>&nbsp;<span style="color:blue;">of</span>&nbsp;&#39;TFailure</pre>
+	</p>
+	<p>
+		A type with this structure is also sometimes known as <em>Either</em>, because the result can be either a success or a failure.
+	</p>
+	<p>
+		The above example also use bind and map functions, which are implemented this way:
+	</p>
+	<p>
+		<pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:green;">//&nbsp;(&#39;a&nbsp;-&gt;&nbsp;Result&lt;&#39;b,&#39;c&gt;)&nbsp;-&gt;&nbsp;Result&lt;&#39;a,&#39;c&gt;&nbsp;-&gt;&nbsp;Result&lt;&#39;b,&#39;c&gt;</span>
+<span style="color:blue;">let</span>&nbsp;<span style="color:navy;">bind</span>&nbsp;<span style="color:navy;">f</span>&nbsp;x&nbsp;=&nbsp;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">match</span>&nbsp;x&nbsp;<span style="color:blue;">with</span>
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:navy;">Success</span>&nbsp;s&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:navy;">f</span>&nbsp;s
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:navy;">Failure</span>&nbsp;f&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:navy;">Failure</span>&nbsp;f
+ 
+<span style="color:green;">//&nbsp;(&#39;a&nbsp;-&gt;&nbsp;&#39;b)&nbsp;-&gt;&nbsp;Result&lt;&#39;a,&#39;c&gt;&nbsp;-&gt;&nbsp;Result&lt;&#39;b,&#39;c&gt;</span>
+<span style="color:blue;">let</span>&nbsp;<span style="color:navy;">map</span>&nbsp;<span style="color:navy;">f</span>&nbsp;x&nbsp;=&nbsp;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">match</span>&nbsp;x&nbsp;<span style="color:blue;">with</span>
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:navy;">Success</span>&nbsp;s&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:navy;">Success</span>(<span style="color:navy;">f</span>&nbsp;s)
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:navy;">Failure</span>&nbsp;f&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:navy;">Failure</span>&nbsp;f</pre>
+	</p>
+	<p>
+		With these building blocks, it's trivial to implement a <a href="https://msdn.microsoft.com/en-us/library/dd233182.aspx">computation expression</a> for the type:
+	</p>
+	<p>
+		<pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">type</span>&nbsp;<span style="color:#4ec9b0;">EitherBuilder</span>&nbsp;()&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">member</span>&nbsp;this.<span style="color:navy;">Bind</span>(x,&nbsp;<span style="color:navy;">f</span>)&nbsp;=&nbsp;<span style="color:navy;">bind</span>&nbsp;<span style="color:navy;">f</span>&nbsp;x
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">member</span>&nbsp;this.<span style="color:navy;">ReturnFrom</span>&nbsp;x&nbsp;=&nbsp;x</pre>
+	</p>
+	<p>
+		You can add more members to EitherBuilder if you need support for more advanced syntax, but this is the minimal implementation required for the following example.
+	</p>
+	<p>
+		You also need a value of the EitherBuilder type:
+	</p>
+	<p>
+		<pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">let</span>&nbsp;either&nbsp;=&nbsp;<span style="color:#4ec9b0;">EitherBuilder</span>&nbsp;()
+</pre>
+	</p>
+	<p>
+		All this code is entirely generic, so you could put it (or a more comprehensive version) in a reusable library.
+	</p>
+	<p>
+		<strong>Composition using the Either computation expression</strong>
+	</p>
+	<p>
+		Since this Either computation expression is for general-purpose use, you can also use it to compose the above <code>imp</code> function:
+	</p>
+	<p>
+		<pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">let</span>&nbsp;<span style="color:navy;">imp</span>&nbsp;candidate&nbsp;=&nbsp;either&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;r&nbsp;=&nbsp;<span style="color:#4ec9b0;">Validate</span>.<span style="color:navy;">reservation</span>&nbsp;candidate
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;i&nbsp;=&nbsp;<span style="color:#4ec9b0;">SqlGateway</span>.<span style="color:navy;">getReservedSeats</span>&nbsp;connectionString&nbsp;r.Date
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return!</span>&nbsp;<span style="color:#4ec9b0;">Capacity</span>.<span style="color:navy;">check</span>&nbsp;10&nbsp;i&nbsp;r
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:navy;">map</span>&nbsp;(<span style="color:#4ec9b0;">SqlGateway</span>.<span style="color:navy;">saveReservation</span>&nbsp;connectionString)&nbsp;}</pre>
+	</p>
+	<p>
+		Notice how the <code>r</code> value can be used by both the SqlGateway.getReservedSeats and Capacity.check functions, because they are all within the same scope.
+	</p>
+	<p>
+		This example looks more like the Haskell composition in my <a href="http://blog.ploeh.dk/2016/03/18/functional-architecture-is-ports-and-adapters">previous article</a>. It even looks cleaner in F#, but to be fair to Haskell, in F# you don't have to explicitly deal with IO as a monadic context, so that in itself makes things look simpler.
+	</p>
+	<p>
+		<strong>A variation using shadowing</strong>
+	</p>
+	<p>
+		You may wonder why I chose to use <code>return!</code> with an expression using the <code>map</code> function. One reason was that I wanted to avoid having to bind a named value to the result of calling Capacity.check. Naming is always difficult, and while I find the names <code>r</code> and <code>i</code> <a href="http://blog.ploeh.dk/2015/08/17/when-x-y-and-z-are-great-variable-names">acceptable because the scope is so small</a>, I prefer composing functions without having to declare intermediary values.
+	</p>
+	<p>
+		Another reason was that I wanted to show you an example that resembles the previous Haskell example as closely as possible.
+	</p>
+	<p>
+		You may, however, find the following variation more readable. In order to use <code>return</code> instead of <code>return!</code>, you need to furnish a <code>Return</code> method on your computation builder:
+	</p>
+	<p>
+		<pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">type</span>&nbsp;<span style="color:#4ec9b0;">EitherBuilder</span>&nbsp;()&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">member</span>&nbsp;this.<span style="color:navy;">Bind</span>(x,&nbsp;<span style="color:navy;">f</span>)&nbsp;=&nbsp;<span style="color:navy;">bind</span>&nbsp;<span style="color:navy;">f</span>&nbsp;x
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">member</span>&nbsp;this.<span style="color:navy;">Return</span>&nbsp;x&nbsp;=&nbsp;<span style="color:navy;">Success</span>&nbsp;x</pre>
+	</p>
+	<p>
+		Nothing prevents you from adding both <code>Return</code> and <code>ReturnFrom</code> (as well as other) methods to the EitherBuilder class, but I'm showing you the minimal implementation required for the example to work.
+	</p>
+	<p>
+		Using this variation of EitherBuilder, you can alternatively write the <code>imp</code> function like this:
+	</p>
+	<p>
+		<pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">let</span>&nbsp;<span style="color:navy;">imp</span>&nbsp;candidate&nbsp;=&nbsp;either&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;r&nbsp;=&nbsp;<span style="color:#4ec9b0;">Validate</span>.<span style="color:navy;">reservation</span>&nbsp;candidate
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;i&nbsp;=&nbsp;<span style="color:#4ec9b0;">SqlGateway</span>.<span style="color:navy;">getReservedSeats</span>&nbsp;connectionString&nbsp;r.Date
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;r&nbsp;=&nbsp;<span style="color:#4ec9b0;">Capacity</span>.<span style="color:navy;">check</span>&nbsp;10&nbsp;i&nbsp;r
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:#4ec9b0;">SqlGateway</span>.<span style="color:navy;">saveReservation</span>&nbsp;connectionString&nbsp;r&nbsp;}</pre>
+	</p>
+	<p>
+		In such an alternative, you can use a <code>let!</code>-bound value to capture the result of calling Capacity.check, but that obligates you to devise a name for the value. You'll often see names like <code>r'</code>, but I always feel uneasy when I resort to such naming. Here, I circumvented the problem by <em>shadowing</em> the original <code>r</code> value with a new value also called <code>r</code>. This is possible, and even desirable, because once the reservation has been checked, you <em>should</em> use that new, checked value, and not the original value. That's what the original composition, above, does, so shadowing is both equivalent and appropriate.
+	</p>
+	<p>
+		<strong>Summary</strong>
+	</p>
+	<p>
+		Computation expressions give you an opportunity to compose functions in a readable way. It's an alternative to using the underlying bind and map functions. Whether you prefer one over the other is partly subjective, but I tend to favour the underlying functions until they become inconvenient. The initial version of the <code>imp</code> function in this article is an example of map and bind becoming unwieldy, and where a computation expression affords a cleaner, more readable syntax.
+	</p>
+	<p>
+		The disadvantage of computation expressions is that you need to use <code>return</code> or <code>return!</code> to return a value. That forces you to write an extra line of code that isn't necessary with a simple <code>bind</code> or <code>map</code>.
+	</p>
+</div>
