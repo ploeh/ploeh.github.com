@@ -362,4 +362,110 @@ toHttpResult (Right ()) = OK ()</pre>
         </div>
         <div class="comment-date">2016-03-24 23:30 UTC</div>
     </div>
+  <div class="comment">
+		<div class="comment-author"><a href="http://blog.ploeh.dk">Mark Seemann</a></div>
+		<div class="comment-content">
+			<p>
+				John, thank you for writing. I'm not sure I can answer everything to your satisfaction in single response, but we can always view this as a beginning of longer interchange. Some of the doubts you express are ambiguous, so I'm not sure how to interpret them, but I'll do my best to be as explicit as possible.
+			</p>
+			<p>
+				In the beginning of your comment, you write:
+				<blockquote>
+					"Many real-life domain operations are going to need to query some data, make decisions based on that data, map that data into different domain objects, persist something, and so on."
+				</blockquote>
+				This is exactly the reason why I like the reservation request example so much, because it does all of that. It queries data, because it reads the number of already reserved seats from a database. It makes decisions based on that data, because it decides whether or not it can accept the reservation based on the number of remaining seats. It maps from an external JSON (or XML) data format to a Reservation record type (belonging to the Domain Model, if you will); it also maps back to an HTTP response. Finally, the example also saves the reservation to the database, if it was accepted.
+			</p>
+			<p>
+				When you say that we've extracted the logic, it's true, but I'm not sure what you mean by "behind the wall", but let's look at each of your bullet points in turn.
+			</p>
+			<p>
+				<strong>Querying existing reservations</strong>
+			</p>
+			<p>
+				You write that I've extracted the "logic of only checking existing reservations on the same day as the day on the request". It's a simple database query. In F#, one implementation may look like this:
+			</p>
+			<p>
+				<pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:green;">//&nbsp;In&nbsp;module&nbsp;SqlGateway:</span>
+<span style="color:blue;">let</span>&nbsp;<span style="color:navy;">getReservedSeats</span>&nbsp;connectionString&nbsp;(date&nbsp;:&nbsp;<span style="color:#4ec9b0;">DateTimeOffset</span>)&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;min&nbsp;=&nbsp;<span style="color:#4ec9b0;">DateTimeOffset</span>(date.Date&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;,&nbsp;date.Offset)
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;max&nbsp;=&nbsp;<span style="color:#4ec9b0;">DateTimeOffset</span>(date.Date.<span style="color:navy;">AddDays</span>&nbsp;1.,&nbsp;date.Offset)
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;sql&nbsp;=&nbsp;<span style="color:#a31515;">&quot;</span>
+<span style="color:#a31515;">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;SELECT&nbsp;ISNULL(SUM(Quantity),&nbsp;0)</span>
+<span style="color:#a31515;">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;FROM&nbsp;[dbo].[Reservations]</span>
+<span style="color:#a31515;">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;WHERE&nbsp;@min&nbsp;&lt;=&nbsp;Date&nbsp;AND&nbsp;Date&nbsp;&lt;&nbsp;@max&quot;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">use</span>&nbsp;conn&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#4ec9b0;">SqlConnection</span>(connectionString)
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">use</span>&nbsp;cmd&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#4ec9b0;">SqlCommand</span>(sql,&nbsp;conn)
+&nbsp;&nbsp;&nbsp;&nbsp;cmd.Parameters.<span style="color:navy;">AddWithValue</span>(<span style="color:#a31515;">&quot;@min&quot;</span>,&nbsp;min)&nbsp;|&gt;&nbsp;<span style="color:navy;">ignore</span>
+&nbsp;&nbsp;&nbsp;&nbsp;cmd.Parameters.<span style="color:navy;">AddWithValue</span>(<span style="color:#a31515;">&quot;@max&quot;</span>,&nbsp;max)&nbsp;|&gt;&nbsp;<span style="color:navy;">ignore</span>
+&nbsp;&nbsp;&nbsp;&nbsp;conn.<span style="color:navy;">Open</span>()
+&nbsp;&nbsp;&nbsp;&nbsp;cmd.<span style="color:navy;">ExecuteScalar</span>()&nbsp;:?&gt;&nbsp;<span style="color:#4ec9b0;">int</span></pre>
+			</p>
+			<p>
+				In my opinion, there's no <em>logic</em> in this function, but this is an example where terminology can be ambiguous. To me, however, <em>logic</em> implies that decisions are being made. That's not the case here. This getReservedSeats function has a cyclomatic complexity of 1.
+			</p>
+			<p>
+				This function is an Adapter: it adapts the ADO.NET SDK (the <em>port</em> to SQL Server) to something the Domain Model can use. In this case, the answer is a simple integer.
+			</p>
+			<p>
+				<strong>To save, or not to save</strong>
+			</p>
+			<p>
+				You also write that I've extracted out the "logic of not saving a new reservation if the request failed the capacity check". Yes, that logic is extracted out to the <code>check</code> function above. Since that's a pure function, it's part of the Domain Model.
+			</p>
+			<p>
+				The function that saves the reservation in the database, again, contains no logic (as I interpret the word <em>logic</em>):
+			</p>
+			<p>
+				<pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:green;">//&nbsp;In&nbsp;module&nbsp;SqlGateway:</span>
+<span style="color:blue;">let</span>&nbsp;saveReservation&nbsp;connectionString&nbsp;(reservation&nbsp;:&nbsp;Reservation)&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;sql&nbsp;=&nbsp;<span style="color:#a31515;">&quot;</span>
+<span style="color:#a31515;">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;INSERT&nbsp;INTO&nbsp;Reservations(Date,&nbsp;Name,&nbsp;Email,&nbsp;Quantity)</span>
+<span style="color:#a31515;">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;VALUES(@Date,&nbsp;@Name,&nbsp;@Email,&nbsp;@Quantity)&quot;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">use</span>&nbsp;conn&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;SqlConnection(connectionString)
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">use</span>&nbsp;cmd&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;SqlCommand(sql,&nbsp;conn)
+&nbsp;&nbsp;&nbsp;&nbsp;cmd.Parameters.AddWithValue(<span style="color:#a31515;">&quot;@Date&quot;</span>,&nbsp;reservation.Date)&nbsp;|&gt;&nbsp;ignore
+&nbsp;&nbsp;&nbsp;&nbsp;cmd.Parameters.AddWithValue(<span style="color:#a31515;">&quot;@Name&quot;</span>,&nbsp;reservation.Name)&nbsp;|&gt;&nbsp;ignore
+&nbsp;&nbsp;&nbsp;&nbsp;cmd.Parameters.AddWithValue(<span style="color:#a31515;">&quot;@Email&quot;</span>,&nbsp;reservation.Email)&nbsp;|&gt;&nbsp;ignore
+&nbsp;&nbsp;&nbsp;&nbsp;cmd.Parameters.AddWithValue(<span style="color:#a31515;">&quot;@Quantity&quot;</span>,&nbsp;reservation.Quantity)&nbsp;|&gt;&nbsp;ignore
+&nbsp;&nbsp;&nbsp;&nbsp;conn.Open()
+&nbsp;&nbsp;&nbsp;&nbsp;cmd.ExecuteNonQuery()&nbsp;|&gt;&nbsp;ignore</pre>
+			</p>
+			<p>
+				Due to the way the Either monad works, however, this function is only going to be called if all previous functions returned Success (or Right in Haskell). That logic is an entirely reusable abstraction. It's also part of the glue that composes functions together.
+			</p>
+			<p>
+				<strong>Reuse of composition</strong>
+			</p>
+			<p>
+				Further down, you ask:
+				<blockquote>
+					"Suppose the restaurant also had a desktop/kiosk application in their building to manage their reservation system. Wouldn't we now be forced to duplicate this internal logic in the Composition Root of that application?"
+				</blockquote>
+				That's an excellent question! I'm glad you asked.
+			</p>
+			<p>
+				A desktop or kiosk application is noticeably different from a web application. It may have a different application flow, and it certainly exposes a different interface to the outside world. Instead of handling incoming HTTP requests, and translating results to HTTP responses, it'll need to respond to click events and transform results to on-screen UI events. This means that validation may be different, and that you don't need to map results back to HTTP response values. Again, this may be clearer in the Haskell implementation, where the <code>toHttpResult</code> function would obviously be superfluous. Additionally, a UI may present a native date and time picker control, which can directly produce strongly typed date and time values, negating the need for validation.
+			</p>
+			<p>
+				Additionally, a kiosk may need to be able to work in off-line, or occasionally connected, mode, so perhaps you'd prefer a different data store implementation. Instead of connecting directly to a database, such an application would need to write to a message queue, and read from an off-line snapshot of reservations.
+			</p>
+			<p>
+				That's a sufficiently different application that it warrants creating applications from <a href="http://blog.ploeh.dk/2011/06/07/SOLIDCodeisnt">fine-grained building blocks instead of course-grained building blocks</a>. Perhaps the only part you'll end up reusing is the core business logic contained in the check[Capacity] function. <a href="http://blog.ploeh.dk/2015/01/06/composition-root-reuse">Composition Roots aren't reusable</a>.
+			</p>
+			<p>
+				(As an aside, you may think that if the check[Capacity] function is the only reusable part, then what's the point? This function is only a couple of lines long, so why even bother? That'd be a fair concern, if it wasn't for the context that all of this is only example code. Think of this example as a stand-in for much more complex business logic. Perhaps the restaurant will allow a certain percentage of over-booking, because some people never show up. Perhaps it will allow different over-booking percentages on different (week) days. Perhaps it'll need to handle reservations on per-table basis, instead of per-seat. Perhaps it'll need to handle multiple seatings on the same day. There are lots of variations you can throw into this business domain that will make it much more complex, and worthy of reuse.)
+			</p>
+			<p>
+				<strong>Brittleness of composition</strong>
+			</p>
+			<p>
+				Finally, you refer to a more realistic scenario, called <em>performOvernightCloseout</em>, and ask if a fine-grained composition wouldn't be brittle? In my experience, it wouldn't be <em>more</em> brittle than any alternatives I've identified. Whether you 'inject' functions into other functions, or you compose them in the Composition Root, doesn't change the underlying forces that act on your code. If you make substantial changes to the dependencies involved, it will break your code, and you'll need to address that. This is true for any manual composition, including <a href="http://blog.ploeh.dk/2014/06/10/pure-di">Pure DI</a>. The only way to avoid compilation errors when you redefine your dependency graphs is to use a DI Container, but that only <a href="http://blog.ploeh.dk/2011/04/29/Feedbackmechanismsandtradeoffs">makes the feedback loop worse, because it'd change a compile-time error into a run-time error</a>.
+			</p>
+			<p>
+				This is a long answer, and even so, I'm not sure I've sufficiently addressed all of your concerns. If not, please write again for clarifications.
+			</p>
+		</div>
+		<div class="comment-date">2016-03-30 13:46 UTC</div>
+	</div>
 </div>
