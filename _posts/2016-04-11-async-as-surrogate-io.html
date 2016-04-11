@@ -1,0 +1,191 @@
+---
+layout: post
+title: "Async as surrogate IO"
+date: 2016-04-11 12:38 UTC
+tags: [F#, ASP.NET Web API, Haskell]
+---
+{% include JB/setup %}
+
+<div id="post">
+	<p>
+		<em>Haskell defines IO as an explicit context for handling effects. In F#, you can experiment with using Async as a surrogate.</em>
+	</p>
+	<p>
+		As a reaction to <a href="http://blog.ploeh.dk/2016/03/18/functional-architecture-is-ports-and-adapters">my article on the relationship between Functional architecture and Ports and Adapters</a>, <a href="http://simon-says-architecture.com">Szymon Pobiega</a> suggested on Twitter:
+		<blockquote>
+			<a href="https://twitter.com/SzymonPobiega/status/713001580077965312">random idea: in c# “IO Int” translates to “Task&lt;int&gt;”. By consistently using this we can make type system help you even in c#</a>
+		</blockquote>
+		If you know Haskell, you might object to that statement, but I don't think Szymon meant it literally. It's an idea worth exploring, I think.
+	</p>
+	<p>
+		<strong>Async as an IO surrogate</strong>
+	</p>
+	<p>
+		Functions in Haskell are, by default, <a href="https://en.wikipedia.org/wiki/Pure_function">pure</a>. Whenever you need to do something impure, like querying a database or sending an email, you need to explicitly do this in an impure context: <code>IO</code>. Don't let the name <code>IO</code> mislead you: it's not only for input and output, but for all impure actions. As an example, random number generation is impure as well, because a function that returns a new value every time isn't pure. (There are ways to model random number generation with pure functions, but let's forget about that for now.)
+	</p>
+	<p>
+		F#, on the other hand, doesn't make the distinction between pure and impure functions in its type system, so nothing 'translates' from <code>IO</code> in Haskell into an equivalent type in F#. Still, it's worth looking into Szymon's suggestion.
+	</p>
+	<p>
+		In 2013, C# finally caught up with F#'s support for asynchronous work-flows, and since then, many IO-bound .NET APIs have gotten asynchronous versions. The underlying API for C#'s <code>async</code>/<code>await</code> support is the <a href="https://msdn.microsoft.com/en-us/library/dd460717">Task Parallel Library</a>, which isn't particularly constrained to IO-bound operations. The use of <code>async</code>/<code>await</code>, however, makes most sense for IO-bound operations. It improves resource utilisation because it can free up threads while waiting for IO-bound operations to complete.
+	</p>
+	<p>
+		It seems to be a frequent observation that once you start using asynchronous operations, they tend to be 'infectious'. A common rule of thumb is <a href="https://msdn.microsoft.com/en-us/magazine/jj991977.aspx">async all the way</a>. You can easily call synchronous methods from asynchronous methods, but it's harder the other way around.
+	</p>
+	<p>
+		This is similar to the distinction between pure and impure functions. You can call pure functions from impure functions, but not the other way around. If you call an impure function from a 'pure' function in F#, the caller also automatically becomes impure. In Haskell, it's not even possible; you can call a pure function from an <code>IO</code> context, but not the other way around.
+	</p>
+	<p>
+		In F#, Async&lt;'a&gt; is more <a href="http://blog.ploeh.dk/2015/08/03/idiomatic-or-idiosyncratic">idiomatic</a> than using Task&lt;T&gt;. While Async&lt;'a&gt; doesn't translate directly to Haskell's <code>IO</code> either, it's worth experimenting with the analogy.
+	</p>
+	<p>
+		<strong>Async I/O</strong>
+	</p>
+	<p>
+		In <a href="http://blog.ploeh.dk/2016/03/18/functional-architecture-is-ports-and-adapters">the previous Haskell example</a>, communication with the database were implemented by functions returning <code>IO</code>:		
+	</p>
+	<p>
+		<pre>getReservedSeatsFromDB :: ConnectionString -> ZonedTime -> IO Int
+
+saveReservation :: ConnectionString -> Reservation -> IO ()</pre>
+	</p>
+	<p>
+		By applying the analogy of <code>IO</code> to <code>Async&lt;'a&gt;</code>, you can implement your F# data access module to return Async work-flows:
+	</p>
+	<p>
+		<pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">module</span>&nbsp;<span style="color:#4ec9b0;">SqlGateway</span>&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;string&nbsp;-&gt;&nbsp;DateTimeOffset&nbsp;-&gt;&nbsp;Async&lt;int&gt;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;<span style="color:navy;">getReservedSeats</span>&nbsp;connectionString&nbsp;(date&nbsp;:&nbsp;<span style="color:#4ec9b0;">DateTimeOffset</span>)&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;...</span>
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;string&nbsp;-&gt;&nbsp;Reservation&nbsp;-&gt;&nbsp;Async&lt;unit&gt;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;<span style="color:navy;">saveReservation</span>&nbsp;connectionString&nbsp;(reservation&nbsp;:&nbsp;<span style="color:#4ec9b0;">Reservation</span>)&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;...</span></pre>
+	</p>
+	<p>
+		This makes it harder to compose the desired <code>imp</code> function, because you need to deal with both asynchronous work-flows and the Either monad. In Haskell, the building blocks are already there in the shape of the <code>EitherT</code> <a href="https://en.wikipedia.org/wiki/Monad_transformer">monad transformer</a>. F# doesn't have monad transformers, but in the spirit of the <a href="http://blog.ploeh.dk/2016/03/21/composition-with-an-either-computation-expression">previous article</a>, you can define a computation expression that combines Either and Async:
+	</p>
+	<p>
+		<pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">type</span>&nbsp;<span style="color:#4ec9b0;">AsyncEitherBuilder</span>&nbsp;()&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;Async&lt;Result&lt;&#39;a,&#39;c&gt;&gt;&nbsp;*&nbsp;(&#39;a&nbsp;-&gt;&nbsp;Async&lt;Result&lt;&#39;b,&#39;c&gt;&gt;)</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;-&gt;&nbsp;Async&lt;Result&lt;&#39;b,&#39;c&gt;&gt;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">member</span>&nbsp;this.<span style="color:navy;">Bind</span>(x,&nbsp;<span style="color:navy;">f</span>)&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">async</span>&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;x&#39;&nbsp;=&nbsp;x
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">match</span>&nbsp;x&#39;&nbsp;<span style="color:blue;">with</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:navy;">Success</span>&nbsp;s&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">return!</span>&nbsp;<span style="color:navy;">f</span>&nbsp;s
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:navy;">Failure</span>&nbsp;f&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:navy;">Failure</span>&nbsp;f&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;&#39;a&nbsp;-&gt;&nbsp;&#39;a</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">member</span>&nbsp;this.<span style="color:navy;">ReturnFrom</span>&nbsp;x&nbsp;=&nbsp;x
+ 
+<span style="color:blue;">let</span>&nbsp;asyncEither&nbsp;=&nbsp;<span style="color:#4ec9b0;">AsyncEitherBuilder</span>&nbsp;()</pre>
+	</p>
+	<p>
+		This is the minimal implementation required for the following composition. A more complete implementation would also define a Return method, as well as <a href="https://msdn.microsoft.com/en-us/library/dd233182">other useful methods</a>.
+	</p>
+	<p>
+		In the Haskell example, you saw how I had to use <code>hoistEither</code> and <code>liftIO</code> to 'extract' the values within the <code>do</code> block. This is necessary because sometimes you need to pull a value out of an Either value, and sometimes you need to get the value inside an <code>IO</code> context.
+	</p>
+	<p>
+		In an <code>asyncEither</code> expression, you need similar functions:
+	</p>
+	<p>
+		<pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:green;">//&nbsp;Async&lt;&#39;a&gt;&nbsp;-&gt;&nbsp;Async&lt;Result&lt;&#39;a,&#39;b&gt;&gt;</span>
+<span style="color:blue;">let</span>&nbsp;<span style="color:navy;">liftAsync</span>&nbsp;x&nbsp;=&nbsp;<span style="color:blue;">async</span>&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;x&#39;&nbsp;=&nbsp;x
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:navy;">Success</span>&nbsp;x&#39;&nbsp;}
+ 
+<span style="color:green;">//&nbsp;&#39;a&nbsp;-&gt;&nbsp;Async&lt;&#39;a&gt;</span>
+<span style="color:blue;">let</span>&nbsp;<span style="color:navy;">asyncReturn</span>&nbsp;x&nbsp;=&nbsp;<span style="color:blue;">async</span>&nbsp;{&nbsp;<span style="color:blue;">return</span>&nbsp;x&nbsp;}</pre>
+	</p>
+	<p>
+		I chose to name the first one <code>liftAsync</code> as a counterpart to Haskell's <code>liftIO</code>, since I'm using <code>Async&lt;'a&gt;</code> as a surrogate for <code>IO</code>. The other function I named <code>asyncReturn</code> because it returns a pure value wrapped in an asynchronous work-flow.
+	</p>
+	<p>
+		You can now compose the desired <code>imp</code> function from the above building blocks:
+	</p>
+	<p>
+		<pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">let</span>&nbsp;<span style="color:navy;">imp</span>&nbsp;candidate&nbsp;=&nbsp;asyncEither&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;r&nbsp;=&nbsp;<span style="color:#4ec9b0;">Validate</span>.<span style="color:navy;">reservation</span>&nbsp;candidate&nbsp;|&gt;&nbsp;<span style="color:navy;">asyncReturn</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;i&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#4ec9b0;">SqlGateway</span>.<span style="color:navy;">getReservedSeats</span>&nbsp;connectionString&nbsp;r.Date
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:navy;">liftAsync</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;r&nbsp;=&nbsp;<span style="color:#4ec9b0;">Capacity</span>.<span style="color:navy;">check</span>&nbsp;10&nbsp;i&nbsp;r&nbsp;|&gt;&nbsp;<span style="color:navy;">asyncReturn</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return!</span>&nbsp;<span style="color:#4ec9b0;">SqlGateway</span>.<span style="color:navy;">saveReservation</span>&nbsp;connectionString&nbsp;r
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:navy;">liftAsync</span>&nbsp;}</pre>
+	</p>
+	<p>
+		Notice how, in contrast with the <a href="http://blog.ploeh.dk/2016/03/21/composition-with-an-either-computation-expression">previous example</a>, this expression uses <code>let!</code> and <code>return!</code> throughout, but that you have to compose each line with <code>asyncReturn</code> or <code>liftAsync</code> in order to pull out the appropriate values.
+	</p>
+	<p>
+		As an example, the original, unmodified <code>Validate.reservation</code> function has the type <code>ReservationRendition -&gt; Result&lt;Reservation, Error&gt;</code>. Inside an <code>asyncEither</code> expression, however, all <code>let!</code>-bound values must be of the type <code>Async&lt;Result&lt;'a, 'b&gt;&gt;</code>, so you need to wrap the return value <code>Result&lt;Reservation, Error&gt;</code> in Async. That's what <code>asyncReturn</code> does. Since this expression is <code>let!</code>-bound, the <code>r</code> value has the type <code>Reservation</code>. It's 'double-unwrapped', if you will.
+	</p>
+	<p>
+		Likewise, <code>SqlGateway.getReservedSeats</code> returns a value of the type <code>Async&lt;int&gt;</code>, so you need to pipe it into <code>liftAsync</code> in order to turn it into an <code>Async&lt;Result&lt;int, Error&gt;&gt;</code>. When that value is <code>let!</code>-bound, then, <code>i</code> has the type <code>int</code>.
+	</p>
+	<p>
+		There's one change compared to the the previous examples: the type of <code>imp</code> changed. It's now <code>ReservationRendition -&gt; Async&lt;Result&lt;unit, Error&gt;&gt;</code>. While you could write an adapter function that executes this function synchronously, it's better to recall the mantra: <em>async all the way!</em>
+	</p>
+	<p>
+		<strong>Async Controller</strong>
+	</p>
+	<p>
+		Instead of coercing the <code>imp</code> function to be synchronous, you can change the ReservationsController that uses it to be asynchronous as well:
+	</p>
+	<p>
+		<pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:green;">//&nbsp;ReservationRendition&nbsp;-&gt;&nbsp;Task&lt;IHttpActionResult&gt;</span>
+<span style="color:blue;">member</span>&nbsp;this.<span style="color:navy;">Post</span>(rendition&nbsp;:&nbsp;<span style="color:#4ec9b0;">ReservationRendition</span>)&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;async&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;res&nbsp;=&nbsp;<span style="color:navy;">imp</span>&nbsp;rendition
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">match</span>&nbsp;res&nbsp;<span style="color:blue;">with</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:navy;">Failure</span>&nbsp;(<span style="color:navy;">ValidationError</span>&nbsp;msg)&nbsp;<span style="color:blue;">-&gt;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;this.<span style="color:navy;">BadRequest</span>&nbsp;msg
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:navy;">Failure</span>&nbsp;<span style="color:navy;">CapacityExceeded</span>&nbsp;<span style="color:blue;">-&gt;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;this.<span style="color:navy;">StatusCode</span>&nbsp;<span style="color:#4ec9b0;">HttpStatusCode</span>.Forbidden
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:navy;">Success</span>&nbsp;()&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">return</span>&nbsp;this.<span style="color:navy;">Ok</span>&nbsp;()&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:#4ec9b0;">Async</span>.<span style="color:navy;">StartAsTask</span></pre>
+	</p>
+	<p>
+		Notice that the method body uses an <code>async</code> computation expression, instead of the new <code>asyncEither</code>. This is because, when returning a result, you finally need to explicitly deal with the error cases as well as the success case. Using a standard <code>async</code> expression enables you to <code>let!</code>-bind <code>res</code> to the result of invoking the asynchronous <code>imp</code> function, and pattern match against it.
+	</p>
+	<p>
+		Since ASP.NET Web API support asynchronous controllers, this works when you convert the async work-flow to a Task with <code>Async.StartAsTask</code>. <em>Async all the way</em>.
+	</p>
+	<p>
+		In order to get this to work, I had to overload the BadRequest, StatusCode, and Ok methods, because they are protected, and you can't use protected methods from within a closure. Here's the entire code for the Controller, including the above Post method for completeness sake:
+	</p>
+	<p>
+		<pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">type</span>&nbsp;<span style="color:#4ec9b0;">ReservationsController</span>(<span style="color:navy;">imp</span>)&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">inherit</span>&nbsp;<span style="color:#4ec9b0;">ApiController</span>()
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">member</span>&nbsp;<span style="color:blue;">private</span>&nbsp;this.<span style="color:navy;">BadRequest</span>&nbsp;(msg&nbsp;:&nbsp;<span style="color:#4ec9b0;">string</span>)&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">base</span>.<span style="color:navy;">BadRequest</span>&nbsp;msg&nbsp;:&gt;&nbsp;<span style="color:#4ec9b0;">IHttpActionResult</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">member</span>&nbsp;<span style="color:blue;">private</span>&nbsp;this.<span style="color:navy;">StatusCode</span>&nbsp;statusCode&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">base</span>.<span style="color:navy;">StatusCode</span>&nbsp;statusCode&nbsp;:&gt;&nbsp;<span style="color:#4ec9b0;">IHttpActionResult</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">member</span>&nbsp;<span style="color:blue;">private</span>&nbsp;this.<span style="color:navy;">Ok</span>&nbsp;()&nbsp;=&nbsp;<span style="color:blue;">base</span>.<span style="color:navy;">Ok</span>&nbsp;()&nbsp;:&gt;&nbsp;<span style="color:#4ec9b0;">IHttpActionResult</span>
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;ReservationRendition&nbsp;-&gt;&nbsp;Task&lt;IHttpActionResult&gt;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">member</span>&nbsp;this.<span style="color:navy;">Post</span>(rendition&nbsp;:&nbsp;<span style="color:#4ec9b0;">ReservationRendition</span>)&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">async</span>&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;res&nbsp;=&nbsp;<span style="color:navy;">imp</span>&nbsp;rendition
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">match</span>&nbsp;res&nbsp;<span style="color:blue;">with</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:navy;">Failure</span>&nbsp;(<span style="color:navy;">ValidationError</span>&nbsp;msg)&nbsp;<span style="color:blue;">-&gt;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;this.<span style="color:navy;">BadRequest</span>&nbsp;msg
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:navy;">Failure</span>&nbsp;<span style="color:navy;">CapacityExceeded</span>&nbsp;<span style="color:blue;">-&gt;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;this.<span style="color:navy;">StatusCode</span>&nbsp;<span style="color:#4ec9b0;">HttpStatusCode</span>.Forbidden
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:navy;">Success</span>&nbsp;()&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">return</span>&nbsp;this.<span style="color:navy;">Ok</span>&nbsp;()&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:#4ec9b0;">Async</span>.<span style="color:navy;">StartAsTask</span></pre>
+	</p>
+	<p>
+		As you can see, apart from the overloaded methods, the Post method is all there is. It uses the injected <code>imp</code> function to perform the actual work, asynchronously translates the result into a proper HTTP response, and returns it as a <code>Task&lt;IHttpActionResult&gt;</code>.
+	</p>
+	<p>
+		<strong>Summary</strong>
+	</p>
+	<p>
+		The initial idea was to experiment with using Async as a surrogate for IO. If you want to derive any value from this convention, you'll need to be disciplined and make all impure functions return Async&lt;'a&gt; - even those not IO-bound, but impure for other reasons (like random number generators).
+	</p>
+	<p>
+		I'm not sure I'm entirely convinced that this would be a useful strategy to adopt, but on the other hand, I'm not deterred either. At least, the outcome of this experiment demonstrates that you can combine asynchronous work-flows with the Either monad, and that the code is still manageable, with good separation of concerns. Since it <em>is</em> a good idea to access IO-bound resources using asynchronous work-flows, it's nice to know that they can be combined with sane error handling.
+	</p>
+</div>
