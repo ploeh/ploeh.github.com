@@ -1,0 +1,184 @@
+---
+layout: post
+title: "CQS and server-generated Entity IDs"
+date: 2016-05-06 17:36 UTC
+tags: [Software Design]
+---
+{% include JB/setup %}
+
+<div id="post">
+	<p>
+		<em>Is it a violation of Command Query Separation to update an ID property when saving an Entity to a database?</em>
+	</p>
+	<p>
+		In my <a href="http://www.shareasale.com/r.cfm?u=1017843&b=611266&m=53701&afftrack=&urllink=www%2Epluralsight%2Ecom%2Fcourses%2Fencapsulation%2Dsolid">Encapsulation and SOLID</a> course on Pluralsight, I explain how the elusive object-oriented quality <em>encapsulation</em> can be approximated by the actionable principles of <a href="https://en.wikipedia.org/wiki/Command%E2%80%93query_separation">Command Query Separation</a> (CQS) and <a href="https://en.wikipedia.org/wiki/Robustness_principle">Postel's law</a>.
+	</p>
+	<p>
+		One of the questions that invariably arise when people first learn about CQS is how to deal with (database) server-generated IDs. While I've <a href="http://blog.ploeh.dk/2014/08/11/cqs-versus-server-generated-ids">already covered that question</a>, I recently came upon <a href="http://enterprisecraftsmanship.com/2014/11/15/cqs-with-database-generated-ids/#comment-2650708342">a variation of the question</a>:
+		<blockquote>
+			"The Create method is a command, then if the object passed to this method have some changes in their property, does it violate any rule? I mean that we can always get the new id from the object itself, so we don't need to return another integer. Is it good or bad practice?"
+		</blockquote>
+		In this article, I'll attempt to answer this question.
+	</p>
+	<p>
+		<strong>Returning an ID by mutating input</strong>
+	</p>
+	<p>
+		I interpret the question like this: an Entity (as described in <a href="http://amzn.to/WBCwx7">DDD</a>) can have a mutable <code>Id</code> property. A <cdata>Create</cdata> method could save the Entity in a database, and then update the input value's <code>Id</code> property with the newly created record's ID.
+	</p>
+	<p>
+		As an example, consider this User class:
+	</p>
+	<p>
+		<pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">User</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">int</span>&nbsp;Id&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;<span style="color:blue;">set</span>;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">string</span>&nbsp;FirstName&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;<span style="color:blue;">set</span>;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">string</span>&nbsp;LastName&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;<span style="color:blue;">set</span>;&nbsp;}
+}</pre>
+	</p>
+	<p>
+		In order to create a new User in your database, you could define an API like this:
+	</p>
+	<p>
+		<pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">interface</span>&nbsp;<span style="color:#2b91af;">IUserRepository</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">void</span>&nbsp;Create(<span style="color:#2b91af;">User</span>&nbsp;user);
+}</pre>
+	</p>
+	<p>
+		An implementation of <code>IUserRepository</code> based on a relational database could perform an <code>INSERT</code> into the appropriate database, get the ID of the created record, and update the User object's <code>Id</code> property.
+	</p>
+	<p>
+		This test snippet demonstrates that behaviour:
+	</p>
+	<p>
+		<pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">var</span>&nbsp;u&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">User</span>&nbsp;{&nbsp;FirstName&nbsp;=&nbsp;<span style="color:#a31515;">&quot;Jane&quot;</span>,&nbsp;LastName&nbsp;=&nbsp;<span style="color:#a31515;">&quot;Doe&quot;</span>&nbsp;};
+<span style="color:#2b91af;">Assert</span>.Equal(0,&nbsp;u.Id);
+ 
+repository.Create(u);
+<span style="color:#2b91af;">Assert</span>.NotEqual(0,&nbsp;u.Id);</pre>
+	</p>
+	<p>
+		When you create the <code>u</code> object, by not assigning a value to the <code>Id</code> property, it will have the default value of 0. Only after the <code>Create</code> method returns does <code>Id</code> hold a proper value.
+	</p>
+	<p>
+		<strong>Evaluation</strong>
+	</p>
+	<p>
+		Does this design adhere to CQS? Yes, it does. The <code>Create</code> method doesn't return a value, but rather changes the state of the system. Not only does it create a record in your database, but it also changes the state of the <code>u</code> object. Nowhere does CQS state that an operation can't change more than a single part of the system.
+	</p>
+	<p>
+		Is it good design, then? I don't think that it is.
+	</p>
+	<p>
+		First, the design violates another part of encapsulation: protection of invariants. The invariants of any Entity is that is has an ID. It is the single defining feature of Entities that they have enduring and stable identities. When you change the identity of an Entity, it's no longer the same Entity. Yet this design allows exactly that:
+	</p>
+	<p>
+		<pre style="font-family:Consolas;font-size:13;color:black;">u.Id&nbsp;=&nbsp;42;
+<span style="color:green;">//&nbsp;...</span>
+u.Id&nbsp;=&nbsp;1337;</pre>
+	</p>
+	<p>
+		Second, such a design puts considerable trust in the implicit protocol between any client and the implementation of <code>IUserRepository</code>. Not only must the <code>Create</code> method save the <code>User</code> object in a data store, but it must also update the <code>Id</code>.
+	</p>
+	<p>
+		What happens, though, if you replay the method call:
+	</p>
+	<p>
+		<pre style="font-family:Consolas;font-size:13;color:black;">repository.Create(<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">User</span>&nbsp;{&nbsp;FirstName&nbsp;=&nbsp;<span style="color:#a31515;">&quot;Ada&quot;</span>,&nbsp;LastName&nbsp;=&nbsp;<span style="color:#a31515;">&quot;Poe&quot;</span>&nbsp;});
+repository.Create(<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">User</span>&nbsp;{&nbsp;FirstName&nbsp;=&nbsp;<span style="color:#a31515;">&quot;Ada&quot;</span>,&nbsp;LastName&nbsp;=&nbsp;<span style="color:#a31515;">&quot;Poe&quot;</span>&nbsp;});</pre>
+	</p>
+	<p>
+		This will result in duplicated entries, because the repository can't detect whether this is a replay, or simply two new users with the same name. You may find this example contrived, but in these days of cloud-based storage, it's common to apply retry strategies to clients.
+	</p>
+	<p>
+		If you use <a href="http://blog.ploeh.dk/2014/08/11/cqs-versus-server-generated-ids">one of the alternatives I previously outlined</a>, you will not have this problem.
+	</p>
+	<p>
+		<strong>Invariants</strong>
+	</p>
+	<p>
+		Even if you don't care about replays or duplicates, you should still consider the invariants of Entities. As a minimum, you shouldn't be able to change the ID of an Entity. For a class like <code>User</code>, it'll also make client developers' job easier if it can provide some useful guarantees. This is part of Postel's law applied: be conservative in what you send. In this case, at least guarantee that no values will be null. Thus, a better (but by no means perfect) User class could be:
+	</p>
+	<p>
+		<pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">User</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;User(<span style="color:blue;">int</span>&nbsp;id)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;(id&nbsp;&lt;=&nbsp;0)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">throw</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">ArgumentOutOfRangeException</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">nameof</span>(id),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#a31515;">&quot;The&nbsp;ID&nbsp;must&nbsp;be&nbsp;a&nbsp;(unique)&nbsp;positive&nbsp;value.&quot;</span>);;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.Id&nbsp;=&nbsp;id;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.firstName&nbsp;=&nbsp;<span style="color:#a31515;">&quot;&quot;</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.lastName&nbsp;=&nbsp;<span style="color:#a31515;">&quot;&quot;</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">int</span>&nbsp;Id&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">string</span>&nbsp;firstName;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">string</span>&nbsp;FirstName
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">get</span>&nbsp;{&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:blue;">this</span>.firstName;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">set</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;(<span style="color:blue;">value</span>&nbsp;==&nbsp;<span style="color:blue;">null</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">throw</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">ArgumentNullException</span>(<span style="color:blue;">nameof</span>(<span style="color:blue;">value</span>));
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.firstName&nbsp;=&nbsp;<span style="color:blue;">value</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">string</span>&nbsp;lastName;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">string</span>&nbsp;LastName
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">get</span>&nbsp;{&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:blue;">this</span>.lastName;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">set</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;(<span style="color:blue;">value</span>&nbsp;==&nbsp;<span style="color:blue;">null</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">throw</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">ArgumentNullException</span>(<span style="color:blue;">nameof</span>(<span style="color:blue;">value</span>));
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.lastName&nbsp;=&nbsp;<span style="color:blue;">value</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+	</p>
+	<p>
+		The constructor initialises all class fields, and ensure that <code>Id</code> is a positive integer. It can't ensure that the ID is unique, though - at least, not without querying the database, which would introduce other problems.
+	</p>
+	<p>
+		How do you create a new <code>User</code> object and save it in the database, then?
+	</p>
+	<p>
+		One option is this:
+	</p>
+	<p>
+		<pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">interface</span>&nbsp;<span style="color:#2b91af;">IUserRepository</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">void</span>&nbsp;Create(<span style="color:blue;">string</span>&nbsp;firstName,&nbsp;<span style="color:blue;">string</span>&nbsp;lastName);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">User</span>&nbsp;Read(<span style="color:blue;">int</span>&nbsp;id);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">void</span>&nbsp;Update(<span style="color:#2b91af;">User</span>&nbsp;user);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">void</span>&nbsp;Delete(<span style="color:blue;">int</span>&nbsp;id);
+}</pre>
+	</p>
+	<p>
+		The <code>Create</code> method doesn't use the <code>User</code> class at all, because at this time, the Entity doesn't yet exist. It only exists once it has an ID, and in this scenario, this only happens once the database has stored it and assigned it an ID.
+	</p>
+	<p>
+		Other methods can still use the <code>User</code> class as either input or output, because once the Entity has an ID, its invariants are satisfied.
+	</p>
+	<p>
+		There are other problems with this design, though, so I still prefer <a href="http://blog.ploeh.dk/2014/08/11/cqs-versus-server-generated-ids">the alternatives I originally sketched</a>.
+	</p>
+	<p>
+		<strong>Conclusion</strong>
+	</p>
+	<p>
+		Proper object-oriented design should, as a bare minimum, consider <em>encapsulation</em>. This includes protecting the invariants of objects. For Entities, it means that an Entity must always have a stable and enduring identity. Well-designed Entities guarantee that identity values are always present and immutable. This requirement tend to be at odds with most popular Object-Relational Mappers (ORM), which require that ID fields are externally assignable. In order to use ORMs, most programmers compromise on encapsulation, ending up with systems that are relational in nature, but far from object-oriented.
+	</p>
+</div>
