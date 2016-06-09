@@ -474,7 +474,7 @@ toHttpResult (Right ()) = OK ()</pre>
     <div class="comment">
         <div class="comment-author">John Dailey</div>
         <div class="comment-content">
-			<p>I believe there was a bit of miscommunication.  When I talked about the 'logic of only checking existing reservations on the same day", I wasn't talking about the implementation of the SqlGateway.  
+			<p>I believe there was a bit of miscommunication.  When I talked about the 'logic of only checking existing reservations on the same day', I wasn't talking about the implementation of the SqlGateway.  
 	I was talking about the 'imp' function:
 			</p>
 			<pre>let imp =
@@ -532,4 +532,74 @@ toHttpResult (Right ()) = OK ()</pre>
 		</div>
 		<div class="comment-date">2016-04-08 9:57 UTC</div>
 	</div>
+  <div class="comment">
+    <div class="comment-author"><a href="https://github.com/MartinRykfors">Martin Rykfors</a></div>
+    <div class="comment-content">
+      <p>
+        Hi Mark, thanks for this post and the discussion.
+      </p>
+      <p>
+        I feel that I share some of the concerns that John is bringing up. The <code>postReservation</code> function is pretty simple now, but eventually we might want to make external calls based on some conditional logic from the domain model.
+      </p>
+      <p>
+        Let's say there is a new feature request. The restaurant has struck a deal with the local caravan dealership, allowing them to rent a caravan to park outside the restaurant in order to increase the seating capacity for one evening. Of course, sometimes there are no caravans available, so we'll need to query the caravan database to see if there is a big enough caravan available that evening:
+      </p>
+      <p>
+        <pre>
+findCaravan :: Int -> ZoneTime -> IO (Maybe Caravan)
+findCaravan minimumCapacity date = ... -- database stuff
+        </pre>
+      </p>
+      <p>
+        How would we integrate this? We could put a call to <code>findCaravan</code> inside the IO context of <code>postReservation</code>, but since we only want to query the caravan database if the first capacity check failed, we'll need to add branching logic to <code>postReservation</code>. We want to have tests for this logic, but since we are coupled to the IO context, we are in trouble.
+      </p>
+      <p>
+        The original issue was that the F# version of <code>checkCapacity</code> could be made impure by injecting the impure <code>getReservedSeats</code> function to it, which is something that Haskell disallows. What if we changed the Haskell version of <code>checkCapacity</code> to the following instead?
+      </p>
+      <p>
+        <pre>
+checkCapacity :: Monad m => Int
+                            -> (ZonedTime -> m Int)
+                            -> Reservation
+                            -> EitherT Error m Reservation
+checkCapacity capacity getReservedSeats reservation = EitherT $ do
+    reservedSeats <- getReservedSeats $ date reservation
+    if capacity < quantity reservation + reservedSeats
+    then return $ Left CapacityExceeded
+    else return $ Right reservation
+                </pre>
+      </p>
+      <p>
+        Since we know that <code>getReservedSeats</code> will be effectful, we declare it so in its type signature. We change <code>postReservation</code> to become:
+      </p>
+      <p>
+<pre>
+postReservation :: ReservationRendition -> IO (HttpResult ())
+postReservation candidate = fmap toHttpResult $ runEitherT $
+  hoistEither $ validateReservation candidate
+  >>= checkCapacity 10 (getReservedSeatsFromDB connStr)
+  >>= liftIO . saveReservation connStr
+</pre>
+      </p>
+      <p>
+        (Or something like that. Monad transformers are the current step on my Haskell learning journey, so I'm not sure this will typecheck.)
+      </p>
+      <p>
+        This way, we can once more inject an IO typed function as the <code>getReservedSeats</code> argument of <code>checkCapacity</code> like we did in F#. If we want to test it, we can create a stub database call by using the monad instance of <code>Identity</code>, for example:
+      </p>
+      <p>
+        <pre>
+stubGetReservedSeats :: ZonedTime -> Identity Int
+stubGetReservedSeats date = return 8
+        </pre>
+      </p>
+      <p>
+        The new feature request also becomes easy to implement. Just pass <code>findCaravan</code> as a new argument to <code>checkCapacity</code>, and make the type of that argument to be <code>ZonedTime -> m (Maybe Caravan)</code>. The <code>checkCapacity</code> function can now do the initial capacity check, and if that fails, call <code>findCaravan</code> to see if it is still possible to allow the booking by renting a suitable caravan. The branching logic that is needed is now inside <code>checkCapacity</code> and can be tested outside of the IO context.
+      </p>
+      <p>
+        I don't know if this would work well in practice, or if it would cause more trouble than what it's worth. What do you think?
+      </p>
+    </div>
+    <div class="comment-date">2016-06-09 10:56 UTC</div>
+  </div>
 </div>
