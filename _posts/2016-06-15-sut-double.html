@@ -1,0 +1,568 @@
+---
+layout: post
+title: "SUT Double"
+date: 2016-06-15 18:01 UTC
+tags: [Unit Testing, Dependency Injection]
+---
+{% include JB/setup %}
+
+<div id="post">
+	<p>
+		<em>While it's possible to rely on Extract and Override for unit testing, Dependency Injection can make code and tests simpler and easier to maintain.</em>
+	</p>
+	<p>
+		In object-oriented programming, many people still struggle with the intersection of design and testability. If a unit test is <em>an automated test of a unit in isolation of its dependencies</em>, then how do you isolate an object from its dependencies, most notably databases, web services, and the like?
+	</p>
+	<p>
+		One technique, described in <a href="http://amzn.to/1ygZ4Jv">The Art of Unit Testing</a>, is called <em>Extract and Override</em>. The idea is that you write a class, but use a <a href="https://en.wikipedia.org/wiki/Template_method_pattern">Template Method</a>, <a href="https://en.wikipedia.org/wiki/Factory_method_pattern">Factory Method</a>, or other sort of virtual class method to expose extensibility points that a unit test can use to achieve the desired isolation.
+	</p>
+	<p>
+		People sometimes ask me whether that isn't good enough, and why <a href="http://amzn.to/12p90MG">I advocate the (ostensibly) more complex technique of Dependency Injection</a>?
+	</p>
+	<p>
+		It's easiest to understand the advantages and disadvantages if we have an example to discuss.
+	</p>
+	<p>
+		<strong>Example: Extract and Override</strong>
+	</p>
+	<p>
+		Imagine that you're creating a reservation system for a restaurant. Clients (web sites, smart phone apps, etcetera) display a user interface where you can fill in details about your reservation: your name, email address, the number of guests, and the date of your reservation. When you submit your reservation request, the client POSTs a JSON document to a web service.
+	</p>
+	<p>
+		In this example, the web service is implemented by a Controller class, and the Post method handles the incoming request:
+	</p>
+	<p>
+		<pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">int</span>&nbsp;Capacity&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;}
+ 
+<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">IHttpActionResult</span>&nbsp;Post(<span style="color:#2b91af;">ReservationDto</span>&nbsp;reservationDto)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">DateTime</span>&nbsp;requestedDate;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>(!<span style="color:#2b91af;">DateTime</span>.TryParse(reservationDto.Date,&nbsp;<span style="color:blue;">out</span>&nbsp;requestedDate))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:blue;">this</span>.BadRequest(<span style="color:#a31515;">&quot;Invalid&nbsp;date.&quot;</span>);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;reservedSeats&nbsp;=&nbsp;<span style="color:blue;">this</span>.ReadReservedSeats(requestedDate);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>(<span style="color:blue;">this</span>.Capacity&nbsp;&lt;&nbsp;reservationDto.Quantity&nbsp;+&nbsp;reservedSeats)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:blue;">this</span>.StatusCode(<span style="color:#2b91af;">HttpStatusCode</span>.Forbidden);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.SaveReservation(requestedDate,&nbsp;reservationDto);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:blue;">this</span>.Ok();
+}</pre>
+	</p>
+	<p>
+		The implementation is simple: It first attempts to validate the incoming document, and returns an error message if the document is invalid. Second, it reads the number of already reserved seats via a helper method, and rejects the request if the remaining capacity is insufficient. On the other hand, if the remaining capacity is sufficient, it saves the reservation and returns 200 OK.
+	</p>
+	<p>
+		The Post method relies on two helper methods that handles communication with the database:
+	</p>
+	<p>
+		<pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">virtual</span>&nbsp;<span style="color:blue;">int</span>&nbsp;ReadReservedSeats(<span style="color:#2b91af;">DateTime</span>&nbsp;date)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">const</span>&nbsp;<span style="color:blue;">string</span>&nbsp;sql&nbsp;=&nbsp;<span style="color:maroon;">@&quot;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;SELECT&nbsp;COALESCE(SUM([Quantity]),&nbsp;0)&nbsp;FROM&nbsp;[dbo].[Reservations]
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;WHERE&nbsp;YEAR([Date])&nbsp;=&nbsp;YEAR(@Date)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;AND&nbsp;MONTH([Date])&nbsp;=&nbsp;MONTH(@Date)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;AND&nbsp;DAY([Date])&nbsp;=&nbsp;DAY(@Date)&quot;</span>;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;connStr&nbsp;=&nbsp;<span style="color:#2b91af;">ConfigurationManager</span>.ConnectionStrings[<span style="color:#a31515;">&quot;booking&quot;</span>]
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.ConnectionString;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">using</span>&nbsp;(<span style="color:blue;">var</span>&nbsp;conn&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">SqlConnection</span>(connStr))
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">using</span>&nbsp;(<span style="color:blue;">var</span>&nbsp;cmd&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">SqlCommand</span>(sql,&nbsp;conn))
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;cmd.Parameters.Add(<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">SqlParameter</span>(<span style="color:#a31515;">&quot;@Date&quot;</span>,&nbsp;date));
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;conn.Open();
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;(<span style="color:blue;">int</span>)cmd.ExecuteScalar();
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}
+ 
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">virtual</span>&nbsp;<span style="color:blue;">void</span>&nbsp;SaveReservation(
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">DateTime</span>&nbsp;dateTime,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">ReservationDto</span>&nbsp;reservationDto)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">const</span>&nbsp;<span style="color:blue;">string</span>&nbsp;sql&nbsp;=&nbsp;<span style="color:maroon;">@&quot;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;INSERT&nbsp;INTO&nbsp;[dbo].[Reservations]&nbsp;([Date],&nbsp;[Name],&nbsp;[Email],&nbsp;[Quantity])
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;VALUES&nbsp;(@Date,&nbsp;@Name,&nbsp;@Email,&nbsp;@Quantity)&quot;</span>;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;connStr&nbsp;=&nbsp;<span style="color:#2b91af;">ConfigurationManager</span>.ConnectionStrings[<span style="color:#a31515;">&quot;booking&quot;</span>]
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.ConnectionString;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">using</span>&nbsp;(<span style="color:blue;">var</span>&nbsp;conn&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">SqlConnection</span>(connStr))
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">using</span>&nbsp;(<span style="color:blue;">var</span>&nbsp;cmd&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">SqlCommand</span>(sql,&nbsp;conn))
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;cmd.Parameters.Add(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">SqlParameter</span>(<span style="color:#a31515;">&quot;@Date&quot;</span>,&nbsp;reservationDto.Date));
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;cmd.Parameters.Add(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">SqlParameter</span>(<span style="color:#a31515;">&quot;@Name&quot;</span>,&nbsp;reservationDto.Name));
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;cmd.Parameters.Add(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">SqlParameter</span>(<span style="color:#a31515;">&quot;@Email&quot;</span>,&nbsp;reservationDto.Email));
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;cmd.Parameters.Add(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">SqlParameter</span>(<span style="color:#a31515;">&quot;@Quantity&quot;</span>,&nbsp;reservationDto.Quantity));
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;conn.Open();
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;cmd.ExecuteNonQuery();
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+	</p>
+	<p>
+		In this example, both helper methods are <code>public</code>, but they could have been <code>protected</code> without changing any conclusions; by being <code>public</code>, though, they're easier to override using <a href="http://www.moqthis.com">Moq</a>. The important detail is that both of these methods are overridable. In C#, you declare that with the <code>virtual</code> keyword; in Java, methods are overridable by default.
+	</p>
+	<p>
+		Both of these methods use elemental ADO.NET to communicate with the database. You can also use an ORM, or any other database access technique you prefer - it doesn't matter for this discussion. What matters is that the methods can be overridden by unit tests.
+	</p>
+	<p>
+		Here's a unit test of the happy path:
+	</p>
+	<p>
+		<pre style="font-family:Consolas;font-size:13;color:black;">[<span style="color:#2b91af;">Fact</span>]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;PostReturnsCorrectResultAndHasCorrectStateOnAcceptableRequest()
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;json&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">ReservationDto</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Date&nbsp;=&nbsp;<span style="color:#a31515;">&quot;2016-05-31&quot;</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Name&nbsp;=&nbsp;<span style="color:#a31515;">&quot;Mark&nbsp;Seemann&quot;</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Email&nbsp;=&nbsp;<span style="color:#a31515;">&quot;mark@example.com&quot;</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Quantity&nbsp;=&nbsp;1
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;};
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;sut&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Mock</span>&lt;<span style="color:#2b91af;">ReservationsController</span>&gt;&nbsp;{&nbsp;CallBase&nbsp;=&nbsp;<span style="color:blue;">true</span>&nbsp;};
+&nbsp;&nbsp;&nbsp;&nbsp;sut
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.Setup(s&nbsp;=&gt;&nbsp;s.ReadReservedSeats(<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">DateTime</span>(2016,&nbsp;5,&nbsp;31)))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.Returns(0);
+&nbsp;&nbsp;&nbsp;&nbsp;sut
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.Setup(s&nbsp;=&gt;&nbsp;s.SaveReservation(<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">DateTime</span>(2016,&nbsp;5,&nbsp;31),&nbsp;json))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.Verifiable();
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;actual&nbsp;=&nbsp;sut.Object.Post(json);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Assert</span>.IsAssignableFrom&lt;<span style="color:#2b91af;">OkResult</span>&gt;(actual);
+&nbsp;&nbsp;&nbsp;&nbsp;sut.Verify();
+}</pre>
+	</p>
+	<p>
+		This example uses the Extract and Override technique, but instead of creating a test-specific class that derives from ReservationsController, it uses Moq to create a dynamic <a href="http://www.martinfowler.com/bliki/TestDouble.html">Test Double</a> for the System Under Test (<a href="https://en.wikipedia.org/wiki/System_under_test">SUT</a>) - a SUT Double.
+	</p>
+	<p>
+		Since both <code>ReadReservedSeats</code> and <code>SaveReservation</code> are virtual, Moq can override them with test-specific behaviour. In this test, it defines the behaviour of <code>ReadReservedSeats</code> in such a way that it returns <code>0</code> when the input is a particular date.
+	</p>
+	<p>
+		While the test is simple, it has a single blemish. It ought to follow the Arrange Act Assert pattern, so it shouldn't have to configure the <code>SaveReservation</code> method <em>before</em> it calls the the <code>Post</code> method. After all, the <code>SaveReservation</code> method is a Command, and you should use <a href="http://blog.ploeh.dk/2013/10/23/mocks-for-commands-stubs-for-queries">Mocks for Commands</a>. In other words, the test ought to verify the interaction with the <code>SaveReservation</code> method in the Assert phase; not configure it in the Arrange phase.
+	</p>
+	<p>
+		Unfortunately, if you don't configure the <code>SaveReservation</code> method before calling <code>Post</code>, Moq will use the base implementation, which will attempt to interact with the database. The database isn't available in the unit test context, so without that override, the base method will throw an exception, causing the test to fail.
+	</p>
+	<p>
+		Still, that's a minor issue. In general, the test is easy to follow, and the design of the ReservationsController class itself is also straightforward. Are there any downsides?
+	</p>
+	<p>
+		<strong>Example: shared connection</strong>
+	</p>
+	<p>
+		From a design perspective, the above version is fine, but you may find it inefficient that <code>ReadReservedSeats</code> and <code>SaveReservation</code> both open and close a connection to the database. Wouldn't it be more efficient if they could share a single connection?
+	</p>
+	<p>
+		If (<a href="https://ericlippert.com/2012/12/17/performance-rant">by measuring</a>) you decide that you'd like to refactor the ReservationsController class to use a shared connection, your first attempt might look like this:
+	</p>
+	<p>
+		<pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">IHttpActionResult</span>&nbsp;Post(<span style="color:#2b91af;">ReservationDto</span>&nbsp;reservationDto)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">DateTime</span>&nbsp;requestedDate;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;(!<span style="color:#2b91af;">DateTime</span>.TryParse(reservationDto.Date,&nbsp;<span style="color:blue;">out</span>&nbsp;requestedDate))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:blue;">this</span>.BadRequest(<span style="color:#a31515;">&quot;Invalid&nbsp;date.&quot;</span>);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">using</span>&nbsp;(<span style="color:blue;">var</span>&nbsp;conn&nbsp;=&nbsp;<span style="color:blue;">this</span>.OpenDbConnection())
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;reservedSeats&nbsp;=&nbsp;<span style="color:blue;">this</span>.ReadReservedSeats(conn,&nbsp;requestedDate);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;(<span style="color:blue;">this</span>.Capacity&nbsp;&lt;&nbsp;reservationDto.Quantity&nbsp;+&nbsp;reservedSeats)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:blue;">this</span>.StatusCode(<span style="color:#2b91af;">HttpStatusCode</span>.Forbidden);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.SaveReservation(conn,&nbsp;requestedDate,&nbsp;reservationDto);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:blue;">this</span>.Ok();
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}
+ 
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">virtual</span>&nbsp;<span style="color:#2b91af;">SqlConnection</span>&nbsp;OpenDbConnection()
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;connStr&nbsp;=&nbsp;<span style="color:#2b91af;">ConfigurationManager</span>.ConnectionStrings[<span style="color:#a31515;">&quot;booking&quot;</span>]
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.ConnectionString;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;conn&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">SqlConnection</span>(connStr);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">try</span>
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;conn.Open();
+&nbsp;&nbsp;&nbsp;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">catch</span>
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;conn.Dispose();
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">throw</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;conn;
+}
+ 
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">virtual</span>&nbsp;<span style="color:blue;">int</span>&nbsp;ReadReservedSeats(<span style="color:#2b91af;">SqlConnection</span>&nbsp;conn,&nbsp;<span style="color:#2b91af;">DateTime</span>&nbsp;date)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">const</span>&nbsp;<span style="color:blue;">string</span>&nbsp;sql&nbsp;=&nbsp;<span style="color:maroon;">@&quot;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;SELECT&nbsp;COALESCE(SUM([Quantity]),&nbsp;0)&nbsp;FROM&nbsp;[dbo].[Reservations]
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;WHERE&nbsp;YEAR([Date])&nbsp;=&nbsp;YEAR(@Date)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;AND&nbsp;MONTH([Date])&nbsp;=&nbsp;MONTH(@Date)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;AND&nbsp;DAY([Date])&nbsp;=&nbsp;DAY(@Date)&quot;</span>;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">using</span>&nbsp;(<span style="color:blue;">var</span>&nbsp;cmd&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">SqlCommand</span>(sql,&nbsp;conn))
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;cmd.Parameters.Add(<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">SqlParameter</span>(<span style="color:#a31515;">&quot;@Date&quot;</span>,&nbsp;date));
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;(<span style="color:blue;">int</span>)cmd.ExecuteScalar();
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}
+ 
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">virtual</span>&nbsp;<span style="color:blue;">void</span>&nbsp;SaveReservation(
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">SqlConnection</span>&nbsp;conn,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">DateTime</span>&nbsp;dateTime,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">ReservationDto</span>&nbsp;reservationDto)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">const</span>&nbsp;<span style="color:blue;">string</span>&nbsp;sql&nbsp;=&nbsp;<span style="color:maroon;">@&quot;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;INSERT&nbsp;INTO&nbsp;[dbo].[Reservations]&nbsp;([Date],&nbsp;[Name],&nbsp;[Email],&nbsp;[Quantity])
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;VALUES&nbsp;(@Date,&nbsp;@Name,&nbsp;@Email,&nbsp;@Quantity)&quot;</span>;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">using</span>&nbsp;(<span style="color:blue;">var</span>&nbsp;cmd&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">SqlCommand</span>(sql,&nbsp;conn))
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;cmd.Parameters.Add(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">SqlParameter</span>(<span style="color:#a31515;">&quot;@Date&quot;</span>,&nbsp;reservationDto.Date));
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;cmd.Parameters.Add(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">SqlParameter</span>(<span style="color:#a31515;">&quot;@Name&quot;</span>,&nbsp;reservationDto.Name));
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;cmd.Parameters.Add(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">SqlParameter</span>(<span style="color:#a31515;">&quot;@Email&quot;</span>,&nbsp;reservationDto.Email));
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;cmd.Parameters.Add(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">SqlParameter</span>(<span style="color:#a31515;">&quot;@Quantity&quot;</span>,&nbsp;reservationDto.Quantity));
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;cmd.ExecuteNonQuery();
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+	</p>
+	<p>
+		You've changed both <code>ReadReservedSeats</code> and <code>SaveReservation</code> to take an extra parameter: the connection to the database. That connection is created by the <code>OpenDbConnection</code> method, but you also have to make that method overridable, because otherwise, it'd attempt to connect to a database during unit testing, and thereby causing the tests to fail.
+	</p>
+	<p>
+		You can still unit test using the Extract and Overide technique, but the test becomes more complicated:
+	</p>
+	<p>
+		<pre style="font-family:Consolas;font-size:13;color:black;">[<span style="color:#2b91af;">Fact</span>]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;PostReturnsCorrectResultAndHasCorrectStateOnAcceptableRequest()
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;json&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">ReservationDto</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Date&nbsp;=&nbsp;<span style="color:#a31515;">&quot;2016-05-31&quot;</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Name&nbsp;=&nbsp;<span style="color:#a31515;">&quot;Mark&nbsp;Seemann&quot;</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Email&nbsp;=&nbsp;<span style="color:#a31515;">&quot;mark@example.com&quot;</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Quantity&nbsp;=&nbsp;1
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;};
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;sut&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Mock</span>&lt;<span style="color:#2b91af;">ReservationsController</span>&gt;&nbsp;{&nbsp;CallBase&nbsp;=&nbsp;<span style="color:blue;">true</span>&nbsp;};
+&nbsp;&nbsp;&nbsp;&nbsp;sut.Setup(s&nbsp;=&gt;&nbsp;s.OpenDbConnection()).Returns((<span style="color:#2b91af;">SqlConnection</span>)<span style="color:blue;">null</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;sut
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.Setup(s&nbsp;=&gt;&nbsp;s.ReadReservedSeats(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">It</span>.IsAny&lt;<span style="color:#2b91af;">SqlConnection</span>&gt;(),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">DateTime</span>(2016,&nbsp;5,&nbsp;31)))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.Returns(0);
+&nbsp;&nbsp;&nbsp;&nbsp;sut
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.Setup(s&nbsp;=&gt;&nbsp;s.SaveReservation(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">It</span>.IsAny&lt;<span style="color:#2b91af;">SqlConnection</span>&gt;(),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">DateTime</span>(2016,&nbsp;5,&nbsp;31),&nbsp;json))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.Verifiable();
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;actual&nbsp;=&nbsp;sut.Object.Post(json);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Assert</span>.IsAssignableFrom&lt;<span style="color:#2b91af;">OkResult</span>&gt;(actual);
+&nbsp;&nbsp;&nbsp;&nbsp;sut.Verify();
+}</pre>
+	</p>
+	<p>
+		Not only must you override <code>ReadReservedSeats</code> and <code>SaveReservation</code>, but you must also supply a <a href="http://xunitpatterns.com/Dummy%20Object.html">Dummy Object</a> for the connection object, as well as override <code>OpenDbConnection</code>. Still manageable, perhaps, but the design indisputably deteriorated.
+	</p>
+	<p>
+		You can summarise the flaw by a single design smell: <a href="http://c2.com/cgi/wiki?FeatureEnvySmell">Feature Envy</a>. Both the <code>ReadReservedSeats</code> and the <code>SaveReservation</code> methods take an argument of the type SqlConnection. On the other hand, they don't use any instance members of the ReservationsController class that currently hosts them. These methods seem like they ought to belong to SqlConnection instead of ReservationsController. That's not possible, however, since SqlConnection is a class from the Base Class Library, but you can, instead, create a new Repository class.
+	</p>
+	<p>
+		<strong>Example: Repository</strong>
+	</p>
+	<p>
+		A common design pattern is the Repository pattern, although the way it's commonly implemented today has diverged somewhat from the original description in <a href="http://bit.ly/patternsofeaa">PoEAA</a>. Here, I'm going to apply it like people often do. You start by defining a new class:
+	</p>
+	<p>
+		<pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">SqlReservationsRepository</span>&nbsp;:&nbsp;<span style="color:#2b91af;">IDisposable</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;<span style="color:#2b91af;">Lazy</span>&lt;<span style="color:#2b91af;">SqlConnection</span>&gt;&nbsp;lazyConn;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;SqlReservationsRepository()
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.lazyConn&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Lazy</span>&lt;<span style="color:#2b91af;">SqlConnection</span>&gt;(<span style="color:blue;">this</span>.OpenSqlConnection);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:#2b91af;">SqlConnection</span>&nbsp;OpenSqlConnection()
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;connStr&nbsp;=&nbsp;<span style="color:#2b91af;">ConfigurationManager</span>.ConnectionStrings[<span style="color:#a31515;">&quot;booking&quot;</span>]
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.ConnectionString;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;conn&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">SqlConnection</span>(connStr);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">try</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;conn.Open();
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">catch</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;conn.Dispose();
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">throw</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;conn;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">virtual</span>&nbsp;<span style="color:blue;">int</span>&nbsp;ReadReservedSeats(<span style="color:#2b91af;">DateTime</span>&nbsp;date)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">const</span>&nbsp;<span style="color:blue;">string</span>&nbsp;sql&nbsp;=&nbsp;<span style="color:maroon;">@&quot;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;SELECT&nbsp;COALESCE(SUM([Quantity]),&nbsp;0)&nbsp;FROM&nbsp;[dbo].[Reservations]
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;WHERE&nbsp;YEAR([Date])&nbsp;=&nbsp;YEAR(@Date)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;AND&nbsp;MONTH([Date])&nbsp;=&nbsp;MONTH(@Date)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;AND&nbsp;DAY([Date])&nbsp;=&nbsp;DAY(@Date)&quot;</span>;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">using</span>&nbsp;(<span style="color:blue;">var</span>&nbsp;cmd&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">SqlCommand</span>(sql,&nbsp;<span style="color:blue;">this</span>.lazyConn.Value))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;cmd.Parameters.Add(<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">SqlParameter</span>(<span style="color:#a31515;">&quot;@Date&quot;</span>,&nbsp;date));
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;(<span style="color:blue;">int</span>)cmd.ExecuteScalar();
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">virtual</span>&nbsp;<span style="color:blue;">void</span>&nbsp;SaveReservation(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">DateTime</span>&nbsp;dateTime,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">ReservationDto</span>&nbsp;reservationDto)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">const</span>&nbsp;<span style="color:blue;">string</span>&nbsp;sql&nbsp;=&nbsp;<span style="color:maroon;">@&quot;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;INSERT&nbsp;INTO&nbsp;[dbo].[Reservations]&nbsp;([Date],&nbsp;[Name],&nbsp;[Email],&nbsp;[Quantity])
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;VALUES&nbsp;(@Date,&nbsp;@Name,&nbsp;@Email,&nbsp;@Quantity)&quot;</span>;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">using</span>&nbsp;(<span style="color:blue;">var</span>&nbsp;cmd&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">SqlCommand</span>(sql,&nbsp;<span style="color:blue;">this</span>.lazyConn.Value))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;cmd.Parameters.Add(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">SqlParameter</span>(<span style="color:#a31515;">&quot;@Date&quot;</span>,&nbsp;reservationDto.Date));
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;cmd.Parameters.Add(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">SqlParameter</span>(<span style="color:#a31515;">&quot;@Name&quot;</span>,&nbsp;reservationDto.Name));
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;cmd.Parameters.Add(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">SqlParameter</span>(<span style="color:#a31515;">&quot;@Email&quot;</span>,&nbsp;reservationDto.Email));
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;cmd.Parameters.Add(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">SqlParameter</span>(<span style="color:#a31515;">&quot;@Quantity&quot;</span>,&nbsp;reservationDto.Quantity));
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;cmd.ExecuteNonQuery();
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;Dispose()
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.Dispose(<span style="color:blue;">true</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">GC</span>.SuppressFinalize(<span style="color:blue;">this</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">protected</span>&nbsp;<span style="color:blue;">virtual</span>&nbsp;<span style="color:blue;">void</span>&nbsp;Dispose(<span style="color:blue;">bool</span>&nbsp;disposing)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;(disposing)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.lazyConn.Value.Dispose();
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+	</p>
+	<p>
+		The new SqlReservationsRepository class contains the two <code>ReadReservedSeats</code> and <code>SaveReservation</code> methods, and because you've now moved them to a class that contains a shared database connection, the methods don't need the connection as a parameter.
+	</p>
+	<p>
+		The ReservationsController can use the new SqlReservationsRepository class to do its work, while keeping connection management efficient. In order to make it <em>testable</em>, however, you must make it overridable. The SqlReservationsRepository class' methods are already virtual, but that's not the class you're testing. The System Under Test is the ReservationsController class, and you have to make its use of SqlReservationsRepository overridable as well.
+	</p>
+	<p>
+		If you wish to avoid Dependency Injection, you can use a <a href="https://en.wikipedia.org/wiki/Factory_method_pattern">Factory Method</a>:
+	</p>
+	<p>
+		<pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">IHttpActionResult</span>&nbsp;Post(<span style="color:#2b91af;">ReservationDto</span>&nbsp;reservationDto)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">DateTime</span>&nbsp;requestedDate;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;(!<span style="color:#2b91af;">DateTime</span>.TryParse(reservationDto.Date,&nbsp;<span style="color:blue;">out</span>&nbsp;requestedDate))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:blue;">this</span>.BadRequest(<span style="color:#a31515;">&quot;Invalid&nbsp;date.&quot;</span>);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">using</span>&nbsp;(<span style="color:blue;">var</span>&nbsp;repo&nbsp;=&nbsp;<span style="color:blue;">this</span>.CreateRepository())
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;reservedSeats&nbsp;=&nbsp;repo.ReadReservedSeats(requestedDate);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;(<span style="color:blue;">this</span>.Capacity&nbsp;&lt;&nbsp;reservationDto.Quantity&nbsp;+&nbsp;reservedSeats)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:blue;">this</span>.StatusCode(<span style="color:#2b91af;">HttpStatusCode</span>.Forbidden);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;repo.SaveReservation(requestedDate,&nbsp;reservationDto);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:blue;">this</span>.Ok();
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">virtual</span>&nbsp;<span style="color:#2b91af;">SqlReservationsRepository</span>&nbsp;CreateRepository()
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">SqlReservationsRepository</span>();
+}</pre>
+	</p>
+	<p>
+		The Factory Method in the above example is the <code>CreateRepository</code> method, which is virtual, and thereby overridable. You can override it in a unit test like this:
+	</p>
+	<p>
+		<pre style="font-family:Consolas;font-size:13;color:black;">[<span style="color:#2b91af;">Fact</span>]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;PostReturnsCorrectResultAndHasCorrectStateOnAcceptableRequest()
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;json&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">ReservationDto</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Date&nbsp;=&nbsp;<span style="color:#a31515;">&quot;2016-05-31&quot;</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Name&nbsp;=&nbsp;<span style="color:#a31515;">&quot;Mark&nbsp;Seemann&quot;</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Email&nbsp;=&nbsp;<span style="color:#a31515;">&quot;mark@example.com&quot;</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Quantity&nbsp;=&nbsp;1
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;};
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;repo&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Mock</span>&lt;<span style="color:#2b91af;">SqlReservationsRepository</span>&gt;();
+&nbsp;&nbsp;&nbsp;&nbsp;repo
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.Setup(r&nbsp;=&gt;&nbsp;r.ReadReservedSeats(<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">DateTime</span>(2016,&nbsp;5,&nbsp;31)))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.Returns(0);
+&nbsp;&nbsp;&nbsp;&nbsp;repo
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.Setup(r&nbsp;=&gt;&nbsp;r.SaveReservation(<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">DateTime</span>(2016,&nbsp;5,&nbsp;31),&nbsp;json))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.Verifiable();
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;sut&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Mock</span>&lt;<span style="color:#2b91af;">ReservationsController</span>&gt;&nbsp;{&nbsp;CallBase&nbsp;=&nbsp;<span style="color:blue;">true</span>&nbsp;};
+&nbsp;&nbsp;&nbsp;&nbsp;sut.Setup(s&nbsp;=&gt;&nbsp;s.CreateRepository()).Returns(repo.Object);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;actual&nbsp;=&nbsp;sut.Object.Post(json);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Assert</span>.IsAssignableFrom&lt;<span style="color:#2b91af;">OkResult</span>&gt;(actual);
+&nbsp;&nbsp;&nbsp;&nbsp;repo.Verify();
+}</pre>			
+	</p>
+	<p>
+		You'll notice that not only did the complexity increase of the System Under Test, but the test itself became more complicated as well. In the previous version, at least you only needed to create a single <code>Mock&lt;T&gt;</code>, but now you have to create two different test doubles and connect them. This is a typical example demonstrating the shortcomings of the Extract and Override technique. It doesn't scale well as complexity increases.
+	</p>
+	<p>
+		<strong>Example: Dependency Injection</strong>
+	</p>
+	<p>
+		In 1994 we <a href="http://amzn.to/XBYukB">we were taught</a> to <em>favor object composition over class inheritance</em>. You can do that, and still keep your code loosely coupled with <a href="http://amzn.to/12p90MG">Dependency Injection</a>. Instead of relying on virtual methods, inject a polymorphic object into the class:
+	</p>
+	<p>
+		<pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">ReservationsController</span>&nbsp;:&nbsp;<span style="color:#2b91af;">ApiController</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;ReservationsController(<span style="color:#2b91af;">IReservationsRepository</span>&nbsp;repository)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;(repository&nbsp;==&nbsp;<span style="color:blue;">null</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">throw</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">ArgumentNullException</span>(<span style="color:blue;">nameof</span>(repository));
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.Capacity&nbsp;=&nbsp;12;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.Repository&nbsp;=&nbsp;repository;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">int</span>&nbsp;Capacity&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">IReservationsRepository</span>&nbsp;Repository&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">IHttpActionResult</span>&nbsp;Post(<span style="color:#2b91af;">ReservationDto</span>&nbsp;reservationDto)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">DateTime</span>&nbsp;requestedDate;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;(!<span style="color:#2b91af;">DateTime</span>.TryParse(reservationDto.Date,&nbsp;<span style="color:blue;">out</span>&nbsp;requestedDate))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:blue;">this</span>.BadRequest(<span style="color:#a31515;">&quot;Invalid&nbsp;date.&quot;</span>);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;reservedSeats&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.Repository.ReadReservedSeats(requestedDate);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;(<span style="color:blue;">this</span>.Capacity&nbsp;&lt;&nbsp;reservationDto.Quantity&nbsp;+&nbsp;reservedSeats)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:blue;">this</span>.StatusCode(<span style="color:#2b91af;">HttpStatusCode</span>.Forbidden);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.Repository.SaveReservation(requestedDate,&nbsp;reservationDto);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:blue;">this</span>.Ok();
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+	</p>
+	<p>
+		In this version of ReservationsController, an IReservationsRepository object is injected into the object via the constructor and saved in a class field for later use. When the <code>Post</code> method executes, it calls <code>Repository.ReadReservedSeats</code> and <code>Repository.SaveReservation</code> without further ado.
+	</p>
+	<p>
+		The IReservationsRepository interface is defined like this:
+	</p>
+	<p>
+		<pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">interface</span>&nbsp;<span style="color:#2b91af;">IReservationsRepository</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">int</span>&nbsp;ReadReservedSeats(<span style="color:#2b91af;">DateTime</span>&nbsp;date);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">void</span>&nbsp;SaveReservation(<span style="color:#2b91af;">DateTime</span>&nbsp;dateTime,&nbsp;<span style="color:#2b91af;">ReservationDto</span>&nbsp;reservationDto);
+}</pre>
+	</p>
+	<p>
+		Perhaps you're surprised to see that it merely defines the two <code>ReadReservedSeats</code> and <code>SaveReservation</code> methods, but makes no attempt at making the interface disposable.
+	</p>
+	<p>
+		Not only is IDisposable an implementation detail, but it also keeps the implementation of ReservationsController simple. Notice how it doesn't attempt to control the lifetime of the injected repository, which may or may not be disposable. In a few paragraphs, we'll return to this matter, but first, witness how the unit test became simpler as well:
+	</p>
+	<p>
+		<pre style="font-family:Consolas;font-size:13;color:black;">[<span style="color:#2b91af;">Fact</span>]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;PostReturnsCorrectResultAndHasCorrectStateOnAcceptableRequest()
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;json&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">ReservationDto</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Date&nbsp;=&nbsp;<span style="color:#a31515;">&quot;2016-05-31&quot;</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Name&nbsp;=&nbsp;<span style="color:#a31515;">&quot;Mark&nbsp;Seemann&quot;</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Email&nbsp;=&nbsp;<span style="color:#a31515;">&quot;mark@example.com&quot;</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Quantity&nbsp;=&nbsp;1
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;};
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;repo&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Mock</span>&lt;<span style="color:#2b91af;">IReservationsRepository</span>&gt;();
+&nbsp;&nbsp;&nbsp;&nbsp;repo
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.Setup(r&nbsp;=&gt;&nbsp;r.ReadReservedSeats(<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">DateTime</span>(2016,&nbsp;5,&nbsp;31)))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.Returns(0);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;sut&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">ReservationsController</span>(repo.Object);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;actual&nbsp;=&nbsp;sut.Post(json);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Assert</span>.IsAssignableFrom&lt;<span style="color:#2b91af;">OkResult</span>&gt;(actual);
+&nbsp;&nbsp;&nbsp;&nbsp;repo.Verify(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;r&nbsp;=&gt;&nbsp;r.SaveReservation(<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">DateTime</span>(2016,&nbsp;5,&nbsp;31),&nbsp;json));
+}</pre>
+	</p>
+	<p>
+		With this test, you can finally use the Arrange Act Assert structure, instead of having to configure the <code>SaveReservation</code> method call in the Arrange phase. This test arranges the <a href="http://xunitpatterns.com/test%20fixture%20-%20xUnit.html">Test Fixture</a> by creating a Test Double for the IReservationsRepository interface and injecting it into the ReservationsController. You only need to configure the <code>ReadReservedSeats</code> method, because there's no default behaviour that you need to suppress.
+	</p>
+	<p>
+		You may be wondering about the potential memory leak when the SqlReservationsRepository is in use. After all, ReservationsController doesn't dispose of the injected repository.
+	</p>
+	<p>
+		You address this concern when you compose the dependency graph. This example uses ASP.NET Web API, which has <a href="http://blog.ploeh.dk/2012/09/28/DependencyInjectionandLifetimeManagementwithASP.NETWebAPI">an extensibility point for this exact purpose</a>:
+	</p>
+	<p>
+		<pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">PureCompositionRoot</span>&nbsp;:&nbsp;<span style="color:#2b91af;">IHttpControllerActivator</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">IHttpController</span>&nbsp;Create(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">HttpRequestMessage</span>&nbsp;request,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">HttpControllerDescriptor</span>&nbsp;controllerDescriptor,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Type</span>&nbsp;controllerType)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>(controllerType&nbsp;==&nbsp;<span style="color:blue;">typeof</span>(<span style="color:#2b91af;">ReservationsController</span>))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;repo&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">SqlReservationsRepository</span>();
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;request.RegisterForDispose(repo);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">ReservationsController</span>(repo);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">throw</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">ArgumentException</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#a31515;">&quot;Unexpected&nbsp;controller&nbsp;type:&nbsp;&quot;</span>&nbsp;+&nbsp;controllerType,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">nameof</span>(controllerType));
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+	</p>
+	<p>
+		The call to <code>request.RegisterForDispose</code> tells the ASP.NET Web API framework to dispose of the concrete <code>repo</code> object once it has handled the request and served the response.
+	</p>
+	<p>
+		<strong>Conclusion</strong>
+	</p>
+	<p>
+		At first glance, it seems like the overall design would be easier if you make your SUT testable via inheritance, but once things become more complex, favouring composition over inheritance gives you more freedom to design according to well-known design patterns.
+	</p>
+	<p>
+		In case you want to dive into the details of the code presented here, it's <a href="https://github.com/ploeh/SUTDouble">available on GitHub</a>. You can follow the progression of the code in the repository's commit history.
+	</p>
+	<p>
+		If you're interested in learning more about advanced unit testing techniques, you can watch <a href="http://bit.ly/advanced-unit-testing">my popular Pluralsight course</a>.
+	</p>
+</div>
