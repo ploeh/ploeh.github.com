@@ -1,0 +1,159 @@
+---
+layout: post
+title: "Conditional composition of functions"
+date: 2016-07-04 6:53 UTC
+tags: [Software Design, Haskell]
+---
+{% include JB/setup %}
+
+<div id="post">
+	<p>
+		<em>A major benefit of Functional Programming is the separation of decisions and (side-)effects. Sometimes, however, one decision ought to trigger an impure operation, and then proceed to make more decisions. Using functional composition, you can succinctly conditionally compose functions.</em>
+	</p>
+	<p>
+		In my <a href="http://blog.ploeh.dk/2016/03/18/functional-architecture-is-ports-and-adapters">article on how Functional Architecture falls into the Ports and Adapters pit of success</a>, I describe how Haskell forces you to separate concerns:
+		<ul>
+			<li>
+				Your Domain Model should be <a href="https://en.wikipedia.org/wiki/Pure_function">pure</a>, with business decisions implemented by pure functions. Not only does it make it easier for you to reason about the business logic, it also has the side-benefit that <a href="http://blog.ploeh.dk/2015/05/07/functional-design-is-intrinsically-testable">pure functions are intrinsically testable</a>.</li>
+			<li>
+				Side-effects, and other impure operations (such as database queries) can be isolated and implemented as <a href="http://xunitpatterns.com/Humble%20Object.html">humble</a> functions.
+			</li>
+		</ul>
+		A common pattern that you can often use is:
+		<ol>
+			<li>Read some data using an impure query.</li>
+			<li>Pass that data to a pure function.</li>
+			<li>Use the return value from the pure function to perform various side-effects. You could, for example, write data to a database, send an email, or update a user interface.</li>
+		</ol>
+		Sometimes, however, things are more complex. Based on the answer from one pure function, you may need to query an additional data source to gather extra data, call a second pure function, and so on. In this article, you'll see one way to accomplish this.
+	</p>
+	<p>
+		<strong>Caravans for extra space</strong>
+	</p>
+	<p>
+		Based on my <a href="http://blog.ploeh.dk/2016/03/18/functional-architecture-is-ports-and-adapters">previous restaurant-booking example</a>, <a href="https://github.com/MartinRykfors">Martin Rykfors</a> suggests "a new feature request. The restaurant has struck a deal with the local caravan dealership, allowing them to rent a caravan to park outside the restaurant in order to increase the seating capacity for one evening. Of course, sometimes there are no caravans available, so we'll need to query the caravan database to see if there is a big enough caravan available that evening:"
+	</p>
+	<p>
+		<pre>findCaravan :: ServiceAddress -&gt; Int -&gt; ZonedTime -&gt; IO (Maybe Caravan)</pre>
+	</p>
+	<p>
+		The above <code>findCaravan</code> is a slight modification of the function Martin suggests, because I imagine that the caravan dealership exposes their caravan booking system as a web service, so the function needs a service address as well. This change doesn't impact the proposed solution, though.
+	</p>
+	<p>
+		This problem definition fits the above general problem statement: you'd only want to call the <code>findCaravan</code> function if <code>checkCapacity</code> returns <code>Left CapacityExceeded</code>.
+	</p>
+	<p>
+		That's still a business decision, so you ought to implement it as a pure function. If you (for a moment) imagine that you have a <code>Maybe Caravan</code> instead of an <code>IO (Maybe Caravan)</code>, you have all the information required to make that decision:
+	</p>
+	<p>
+		<pre>checkCaravanCapacityOnError :: Error
+                            -&gt; Maybe Caravan
+                            -&gt; Reservation
+                            -&gt; Either Error Reservation
+checkCaravanCapacityOnError CapacityExceeded (Just caravan) reservation =
+  if caravanCapacity caravan &lt; quantity reservation
+  then Left CapacityExceeded
+  else Right reservation
+checkCaravanCapacityOnError err _ _ = Left err</pre>
+	</p>
+	<p>
+		Notice that this function not only takes <code>Maybe Caravan</code>, it also takes an <code>Error</code> value. This encodes into the function's type that you should only call it if you have an <code>Error</code> that originates from a previous step. This <code>Error</code> value also enables the function to only check the caravan's capacity if the previous <code>Error</code> was a <code>CapacityExceeded</code>. <code>Error</code> can also be <code>ValidationError</code>, in which case there's no reason to check the caravan's capacity.
+	</p>
+	<p>
+		This takes care of the Domain Model, but you still need to figure out how to get a <code>Maybe Caravan</code> value. Additionally, if <code>checkCaravanCapacityOnError</code> returns <code>Right Reservation</code>, you'd probably want to reserve the caravan for the evening. You can imagine that this is possible with the following function:
+	</p>
+	<p>
+		<pre>reserveCaravan :: ServiceAddress -&gt; ZonedTime -&gt; Caravan -&gt; IO ()</pre>
+	</p>
+	<p>
+		This function reserves the caravan at the supplied time. In order to keep the example simple, you can imagine that the provided <code>ZonedTime</code> indicates an entire day (or evening), and not just an instant.
+	</p>
+	<p>
+		<strong>Composition of caravan-checking</strong>
+	</p>
+	<p>
+		As a first step, you can compose an impure function that
+		<ol>
+			<li>Queries the caravan dealership for a caravan</li>
+			<li>Calls the pure <code>checkCaravanCapacityOnError</code> function</li>
+			<li>Reserves the caravan if the return value was <code>Right Reservation</code></li>
+		</ol>
+		Notice how these steps follow the impure-pure-impure pattern I described above. You can compose such a function like this:
+	</p>
+	<p>
+		<pre>import Control.Monad (forM_)
+import Control.Monad.Trans (liftIO)
+import Control.Monad.Trans.Either (EitherT(..), hoistEither)
+
+checkCaravan :: Reservation -&gt; Error -&gt; EitherT Error IO Reservation
+checkCaravan reservation err = do
+  c &lt;- liftIO $ findCaravan svcAddr (quantity reservation) (date reservation)
+  newRes &lt;- hoistEither $ checkCaravanCapacityOnError err c reservation
+  liftIO $ forM_ c $ reserveCaravan svcAddr (date newRes)
+  return newRes</pre>
+	</p>
+	<p>
+		It starts by calling <code>findCaravan</code> by closing over <code>svcAddr</code> (a <code>ServiceAddress</code> value). This is an impure operation, but you can use <code>liftIO</code> to make <code>c</code> a <code>Maybe Caravan</code> value that can be passed to <code>checkCaravanCapacityOnError</code> on the next line. This function returns <code>Either Error Reservation</code>, but since this function is defined in an <code>EitherT Error IO Reservation</code> context, <code>newRes</code> is a <code>Reservation</code> value. Still, it's important to realise that exactly because of this context, execution will short-circuit at that point if the return value from <code>checkCaravanCapacityOnError</code> is a <code>Left</code> value. In other words, all subsequent expression are only evaluated if <code>checkCaravanCapacityOnError</code> returns <code>Right</code>. This means that the <code>reserveCaravan</code> function is only called if a caravan with enough capacity is available.
+	</p>
+	<p>
+		The <code>checkCaravan</code> function will <em>unconditionally</em> execute if called, so as the final composition step, you'll need to figure out how to compose it into the overall <code>postReservation</code> function in such a way that it's only called if <code>checkCapacity</code> returns <code>Left</code>.
+	</p>
+	<p>
+		<strong>Conditional composition</strong>
+	</p>
+	<p>
+		In the previous incarnation of this example, the overall entry point for the HTTP request in question was this <code>postReservation</code> function:
+	</p>
+	<p>
+		<pre>postReservation :: ReservationRendition -&gt; IO (HttpResult ())
+postReservation candidate = fmap toHttpResult $ runEitherT $ do
+  r &lt;- hoistEither $ validateReservation candidate
+  i &lt;- liftIO $ getReservedSeatsFromDB connStr $ date r
+  hoistEither $ checkCapacity 10 i r
+  &gt;&gt;= liftIO . saveReservation connStr</pre>
+	</p>
+	<p>
+		Is it possible to compose <code>checkCaravan</code> into this function in such a way that it's only going to be executed if <code>checkCapacity</code> returns <code>Left</code>? Yes, by adding to the <code>hoistEither $ checkCapacity 10 i r</code> pipeline:
+	</p>
+	<p>
+		<pre>import Control.Monad.Trans (liftIO)
+import Control.Monad.Trans.Either (EitherT(..), hoistEither, right, eitherT)
+
+postReservation :: ReservationRendition -&gt; IO (HttpResult ())
+postReservation candidate = fmap toHttpResult $ runEitherT $ do
+  r &lt;- hoistEither $ validateReservation candidate
+  i &lt;- liftIO $ getReservedSeatsFromDB connStr $ date r
+  eitherT (checkCaravan r) right $ hoistEither $ checkCapacity 10 i r
+  &gt;&gt;= liftIO . saveReservation connStr</pre>
+	</p>
+	<p>
+		Contrary to F#, you have to read Haskell pipelines from right to left. In the second-to-last line of code, you can see that I've added <code>eitherT (checkCaravan r) right</code> to the left of <code>hoistEither $ checkCapacity 10 i r</code>, which was already there. This means that, instead of binding the result of <code>hoistEither $ checkCapacity 10 i r</code> directly to the <code>saveReservation</code> composition (via the monadic <code>&gt;&gt;=</code> <em>bind</em> operator), that result is first passed to <code>eitherT (checkCaravan r) right</code>.
+	</p>
+	<p>
+		The <code>eitherT</code> function composes two other functions: the leftmost function is invoked if the input is <code>Left</code>, and the right function is invoked if the input is <code>Right</code>. In this particular example, <code>(checkCaravan r)</code> is the closure being invoked in the <code>Left</code> - and only in the <code>Left</code> - case. In the <code>Right</code> case, the value is passed on unmodified, but elevated back into the <code>EitherT</code> context using the <code>right</code> function.
+	</p>
+	<p>
+		(BTW, the above composition has a subtle bug: the capacity is still hard-coded as <code>10</code>, even though reserving extra caravans actually increases the overall capacity of the restaurant for the day. I'll leave it as an exercise for you to make the capacity take into account any reserved caravans. You can download <a href="https://gist.github.com/ploeh/c999e2ae2248bd44d775">all of the source code</a>, if you want to give it a try.)
+	</p>
+	<p>
+		<strong>Interleaving</strong>
+	</p>
+	<p>
+		Haskell has strong support for composition of functions. Not only can you interleave pure and impure code, but you can also do it <em>conditionally</em>. In the above example, the <code>eitherT</code> function holds the key to that. The overall flow of the <code>postReservation</code> function is:
+		<ol>
+			<li>Validate the input</li>
+			<li>Get already reserved seats from the database</li>
+			<li>Check the reservation request against the restaurant's remaining capacity</li>
+			<li>If the capacity is exceeded, attempt to reserve a caravan of sufficient capacity</li>
+			<li>If one of the previous steps decided that the restaurant has enough capacity, then save the reservation in the database</li>
+			<li>Convert the result (whether it's <code>Left</code> or <code>Right</code>) to an HTTP response</li>
+		</ol>
+		Programmers who are used to implementing such solutions using C#, Java, or similar languages, may feel hesitant by delegating a branching decision to a piece of composition code, instead of something they can unit test.
+	</p>
+	<p>
+		Haskell's type system is remarkably helpful here. Haskell programmers often joke that <em>if it compiles, it works</em>, and there's a morsel of truth in that sentiment. Both functions used with <code>eitherT</code> must return a value of the same type, but the left function <em>must</em> be a function that takes the <code>Left</code> type as input, whereas the right function <em>must</em> be a function that takes the <code>Right</code> type as input. In the above example, <code>(checkCaravan r)</code> is a partially applied function with the type <code>Error -&gt; EitherT Error IO Reservation</code>; that is: the input type is <code>Error</code>, so it can only be composed with an <code>Either Error a</code> value. That matches the return type of <code>checkCapacity 10 i r</code>, so the code compiles, but if I accidentally switch the arguments to <code>eitherT</code>, it doesn't compile.
+	</p>
+	<p>
+		I find it captivating to figure out how to 'click' together such interleaving functions using the composition functions that Haskell provides. Often, when the composition compiles, it works as intended.
+	</p>
+</div>
