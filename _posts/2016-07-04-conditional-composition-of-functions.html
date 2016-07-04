@@ -157,3 +157,57 @@ postReservation candidate = fmap toHttpResult $ runEitherT $ do
 		I find it captivating to figure out how to 'click' together such interleaving functions using the composition functions that Haskell provides. Often, when the composition compiles, it works as intended.
 	</p>
 </div>
+
+<div class="comment">
+    <div class="comment-author">Benjamin Hodgson</div>
+    <div class="comment-content">
+        <p>
+            This is something of a tangent, but I wanted to hint to you that Haskell can help reduce the boilerplate it takes to compose monadic computations like this.
+        </p>
+        <p>
+            The <a href="https://hackage.haskell.org/package/mtl-2.2.1/docs/Control-Monad-Except.html#t:MonadError"><code>MonadError</code></a> class abstracts monads which support throwing and catching errors. If you don't specify the concrete monad (transformer stack) a computation lives in, it's easier to compose it into a larger environment.
+        </p>
+
+
+        <p>
+<pre>checkCaravanCapacityOnError :: MonadError Error m
+                            =&gt; Error
+                            -&gt; Maybe Caravan
+                            -&gt; Reservation
+                            -&gt; m Reservation
+checkCaravanCapacityOnError CapacityExceeded (Just caravan) reservation
+  | caravanCapacity caravan &lt; quantity reservation = throwError CapacityExceeded
+  | otherwise = return reservation
+checkCaravanCapacityOnError err _ _ = throwError err</pre>
+        </p>
+
+        <p>
+            I'm programming to the interface, not the implementation, by using <code>throwError</code> and <code>return</code> instead of <code>Left</code> and <code>Right</code>. This allows me to dispense with calls to <code>hoistEither</code> when I come to call my function in the context of a bigger monad:
+        </p>
+
+        <p>
+<pre>findCaravan :: MonadIO m =&gt; ServiceAddress -&gt; Int -&gt; ZonedTime -&gt; m (Maybe Caravan)
+reserveCaravan :: MonadIO m =&gt; ServiceAddress -&gt; ZonedTime -&gt; m ()
+
+checkCaravan :: (MonadIO m, MonadError Error m) =&gt; Reservation -&gt; Error -&gt; m Reservation
+checkCaravan reservation err = do
+  c &lt;- findCaravan svcAddr (quantity reservation) (date reservation)
+  newRes &lt;- checkCaravanCapacityOnError err c reservation
+  traverse_ (reserveCaravan svcAddr (date newRes)) c
+  return newRes</pre>
+        </p>
+
+        <p>
+            Note how <code>findCaravan</code> and <code>reserveCaravan</code> only declare a <code>MonadIO</code> constraint, whereas <code>checkCaravan</code> needs to do both IO and error handling. The type class system lets you declare the capabilities you need from your monad without specifying the monad in question. The elaborator figures out the right number of calls to <code>lift</code> when it builds the <code>MonadError</code> dictionary, which is determined by the concrete type you choose for <code>m</code> at the edge of your system.
+        </p>
+
+        <p>
+            F# doesn't support this style of programming - well, it doesn't support monad transformers at all - because it lacks higher-kinded types. You can't abstract over <code>m</code>; you have to pick a concrete monad up-front. This is bad for code reuse: if you need to add (for example) runtime configuration to your application you have to rewrite the implementation of your monad, and potentially every function which uses it, rather than just tacking on a <code>MonadReader</code> constraint to the functions that need it and adding a <code>runReaderT</code> at the entry point to your application.
+        </p>
+
+        <p>
+            Finally, monad transformers are but one style of effect typing; <a href="http://okmij.org/ftp/Haskell/extensible/more.pdf"><code>extensible-effects</code></a> is an alternative which is gaining popularity.
+        </p>
+    </div>
+</div>
+
