@@ -1,0 +1,246 @@
+---
+layout: post
+title: "Decoupling decisions from effects"
+date: 2016-09-26 21:51 UTC
+tags: [Unit Testing, Software Design, F#]
+---
+{% include JB/setup %}
+
+<div id="post">
+	<p>
+		<em>Functional programming emphasises pure functions, but sometimes decisions must be made based on impure data. The solution is to decouple decisions and effects.</em>
+	</p>
+	<p>
+		Functional programmers love <a href="https://en.wikipedia.org/wiki/Pure_function">pure functions</a>. Not only do they tend to be easy to reason about, they are also <a href="http://blog.ploeh.dk/2015/05/07/functional-design-is-intrinsically-testable">intrinsically testable</a>. It'd be wonderful if we could build entire systems only from pure functions, but every functional programmer knows that the world is impure. Instead, we strive towards implementing as much of our code base as pure functions, so that an application is <a href="http://blog.ploeh.dk/2016/03/18/functional-architecture-is-ports-and-adapters">impure only at its boundaries</a>.
+	</p>
+	<p>
+		The more you can do this, the more testable the system becomes. One rule of thumb about unit testing that I often use is that if a particular candidate for unit testing has a <a href="https://en.wikipedia.org/wiki/Cyclomatic_complexity">cyclomatic complexity</a> of 1, it may be acceptable to skip unit testing it. Instead, we can consider such a unit a <a href="http://xunitpatterns.com/Humble%20Object.html">humble unit</a>. If you can separate decisions from <em>effects</em> (which is what functional programmers often call impurities), you can often make the impure functions humble.
+	</p>
+	<p>
+		In other words: put all logic in pure functions that can be unit tested, and implement impure effects as humble functions that you don't need to unit test.
+	</p>
+	<p>
+		You want to see an example. So do I!
+	</p>
+	<p>
+		<strong>Example: conditional reading from file</strong>
+	</p>
+	<p>
+		In a <a href="https://gist.github.com/jcansdale/de58c2b2c389851f72b00ef525be820c">recent discussion</a>, Jamie Cansdale asks how I'd design and unit test something like the following C# method if I could instead redesign it in F#.
+	</p>
+	<p>
+		<pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:blue;">string</span>&nbsp;GetUpperText(<span style="color:blue;">string</span>&nbsp;path)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;(!<span style="color:#2b91af;">File</span>.Exists(path))&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:#a31515;">&quot;DEFAULT&quot;</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;text&nbsp;=&nbsp;<span style="color:#2b91af;">File</span>.ReadAllText(path);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;text.ToUpperInvariant();
+}</pre>
+	</p>
+	<p>
+		Notice how this method contains two impure operations: <code>File.Exists</code> and <code>File.ReadAllText</code>. Decision logic seems interleaved with IO. How can decisions be separated from effects?
+	</p>
+	<p>
+		(For good measure I ought to point out that obviously, the above example is to simple that by itself, it almost doesn't warrant testing. Think of it as a stand-in for a more complex problem.)
+	</p>
+	<p>
+		With a statement-based language like C#, it can be difficult to see how to separate decision logic from effects without introducing interfaces, but with expression-based languages like F#, it becomes close to trivial. In this article, I'll show you three alternatives.
+	</p>
+	<p>
+		All three alternatives, however, make use of the same function for turning text into upper case:
+	</p>
+	<p>
+		<pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:green;">//&nbsp;string&nbsp;-&gt;&nbsp;string</span>
+<span style="color:blue;">let</span>&nbsp;<span style="color:navy;">getUpper</span>&nbsp;(text&nbsp;:&nbsp;<span style="color:teal;">string</span>)&nbsp;=&nbsp;text.<span style="color:navy;">ToUpperInvariant</span>&nbsp;()</pre>
+	</p>
+	<p>
+		Obviously, this function is so trivial that it's hardly worth testing, but remember to think about it as a stand-in for a more complex problem. It's a pure function, so it's easy to unit test:
+	</p>
+	<p>
+		<pre style="font-family:Consolas;font-size:13;color:black;">[&lt;<span style="color:teal;">Theory</span>&gt;]
+[&lt;<span style="color:teal;">InlineData</span>(<span style="color:#a31515;">&quot;foo&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;FOO&quot;</span>)&gt;]
+[&lt;<span style="color:teal;">InlineData</span>(<span style="color:#a31515;">&quot;bar&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;BAR&quot;</span>)&gt;]
+<span style="color:blue;">let</span>&nbsp;<span style="color:navy;">``getUpper&nbsp;returns&nbsp;correct&nbsp;value``</span>&nbsp;input&nbsp;expected&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;actual&nbsp;=&nbsp;<span style="color:navy;">getUpper</span>&nbsp;input
+&nbsp;&nbsp;&nbsp;&nbsp;expected&nbsp;=!&nbsp;actual</pre>
+	</p>
+	<p>
+		This test uses <a href="https://xunit.github.io">xUnit.net 2.1.0</a> and <a href="http://www.swensensoftware.com/unquote">Unquote 3.1.2</a>. The <code>=!</code> operator is a custom Unquote operator; you can read it as <em>must equal</em>; that is: <em>expected must equal actual</em>. It'll throw an exception if this isn't the case.
+	</p>
+	<p>
+		<strong>Custom unions</strong>
+	</p>
+	<p>
+		Languages like F# come with <a href="https://en.wikipedia.org/wiki/Algebraic_data_type">algebraic data types</a>, which means that in addition to complex structures, they also enable you to express types as <em>alternatives</em>. This means that you can represent a decision as one or more alternative <em>pure</em> values.
+	</p>
+	<p>
+		Although the examples you'll see later in this article are simpler, I think it'll be helpful to start with an ad hoc solution to the problem. Here, the decision is to either read from a file, or return a default value. You can express that using a custom discriminated union:
+	</p>
+	<p>
+		<pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">type</span>&nbsp;<span style="color:teal;">Action</span>&nbsp;=&nbsp;<span style="color:navy;">ReadFromFile</span>&nbsp;<span style="color:blue;">of</span>&nbsp;<span style="color:teal;">string</span>&nbsp;|&nbsp;<span style="color:navy;">UseDefault</span>&nbsp;<span style="color:blue;">of</span>&nbsp;<span style="color:teal;">string</span>
+</pre>
+	</p>
+	<p>
+		This type models two mutually exclusive cases: either you decide to read from the file identified by a file path (<code>string</code>), or your return a default value (also modelled as a <code>string</code>).
+	</p>
+	<p>
+		Using this <code>Action</code> type, you can write a <em>pure</em> function that makes the decision:
+	</p>
+	<p>
+		<pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:green;">//&nbsp;string&nbsp;-&gt;&nbsp;bool&nbsp;-&gt;&nbsp;Action</span>
+<span style="color:blue;">let</span>&nbsp;<span style="color:navy;">decide</span>&nbsp;path&nbsp;fileExists&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;fileExists
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">then</span>&nbsp;<span style="color:navy;">ReadFromFile</span>&nbsp;path
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">else</span>&nbsp;<span style="color:navy;">UseDefault</span>&nbsp;<span style="color:#a31515;">&quot;DEFAULT&quot;</span></pre>
+	</p>
+	<p>
+		This function takes two arguments: <code>path</code> (a <code>string</code>) and <code>fileExists</code> (a <code>bool</code>). If <code>fileExists</code> is <code>true</code>, it returns the <code>ReadFromFile</code> case; otherwise, it returns the <code>UseDefault</code> case.
+	</p>
+	<p>
+		Notice how this function neither checks whether the file exists, nor does it attempt to read the contents of the file. It only makes a decision based on input, and returns information about this decision as output. This function is <em>pure</em>, so (as I've claimed numerous times) is easy to unit test:
+	</p>
+	<p>
+		<pre style="font-family:Consolas;font-size:13;color:black;">[&lt;<span style="color:teal;">Theory</span>&gt;]
+[&lt;<span style="color:teal;">InlineData</span>(<span style="color:#a31515;">&quot;ploeh.txt&quot;</span>)&gt;]
+[&lt;<span style="color:teal;">InlineData</span>(<span style="color:#a31515;">&quot;fnaah.txt&quot;</span>)&gt;]
+<span style="color:blue;">let</span>&nbsp;<span style="color:navy;">``decide&nbsp;returns&nbsp;correct&nbsp;result&nbsp;when&nbsp;file&nbsp;exists``</span>&nbsp;path&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;actual&nbsp;=&nbsp;<span style="color:navy;">decide</span>&nbsp;path&nbsp;<span style="color:blue;">true</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:navy;">ReadFromFile</span>&nbsp;path&nbsp;=!&nbsp;actual
+ 
+[&lt;<span style="color:teal;">Theory</span>&gt;]
+[&lt;<span style="color:teal;">InlineData</span>(<span style="color:#a31515;">&quot;ploeh.txt&quot;</span>)&gt;]
+[&lt;<span style="color:teal;">InlineData</span>(<span style="color:#a31515;">&quot;fnaah.txt&quot;</span>)&gt;]
+<span style="color:blue;">let</span>&nbsp;<span style="color:navy;">``decide&nbsp;returns&nbsp;correct&nbsp;result&nbsp;when&nbsp;file&nbsp;doesn&#39;t&nbsp;exist``</span>&nbsp;path&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;actual&nbsp;=&nbsp;<span style="color:navy;">decide</span>&nbsp;path&nbsp;<span style="color:blue;">false</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:navy;">UseDefault</span>&nbsp;<span style="color:#a31515;">&quot;DEFAULT&quot;</span>&nbsp;=!&nbsp;actual</pre>
+	</p>
+	<p>
+		One unit test function exercises the code path where the file exists, whereas the other test exercises the code path where it doesn't. Straightforward.
+	</p>
+	<p>
+		There's still some remaining work, because you need to somehow compose your pure functions with <code>File.Exists</code> and <code>File.ReadAllText</code>. You also need a way to extract the string value from the two cases of <code>Action</code>. One way to do that is to introduce another pure function:
+	</p>
+	<p>
+		<pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:green;">//&nbsp;(string&nbsp;-&gt;&nbsp;string)&nbsp;-&gt;&nbsp;Action&nbsp;-&gt;&nbsp;string</span>
+<span style="color:blue;">let</span>&nbsp;<span style="color:navy;">getValue</span>&nbsp;<span style="color:navy;">f</span>&nbsp;=&nbsp;<span style="color:blue;">function</span>
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:navy;">ReadFromFile</span>&nbsp;path&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:navy;">f</span>&nbsp;path
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:navy;">UseDefault</span>&nbsp;value&nbsp;&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;value</pre>
+	</p>
+	<p>
+		This is a function that returns the <code>UseDefault</code> data for that case, but invokes a function <code>f</code> in the <code>ReadFromFile</code> case. Again, since this function is pure it's easy to unit test it, but I'll leave that as an exercise.
+	</p>
+	<p>
+		You now have all the building blocks required to compose a function similar to the above <code>GetUpperText</code> C# method:
+	</p>
+	<p>
+		<pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:green;">//&nbsp;string&nbsp;-&gt;&nbsp;string</span>
+<span style="color:blue;">let</span>&nbsp;<span style="color:navy;">getUpperText</span>&nbsp;path&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;path
+&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:teal;">File</span>.<span style="color:navy;">Exists</span>
+&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:navy;">decide</span>&nbsp;path
+&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:navy;">getValue</span>&nbsp;(<span style="color:teal;">File</span>.<span style="color:navy;">ReadAllText</span>&nbsp;&gt;&gt;&nbsp;<span style="color:navy;">getUpper</span>)</pre>
+	</p>
+	<p>
+		This implementation pipes <code>path</code> into <code>File.Exists</code>, which returns a Boolean value indicating whether the file exists. This Boolean value is then piped into <code>decide path</code>, which (as you may recall) returns an <code>Action</code>. That value is finally piped into <code>getValue (File.ReadAllText &gt;&gt; getUpper)</code>. Recall that <code>getValue</code> will only invoke the function argument when the <code>Action</code> is <code>ReadFromFile</code>, so <code>File.ReadAllText &gt;&gt; getUpper</code> is only executed in this case.
+	</p>
+	<p>
+		Notice how decisions and effectful functions are interleaved. All the decision functions are covered by unit tests; only <code>File.Exists</code> and <code>File.ReadAllText</code> aren't covered, but I find it reasonable to treat these as humble functions.
+	</p>
+	<p>
+		<strong>Either</strong>
+	</p>
+	<p>
+		Normally, decisions often involve a choice between two alternatives. In the above example, you saw how the alternatives were named <code>ReadFromFile</code> and <code>UseDefault</code>. Since a choice between two alternatives is so common, there's a well-known 'pattern' that gives you general-purpose tools to model decisions. This is known as the <em>Either</em> monad.
+	</p>
+	<p>
+		The F# core library doesn't (<a href="https://github.com/fsharp/FSharpLangDesign/blob/master/RFCs/FS-1004-result-type.md">yet</a>) come with an implementation of the Either monad, but it's easy to add. In this example, I'm using code from <a href="https://fsharpforfunandprofit.com">Scott Wlaschin's</a> <a href="https://fsharpforfunandprofit.com/posts/recipe-part2">railway-oriented programming</a>, although slightly modified, and including only the most essential building blocks for the example:
+	</p>
+	<p>
+		<pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">module</span>&nbsp;<span style="color:teal;">Result</span>&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;(&#39;a&nbsp;-&gt;&nbsp;Result&lt;&#39;b,&nbsp;&#39;c&gt;)&nbsp;-&gt;&nbsp;Result&lt;&#39;a,&nbsp;&#39;c&gt;&nbsp;-&gt;&nbsp;Result&lt;&#39;b,&nbsp;&#39;c&gt;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;<span style="color:navy;">bind</span>&nbsp;<span style="color:navy;">f</span>&nbsp;=&nbsp;<span style="color:blue;">function</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:navy;">Success</span>&nbsp;succ&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:navy;">f</span>&nbsp;succ
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:navy;">Failure</span>&nbsp;fail&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:navy;">Failure</span>&nbsp;fail
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;(&#39;a&nbsp;-&gt;&nbsp;&#39;b)&nbsp;-&gt;&nbsp;Result&lt;&#39;a,&nbsp;&#39;c&gt;&nbsp;-&gt;&nbsp;Result&lt;&#39;b,&nbsp;&#39;c&gt;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;<span style="color:navy;">map</span>&nbsp;<span style="color:navy;">f</span>&nbsp;=&nbsp;<span style="color:blue;">function</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:navy;">Success</span>&nbsp;succ&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:navy;">Success</span>&nbsp;(<span style="color:navy;">f</span>&nbsp;succ)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:navy;">Failure</span>&nbsp;fail&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:navy;">Failure</span>&nbsp;fail
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;(&#39;a&nbsp;-&gt;&nbsp;bool)&nbsp;-&gt;&nbsp;&#39;a&nbsp;-&gt;&nbsp;Result&lt;&#39;a,&nbsp;&#39;a&gt;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;<span style="color:navy;">split</span>&nbsp;<span style="color:navy;">f</span>&nbsp;x&nbsp;=&nbsp;<span style="color:blue;">if</span>&nbsp;<span style="color:navy;">f</span>&nbsp;x&nbsp;<span style="color:blue;">then</span>&nbsp;<span style="color:navy;">Success</span>&nbsp;x&nbsp;<span style="color:blue;">else</span>&nbsp;<span style="color:navy;">Failure</span>&nbsp;x
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;(&#39;a&nbsp;-&gt;&nbsp;&#39;b)&nbsp;-&gt;&nbsp;(&#39;c&nbsp;-&gt;&nbsp;&#39;b)&nbsp;-&gt;&nbsp;Result&lt;&#39;a,&nbsp;&#39;c&gt;&nbsp;-&gt;&nbsp;&#39;b</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;<span style="color:navy;">either</span>&nbsp;<span style="color:navy;">f</span>&nbsp;<span style="color:navy;">g</span>&nbsp;=&nbsp;<span style="color:blue;">function</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:navy;">Success</span>&nbsp;succ&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:navy;">f</span>&nbsp;succ
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:navy;">Failure</span>&nbsp;fail&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:navy;">g</span>&nbsp;fail</pre>
+	</p>
+	<p>
+		In fact, the <code>bind</code> and <code>map</code> functions aren't even required for this particular example, but I included them anyway, because otherwise, readers already familiar with the Either monad would wonder why they weren't there.
+	</p>
+	<p>
+		All these functions are generic and pure, so they are easy to unit test. I'm not going to show you the unit tests, however, as I consider the functions belonging to that <code>Result</code> module as reusable functions. This is a module that would ship as part of a well-tested library. In fact, <a href="https://github.com/fsharp/FSharpLangDesign/blob/master/RFCs/FS-1004-result-type.md">it'll soon be added to the F# core library</a>.
+	</p>
+	<p>
+		With the already tested <code>getUpper</code> function, you now have all the building blocks required to implement the desired functionality:
+	</p>
+	<p>
+		<pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:green;">//&nbsp;string&nbsp;-&gt;&nbsp;string</span>
+<span style="color:blue;">let</span>&nbsp;<span style="color:navy;">getUpperText</span>&nbsp;path&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;path
+&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:teal;">Result</span>.<span style="color:navy;">split</span>&nbsp;<span style="color:teal;">File</span>.<span style="color:navy;">Exists</span>
+&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:teal;">Result</span>.<span style="color:navy;">either</span>&nbsp;(<span style="color:teal;">File</span>.<span style="color:navy;">ReadAllText</span>&nbsp;&gt;&gt;&nbsp;<span style="color:navy;">getUpper</span>)&nbsp;(<span style="color:blue;">fun</span>&nbsp;_&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:#a31515;">&quot;DEFAULT&quot;</span>)</pre>
+	</p>
+	<p>
+		This composition pipes <code>path</code> into <code>Result.split</code>, which uses <code>File.Exists</code> as a predicate to decide whether the path should be packaged into a <code>Success</code> or <code>Failure</code> case. The resulting <code>Result&lt;string, string&gt;</code> is then piped into <code>Result.either</code>, which invokes <code>File.ReadAllText &gt;&gt; getUpper</code> in the <code>Success</code> case, and the anonymous function in the <code>Failure</code> case.
+	</p>
+	<p>
+		Notice how, once again, the impure functions <code>File.Exists</code> and <code>File.ReadAllText</code> are used as humble functions, but interleaved with testable, pure functions that make all the decisions.
+	</p>
+	<p>
+		<strong>Maybe</strong>
+	</p>
+	<p>
+		Sometimes, a decision isn't so much between two alternatives as it's a decision between something that may exist, but also may not. You can model this with the <em>Maybe</em> monad, which in F# comes in the form of the built-in <code>option</code> type.
+	</p>
+	<p>
+		In fact, so much is already built in (and tested by the F# development team) that you almost don't need to add anything yourself. The only function you could consider adding is this:
+	</p>
+	<p>
+		<pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">module</span>&nbsp;<span style="color:teal;">Option</span>&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;&#39;a&nbsp;-&gt;&nbsp;&#39;a&nbsp;option&nbsp;-&gt;&nbsp;&#39;a</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;<span style="color:navy;">defaultIfNone</span>&nbsp;def&nbsp;x&nbsp;=&nbsp;<span style="color:navy;">defaultArg</span>&nbsp;x&nbsp;def</pre>
+	</p>
+	<p>
+		As you can see, this function simply swaps the arguments for the built-in <code>defaultArg</code> function. This is done to make it more pipe-friendly. This function <a href="https://github.com/fsharp/FSharpLangDesign/blob/master/RFCs/FS-1007-additional-Option-module-functions.md">will most likely be added in a future version of F#</a>.
+	</p>
+	<p>
+		That's all you need:
+	</p>
+	<p>
+		<pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:green;">//&nbsp;string&nbsp;-&gt;&nbsp;string</span>
+<span style="color:blue;">let</span>&nbsp;<span style="color:navy;">getUpperText</span>&nbsp;path&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;path
+&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:navy;">Some</span>
+&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:teal;">Option</span>.<span style="color:navy;">filter</span>&nbsp;<span style="color:teal;">File</span>.<span style="color:navy;">Exists</span>
+&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:teal;">Option</span>.<span style="color:navy;">map</span>&nbsp;(<span style="color:teal;">File</span>.<span style="color:navy;">ReadAllText</span>&nbsp;&gt;&gt;&nbsp;<span style="color:navy;">getUpper</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:teal;">Option</span>.<span style="color:navy;">defaultIfNone</span>&nbsp;<span style="color:#a31515;">&quot;DEFAULT&quot;</span></pre>
+	</p>
+	<p>
+		This composition starts with the <code>path</code>, puts it into a <code>Some</code> case, and pipes that <code>option</code> value into <code>Option.filter File.Exists</code>. This means that the <code>Some</code> case will only stay a <code>Some</code> value if the file exists; otherwise, it will be converted to a <code>None</code> value. Whatever the <code>option</code> value is, it's then piped into <code>Option.map (File.ReadAllText &gt;&gt; getUpper)</code>. The composed function <code>File.ReadAllText &gt;&gt; getUpper</code> is only executed in the <code>Some</code> case, so if the file doesn't exist, the function will not attempt to read it. Finally, the <code>option</code> value is piped into <code>Option.defaultIfNone</code>, which returns the mapped value, or <code>"DEFAULT"</code> if the value was <code>None</code>.
+	</p>
+	<p>
+		Like in the two previous examples, the decision logic is implemented by pure functions, whereas the impure functions <code>File.Exists</code> and <code>File.ReadAllText</code> are handled as humble functions.
+	</p>
+	<p>
+		<strong>Summary</strong>
+	</p>
+	<p>
+		Have you noticed a pattern in all the three examples? Decisions are separated from effects using discriminated unions (both the above <code>Action</code>, <code>Result&lt;'TSuccess, 'TFailure&gt;</code>, and the built-in <code>option</code> are discriminated unions). In my experience, as long as you need to decide between two alternatives, the Either or Maybe monads are often sufficient to decouple decision logic from effects. Often, I don't even need to write any tests, because I compose my functions from the known, well-tested functions that belong to the respective monads.
+	</p>
+	<p>
+		If your decision has to branch between three or more alternatives, you can consider a custom discriminated union. For this particular example, though, I think I prefer the third, Maybe-based composition, but closely followed by the Either-based composition.
+	</p>
+	<p>
+		In this article, you saw three examples of how to decouple decision from effects; and I didn't even show you the <em>Free</em> monad!
+	</p>
+</div>
