@@ -1,0 +1,331 @@
+---
+layout: post
+title: "When variable names are in the way"
+date: 2016-10-25 06:20 UTC
+tags: [Unit Testing, F#]
+---
+{% include JB/setup %}
+
+<div id="post">
+	<p>
+		<em>While Clean Code recommends using good variable names to communicate the intent of code, sometimes, variable names can be in the way.</em>
+	</p>
+	<p>
+		Good guides to more readable code, like <a href="http://amzn.to/XCJi9X">Clean Code</a>, explain how explicitly introducing variables with descriptive names can make the code easier to understand. There's much literature on the subject, so I'm not going to reiterate it here. It's not the topic of this article.
+	</p>
+	<p>
+		In the majority of cases, introducing a well-named variable will make the code more readable. There are, however, no rules without exceptions. After all, <a href="http://martinfowler.com/bliki/TwoHardThings.html">one of the hardest tasks in programming is naming things</a>. In this article, I'll show you an example of such an exception. While the example is slightly elaborate, it's a <em>real-world</em> example I recently ran into.
+	</p>
+	<p>
+		<strong>Escaping object-orientation</strong>
+	</p>
+	<p>
+		Regular readers of this blog will know that I write many <a href="https://en.wikipedia.org/wiki/Representational_state_transfer">RESTful APIs</a> in F#, but using ASP.NET Web API. Since I like to write functional F#, but ASP.NET Web API is an object-oriented framework, I prefer to escape the object-oriented framework as soon as possible. (In general, it makes good architectural sense to write most of your code as framework-independent as possible.)
+	</p>
+	<p>
+		ASP.NET Web API expects you handle HTTP requests using <em>Controllers</em>, so I use Constructor Injection to inject a function that will do all the actual work, and delegate each request to a function call. It often looks like this:
+	</p>
+	<p>
+		<pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">type</span>&nbsp;<span style="color:teal;">PushController</span>&nbsp;(<span style="color:navy;">imp</span>)&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">inherit</span>&nbsp;<span style="color:teal;">ApiController</span>&nbsp;()
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">member</span>&nbsp;this.<span style="color:navy;">Post</span>&nbsp;(<span style="color:#9b9b9b;">portalId</span>&nbsp;:&nbsp;<span style="color:teal;">string</span>,&nbsp;req&nbsp;:&nbsp;<span style="color:teal;">PushRequestDtr</span>)&nbsp;:&nbsp;<span style="color:teal;">IHttpActionResult</span>&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">match</span>&nbsp;<span style="color:navy;">imp</span>&nbsp;req&nbsp;<span style="color:blue;">with</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:navy;">Success</span>&nbsp;()&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;this.<span style="color:navy;">Ok</span>&nbsp;()&nbsp;:&gt;&nbsp;_
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:navy;">Failure</span>&nbsp;(<span style="color:navy;">ValidationFailure</span>&nbsp;msg)&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;this.<span style="color:navy;">BadRequest</span>&nbsp;msg&nbsp;:&gt;&nbsp;_
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:navy;">Failure</span>&nbsp;(<span style="color:navy;">IntegrationFailure</span>&nbsp;msg)&nbsp;<span style="color:blue;">-&gt;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;this.<span style="color:navy;">InternalServerError</span>&nbsp;(<span style="color:teal;">InvalidOperationException</span>&nbsp;msg)&nbsp;:&gt;&nbsp;_</pre>
+	</p>
+	<p>
+		This particular Controller only handles HTTP POST requests, and it does it by delegating to the injected <code>imp</code> function and translating the return value of that function call to various HTTP responses. This enables me to compose <code>imp</code> from F# functions, and thereby escape the object-oriented design of ASP.NET Web API. In other words, each Controller is an <a href="https://en.wikipedia.org/wiki/Adapter_pattern">Adapter</a> over a functional implementation.
+	</p>
+	<p>
+		For good measure, though, this Controller implementation ought to be unit tested.
+	</p>
+	<p>
+		<strong>A naive unit test attempt</strong>
+	</p>
+	<p>
+		Each HTTP request is handled at the boundary of the system, and <a href="http://blog.ploeh.dk/2016/03/18/functional-architecture-is-ports-and-adapters">the boundary of the system is always impure</a> - even in Haskell. This is particularly clear in the case of the above <code>PushController</code>, because it handles <code>Success ()</code>. In success cases, the result is <code>()</code> (<code>unit</code>), which strongly implies a side effect. Thus, a unit test ought to care not only about what <code>imp</code> returns, but also the input to the function.
+	</p>
+	<p>
+		While you could write a unit test like the following, it'd be naive.
+	</p>
+	<p>
+		<pre style="font-family:Consolas;font-size:13;color:black;">[&lt;<span style="color:teal;">Property</span>(QuietOnSuccess&nbsp;=&nbsp;<span style="color:blue;">true</span>)&gt;]
+<span style="color:blue;">let</span>&nbsp;<span style="color:navy;">``Post&nbsp;returns&nbsp;correct&nbsp;result&nbsp;on&nbsp;validation&nbsp;failure``</span>&nbsp;req&nbsp;(<span style="color:navy;">NonNull</span>&nbsp;msg)&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;<span style="color:navy;">imp</span>&nbsp;_&nbsp;=&nbsp;<span style="color:teal;">Result</span>.<span style="color:navy;">fail</span>&nbsp;(<span style="color:navy;">ValidationFailure</span>&nbsp;msg)
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">use</span>&nbsp;sut&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:teal;">PushController</span>&nbsp;(<span style="color:navy;">imp</span>)
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;actual&nbsp;=&nbsp;sut.<span style="color:navy;">Post</span>&nbsp;req
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:navy;">test</span>&nbsp;<span style="background:yellow;">&lt;@&nbsp;</span><span style="background:yellow;">actual</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="background:yellow;">|&gt;</span><span style="background:yellow;">&nbsp;</span><span style="color:navy;background:yellow;">convertsTo</span><span style="background:yellow;">&lt;</span><span style="background:yellow;">Results</span><span style="background:yellow;">.</span><span style="color:teal;background:yellow;">BadRequestErrorMessageResult</span><span style="background:yellow;">&gt;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="background:yellow;">|&gt;</span><span style="background:yellow;">&nbsp;</span><span style="color:teal;background:yellow;">Option</span><span style="background:yellow;">.</span><span style="color:navy;background:yellow;">map</span><span style="background:yellow;">&nbsp;(</span><span style="color:blue;background:yellow;">fun</span><span style="background:yellow;">&nbsp;</span><span style="background:yellow;">r</span><span style="background:yellow;">&nbsp;</span><span style="color:blue;background:yellow;">-&gt;</span><span style="background:yellow;">&nbsp;</span><span style="background:yellow;">r</span><span style="background:yellow;">.</span><span style="background:yellow;">Message</span><span style="background:yellow;">)</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="background:yellow;">|&gt;</span><span style="background:yellow;">&nbsp;</span><span style="color:teal;background:yellow;">Option</span><span style="background:yellow;">.</span><span style="color:navy;background:yellow;">exists</span><span style="background:yellow;">&nbsp;((</span><span style="background:yellow;">=</span><span style="background:yellow;">)&nbsp;</span><span style="background:yellow;">msg</span><span style="background:yellow;">)&nbsp;@&gt;</span></pre>
+	</p>
+	<p>
+		This unit test uses <a href="https://fscheck.github.io/FsCheck">FsCheck</a>'s integration for <a href="https://xunit.github.io">xUnit.net</a>, and <a href="http://www.swensensoftware.com/unquote">Unquote</a> for assertions. Additionally, it uses a <code>convertsTo</code> function that I've <a href="http://blog.ploeh.dk/2014/03/21/composed-assertions-with-unquote">previously described</a>.
+	</p>
+	<p>
+		The <code>imp</code> function for <code>PushController</code> must have the type <code>PushRequestDtr -&gt; Result&lt;unit, BoundaryFailure&gt;</code>. In the unit test, it uses a wild-card (<code>_</code>) for the input value, so its type is <code>'a -&gt; Result&lt;'b, BoundaryFailure&gt;</code>. That's a wider type, but it matches the required type, so the test compiles (and passes).
+	</p>
+	<p>
+		FsCheck populates the <code>req</code> argument to the test function itself. This value is passed to <code>sut.Post</code>. If you look at the definition of <code>sut.Post</code>, you may wonder what happened to the individual (and currently unused) <code>portalId</code> argument. The explanation is that the <code>Post</code> method can be viewed as a method with two parameters, but it can also be viewed as an impure function that takes a <em>single</em> argument of the type <code>string * PushRequestDtr</code> - a tuple. In other words, the test function's <code>req</code> argument is a tuple. The test is not only concise, but also robust against refactorings. If you change the signature of the <code>Post</code> method, odds are that the test will still compile. (This is one of the many benefits of type inference.)
+	</p>
+	<p>
+		The problem with the test is that it doesn't verify the data flow into <code>imp</code>, so this version of <code>PushController</code> <em>also</em> passes the test:
+	</p>
+	<p>
+		<pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">type</span>&nbsp;<span style="color:teal;">PushController</span>&nbsp;(<span style="color:navy;">imp</span>)&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">inherit</span>&nbsp;<span style="color:teal;">ApiController</span>&nbsp;()
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">member</span>&nbsp;this.<span style="color:navy;">Post</span>&nbsp;(<span style="color:#9b9b9b;">portalId</span>&nbsp;:&nbsp;<span style="color:teal;">string</span>,&nbsp;<span style="color:#9b9b9b;">req</span>&nbsp;:&nbsp;<span style="color:teal;">PushRequestDtr</span>)&nbsp;:&nbsp;<span style="color:teal;">IHttpActionResult</span>&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;minimalReq&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{&nbsp;Transaction&nbsp;=&nbsp;{&nbsp;Invoice&nbsp;=&nbsp;<span style="color:#a31515;">&quot;&quot;</span>;&nbsp;Status&nbsp;=&nbsp;{&nbsp;Code&nbsp;=&nbsp;{&nbsp;Code&nbsp;=&nbsp;0&nbsp;}&nbsp;}&nbsp;}&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">match</span>&nbsp;<span style="color:navy;">imp</span>&nbsp;minimalReq&nbsp;<span style="color:blue;">with</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:navy;">Success</span>&nbsp;()&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;this.<span style="color:navy;">Ok</span>&nbsp;()&nbsp;:&gt;&nbsp;_
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:navy;">Failure</span>&nbsp;(<span style="color:navy;">ValidationFailure</span>&nbsp;msg)&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;this.<span style="color:navy;">BadRequest</span>&nbsp;msg&nbsp;:&gt;&nbsp;_
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:navy;">Failure</span>&nbsp;(<span style="color:navy;">IntegrationFailure</span>&nbsp;msg)&nbsp;<span style="color:blue;">-&gt;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;this.<span style="color:navy;">InternalServerError</span>&nbsp;(<span style="color:teal;">InvalidOperationException</span>&nbsp;msg)&nbsp;:&gt;&nbsp;_</pre>
+	</p>
+	<p>
+		As the name implies, the <code>minimalReq</code> value is the 'smallest' value I can create of the <code>PushRequestDtr</code> type. As you can see, this implementation ignores the <code>req</code> method argument and instead passes <code>minimalReq</code> to <code>imp</code>. This is clearly wrong, but it passes the unit test test.
+	</p>
+	<p>
+		<strong>Data flow testing</strong>
+	</p>
+	<p>
+		Not only should you care about the output of <code>imp</code>, but you should also care about the input. This is because <code>imp</code> is inherently impure, so it'd be conceivable that the input values matter in some way.
+	</p>
+	<p>
+		As <a href="http://bit.ly/xunitpatterns">xUnit Test Patterns</a> explains, automated tests should contain no branching, so I don't think it's a good idea to define a test-specific <code>imp</code> function using conditionals. Instead, we can use guard assertions to verify that the input is as expected:
+	</p>
+	<p>
+		<pre style="font-family:Consolas;font-size:13;color:black;">[&lt;<span style="color:teal;">Property</span>(QuietOnSuccess&nbsp;=&nbsp;<span style="color:blue;">true</span>)&gt;]
+<span style="color:blue;">let</span>&nbsp;<span style="color:navy;">``Post&nbsp;returns&nbsp;correct&nbsp;result&nbsp;on&nbsp;validation&nbsp;failure``</span>&nbsp;req&nbsp;(<span style="color:navy;">NonNull</span>&nbsp;msg)&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;<span style="color:navy;">imp</span>&nbsp;candidate&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;candidate&nbsp;=!&nbsp;<span style="color:navy;">snd</span>&nbsp;req
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:teal;">Result</span>.<span style="color:navy;">fail</span>&nbsp;(<span style="color:navy;">ValidationFailure</span>&nbsp;msg)
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">use</span>&nbsp;sut&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:teal;">PushController</span>&nbsp;(<span style="color:navy;">imp</span>)
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;actual&nbsp;=&nbsp;sut.<span style="color:navy;">Post</span>&nbsp;req
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:navy;">test</span>&nbsp;<span style="background:yellow;">&lt;@&nbsp;</span><span style="background:yellow;">actual</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="background:yellow;">|&gt;</span><span style="background:yellow;">&nbsp;</span><span style="color:navy;background:yellow;">convertsTo</span><span style="background:yellow;">&lt;</span><span style="background:yellow;">Results</span><span style="background:yellow;">.</span><span style="color:teal;background:yellow;">BadRequestErrorMessageResult</span><span style="background:yellow;">&gt;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="background:yellow;">|&gt;</span><span style="background:yellow;">&nbsp;</span><span style="color:teal;background:yellow;">Option</span><span style="background:yellow;">.</span><span style="color:navy;background:yellow;">map</span><span style="background:yellow;">&nbsp;(</span><span style="color:blue;background:yellow;">fun</span><span style="background:yellow;">&nbsp;</span><span style="background:yellow;">r</span><span style="background:yellow;">&nbsp;</span><span style="color:blue;background:yellow;">-&gt;</span><span style="background:yellow;">&nbsp;</span><span style="background:yellow;">r</span><span style="background:yellow;">.</span><span style="background:yellow;">Message</span><span style="background:yellow;">)</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="background:yellow;">|&gt;</span><span style="background:yellow;">&nbsp;</span><span style="color:teal;background:yellow;">Option</span><span style="background:yellow;">.</span><span style="color:navy;background:yellow;">exists</span><span style="background:yellow;">&nbsp;((</span><span style="background:yellow;">=</span><span style="background:yellow;">)&nbsp;</span><span style="background:yellow;">msg</span><span style="background:yellow;">)&nbsp;@&gt;</span></pre>
+	</p>
+	<p>
+		The <code>imp</code> function is now implemented using Unquote's custom <code>=!</code> operator, which means that <code>candidate</code> must equal <code>req</code>. If not, Unquote will throw an exception, and thereby fail the test.
+	</p>
+	<p>
+		If <code>candidate</code> is equal to <code>snd req</code>, the <code>=!</code> operator does nothing, enabling the <code>imp</code> function to return the value <code>Result.fail (ValidationFailure msg)</code>.
+	</p>
+	<p>
+		This version of the test verifies the entire data flow through <code>imp</code>: both input and output.
+	</p>
+	<p>
+		There is, however, a small disadvantage to writing the <code>imp</code> code this way. It isn't a big issue, but it annoys me.
+	</p>
+	<p>
+		Here's the heart of the matter: I had to come up with a name for the local <code>PushRequestDtr</code> value that the <code>=!</code> operator evaluates against <code>snd req</code>. I chose to call it <code>candidate</code>, which may seem reasonable, but that naming strategy doesn't scale.
+	</p>
+	<p>
+		In order to keep the introductory example simple, I chose a Controller method that doesn't (yet) use its <code>portalId</code> argument, but the code base contains other Controllers, for example this one:
+	</p>
+	<p>
+		<pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">type</span>&nbsp;<span style="color:teal;">IdealController</span>&nbsp;(<span style="color:navy;">imp</span>)&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">inherit</span>&nbsp;<span style="color:teal;">ApiController</span>&nbsp;()
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">member</span>&nbsp;this.<span style="color:navy;">Post</span>&nbsp;(portalId&nbsp;:&nbsp;<span style="color:teal;">string</span>,&nbsp;req&nbsp;:&nbsp;<span style="color:teal;">IDealRequestDtr</span>)&nbsp;:&nbsp;<span style="color:teal;">IHttpActionResult</span>&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">match</span>&nbsp;<span style="color:navy;">imp</span>&nbsp;portalId&nbsp;req&nbsp;<span style="color:blue;">with</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:navy;">Success</span>&nbsp;(resp&nbsp;:&nbsp;<span style="color:teal;">IDealResponseDtr</span>)&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;this.<span style="color:navy;">Ok</span>&nbsp;resp&nbsp;:&gt;&nbsp;_
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:navy;">Failure</span>&nbsp;(<span style="color:navy;">ValidationFailure</span>&nbsp;msg)&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;this.<span style="color:navy;">BadRequest</span>&nbsp;msg&nbsp;:&gt;&nbsp;_
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:navy;">Failure</span>&nbsp;(<span style="color:navy;">IntegrationFailure</span>&nbsp;msg)&nbsp;<span style="color:blue;">-&gt;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;this.<span style="color:navy;">InternalServerError</span>&nbsp;(<span style="color:teal;">InvalidOperationException</span>&nbsp;msg)&nbsp;:&gt;&nbsp;_</pre>
+	</p>
+	<p>
+		This Controller's <code>Post</code> method passes <em>both</em> <code>portalId</code> and <code>req</code> to <code>imp</code>. In order to perform data flow verification of that implementation, the test has to look like this:
+	</p>
+	<p>
+		<pre style="font-family:Consolas;font-size:13;color:black;">[&lt;<span style="color:teal;">Property</span>(QuietOnSuccess&nbsp;=&nbsp;<span style="color:blue;">true</span>)&gt;]
+<span style="color:blue;">let</span>&nbsp;<span style="color:navy;">``Post&nbsp;returns&nbsp;correct&nbsp;result&nbsp;on&nbsp;success``</span>&nbsp;portalId&nbsp;req&nbsp;resp&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;<span style="color:navy;">imp</span>&nbsp;pid&nbsp;candidate&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;pid&nbsp;=!&nbsp;portalId
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;candidate&nbsp;=!&nbsp;req
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:teal;">Result</span>.<span style="color:navy;">succeed</span>&nbsp;resp
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">use</span>&nbsp;sut&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:teal;">IdealController</span>&nbsp;(<span style="color:navy;">imp</span>)
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;actual&nbsp;=&nbsp;sut.<span style="color:navy;">Post</span>&nbsp;(portalId,&nbsp;req)
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:navy;">test</span>&nbsp;<span style="background:yellow;">&lt;@&nbsp;</span><span style="background:yellow;">actual</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="background:yellow;">|&gt;</span><span style="background:yellow;">&nbsp;</span><span style="color:navy;background:yellow;">convertsTo</span><span style="background:yellow;">&lt;</span><span style="background:yellow;">Results</span><span style="background:yellow;">.</span><span style="color:teal;background:yellow;">OkNegotiatedContentResult</span><span style="background:yellow;">&lt;</span><span style="color:teal;background:yellow;">IDealResponseDtr</span><span style="background:yellow;">&gt;&gt;</span><span style="background:yellow;"></span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="background:yellow;">|&gt;</span><span style="background:yellow;">&nbsp;</span><span style="color:teal;background:yellow;">Option</span><span style="background:yellow;">.</span><span style="color:navy;background:yellow;">map</span><span style="background:yellow;">&nbsp;(</span><span style="color:blue;background:yellow;">fun</span><span style="background:yellow;">&nbsp;</span><span style="background:yellow;">r</span><span style="background:yellow;">&nbsp;</span><span style="color:blue;background:yellow;">-&gt;</span><span style="background:yellow;">&nbsp;</span><span style="background:yellow;">r</span><span style="background:yellow;">.</span><span style="background:yellow;">Content</span><span style="background:yellow;">)</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="background:yellow;">|&gt;</span><span style="background:yellow;">&nbsp;</span><span style="color:teal;background:yellow;">Option</span><span style="background:yellow;">.</span><span style="color:navy;background:yellow;">exists</span><span style="background:yellow;">&nbsp;((</span><span style="background:yellow;">=</span><span style="background:yellow;">)&nbsp;</span><span style="background:yellow;">resp</span><span style="background:yellow;">)&nbsp;@&gt;</span></pre>
+	</p>
+	<p>
+		This is where I began to run out of good argument names. You need names for the <code>portalId</code> and <code>req</code> arguments of <code>imp</code>, but you can't use those names because they're already in use. You can't even shadow the names of the outer values, because the test-specific <code>imp</code> function has to close over those outer values in order to compare them to their expected values.
+	</p>
+	<p>
+		While I decided to call the local <em>portal ID</em> argument <code>pid</code>, it's hardly helpful. Explicit arguments have become a burden rather than a help to the reader. If only we could get rid of those explicit arguments.
+	</p>
+	<p>
+		<strong>Point free</strong>
+	</p>
+	<p>
+		Functional programming offers a well-known alternative to explicit arguments, commonly known as <a href="https://en.wikipedia.org/wiki/Tacit_programming">point-free programming</a>. Some people find point-free style unreadable, but sometimes it can make the code more readable. Could this be the case here?
+	</p>
+	<p>
+		If you look at the test-specific <code>imp</code> functions in both of the above examples with explicit arguments, you may notice that they follow a common pattern. First they invoke one or more guard assertions, and then they return a value. You can model this with a custom operator:
+	</p>
+	<p>
+		<pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:green;">//&nbsp;&#39;Guard&#39;&nbsp;composition.&nbsp;Returns&nbsp;the&nbsp;return&nbsp;value&nbsp;if&nbsp;``assert``&nbsp;doesn&#39;t&nbsp;throw.</span>
+<span style="color:green;">//&nbsp;(&#39;a&nbsp;-&gt;&nbsp;unit)&nbsp;-&gt;&nbsp;&#39;b&nbsp;-&gt;&nbsp;&#39;a&nbsp;-&gt;&nbsp;&#39;b</span>
+<span style="color:blue;">let</span>&nbsp;(&gt;&gt;!)&nbsp;<span style="color:navy;">``assert``</span>&nbsp;returnValue&nbsp;x&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:navy;">``assert``</span>&nbsp;x
+&nbsp;&nbsp;&nbsp;&nbsp;returnValue</pre>
+	</p>
+	<p>
+		The first argument, <code>``assert``</code>, is a function with the type <code>'a -&gt; unit</code>. This is the assertion function: it takes any value as input, and returns <code>unit</code>. The implication is that it'll throw an exception if the assertion fails.
+	</p>
+	<p>
+		After invoking the assertion, the function returns the <code>returnValue</code> argument.
+	</p>
+	<p>
+		The reason I designed it that way is that it's <em>composable</em>, which you'll see in a minute. The reason I named it <code>&gt;&gt;!</code> was that I wanted some kind of arrow, and I thought that the exclamation mark relates nicely to Unquote's use of exclamation marks.
+	</p>
+	<p>
+		This enables you to compose the first <code>imp</code> example (for <code>PushController</code>) in point-free style:
+	</p>
+	<p>
+		<pre style="font-family:Consolas;font-size:13;color:black;">[&lt;<span style="color:teal;">Property</span>(QuietOnSuccess&nbsp;=&nbsp;<span style="color:blue;">true</span>)&gt;]
+<span style="color:blue;">let</span>&nbsp;<span style="color:navy;">``Post&nbsp;returns&nbsp;correct&nbsp;result&nbsp;on&nbsp;validation&nbsp;failure``</span>&nbsp;req&nbsp;(<span style="color:navy;">NonNull</span>&nbsp;msg)&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;<span style="color:navy;">imp</span>&nbsp;=&nbsp;((=!)&nbsp;(<span style="color:navy;">snd</span>&nbsp;req))&nbsp;&gt;&gt;!&nbsp;<span style="color:teal;">Result</span>.<span style="color:navy;">fail</span>&nbsp;(<span style="color:navy;">ValidationFailure</span>&nbsp;msg)
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">use</span>&nbsp;sut&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:teal;">PushController</span>&nbsp;(<span style="color:navy;">imp</span>)
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;actual&nbsp;=&nbsp;sut.<span style="color:navy;">Post</span>&nbsp;req
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:navy;">test</span>&nbsp;<span style="background:yellow;">&lt;@&nbsp;</span><span style="background:yellow;">actual</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="background:yellow;">|&gt;</span><span style="background:yellow;">&nbsp;</span><span style="color:navy;background:yellow;">convertsTo</span><span style="background:yellow;">&lt;</span><span style="background:yellow;">Results</span><span style="background:yellow;">.</span><span style="color:teal;background:yellow;">BadRequestErrorMessageResult</span><span style="background:yellow;">&gt;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="background:yellow;">|&gt;</span><span style="background:yellow;">&nbsp;</span><span style="color:teal;background:yellow;">Option</span><span style="background:yellow;">.</span><span style="color:navy;background:yellow;">map</span><span style="background:yellow;">&nbsp;(</span><span style="color:blue;background:yellow;">fun</span><span style="background:yellow;">&nbsp;</span><span style="background:yellow;">r</span><span style="background:yellow;">&nbsp;</span><span style="color:blue;background:yellow;">-&gt;</span><span style="background:yellow;">&nbsp;</span><span style="background:yellow;">r</span><span style="background:yellow;">.</span><span style="background:yellow;">Message</span><span style="background:yellow;">)</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="background:yellow;">|&gt;</span><span style="background:yellow;">&nbsp;</span><span style="color:teal;background:yellow;">Option</span><span style="background:yellow;">.</span><span style="color:navy;background:yellow;">exists</span><span style="background:yellow;">&nbsp;((</span><span style="background:yellow;">=</span><span style="background:yellow;">)&nbsp;</span><span style="background:yellow;">msg</span><span style="background:yellow;">)&nbsp;@&gt;</span></pre>
+	</p>
+	<p>
+		At first glance, most people would be likely to consider this to be <em>less</em> readable than before, and clearly, that's a valid standpoint. On the other hand, once you get used to identify the <code>&gt;&gt;!</code> operator, this becomes a concise shorthand. A data-flow-verifying <code>imp</code> mock function is  composed of an assertion on the left-hand side of <code>&gt;&gt;!</code>, and a return value on the right-hand side.
+	</p>
+	<p>
+		Most importantly, those hard-to-name arguments are gone.
+	</p>
+	<p>
+		Still, let's dissect the expression <code>((=!) (snd req)) &gt;&gt;! Result.fail (ValidationFailure msg)</code>. 
+	</p>
+	<p>
+		The expression on the left-hand side of the <code>&gt;&gt;!</code> operator is the assertion. It uses Unquote's <em>must equal</em> <code>=!</code> operator as a function. (In F#, infix operators are functions, and you can use them as functions by surrounding them by brackets.) While you can write an assertion as <code>candidate =! snd req</code> using infix notation, you can also write the same expression as a function call: <code>(=!) (snd req) candidate</code>. Since this is a function, it can be partially applied: <code>(=!) (snd req)</code>; the type of that expression is <code>PushRequestDtr -&gt; unit</code>, which matches the required type <code>'a -&gt; unit</code> that <code>&gt;&gt;!</code> expects from its <code>``assert``</code> argument. That explains the left-hand side of the <code>&gt;&gt;!</code> operator.
+	</p>
+	<p>
+		The right-hand side is easier, because that's the return value of the composed function. In this case the value is <code>Result.fail (ValidationFailure msg)</code>.
+	</p>
+	<p>
+		You already know that the type of <code>&gt;&gt;!</code> is <code>('a -&gt; unit) -&gt; 'b -&gt; 'a -&gt; 'b</code>. Replacing the generic type arguments with the actual types in use, <code>'a</code> is <code>PushRequestDtr</code> and <code>'b</code> is <code>Result&lt;'a ,BoundaryFailure&gt;</code>, so the type of <code>imp</code> is <code>PushRequestDtr -&gt; Result&lt;'a ,BoundaryFailure&gt;</code>. When you set <code>'a</code> to <code>unit</code>, this fits the required type of <code>PushRequestDtr -&gt; Result&lt;unit, BoundaryFailure&gt;</code>.
+	</p>
+	<p>
+		This works because in its current incarnation, the <code>imp</code> function for <code>PushController</code> only takes a single value as input. Will this also work for <code>IdealController</code>, which passes both <code>portalId</code> and <code>req</code> to its <code>imp</code> function?
+	</p>
+	<p>
+		<strong>Currying</strong>
+	</p>
+	<p>
+		The <code>imp</code> function for <code>IdealController</code> has the type <code>string -&gt; IDealRequestDtr -&gt; Result&lt;IDealResponseDtr, BoundaryFailure&gt;</code>. Notice that it takes two arguments instead of one. Is it possible to compose an <code>imp</code> function with the <code>&gt;&gt;!</code> operator?
+	</p>
+	<p>
+		Consider the above example that exercises the success case for <code>IdealController</code>. What if, instead of writing
+	</p>
+	<p>
+		<pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">let</span>&nbsp;<span style="color:navy;">imp</span>&nbsp;pid&nbsp;candidate&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;pid&nbsp;=!&nbsp;portalId
+&nbsp;&nbsp;&nbsp;&nbsp;candidate&nbsp;=!&nbsp;req
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:teal;">Result</span>.<span style="color:navy;">succeed</span>&nbsp;resp</pre>
+	</p>
+	<p>
+		you write the following?
+	</p>
+	<p>
+		<pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">let</span>&nbsp;<span style="color:navy;">imp</span>&nbsp;=&nbsp;((=!)&nbsp;req)&nbsp;&gt;&gt;!&nbsp;<span style="color:teal;">Result</span>.<span style="color:navy;">succeed</span>&nbsp;resp
+</pre>
+	</p>
+	<p>
+		Unfortunately, that does work, because the type of that function is <code>string * IDealRequestDtr -&gt; Result&lt;IDealResponseDtr, 'a&gt;</code>, and not <code>string -&gt; IDealRequestDtr -&gt; Result&lt;IDealResponseDtr, BoundaryFailure&gt;</code>, as it should be. It's almost there, but the input values are tupled, instead of curried.
+	</p>
+	<p>
+		You can easily correct that with a standard <a href="https://gist.github.com/ploeh/6d8050e121a5175fabb1d08ef5266cd7">curry function</a>:
+	</p>
+	<p>
+		<pre style="font-family:Consolas;font-size:13;color:black;"><span style="color:blue;">let</span>&nbsp;<span style="color:navy;">imp</span>&nbsp;=&nbsp;((=!)&nbsp;req)&nbsp;&gt;&gt;!&nbsp;<span style="color:teal;">Result</span>.<span style="color:navy;">succeed</span>&nbsp;resp&nbsp;|&gt;&nbsp;<span style="color:teal;">Tuple2</span>.<span style="color:navy;">curry</span>
+</pre>
+	</p>
+	<p>
+		The <code>Tuple2.curry</code> function takes as input a function that has tupled arguments, and turns it into a curried function. Exactly what we need here!
+	</p>
+	<p>
+		The entire test is now:
+	</p>
+	<p>
+		<pre style="font-family:Consolas;font-size:13;color:black;">[&lt;<span style="color:teal;">Property</span>(QuietOnSuccess&nbsp;=&nbsp;<span style="color:blue;">true</span>)&gt;]
+<span style="color:blue;">let</span>&nbsp;<span style="color:navy;">``Post&nbsp;returns&nbsp;correct&nbsp;result&nbsp;on&nbsp;success``</span>&nbsp;req&nbsp;resp&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;<span style="color:navy;">imp</span>&nbsp;=&nbsp;((=!)&nbsp;req)&nbsp;&gt;&gt;!&nbsp;<span style="color:teal;">Result</span>.<span style="color:navy;">succeed</span>&nbsp;resp&nbsp;|&gt;&nbsp;<span style="color:teal;">Tuple2</span>.<span style="color:navy;">curry</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">use</span>&nbsp;sut&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:teal;">IdealController</span>&nbsp;(<span style="color:navy;">imp</span>)
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;actual&nbsp;=&nbsp;sut.<span style="color:navy;">Post</span>&nbsp;req
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:navy;">test</span>&nbsp;<span style="background:yellow;">&lt;@&nbsp;</span><span style="background:yellow;">actual</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="background:yellow;">|&gt;</span><span style="background:yellow;">&nbsp;</span><span style="color:navy;background:yellow;">convertsTo</span><span style="background:yellow;">&lt;</span><span style="background:yellow;">Results</span><span style="background:yellow;">.</span><span style="color:teal;background:yellow;">OkNegotiatedContentResult</span><span style="background:yellow;">&lt;</span><span style="color:teal;background:yellow;">IDealResponseDtr</span><span style="background:yellow;">&gt;&gt;</span><span style="background:yellow;"></span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="background:yellow;">|&gt;</span><span style="background:yellow;">&nbsp;</span><span style="color:teal;background:yellow;">Option</span><span style="background:yellow;">.</span><span style="color:navy;background:yellow;">map</span><span style="background:yellow;">&nbsp;(</span><span style="color:blue;background:yellow;">fun</span><span style="background:yellow;">&nbsp;</span><span style="background:yellow;">r</span><span style="background:yellow;">&nbsp;</span><span style="color:blue;background:yellow;">-&gt;</span><span style="background:yellow;">&nbsp;</span><span style="background:yellow;">r</span><span style="background:yellow;">.</span><span style="background:yellow;">Content</span><span style="background:yellow;">)</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="background:yellow;">|&gt;</span><span style="background:yellow;">&nbsp;</span><span style="color:teal;background:yellow;">Option</span><span style="background:yellow;">.</span><span style="color:navy;background:yellow;">exists</span><span style="background:yellow;">&nbsp;((</span><span style="background:yellow;">=</span><span style="background:yellow;">)&nbsp;</span><span style="background:yellow;">resp</span><span style="background:yellow;">)&nbsp;@&gt;</span></pre>
+	</p>
+	<p>
+		Whether or not you find this more readable than the previous example is, as always, subjective, but I like it because it's a succinct, composable way to address data flow verification. Once you get over the initial shock of partially applying Unquote's <code>=!</code> operator, as well as the cryptic-looking <code>&gt;&gt;!</code> operator, you may begin to realise that the same idiom is repeated throughout. In fact, it's more than an idiom. It's an implementation of a design pattern.
+	</p>
+	<p>
+		<strong>Mocks</strong>
+	</p>
+	<p>
+		When talking about unit testing, I prefer the vocabulary of <a href="http://bit.ly/xunitpatterns">xUnit Test Patterns</a>, because of its unrivalled consistent terminology. Using Gerard Meszaros' nomenclature, a <a href="http://martinfowler.com/bliki/TestDouble.html">Test Double</a> with built-in verification of interaction is called a <em>Mock</em>.
+	</p>
+	<p>
+		Most people (including me) dislike Mocks because they tend to lead to brittle unit tests. They <em>tend</em> to, but <a href="http://blog.ploeh.dk/2013/10/23/mocks-for-commands-stubs-for-queries">sometimes you need them</a>. Mocks are useful when you care about side-effects.
+	</p>
+	<p>
+		Functional programming emphasises <a href="https://en.wikipedia.org/wiki/Pure_function">pure functions</a>, which, by definition, are free of side-effects. <a href="http://blog.ploeh.dk/2015/05/07/functional-design-is-intrinsically-testable">In pure functional programming, you don't need Mocks</a>.
+	</p>
+	<p>
+		Since F# is a multi-paradigmatic language, you sometimes have to write code in a more object-oriented style. In the example you've seen here, I've shown you how to unit test that Controllers correctly work as Adapters over (impure) functions. Here, Mocks are useful, even if they have no place in the rest of the code base.
+	</p>
+	<p>
+		Being able to express a Mock with a couple of minimal functions is, in my opinion, preferable to adding a big dependency to a 'mocking library'.
+	</p>
+	<p>
+		<strong>Concluding remarks</strong>
+	</p>
+	<p>
+		Sometimes, explicit values and arguments are in the way. By their presence, they force you to name them. Often, naming is good, because it compels you to make tacit knowledge explicit. In rare cases, though, the important detail isn't a value, or an argument, but instead an <em>activity</em>. An example of this is when verifying data flow. While the values are obviously present, the focus ought to be on the comparison. Thus, by making the local function arguments implicit, you can direct the reader's attention to the interaction - in this case, Unquote's <code>=!</code> <em>must equal</em> comparison.
+	</p>
+	<p>
+		In the introduction to this article, I told you that the code you've seen here is a real-life example. This is true.
+	</p>
+	<p>
+		I submitted my refactoring to point-free style as an internal pull request on the project I'm currently working. When I did that, I was genuinely in doubt about the readability improvement this would give, so I asked my reviewers for their opinions. I was genuinely ready to accept if they wanted to reject the pull request.
+	</p>
+	<p>
+		My reviewers disagreed internally, ultimately had a vote, and decided to reject the pull request. I don't blame them. We had a civil discussion about the pros and cons, and while they understood the advantages, they felt that the disadvantages weighed heavier.
+	</p>
+	<p>
+		In their context, I understand why they decided to decline the change, but that doesn't mean that I don't find this an interesting experiment. I expect to use something like this in the future in some contexts, while in other contexts, I'll stick with the more verbose (and harder to name) test-specific functions with explicit arguments.
+	</p>
+	<p>
+		Still, I like to solve problems using well-known compositions, which is the reason I prefer a composable, idiomatic approach over ad-hoc code.
+	</p>
+	<p>
+		If you'd like to learn more about unit testing and property-based testing in F# (and C#), you can watch some of <a href="http://bit.ly/ploehralsight">my Pluralsight courses</a>.
+	</p>
+</div>
