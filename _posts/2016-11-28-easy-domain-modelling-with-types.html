@@ -1,0 +1,220 @@
+---
+layout: post
+title: "Easy domain modelling with types"
+date: 2016-11-28 07:21 UTC
+tags: [Software Design, F#]
+---
+{% include JB/setup %}
+
+<div id="post">
+	<p>
+		<em>Algebraic data types make domain modelling easy.</em>
+	</p>
+	<p>
+		People often ask me if I think that F# is a good general-purpose language, and when I emphatically answer <em>yes!</em>, the natural next question is: <em>why?</em>
+	</p>
+	<p>
+		For years, I've been able to answer this question in the abstract, but I've been looking for a good concrete example with which I could illustrate the answer. I believe that I've now found such an example.
+	</p>
+	<p>
+		The abstract answer, by the way, is that F# has <a href="https://en.wikipedia.org/wiki/Algebraic_data_type">algebraic data types</a>, which makes domain modelling much easier than in languages that don't have such types. Don't worry if the word 'algebraic' sounds scary, though. It's not at all difficult to understand, and I'll show you a simple example.
+	</p>
+	<p>
+		<strong>Payment types</strong>
+	</p>
+	<p>
+		At the moment, I'm working on an integration project: I'm developing a RESTful API that serves as Facade in front of a third-party payment provider. The third-party provider exposes their own API and web-based GUI that enable our end users to pay for services using credit cards, PayPal, and so on. The API that I'm developing presents a simplified, RESTful API to other clients in our organisation.
+	</p>
+	<p>
+		The example you're going to see here is real code that I'm writing in order to implement the desired functionality.
+	</p>
+	<p>
+		The system must be able to handle several different types of payment:
+		<ul>
+			<li>Sometimes, a user pays for a single thing, and that's the end of that transaction.</li>
+			<li>Other times, however, a user engages into a long-term payment relationship. This could be, for example, a subscription, or an 'auto-fill' style of relationship. This is handled in two distinct phases:</li>
+			<ul>
+				<li>An initial payment (can sometimes be for a zero amount) that authorises the merchant to make further transactions.</li>
+				<li>Subsequent payments, based off that initial payment. These payments can be automated, because they require no further user interaction than the initial authorisation.</li>
+			</ul>
+		</ul>
+		The third-party service calls these 'long-term relationship' payments for <em>recurring</em> payments, but in order to distinguish between the first and the subsequent payments in such a relationship, I decided to call them <em>parent</em> and <em>child</em> payments; accordingly, I call the one-off payments <em>individual</em> payments.
+	</p>
+	<p>
+		You can indicate the type of payment when interacting with the payment service's JSON-based API, like this:
+	</p>
+	<p>
+		<pre>{
+&nbsp;&nbsp;...
+&nbsp;&nbsp;"StartRecurrent": "false"
+&nbsp;&nbsp;...
+}</pre>
+	</p>
+	<p>
+		Obviously, as the (illegal) ellipses suggests, there's much more data associated with a payment, but that's not important in this example. Since <code>StartRecurrent</code> is <code>false</code>, this is either an individual payment, or a child payment. If you want to start a long-term relationship, you must create a parent payment and set <code>StartRecurrent</code> to <code>true</code>.
+	</p>
+	<p>
+		Child payments, however, are a bit different, because you have to tell the payment service about the parent payment:
+	</p>
+	<p><pre>{
+&nbsp;&nbsp;...
+&nbsp;&nbsp;"OriginalTransactionKey": "1234ABCD",
+&nbsp;&nbsp;"StartRecurrent": "false"
+&nbsp;&nbsp;...
+}</pre>
+	</p>
+	<p>
+		As you can see, when making a child payment, you supply the transaction ID for the parent payment. (This ID is given to you by the payment service when you initiate the parent payment.)
+	</p>
+	<p>
+		In this case, you're clearly <em>not</em> starting a <em>new</em> recurrent transaction.
+	</p>
+	<p>
+		There are two dimensions of variation in this example: <code>StartRecurrent</code> and <code>OriginalTransactionKey</code>. Let's put them in a table:
+		<table>
+			<thead>
+				<tr>
+					<th></th>
+					<th><code>"StartRecurrent" : "false"</code></th>
+					<th><code>"StartRecurrent" : "true"</code></th>
+				</tr>
+			</thead>
+			<tbody>
+				<tr>
+					<td><code>"OriginalTransactionKey" : null</code></td>
+					<td><em>Individual</em></td>
+					<td><em>Parent</em></td>
+				</tr>
+				<tr>
+					<td><code>"OriginalTransactionKey" : "1234ABCD"</code></td>
+					<td><em>Child</em></td>
+					<td><strong>(Illegal)</strong></td>
+				</tr>
+			</tbody>
+		</table>
+		As the table suggests, the combination of an <code>OriginalTransactionKey</code> and setting <code>StartRecurrent</code> to <code>true</code> is illegal, or, in best case, meaningless.
+	</p>
+	<p>
+		How would you model the rules laid out in the above table? In languages like C#, it's difficult, but in F# it's easy.
+	</p>
+	<p>
+		<strong>C# attempts</strong>
+	</p>
+	<p>
+		Most C# developers would, I think, attempt to model a payment transaction with a class. If they aim for <a href="http://blog.ploeh.dk/2011/05/24/Poka-yokeDesignFromSmelltoFragrance">poka-yoke design</a>, they might come up with a design like this:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">PaymentType</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;PaymentType(<span style="color:blue;">bool</span>&nbsp;startRecurrent)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.StartRecurrent&nbsp;=&nbsp;startRecurrent;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;PaymentType(<span style="color:blue;">string</span>&nbsp;originalTransactionKey)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;(originalTransactionKey&nbsp;==&nbsp;<span style="color:blue;">null</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">throw</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">ArgumentNullException</span>(<span style="color:blue;">nameof</span>(originalTransactionKey));
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.StartRecurrent&nbsp;=&nbsp;<span style="color:blue;">false</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.OriginalTransactionKey&nbsp;=&nbsp;originalTransactionKey;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">bool</span>&nbsp;StartRecurrent&nbsp;{&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">set</span>;&nbsp;<span style="color:blue;">get</span>;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">string</span>&nbsp;OriginalTransactionKey&nbsp;{&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">set</span>;&nbsp;<span style="color:blue;">get</span>;&nbsp;}
+}</pre>
+	</p>
+	<p>
+		This goes a fair way towards <a href="http://fsharpforfunandprofit.com/posts/designing-with-types-making-illegal-states-unrepresentable">making illegal states unrepresentable</a>, but it doesn't communicate to a fellow programmer how it should be used.
+	</p>
+	<p>
+		Code that <em>uses</em> instances of this <code>PaymentType</code> class could attempt to read the <code>OriginalTransactionKey</code>, which, depending on the type of payment, could return null. That sort of design leads to <a href="http://blog.ploeh.dk/2013/07/08/defensive-coding">defensive coding</a>.
+	</p>
+	<p>
+		Other people might attempt to solve the problem by designing a class hierarchy:
+	</p>
+	<p>
+		<img src="/content/binary/hypothetical-payment-class-hierarchy.png" alt="A hypothetical payment class hierarchy, showing a Payment base class, and three derived classes: IndividualPayment, ParentPayment, and ChildPayment.">
+	</p>
+	<p>
+		(A variation on this design is to define an <code>IPayment</code> interface, and three concrete classes that implement that interface.)
+	</p>
+	<p>
+		This design trades better protection of invariants for violations of the <a href="https://en.wikipedia.org/wiki/Liskov_substitution_principle">Liskov Substitution Principle</a>. Clients will have to (attempt to) downcast to subtypes in order to access all relevant data (particularly <code>OriginalTransactionKey</code>).
+	</p>
+	<p>
+		For completeness sake, I can think of at least one other option with significantly different trade-offs: applying the <a href="https://en.wikipedia.org/wiki/Visitor_pattern">Visitor design pattern</a>. This is, however, quite a complex solution, and most people will find the disadvantages greater than the benefits.
+	</p>
+	<p>
+		Is it such a big deal, then? After all, it's only a single data value (<code>OriginalTransactionKey</code>) that may or may not be there. Surely, most programmers will be able to deal with that.
+	</p>
+	<p>
+		This may be true in this isolated case, but keep in mind that this is only a motivating <em>example</em>. In many other situations, the domain you're trying to model is much more intricate, with many more exceptions to general rules. The more dimensions you add, the more difficult it becomes to reason about the code.
+	</p>
+	<p>
+		<strong>F# model</strong>
+	</p>
+	<p>
+		F#, on the other hand, makes dealing with such problems so simple that it's almost anticlimactic. The reason is that F#'s type system enables you to model <em>alternatives</em> of data, in addition to the combinations of data that C# (or Java) enables. Such alternatives are called <a href="https://docs.microsoft.com/en-us/dotnet/articles/fsharp/language-reference/discriminated-unions">discriminated unions</a>.
+	</p>
+	<p>
+		In the code base I'm currently developing, I model the various payment types like this:
+	</p>
+	<p>
+		<pre><span style="color:blue;">type</span>&nbsp;<span style="color:teal;">PaymentService</span>&nbsp;=&nbsp;{&nbsp;Name&nbsp;:&nbsp;<span style="color:teal;">string</span>;&nbsp;Action&nbsp;:&nbsp;<span style="color:teal;">string</span>&nbsp;}
+ 
+<span style="color:blue;">type</span>&nbsp;<span style="color:teal;">PaymentType</span>&nbsp;=
+|&nbsp;<span style="color:navy;">Individual</span>&nbsp;<span style="color:blue;">of</span>&nbsp;<span style="color:teal;">PaymentService</span>
+|&nbsp;<span style="color:navy;">Parent</span>&nbsp;<span style="color:blue;">of</span>&nbsp;<span style="color:teal;">PaymentService</span>
+|&nbsp;<span style="color:navy;">Child</span>&nbsp;<span style="color:blue;">of</span>&nbsp;originalTransactionKey&nbsp;:&nbsp;<span style="color:teal;">string</span>&nbsp;*&nbsp;paymentService&nbsp;:&nbsp;<span style="color:teal;">PaymentService</span></pre>
+	</p>
+	<p>
+		Here, <code>PaymentService</code> is a record type with some data about the payment (e.g. which credit card to use).
+	</p>
+	<p>
+		Even if you're not used to reading F# code, you can see three alternatives outlined on each of the three lines of code that start with a vertical bar (<code>|</code>). The <code>PaymentType</code> type has <em>exactly</em> three 'subtypes' (they're called <em>cases</em>, though). The illegal state of a non-null <code>OriginalTransactionKey</code> combined with <code>StartRecurrent</code> value of <code>true</code> is not possible. It can't be compiled.
+	</p>
+	<p>
+		Not only that, but all clients given a <code>PaymentType</code> value <em>must</em> deal with all three cases (or the compiler will issue a warning). Here's one example where our code is creating the JSON document to send to the payment service:
+	</p>
+	<p>
+		<pre><span style="color:blue;">let</span>&nbsp;name,&nbsp;action,&nbsp;startRecurrent,&nbsp;transaction&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">match</span>&nbsp;req.PaymentType&nbsp;<span style="color:blue;">with</span>
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:navy;">Individual</span>&nbsp;{&nbsp;Name&nbsp;=&nbsp;name;&nbsp;Action&nbsp;=&nbsp;action&nbsp;}&nbsp;<span style="color:blue;">-&gt;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;name,&nbsp;action,&nbsp;<span style="color:blue;">false</span>,&nbsp;<span style="color:navy;">None</span>
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:navy;">Parent</span>&nbsp;{&nbsp;Name&nbsp;=&nbsp;name;&nbsp;Action&nbsp;=&nbsp;action&nbsp;}&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;name,&nbsp;action,&nbsp;<span style="color:blue;">true</span>,&nbsp;<span style="color:navy;">None</span>
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:navy;">Child</span>&nbsp;(transactionKey,&nbsp;{&nbsp;Name&nbsp;=&nbsp;name;&nbsp;Action&nbsp;=&nbsp;action&nbsp;})&nbsp;<span style="color:blue;">-&gt;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;name,&nbsp;action,&nbsp;<span style="color:blue;">false</span>,&nbsp;<span style="color:navy;">Some</span>&nbsp;transactionKey</pre>
+	</p>
+	<p>
+		This code example also extracts <code>name</code> and <code>action</code> from the <code>PaymentType</code> value, but the relevant values to be aware of are <code>startRecurrent</code> and <code>transaction</code>.
+		<ul>
+			<li>For an individual payment, <code>startRecurrent</code> becomes <code>false</code> and <code>transaction</code> becomes <code>None</code> (meaning that the value is missing).</li>
+			<li>For a parent payment, <code>startRecurrent</code> becomes <code>true</code> and <code>transaction</code> becomes <code>None</code>.</li>
+			<li>For a child payment, <code>startRecurrent</code> becomes <code>false</code> and <code>transaction</code> becomes <code>Some transactionKey</code>.</li>
+		</ul>
+		Notice that the (parent) <code>transactionKey</code> is only available when the payment is a child payment.
+	</p>
+	<p>
+		This is a real-world example that, I hope, demonstrates why I prefer F# over C# for domain modelling. The type system enables me to model alternatives as well as combinations of data, and thereby <em>making illegal states unrepresentable</em> - all in only a few lines of code.
+	</p>
+	<p>
+		<strong>Summary</strong>
+	</p>
+	<p>
+		Classes, in languages like C# and Java, enable you to model <em>combinations</em> of data. The more fields or properties you add to a class, the more combinations are possible. This is often useful, but sometimes you need to be able to model <em>alternatives</em>, rather than combinations.
+	</p>
+	<p>
+		Some languages, like F#, Haskell, OCaml, Elm, Kotlin, and many others, have type systems that give you the power to model both combinations and alternatives. Such types systems are said to have <a href="https://en.wikipedia.org/wiki/Algebraic_data_type">algebraic data types</a>, but while the word sounds 'mathy', such types make it much easier to model complex domains.
+	</p>
+	<p>
+		There are more reasons to love F# than only its algebraic data types, but this is the foremost reason I find it a better language for mainstream development work than C#.
+	</p>
+	<p>
+		Finally, I should be careful that I don't oversell the idea of making illegal states unrepresentable. Algebraic data types give you an extra dimension in which you can model domains, but there are still rules that they can't enforce. As an example, you can't state that integers must only fall in a certain range (e.g. only positive integers allowed). There are other type systems, such as <a href="https://en.wikipedia.org/wiki/Dependent_type">dependent types</a>, that give you even more power to embed domain rules into types, but as far as I know, there are no type systems that can fully model all rules as types. You'll still have to write some code as well.
+	</p>
+	<p>
+		The article is an instalment in the <a href="https://sergeytihon.wordpress.com/2016/10/23/f-advent-calendar-in-english-2016">2016 F# Advent calendar</a>.
+	</p>
+</div>
