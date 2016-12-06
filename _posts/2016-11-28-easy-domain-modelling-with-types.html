@@ -239,4 +239,69 @@ tags: [Software Design, F#]
         </div>
         <div class="comment-date">2016-12-03 08:38 UTC</div>
     </div>
+  <div class="comment">
+    <div class="comment-author"><a href="http://blog.ploeh.dk">Mark Seemann</a></div>
+    <div class="comment-content">
+      <p>
+      	Botond, thank you for writing. The major advantage is that enumeration of all possible cases is available at compile-time. One derived advantage of that is that the compiler can check whether a piece of code handles all cases. That's already, in my experience, a big deal. The sooner you can get feedback on your work, the better, and <a href="http://blog.ploeh.dk/2011/04/29/Feedbackmechanismsandtradeoffs">it doesn't get faster than compile-time feedback</a>.
+      </p>
+      <p>
+      	Another advantage of having all cases encoded in the type system is that it gives you better tool support. Imagine that you're looking at the return value of a function, and that this is the first time you're encountering that return type. If the return value is an abstract base class (or interface), you'll need to resort to either the documentation or reflection in order to figure out which subtypes exist. There can be arbitrarily many subtypes, and they can be scattered over arbitrarily many libraries (assemblies). Figuring out what to do with an abstract base class introduces a context switch that could have been avoided.
+      </p>
+      <p>
+      	This is exactly another advantage offered by discriminated unions: when a function returns a discriminated union, you can immediately get tool support to figure out what to do with it, even if you've never encountered the type before.
+      </p>
+      <p>
+      	The problem with examples such as the above is that I'm trying to explain how a language feature can help you with modelling <em>complex</em> domains, but if I try to present a really complex problem, no-one will have the patience to read the article. Instead, I have to come up with an example that's so simple that the reader doesn't give up, and hopefully still complex enough that the reader can imagine how it's a stand-in for a more complex problem.
+      </p>
+      <p>
+      	When you look at the problem presented above, it's not <em>that</em> complex, so you can still keep a C# implementation in your head. As you add more variability to the problem, however, you can easily find yourself in a situation where the combinatorial explosion of possible values make it difficult to ensure that you've dealt with all edge cases. This is one of the main reasons that C# and Java code often throws run-time exceptions (particularly null-reference exceptions).
+      </p>
+      <p>
+      	It did, in fact, turn out that the above example domain became more complex as I learned more about the entire range of problems I had to solve. When I described the problem above, I thought that all payments would have pre-selected payment methods. In other words, when a user is presented with a check-out page, he or she selects the payment method (PayPal, direct debit, and so on), and only then, when we know payment method, do we initiate the payment flow. It turns out, though, that in some cases, we should start the payment flow first, and then let the user pick the payment method from a list of options. It should be noted, however, that user-selection only makes sense for interactive payments, so a <em>child</em> payment can never be user-selectable (since it's automated).
+      </p>
+      <p>
+      	It was trivial to extend the domain model with that new requirement:
+      </p>
+      <p>
+      	<pre><span style="color:blue;">type</span>&nbsp;<span style="color:teal;">PaymentService</span>&nbsp;=&nbsp;{&nbsp;Name&nbsp;:&nbsp;<span style="color:teal;">string</span>;&nbsp;Action&nbsp;:&nbsp;<span style="color:teal;">string</span>&nbsp;}
+ 
+<span style="color:blue;">type</span>&nbsp;<span style="color:teal;">PaymentMethod</span>&nbsp;=
+|&nbsp;<span style="color:navy;">PreSelected</span>&nbsp;<span style="color:blue;">of</span>&nbsp;<span style="color:teal;">PaymentService</span>
+|&nbsp;<span style="color:navy;">UserSelectable</span>&nbsp;<span style="color:blue;">of</span>&nbsp;<span style="color:teal;">string</span>&nbsp;<span style="color:teal;">list</span>
+ 
+<span style="color:blue;">type</span>&nbsp;<span style="color:teal;">TransactionKey</span>&nbsp;=&nbsp;<span style="color:navy;">TransactionKey</span>&nbsp;<span style="color:blue;">of</span>&nbsp;<span style="color:teal;">string</span>&nbsp;<span style="color:blue;">with</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">override</span>&nbsp;this.<span style="color:navy;">ToString</span>&nbsp;()&nbsp;=&nbsp;<span style="color:blue;">match</span>&nbsp;this&nbsp;<span style="color:blue;">with</span>&nbsp;<span style="color:navy;">TransactionKey</span>&nbsp;s&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;s
+ 
+<span style="color:blue;">type</span>&nbsp;<span style="color:teal;">PaymentType</span>&nbsp;=
+|&nbsp;<span style="color:navy;">Individual</span>&nbsp;<span style="color:blue;">of</span>&nbsp;<span style="color:teal;">PaymentMethod</span>
+|&nbsp;<span style="color:navy;">Parent</span>&nbsp;<span style="color:blue;">of</span>&nbsp;<span style="color:teal;">PaymentMethod</span>
+|&nbsp;<span style="color:navy;">Child</span>&nbsp;<span style="color:blue;">of</span>&nbsp;<span style="color:teal;">TransactionKey</span>&nbsp;*&nbsp;<span style="color:teal;">PaymentService</span></pre>
+      </p>
+      <p>
+      	This effectively uses the static type system to state that both the <code>Individual</code> and <code>Parent</code> cases can be defined in one of two ways: <code>PreSelected</code> or <code>UserSelectable</code>, each of which, again, contains heterogeneous data (<code>PaymentService</code> versus <code>string list</code>). Child payments, on the other hand, can't be user-selectable, but must be defined by a <code>PaymentService</code> value, as well as a transaction key (at this point, I'd also created a single-case union for the transaction key, but that's a different topic; it's still a string).
+      </p>
+      <p>
+      	Handling all the different combinations was equally easy, and the compiler guarantees that I've handled all possible combinations:
+      </p>
+      <p>
+      	<pre><span style="color:blue;">let</span>&nbsp;services,&nbsp;selectables,&nbsp;startRecurrent,&nbsp;transaction&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">match</span>&nbsp;req.PaymentType&nbsp;<span style="color:blue;">with</span>
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:navy;">Individual</span>&nbsp;(<span style="color:navy;">PreSelected</span>&nbsp;ps)&nbsp;<span style="color:blue;">-&gt;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:navy;">service</span>&nbsp;ps,&nbsp;<span style="color:navy;">None</span>,&nbsp;<span style="color:blue;">false</span>,&nbsp;<span style="color:navy;">None</span>
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:navy;">Individual</span>&nbsp;(<span style="color:navy;">UserSelectable</span>&nbsp;us)&nbsp;<span style="color:blue;">-&gt;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;[||],&nbsp;us&nbsp;|&gt;&nbsp;<span style="color:teal;">String</span>.<span style="color:navy;">concat</span>&nbsp;<span style="color:#a31515;">&quot;,&nbsp;&quot;</span>&nbsp;|&gt;&nbsp;<span style="color:navy;">Some</span>,&nbsp;<span style="color:blue;">false</span>,&nbsp;<span style="color:navy;">None</span>
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:navy;">Parent</span>&nbsp;(<span style="color:navy;">PreSelected</span>&nbsp;ps)&nbsp;<span style="color:blue;">-&gt;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:navy;">service</span>&nbsp;ps,&nbsp;<span style="color:navy;">None</span>,&nbsp;<span style="color:blue;">true</span>,&nbsp;&nbsp;<span style="color:navy;">None</span>
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:navy;">Parent</span>&nbsp;(<span style="color:navy;">UserSelectable</span>&nbsp;us)&nbsp;<span style="color:blue;">-&gt;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;[||],&nbsp;us&nbsp;|&gt;&nbsp;<span style="color:teal;">String</span>.<span style="color:navy;">concat</span>&nbsp;<span style="color:#a31515;">&quot;,&nbsp;&quot;</span>&nbsp;|&gt;&nbsp;<span style="color:navy;">Some</span>,&nbsp;<span style="color:blue;">true</span>,&nbsp;&nbsp;<span style="color:navy;">None</span>
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:navy;">Child</span>&nbsp;(<span style="color:navy;">TransactionKey</span>&nbsp;transactionKey,&nbsp;ps)&nbsp;<span style="color:blue;">-&gt;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:navy;">service</span>&nbsp;ps,&nbsp;<span style="color:navy;">None</span>,&nbsp;<span style="color:blue;">false</span>,&nbsp;<span style="color:navy;">Some</span>&nbsp;transactionKey</pre>
+      </p>
+      <p>
+      	How would you handle this with a class hierarchy, and what would the consuming code look like?
+      </p>
+    </div>
+    <div class="comment-date">2016-12-06 10:50 UTC</div>
+  </div>
 </div>
