@@ -1,0 +1,204 @@
+---
+layout: post
+title: "Domain modelling with REST"
+date: 2016-12-07 09:15 UTC
+tags: [Software Design, Services, REST, Architecture]
+---
+{% include JB/setup %}
+
+<div id="post">
+	<p>
+		<em>Make illegal states unrepresentable by using hyperlinks as the engine of application state.</em>
+	</p>
+	<p>
+		Every piece of software, whether it's a web service, smart phone app, batch job, or speech recognition system, interfaces with the world in some way. Sometimes, that interface is a user interface, sometimes it's a machine-readable interface; sometimes it involves rendering pixels on a screen, and sometimes it involves writing to files, selecting records from a database, sending emails, and so on.
+	</p>
+	<p>
+		Programmers often struggle with how to model these interactions. This is particularly difficult because at the boundaries, systems no longer adhere to popular programming paradigms. Previously, I've explained why, <a href="http://blog.ploeh.dk/2011/05/31/AttheBoundaries,ApplicationsareNotObject-Oriented">at the boundaries, applications aren't object-oriented</a>. By the same type of argument, neither are they functional (as in 'functional programming').
+	</p>
+	<p>
+		If that's the case, why should you even bother with 'domain modelling'? Particularly, does it even matter that, with <a href="https://en.wikipedia.org/wiki/Algebraic_data_type">algebraic data types</a>, you can <a href="http://fsharpforfunandprofit.com/posts/designing-with-types-making-illegal-states-unrepresentable">make illegal states unrepresentable</a>? If you need to compromise once you hit the boundary of your application, is it worth the effort?
+	</p>
+	<p>
+		It is, if you structure your application correctly. Proper (<a href="http://martinfowler.com/articles/richardsonMaturityModel.html">level 3</a>) <a href="https://en.wikipedia.org/wiki/Representational_state_transfer">REST</a> architecture gives you one way to structure applications in such a way that you can surface the constraints of your domain model to the interface layer. When done correctly, you can also make illegal states unrepresentable at the boundary.
+	</p>
+	<p>
+		<strong>A payment example</strong>
+	</p>
+	<p>
+		In my <a href="http://blog.ploeh.dk/2016/11/28/easy-domain-modelling-with-types">previous article</a>, I demonstrated how to use (static) types to model an on-line payment domain. To summarise, my task was to model three types of payments:
+		<ul>
+			<li>Individual payments, which happen only once.</li>
+			<li>Parent payments, which start a long-term payment relationship.</li>
+			<li>Child payments, which are automated payments originally authorised by an initial parent payment.</li>
+		</ul>
+		The constraint I had to model is that a child payment requires a <em>transaction key</em> that identifies the original parent payment. When making a payment, however, it's only valid to supply a transaction key for a child payment. It'd be invalid to supply a transaction key to a parent or an individual payment. On the other hand, you have to distinguish individual payments from parent payments, because only parent payments can be used to start a long-term payment relationship. All this leads to this table of possible combinations:
+		<table>
+			<thead>
+				<tr>
+					<th></th>
+					<th><code>"StartRecurrent" : "false"</code></th>
+					<th><code>"StartRecurrent" : "true"</code></th>
+				</tr>
+			</thead>
+			<tbody>
+				<tr>
+					<td><code>"OriginalTransactionKey" : null</code></td>
+					<td><em>Individual</em></td>
+					<td><em>Parent</em></td>
+				</tr>
+				<tr>
+					<td><code>"OriginalTransactionKey" : "1234ABCD"</code></td>
+					<td><em>Child</em></td>
+					<td><strong>(Illegal)</strong></td>
+				</tr>
+			</tbody>
+		</table>
+		The table shows that it's illegal to simultaneously provide a transaction key and set <code>StartRecurrent</code> to <code>true</code>. The other three combinations, on the other hand, are valid.
+	</p>
+	<p>
+		As I demonstrated in my <a href="http://blog.ploeh.dk/2016/11/28/easy-domain-modelling-with-types">previous article</a>, you can easily model this with algebraic data types.
+	</p>
+	<p>
+		At the boundary, however, there are no static types, so how could you model something like that as a web service?
+	</p>
+	<p>
+		<strong>A RESTful solution</strong>
+	</p>
+	<p>
+		A major advantage of REST is that it gives you a way to realise your domain model at the application boundary. It does require, though, that you design the API according to <a href="http://martinfowler.com/articles/richardsonMaturityModel.html">level 3 of the Richardson maturity model</a>. In other words, it's not REST if you're merely tunnelling JSON (or XML) through HTTP. It's still not REST if you publish URL templates and expect clients to fill data into specific place-holders of those URLs.
+	</p>
+	<p>
+		It's REST if the only way a client can interact with your API is by following hyperlinks.
+	</p>
+	<p>
+		If you follow those design principles, however, it's easy to model the above payment domain as a RESTful API.
+	</p>
+	<p>
+		In the following, I will show examples in XML, but it could as well have been JSON. After all, <a href="http://blog.ploeh.dk/2015/06/22/rest-implies-content-negotiation">a true REST API <em>must</em> support content negotiation</a>. One of the reasons that I prefer XML is that I can use <a href="https://en.wikipedia.org/wiki/XPath">XPath</a> to point out various nodes.
+	</p>
+	<p>
+		A client must begin at a pre-published 'home' resource, just like the home page of a web site. This resource presents <a href="https://en.wikipedia.org/wiki/Affordance">affordances</a> in the shape of hyperlinks. As recommended by the <a href="http://amzn.to/YFnkRg">RESTful Web Services Cookbook</a>, I always use <a href="https://en.wikipedia.org/wiki/Atom_(standard)">ATOM</a> links:
+	</p>
+	<p>
+		<pre><span style="color:blue;">&lt;</span><span style="color:#a31515;">home</span><span style="color:blue;">&nbsp;</span><span style="color:red;">xmlns</span><span style="color:blue;">=</span>&quot;<span style="color:blue;">http://example.com/payment</span>&quot;
+<span style="color:blue;">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</span><span style="color:red;">xmlns:atom</span><span style="color:blue;">=</span>&quot;<span style="color:blue;">http://www.w3.org/2005/Atom</span>&quot;<span style="color:blue;">&gt;</span>
+<span style="color:blue;">&nbsp;&nbsp;&lt;</span><span style="color:#a31515;">payment-methods</span><span style="color:blue;">&gt;</span>
+<span style="color:blue;">&nbsp;&nbsp;&nbsp;&nbsp;&lt;</span><span style="color:#a31515;">payment-method</span><span style="color:blue;">&gt;</span>
+<span style="color:blue;">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&lt;</span><span style="color:#a31515;">links</span><span style="color:blue;">&gt;</span>
+<span style="color:blue;">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&lt;</span><span style="color:#a31515;">atom:link</span><span style="color:blue;">&nbsp;</span><span style="color:red;">rel</span><span style="color:blue;">=</span>&quot;<span style="color:blue;">example:pay-individual</span>&quot;
+<span style="color:blue;">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</span><span style="color:red;">href</span><span style="color:blue;">=</span>&quot;<span style="color:blue;">https://example.com/gift-card</span>&quot;<span style="color:blue;">&nbsp;/&gt;</span>
+<span style="color:blue;">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&lt;/</span><span style="color:#a31515;">links</span><span style="color:blue;">&gt;</span>
+<span style="color:blue;">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&lt;</span><span style="color:#a31515;">id</span><span style="color:blue;">&gt;</span>gift-card<span style="color:blue;">&lt;/</span><span style="color:#a31515;">id</span><span style="color:blue;">&gt;</span>
+<span style="color:blue;">&nbsp;&nbsp;&nbsp;&nbsp;&lt;/</span><span style="color:#a31515;">payment-method</span><span style="color:blue;">&gt;</span>
+<span style="color:blue;">&nbsp;&nbsp;&nbsp;&nbsp;&lt;</span><span style="color:#a31515;">payment-method</span><span style="color:blue;">&gt;</span>
+<span style="color:blue;">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&lt;</span><span style="color:#a31515;">links</span><span style="color:blue;">&gt;</span>
+<span style="color:blue;">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&lt;</span><span style="color:#a31515;">atom:link</span><span style="color:blue;">&nbsp;</span><span style="color:red;">rel</span><span style="color:blue;">=</span>&quot;<span style="color:blue;">example:pay-individual</span>&quot;
+<span style="color:blue;">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</span><span style="color:red;">href</span><span style="color:blue;">=</span>&quot;<span style="color:blue;">https://example.com/credit-card</span>&quot;<span style="color:blue;">&nbsp;/&gt;</span>
+<span style="color:blue;">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&lt;</span><span style="color:#a31515;">atom:link</span><span style="color:blue;">&nbsp;</span><span style="color:red;">rel</span><span style="color:blue;">=</span>&quot;<span style="color:blue;">example:pay-parent</span>&quot;
+<span style="color:blue;">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</span><span style="color:red;">href</span><span style="color:blue;">=</span>&quot;<span style="color:blue;">https://example.com/recurrent/start/credit-card</span>&quot;<span style="color:blue;">&nbsp;/&gt;</span>
+<span style="color:blue;">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&lt;/</span><span style="color:#a31515;">links</span><span style="color:blue;">&gt;</span>
+<span style="color:blue;">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&lt;</span><span style="color:#a31515;">id</span><span style="color:blue;">&gt;</span>credit-card<span style="color:blue;">&lt;/</span><span style="color:#a31515;">id</span><span style="color:blue;">&gt;</span>
+<span style="color:blue;">&nbsp;&nbsp;&nbsp;&nbsp;&lt;/</span><span style="color:#a31515;">payment-method</span><span style="color:blue;">&gt;</span>
+<span style="color:blue;">&nbsp;&nbsp;&lt;/</span><span style="color:#a31515;">payment-methods</span><span style="color:blue;">&gt;</span>
+<span style="color:blue;">&lt;/</span><span style="color:#a31515;">home</span><span style="color:blue;">&gt;</span>
+</pre>
+	</p>
+	<p>
+		A client receiving the above response is effectively presented with a choice. It can choose to pay with a gift card or credit card, and nothing else, however much it'd like to pay with, say, PayPal. For each of these payment methods, zero or more links are available.
+	</p>
+	<p>
+		Specifically, there are links to create both an individual or a parent payment with a credit card, but it's only possible to make an individual payment with a gift card. You can't set up a long-term, automated payment relationship with a gift card. (This may or may not make sense, depending on how you look at it, but it's fundamentally a business decision.)
+	</p>
+	<p>
+		Links are defined by <em>relationship types</em>, which are unique identifiers present in the <code>rel</code> attributes. You can think of them as equivalent to the human-readable text in an HTML <code>a</code> tag that suggests to a human user what to expect from clicking the link; only, <code>rel</code> attribute values are machine-readable and part of the contract between client and service.
+	</p>
+	<p>
+		Notice how the above XML representation only gives a client the option of making an individual or a parent payment with a credit card. A client can't make a child payment at this point. This follows the domain model, because you can't make a child payment without first having made a parent payment.
+	</p>
+	<p>
+		<strong>RESTful individual payments</strong>
+	</p>
+	<p>
+		If a client wishes to make an individual payment, it follows the link identified by
+	</p>
+	<p>
+		<pre>/home/payment-methods/payment-method[id = 'credit-card']/links/atom:link[@rel = 'example:pay-individual']/@href</pre>
+	</p>
+	<p>
+		In the above XPath query, I've ignored the default document namespace in order to make the expression more readable. The query returns <code>https://example.com/credit-card</code>, and the client can now make an HTTP POST request against that URL with a JSON or XML document containing details about the payment (not shown here, because it's not important for this particular discussion).
+	</p>
+	<p>
+		<strong>RESTful parent payments</strong>
+	</p>
+	<p>
+		If a client wishes to make a parent payment, the initial procedure is the same. First, it follows the link identified by
+	</p>
+	<p>
+		<pre>/home/payment-methods/payment-method[id = 'credit-card']/links/atom:link[@rel = 'example:pay-parent']/@href</pre>
+	</p>
+	<p>
+		The result of that XPath query is <code>https://example.com/recurrent/start/credit-card</code>, so the client can make an HTTP POST request against that URL with the payment details. Unlike the response for an individual payment, the response for a parent payment contains <em>another</em> link:
+	</p>
+	<p>
+		<pre><span style="color:blue;">&lt;</span><span style="color:#a31515;">payment</span><span style="color:blue;">&nbsp;</span><span style="color:red;">xmlns</span><span style="color:blue;">=</span>&quot;<span style="color:blue;">http://example.com/payment</span>&quot;
+<span style="color:blue;">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</span><span style="color:red;">xmlns:atom</span><span style="color:blue;">=</span>&quot;<span style="color:blue;">http://www.w3.org/2005/Atom</span>&quot;<span style="color:blue;">&gt;</span>
+<span style="color:blue;">&nbsp;&nbsp;&lt;</span><span style="color:#a31515;">links</span><span style="color:blue;">&gt;</span>
+<span style="color:blue;">&nbsp;&nbsp;&nbsp;&nbsp;&lt;</span><span style="color:#a31515;">atom:link</span><span style="color:blue;">&nbsp;</span><span style="color:red;">rel</span><span style="color:blue;">=</span>&quot;<span style="color:blue;">example:pay-child</span>&quot;
+<span style="color:blue;">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</span><span style="color:red;">href</span><span style="color:blue;">=</span>&quot;<span style="color:blue;">https://example.com/recurrent/42</span>&quot;<span style="color:blue;">&nbsp;/&gt;</span>
+<span style="color:blue;">&nbsp;&nbsp;&nbsp;&nbsp;&lt;</span><span style="color:#a31515;">atom:link</span><span style="color:blue;">&nbsp;</span><span style="color:red;">rel</span><span style="color:blue;">=</span>&quot;<span style="color:blue;">example:payment-details</span>&quot;
+<span style="color:blue;">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</span><span style="color:red;">href</span><span style="color:blue;">=</span>&quot;<span style="color:blue;">https://example.com/42</span>&quot;<span style="color:blue;">&nbsp;/&gt;</span>
+<span style="color:blue;">&nbsp;&nbsp;&lt;/</span><span style="color:#a31515;">links</span><span style="color:blue;">&gt;</span>
+<span style="color:blue;">&nbsp;&nbsp;&lt;</span><span style="color:#a31515;">amount</span><span style="color:blue;">&gt;</span>13.37<span style="color:blue;">&lt;/</span><span style="color:#a31515;">amount</span><span style="color:blue;">&gt;</span>
+<span style="color:blue;">&nbsp;&nbsp;&lt;</span><span style="color:#a31515;">currency</span><span style="color:blue;">&gt;</span>EUR<span style="color:blue;">&lt;/</span><span style="color:#a31515;">currency</span><span style="color:blue;">&gt;</span>
+<span style="color:blue;">&nbsp;&nbsp;&lt;</span><span style="color:#a31515;">invoice</span><span style="color:blue;">&gt;</span>1234567890<span style="color:blue;">&lt;/</span><span style="color:#a31515;">invoice</span><span style="color:blue;">&gt;</span>
+<span style="color:blue;">&lt;/</span><span style="color:#a31515;">payment</span><span style="color:blue;">&gt;</span></pre>
+	</p>
+	<p>
+		This response echoes the details of the payment: this is a payment of 13.37 EUR for invoice 1234567890. It also includes some links that a client can use to further interact with the payment:
+		<ul>
+			<li>The <code>example:payment-details</code> link can be used to query the API for details about the payment, for example its status.</li>
+			<li>The <code>example:pay-child</code> link can be used to make a child payment.</li>
+		</ul>
+		The <code>example:pay-child</code> link is only returned if the previous payment was a parent payment. When a client makes an individual payment, this link isn't present in the response, but when the client makes a parent payment, it is.
+	</p>
+	<p>
+		Another design principle of REST is that <a href="https://www.w3.org/Provider/Style/URI.html.en">cool URIs don't change</a>; once the API has shown a URL like <code>https://example.com/recurrent/42</code> to a client, it should honour that URL indefinitely. The upshot of that is that a client can <em>save</em> that URL for later use. If a client wants to, say, renew a subscription, it can make a new HTTP POST request to that URL <em>a month later</em>, and that's going to be a child payment. Clients don't have to <a href="http://blog.ploeh.dk/2013/05/01/rest-lesson-learned-avoid-hackable-urls">hack the URL</a> in order to figure out what the transaction key is; they can simply store the complete URL as is and use it later.
+	</p>
+	<p>
+		<strong>A network of options</strong>
+	</p>
+	<p>
+		Using a design like the one sketched above, you can make illegal states unrepresentative. There's no way for a client to make a payment with <code>StartRecurrent = true</code> and a non-null transaction key; there's no link to that combination. Such an API uses <a href="https://en.wikipedia.org/wiki/HATEOAS">hypermedia as the engine of application state</a>.
+	</p>
+	<p>
+		It shouldn't be surprising that proper RESTful design works that way. After all, REST is essentially a distillate of the properties that make the World Wide Web work. On a human-readable web page, the user follows links to other pages, and a well-designed web site will only enable a link if the destination exists.
+	</p>
+	<p>
+		You can even draw a graph of the the API I've sketched above:
+	</p>
+	<p>
+		<img src="/content/binary/graph-of-payment-paths.png" alt="Graph of payment options, including a start node, and end node, and a node for each of the three payment types">
+	</p>
+	<p>
+		In this diagram, you can see that when you make an individual payment, that's all you can do. You can also see that the only way to make a child payment is by first making a parent payment. There's also a path from parent payments directly to the end note, because a client doesn't <em>have</em> to make a child payment just because it made a parent payment.
+	</p>
+	<p>
+		If you think that this looks like a finite state machine, then that's no coincidence. That's exactly what it is. You have states (the nodes) and paths between them. If a state is illegal, then don't add that node; only add nodes for legal states, then add links between the nodes that model legal transitions.
+	</p>
+	<p>
+		Incidentally, languages like F# excel at implementing finite state machines, so it's no wonder I like to implement RESTful APIs in F#.
+	</p>
+	<p>
+		<strong>Summary</strong>
+	</p>
+	<p>
+		Truly RESTful design enables you to make illegal states unrepresentable by using hypermedia as the engine of application state. This gives you a powerful design tool to ensure that clients can only perform correct operations.
+	</p>
+	<p>
+		As I also wrote in <a href="http://blog.ploeh.dk/2016/11/28/easy-domain-modelling-with-types">my previous article</a>, this, too, is no silver bullet. You can turn an API into a pit of success, but there are still many fault scenarios that you can't prevent.
+	</p>
+	<p>
+		If you were intrigued by this article, but are having trouble applying these design techniques to your own field, I'm <a href="http://blog.ploeh.dk/hire-me">available for hire</a> for short or long-term engagements.
+	</p>
+</div>
