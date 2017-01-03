@@ -1,0 +1,184 @@
+---
+layout: post
+title: "Decoupling application errors from domain models"
+date: 2017-01-03 12:26 UTC
+tags: [Software Design, F#]
+---
+{% include JB/setup %}
+
+<div id="post">
+	<p>
+		<em>How to prevent application-specific error cases from infecting your domain models.</em>
+	</p>
+	<p>
+		Functional error-handling is often done with the Either monad. If all is good, the <em>right</em> case is returned, but if things go wrong, you'll want to return a value that indicates the error. In an application, you'll often need to be able to distinguish between different kinds of errors.
+	</p>
+	<p>
+		<strong>From application errors to HTTP responses</strong>
+	</p>
+	<p>
+		When an application encounters an error, it should respond appropriately. A GUI-based application should inform the user about the error, a batch job should log it, and a <a href="https://en.wikipedia.org/wiki/Representational_state_transfer">REST</a> API should return the appropriate HTTP status code.
+	</p>
+	<p>
+		Regular readers of this blog will know that I write many RESTful APIs in F#, using ASP.NET Web API. Since I like to write functional F#, but ASP.NET Web API is an object-oriented framework, I prefer to escape the object-oriented framework as soon as possible. (In general, it makes good architectural sense to write most of your code as framework-independent as possible.)
+	</p>
+	<p>
+		In my <a href="http://bit.ly/tddwithfsharp">Test-Driven Development with F#</a> Pluralsight course (a <a href="http://www.infoq.com/presentations/mock-fsharp-tdd">free, condensed version is also available</a>), I demonstrate how to handle various error cases in a Controller class:
+	</p>
+	<p>
+		<pre><span style="color:blue;">type</span>&nbsp;<span style="color:teal;">ReservationsController</span>&nbsp;(<span style="color:navy;">imp</span>)&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">inherit</span>&nbsp;<span style="color:teal;">ApiController</span>&nbsp;()
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">member</span>&nbsp;this.<span style="color:navy;">Post</span>&nbsp;(dtr&nbsp;:&nbsp;<span style="color:teal;">ReservationDtr</span>)&nbsp;:&nbsp;<span style="color:teal;">IHttpActionResult</span>&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">match</span>&nbsp;<span style="color:navy;">imp</span>&nbsp;dtr&nbsp;<span style="color:blue;">with</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:navy;">Failure</span>&nbsp;(<span style="color:navy;">ValidationError</span>&nbsp;msg)&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;this.<span style="color:navy;">BadRequest</span>&nbsp;msg&nbsp;:&gt;&nbsp;_
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:navy;">Failure</span>&nbsp;<span style="color:navy;">CapacityExceeded</span>&nbsp;<span style="color:blue;">-&gt;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;this.<span style="color:navy;">StatusCode</span>&nbsp;<span style="color:teal;">HttpStatusCode</span>.Forbidden&nbsp;:&gt;&nbsp;_
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:navy;">Success</span>&nbsp;()&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;this.<span style="color:navy;">Ok</span>&nbsp;()&nbsp;:&gt;&nbsp;_</pre>
+	</p>
+	<p>
+		The injected <code>imp</code> function is a complete, composed, vertical feature implementation that performs both input validation, business logic, and data access. If input validation fails, it'll return <code>Failure (ValidationError msg)</code>, and that value is translated to a <code>400 Bad Request</code> response. Likewise, if the business logic returns <code>Failure CapacityExceeded</code>, the response becomes <code>403 Forbidden</code>, and a success is returned as <code>200 OK</code>.
+	</p>
+	<p>
+		Both <code>ValidationError</code> and <code>CapacityExceeded</code> are cases of an <code>Error</code> type. This is only a simple example, so these are the only cases defined by that type:
+	</p>
+	<p>
+		<pre><span style="color:blue;">type</span>&nbsp;<span style="color:teal;">Error</span>&nbsp;=
+|&nbsp;<span style="color:navy;">ValidationError</span>&nbsp;<span style="color:blue;">of</span>&nbsp;<span style="color:teal;">string</span>
+|&nbsp;<span style="color:navy;">CapacityExceeded</span></pre>
+	</p>
+	<p>
+		This seems reasonable, but there's a problem.		
+	</p>
+	<p>
+		<strong>Error infection</strong>
+	</p>
+	<p>
+		In F#, a function can't use a type unless that type is already defined. This is a problem because the <code>Error</code> type defined above mixes different concerns. If you seek to <a href="http://fsharpforfunandprofit.com/posts/designing-with-types-making-illegal-states-unrepresentable">make illegal states unrepresentable</a>, it follows that validation is not a concern in your domain model. Validation is still important at the boundary of an application, so you can't just ignore it. The <code>ValidationError</code> case relates to the application boundary, while <code>CapacityExceeded</code> relates to the domain model.
+	</p>
+	<p>
+		Still, when implementing your domain model, you may want to return a <code>CapacityExceeded</code> value from time to time:
+	</p>
+	<p>
+		<pre><span style="color:green;">//&nbsp;int&nbsp;-&gt;&nbsp;int&nbsp;-&gt;&nbsp;Reservation&nbsp;-&gt;&nbsp;Result&lt;Reservation,Error&gt;</span>
+<span style="color:blue;">let</span>&nbsp;<span style="color:navy;">checkCapacity</span>&nbsp;capacity&nbsp;reservedSeats&nbsp;reservation&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;capacity&nbsp;&lt;&nbsp;reservation.Quantity&nbsp;+&nbsp;reservedSeats
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">then</span>&nbsp;<span style="color:navy;">Failure</span>&nbsp;<span style="color:navy;">CapacityExceeded</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">else</span>&nbsp;<span style="color:navy;">Success</span>&nbsp;reservation</pre>
+	</p>
+	<p>
+		Notice how the return type of this function is <code>Result&lt;Reservation,Error&gt;</code>. In order to be able to implement your domain model, you've now pulled in the <code>Error</code> type, which also defines the <code>ValidationError</code> case. Your domain model is now polluted by an application boundary concern.
+	</p>
+	<p>
+		I think many developers would consider this trivial, but in my experience, failure to manage dependencies is the dominant reason for <a href="https://en.wikipedia.org/wiki/Software_rot">code rot</a>. It makes the code less general, and less reusable, because it's now coupled to something that may not fit into a different context.
+	</p>
+	<p>
+		Particularly, the situation in the example looks like this:
+	</p>
+	<p>
+		<img src="/content/binary/error-infection-dependency-diagram.png" alt="Dependency diagram">
+	</p>
+	<p>
+		Boundary and data access modules depend on the domain model, <a href="http://blog.ploeh.dk/2013/12/03/layers-onions-ports-adapters-its-all-the-same">as they should</a>, but everything depends on the <code>Error</code> type. This is wrong. Modules or libraries should be able to define their own error types.
+	</p>
+	<p>
+		The <code>Error</code> type belongs in the <a href="http://blog.ploeh.dk/2011/07/28/CompositionRoot">Composition Root</a>, but it's impossible to put it there because F# prevents circular dependencies (a <a href="http://blog.ploeh.dk/2015/04/13/less-is-more-language-features">treasured language feature</a>).
+	</p>
+	<p>
+		Fortunately, the fix is straightforward.
+	</p>
+	<p>
+		<strong>Mapped Either values</strong>
+	</p>
+	<p>
+		A domain model should be self-contained. As Robert C. Martin puts it in <a href="http://amzn.to/19W4JHk">APPP</a>:
+		<blockquote>
+			Abstractions should not depend upon details. Details should depend upon abstractions.
+		</blockquote>
+		Your domain model is an abstraction of the real world (that's why it's called a <em>model</em>), and is the reason you're developing a piece of software in the first place. So start with the domain model:
+	</p>
+	<p>
+		<pre><span style="color:blue;">type</span>&nbsp;<span style="color:teal;">BookingError</span>&nbsp;=&nbsp;<span style="color:navy;">CapacityExceeded</span>
+ 
+<span style="color:green;">//&nbsp;int&nbsp;-&gt;&nbsp;int&nbsp;-&gt;&nbsp;Reservation&nbsp;-&gt;&nbsp;Result&lt;Reservation,BookingError&gt;</span>
+<span style="color:blue;">let</span>&nbsp;<span style="color:navy;">checkCapacity</span>&nbsp;capacity&nbsp;reservedSeats&nbsp;reservation&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;capacity&nbsp;&lt;&nbsp;reservation.Quantity&nbsp;+&nbsp;reservedSeats
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">then</span>&nbsp;<span style="color:navy;">Failure</span>&nbsp;<span style="color:navy;">CapacityExceeded</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">else</span>&nbsp;<span style="color:navy;">Success</span>&nbsp;reservation</pre>
+	</p>
+	<p>
+		In this example, there's only a single type of domain error (<code>CapacityExceeded</code>), but that's mostly because this is an example. Real production code could define a domain error union with several cases. The crux of the matter is that <code>BookingError</code> isn't infected with irrelevant implementation details like validation error types.
+	</p>
+	<p>
+		You're still going to need an exhaustive discriminated union to model all possible error cases for your particular application, but that type belongs in the Composition Root. Accordingly, you also need a way to return validation errors in your validation module. Often, a <code>string</code> is all you need:
+	</p>
+	<p>
+		<pre><span style="color:green;">//&nbsp;ReservationDtr&nbsp;-&gt;&nbsp;Result&lt;Reservation,string&gt;</span>
+<span style="color:blue;">let</span>&nbsp;<span style="color:navy;">validateReservation</span>&nbsp;(dtr&nbsp;:&nbsp;<span style="color:teal;">ReservationDtr</span>)&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">match</span>&nbsp;dtr.Date&nbsp;|&gt;&nbsp;<span style="color:teal;">DateTimeOffset</span>.<span style="color:navy;">TryParse</span>&nbsp;<span style="color:blue;">with</span>
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;(<span style="color:blue;">true</span>,&nbsp;date)&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:navy;">Success</span>&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:teal;">Reservation</span>.Date&nbsp;=&nbsp;date
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Name&nbsp;=&nbsp;dtr.Name
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Email&nbsp;=&nbsp;dtr.Email
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Quantity&nbsp;=&nbsp;dtr.Quantity&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;_&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:navy;">Failure</span>&nbsp;<span style="color:#a31515;">&quot;Invalid&nbsp;date.&quot;</span></pre>
+	</p>
+	<p>
+		The <code>validateReservation</code> function returns a <code>Reservation</code> value when validation succeeds, and a simple <code>string</code> with an error message if it fails.
+	</p>
+	<p>
+		You could, conceivably, return <code>string</code> values for errors from many different places in your code, so you're going to map them into an appropriate error case that makes sense in your application.
+	</p>
+	<p>
+		In this particular example, the Controller shown above should still look like this:
+	</p>
+	<p>
+		<pre><span style="color:blue;">type</span>&nbsp;<span style="color:teal;">Error</span>&nbsp;=
+|&nbsp;<span style="color:navy;">ValidationError</span>&nbsp;<span style="color:blue;">of</span>&nbsp;<span style="color:teal;">string</span>
+|&nbsp;<span style="color:navy;">DomainError</span>
+ 
+<span style="color:blue;">type</span>&nbsp;<span style="color:teal;">ReservationsController</span>&nbsp;(<span style="color:navy;">imp</span>)&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">inherit</span>&nbsp;<span style="color:teal;">ApiController</span>&nbsp;()
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">member</span>&nbsp;this.<span style="color:navy;">Post</span>&nbsp;(dtr&nbsp;:&nbsp;<span style="color:teal;">ReservationDtr</span>)&nbsp;:&nbsp;<span style="color:teal;">IHttpActionResult</span>&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">match</span>&nbsp;<span style="color:navy;">imp</span>&nbsp;dtr&nbsp;<span style="color:blue;">with</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:navy;">Failure</span>&nbsp;(<span style="color:navy;">ValidationError</span>&nbsp;msg)&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;this.<span style="color:navy;">BadRequest</span>&nbsp;msg&nbsp;:&gt;&nbsp;_
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:navy;">Failure</span>&nbsp;<span style="color:navy;">DomainError</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;this.<span style="color:navy;">StatusCode</span>&nbsp;<span style="color:teal;">HttpStatusCode</span>.Forbidden&nbsp;:&gt;&nbsp;_
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:navy;">Success</span>&nbsp;()&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;this.<span style="color:navy;">Ok</span>&nbsp;()&nbsp;:&gt;&nbsp;_</pre>
+	</p>
+	<p>
+		Notice how similar this is to the initial example. The important difference, however, is that <code>Error</code> is defined in the same module that also implements <code>ReservationsController</code>. This is part of the composition of the specific application.
+	</p>
+	<p>
+		In order to make that work, you're going to need to map from one failure type to another. This is trivial to do with an extra function belonging to your Result (or Either) module:
+	</p>
+	<p>
+		<pre><span style="color:green;">//&nbsp;(&#39;a&nbsp;-&gt;&nbsp;&#39;b)&nbsp;-&gt;&nbsp;Result&lt;&#39;c,&#39;a&gt;&nbsp;-&gt;&nbsp;Result&lt;&#39;c,&#39;b&gt;</span>
+<span style="color:blue;">let</span>&nbsp;<span style="color:navy;">mapFailure</span>&nbsp;<span style="color:navy;">f</span>&nbsp;x&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">match</span>&nbsp;x&nbsp;<span style="color:blue;">with</span>
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:navy;">Success</span>&nbsp;succ&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:navy;">Success</span>&nbsp;succ
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:navy;">Failure</span>&nbsp;fail&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:navy;">Failure</span>&nbsp;(<span style="color:navy;">f</span>&nbsp;fail)</pre>
+	</p>
+	<p>
+		This function takes any <code>Result</code> value and maps the failure case instead of the success case. It enables you to transform e.g. a <code>BookingError</code> into a <code>DomainError</code>:
+	</p>
+	<p>
+		<pre><span style="color:blue;">let</span>&nbsp;<span style="color:navy;">imp</span>&nbsp;candidate&nbsp;=&nbsp;<span style="color:blue;">either</span>&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;r&nbsp;=&nbsp;<span style="color:navy;">validateReservation</span>&nbsp;candidate&nbsp;|&gt;&nbsp;<span style="color:navy;">mapFailure</span>&nbsp;<span style="color:navy;">ValidationError</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;&nbsp;i&nbsp;=&nbsp;<span style="color:teal;">SqlGateway</span>.<span style="color:navy;">getReservedSeats</span>&nbsp;connectionString&nbsp;r.Date
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;r&nbsp;=&nbsp;<span style="color:navy;">checkCapacity</span>&nbsp;10&nbsp;i&nbsp;r&nbsp;|&gt;&nbsp;<span style="color:navy;">mapFailure</span>&nbsp;(<span style="color:blue;">fun</span>&nbsp;_&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:navy;">DomainError</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:teal;">SqlGateway</span>.<span style="color:navy;">saveReservation</span>&nbsp;connectionString&nbsp;r&nbsp;}</pre>
+	</p>
+	<p>
+		This composition is a variation of the composition I've <a href="http://blog.ploeh.dk/2016/03/21/composition-with-an-either-computation-expression">previously published</a>. The only difference is that the error cases are now mapped into the application-specific <code>Error</code> type.
+	</p>
+	<p>
+		<strong>Conclusion</strong>
+	</p>
+	<p>
+		Errors can occur in diverse places in your code base: when validating input, when making business decisions, when writing to, or reading from, databases, and so on.
+	</p>
+	<p>
+		When you use the Either monad for error handling, in a strongly typed language like F#, you'll need to define a discriminated union that models all the error cases you care about in the specific application. You can map module-specific error types into such a comprehensive error type using a function like <code>mapFailure</code>. In Haskell, it would be the <code>first</code> function of the <code>Bifunctor</code> typeclass, so this is a well-known function.
+	</p>
+</div>
