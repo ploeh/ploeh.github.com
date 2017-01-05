@@ -1,0 +1,192 @@
+---
+layout: post
+title: "A reusable ApiController Adapter"
+date: 2017-01-05 16:34 UTC
+tags: [F#, ASP.NET Web API]
+---
+{% include JB/setup %}
+
+<div id="post">
+	<p>
+		<em>Refactor ApiController Adapters to a single, reusable base class.</em>
+	</p>
+	<p>
+		Regular readers of this blog will know that I write many RESTful APIs in F#, using ASP.NET Web API. Since I like to write functional F#, but ASP.NET Web API is an object-oriented framework, I prefer to escape the object-oriented framework as soon as possible. (In general, it makes good architectural sense to write most of your code as framework-independent as possible.)
+	</p>
+	<p>
+		(Regular readers will also have <a href="http://blog.ploeh.dk/2017/01/03/decoupling-application-errors-from-domain-models">seen the above paragraph before</a>.)
+	</p>
+	<p>
+		To bridge the gap between the object-oriented framework and my functional code, I implement Controller classes like this:
+	</p>
+	<p>
+		<pre><span style="color:blue;">type</span>&nbsp;<span style="color:teal;">CreditCardController</span>&nbsp;(<span style="color:navy;">imp</span>)&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">inherit</span>&nbsp;<span style="color:teal;">ApiController</span>&nbsp;()
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">member</span>&nbsp;this.<span style="color:navy;">Post</span>&nbsp;(portalId&nbsp;:&nbsp;<span style="color:teal;">string</span>,&nbsp;req&nbsp;:&nbsp;<span style="color:teal;">PaymentDtr</span>)&nbsp;:&nbsp;<span style="color:teal;">IHttpActionResult</span>&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">match</span>&nbsp;<span style="color:navy;">imp</span>&nbsp;portalId&nbsp;req&nbsp;<span style="color:blue;">with</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:navy;">Success</span>&nbsp;(resp&nbsp;:&nbsp;<span style="color:teal;">PaymentDtr</span>)&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;this.<span style="color:navy;">Ok</span>&nbsp;resp&nbsp;:&gt;&nbsp;_
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:navy;">Failure</span>&nbsp;<span style="color:navy;">RouteFailure</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;this.<span style="color:navy;">NotFound</span>&nbsp;()&nbsp;:&gt;&nbsp;_
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:navy;">Failure</span>&nbsp;(<span style="color:navy;">ValidationFailure</span>&nbsp;msg)&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;this.<span style="color:navy;">BadRequest</span>&nbsp;msg&nbsp;:&gt;&nbsp;_
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:navy;">Failure</span>&nbsp;(<span style="color:navy;">IntegrationFailure</span>&nbsp;msg)&nbsp;<span style="color:blue;">-&gt;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;this.<span style="color:navy;">InternalServerError</span>&nbsp;(<span style="color:teal;">InvalidOperationException</span>&nbsp;msg)&nbsp;:&gt;&nbsp;_</pre>
+	</p>
+	<p>
+		The above example is a Controller that handles <a href="http://blog.ploeh.dk/2016/12/16/from-rest-to-algebraic-data">incoming payment data</a>. It immediately delegates all work to an injected <code>imp</code> function, and pattern matches on the return value in order to return correct responses.
+	</p>
+	<p>
+		This <code>CreditCardController</code> extends ApiController in order to work nicely with ASP.NET Web API, while the injected <code>imp</code> function is written using functional programming. If you want to be charitable, you could say that the Controller is an <a href="https://en.wikipedia.org/wiki/Adapter_pattern">Adapter</a> between ASP.NET Web API and the functional F# API that actually implements the service. If you want to be cynical, you could also call it an <a href="http://wiki.c2.com/?AnticorruptionLayer">anti-corruption layer</a>.
+	</p>
+	<p>
+		This works well, but tends to become repetitive:
+	</p>
+	<p>
+		<pre><span style="color:blue;">open</span>&nbsp;System
+<span style="color:blue;">open</span>&nbsp;System.Web.Http
+ 
+<span style="color:blue;">type</span>&nbsp;<span style="color:teal;">BoundaryFailure</span>&nbsp;=
+|&nbsp;<span style="color:navy;">RouteFailure</span>
+|&nbsp;<span style="color:navy;">ValidationFailure</span>&nbsp;<span style="color:blue;">of</span>&nbsp;<span style="color:teal;">string</span>
+|&nbsp;<span style="color:navy;">IntegrationFailure</span>&nbsp;<span style="color:blue;">of</span>&nbsp;<span style="color:teal;">string</span>
+ 
+<span style="color:blue;">type</span>&nbsp;<span style="color:teal;">HomeController</span>&nbsp;(<span style="color:navy;">imp</span>)&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">inherit</span>&nbsp;<span style="color:teal;">ApiController</span>&nbsp;()
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;[&lt;<span style="color:teal;">AllowAnonymous</span>&gt;]
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">member</span>&nbsp;this.<span style="color:navy;">Get</span>&nbsp;()&nbsp;:&nbsp;<span style="color:teal;">IHttpActionResult</span>&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">match</span>&nbsp;<span style="color:navy;">imp</span>&nbsp;()&nbsp;<span style="color:blue;">with</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:navy;">Success</span>&nbsp;(resp&nbsp;:&nbsp;<span style="color:teal;">HomeDtr</span>)&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;this.<span style="color:navy;">Ok</span>&nbsp;resp&nbsp;:&gt;&nbsp;_
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:navy;">Failure</span>&nbsp;<span style="color:navy;">RouteFailure</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;this.<span style="color:navy;">NotFound</span>&nbsp;()&nbsp;:&gt;&nbsp;_
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:navy;">Failure</span>&nbsp;(<span style="color:navy;">ValidationFailure</span>&nbsp;msg)&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;this.<span style="color:navy;">BadRequest</span>&nbsp;msg&nbsp;:&gt;&nbsp;_
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:navy;">Failure</span>&nbsp;(<span style="color:navy;">IntegrationFailure</span>&nbsp;msg)&nbsp;<span style="color:blue;">-&gt;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;this.<span style="color:navy;">InternalServerError</span>&nbsp;(<span style="color:teal;">InvalidOperationException</span>&nbsp;msg)&nbsp;:&gt;&nbsp;_
+ 
+<span style="color:blue;">type</span>&nbsp;<span style="color:teal;">CreditCardController</span>&nbsp;(<span style="color:navy;">imp</span>)&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">inherit</span>&nbsp;<span style="color:teal;">ApiController</span>&nbsp;()
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">member</span>&nbsp;this.<span style="color:navy;">Post</span>&nbsp;(portalId&nbsp;:&nbsp;<span style="color:teal;">string</span>,&nbsp;req&nbsp;:&nbsp;<span style="color:teal;">PaymentDtr</span>)&nbsp;:&nbsp;<span style="color:teal;">IHttpActionResult</span>&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">match</span>&nbsp;<span style="color:navy;">imp</span>&nbsp;portalId&nbsp;req&nbsp;<span style="color:blue;">with</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:navy;">Success</span>&nbsp;(resp&nbsp;:&nbsp;<span style="color:teal;">PaymentDtr</span>)&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;this.<span style="color:navy;">Ok</span>&nbsp;resp&nbsp;:&gt;&nbsp;_
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:navy;">Failure</span>&nbsp;<span style="color:navy;">RouteFailure</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;this.<span style="color:navy;">NotFound</span>&nbsp;()&nbsp;:&gt;&nbsp;_
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:navy;">Failure</span>&nbsp;(<span style="color:navy;">ValidationFailure</span>&nbsp;msg)&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;this.<span style="color:navy;">BadRequest</span>&nbsp;msg&nbsp;:&gt;&nbsp;_
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:navy;">Failure</span>&nbsp;(<span style="color:navy;">IntegrationFailure</span>&nbsp;msg)&nbsp;<span style="color:blue;">-&gt;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;this.<span style="color:navy;">InternalServerError</span>&nbsp;(<span style="color:teal;">InvalidOperationException</span>&nbsp;msg)&nbsp;:&gt;&nbsp;_
+ 
+<span style="color:blue;">type</span>&nbsp;<span style="color:teal;">CreditCardRecurrentStartController</span>&nbsp;(<span style="color:navy;">imp</span>)&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">inherit</span>&nbsp;<span style="color:teal;">ApiController</span>&nbsp;()
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">member</span>&nbsp;this.<span style="color:navy;">Post</span>&nbsp;(portalId&nbsp;:&nbsp;<span style="color:teal;">string</span>,&nbsp;req&nbsp;:&nbsp;<span style="color:teal;">PaymentDtr</span>)&nbsp;:&nbsp;<span style="color:teal;">IHttpActionResult</span>&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">match</span>&nbsp;<span style="color:navy;">imp</span>&nbsp;portalId&nbsp;req&nbsp;<span style="color:blue;">with</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:navy;">Success</span>&nbsp;(resp&nbsp;:&nbsp;<span style="color:teal;">PaymentDtr</span>)&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;this.<span style="color:navy;">Ok</span>&nbsp;resp&nbsp;:&gt;&nbsp;_
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:navy;">Failure</span>&nbsp;<span style="color:navy;">RouteFailure</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;this.<span style="color:navy;">NotFound</span>&nbsp;()&nbsp;:&gt;&nbsp;_
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:navy;">Failure</span>&nbsp;(<span style="color:navy;">ValidationFailure</span>&nbsp;msg)&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;this.<span style="color:navy;">BadRequest</span>&nbsp;msg&nbsp;:&gt;&nbsp;_
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:navy;">Failure</span>&nbsp;(<span style="color:navy;">IntegrationFailure</span>&nbsp;msg)&nbsp;<span style="color:blue;">-&gt;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;this.<span style="color:navy;">InternalServerError</span>&nbsp;(<span style="color:teal;">InvalidOperationException</span>&nbsp;msg)&nbsp;:&gt;&nbsp;_
+ 
+<span style="color:blue;">type</span>&nbsp;<span style="color:teal;">CreditCardRecurrentController</span>&nbsp;(<span style="color:navy;">imp</span>)&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">inherit</span>&nbsp;<span style="color:teal;">ApiController</span>&nbsp;()
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">member</span>&nbsp;this.<span style="color:navy;">Post</span>&nbsp;(portalId&nbsp;:&nbsp;<span style="color:teal;">string</span>,&nbsp;transactionKey&nbsp;:&nbsp;<span style="color:teal;">string</span>,&nbsp;req&nbsp;:&nbsp;<span style="color:teal;">PaymentDtr</span>)&nbsp;:&nbsp;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:teal;">IHttpActionResult</span>&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">match</span>&nbsp;<span style="color:navy;">imp</span>&nbsp;portalId&nbsp;transactionKey&nbsp;req&nbsp;<span style="color:blue;">with</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:navy;">Success</span>&nbsp;(resp&nbsp;:&nbsp;<span style="color:teal;">PaymentDtr</span>)&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;this.<span style="color:navy;">Ok</span>&nbsp;resp&nbsp;:&gt;&nbsp;_
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:navy;">Failure</span>&nbsp;<span style="color:navy;">RouteFailure</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;this.<span style="color:navy;">NotFound</span>&nbsp;()&nbsp;:&gt;&nbsp;_
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:navy;">Failure</span>&nbsp;(<span style="color:navy;">ValidationFailure</span>&nbsp;msg)&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;this.<span style="color:navy;">BadRequest</span>&nbsp;msg&nbsp;:&gt;&nbsp;_
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:navy;">Failure</span>&nbsp;(<span style="color:navy;">IntegrationFailure</span>&nbsp;msg)&nbsp;<span style="color:blue;">-&gt;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;this.<span style="color:navy;">InternalServerError</span>&nbsp;(<span style="color:teal;">InvalidOperationException</span>&nbsp;msg)&nbsp;:&gt;&nbsp;_
+ 
+<span style="color:blue;">type</span>&nbsp;<span style="color:teal;">PushController</span>&nbsp;(<span style="color:navy;">imp</span>)&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">inherit</span>&nbsp;<span style="color:teal;">ApiController</span>&nbsp;()
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">member</span>&nbsp;this.<span style="color:navy;">Post</span>&nbsp;(portalId&nbsp;:&nbsp;<span style="color:teal;">string</span>,&nbsp;req&nbsp;:&nbsp;<span style="color:teal;">PushRequestDtr</span>)&nbsp;:&nbsp;<span style="color:teal;">IHttpActionResult</span>&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">match</span>&nbsp;<span style="color:navy;">imp</span>&nbsp;portalId&nbsp;req&nbsp;<span style="color:blue;">with</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:navy;">Success</span>&nbsp;()&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;this.<span style="color:navy;">Ok</span>&nbsp;()&nbsp;:&gt;&nbsp;_
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:navy;">Failure</span>&nbsp;<span style="color:navy;">RouteFailure</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;this.<span style="color:navy;">NotFound</span>&nbsp;()&nbsp;:&gt;&nbsp;_
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:navy;">Failure</span>&nbsp;(<span style="color:navy;">ValidationFailure</span>&nbsp;msg)&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;this.<span style="color:navy;">BadRequest</span>&nbsp;msg&nbsp;:&gt;&nbsp;_
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:navy;">Failure</span>&nbsp;(<span style="color:navy;">IntegrationFailure</span>&nbsp;msg)&nbsp;<span style="color:blue;">-&gt;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;this.<span style="color:navy;">InternalServerError</span>&nbsp;(<span style="color:teal;">InvalidOperationException</span>&nbsp;msg)&nbsp;:&gt;&nbsp;_</pre>
+	</p>
+	<p>
+		At this point in our code base, we had five Controllers, and they all had similar implementations. They all pass their input parameters to their injected <code>imp</code> functions, and they all pattern match in exactly the same way. There are, however, small variations. Notice that one of the Controllers expose an HTTP GET operation, whereas the other four expose a POST operation. Conceivably, there could also be Controllers that allow both GET and POST, and so on, but this isn't the case here.
+	</p>
+	<p>
+		The parameter list for each of the action methods also vary. Some take two arguments, one takes three, and the GET method takes none.
+	</p>
+	<p>
+		Another variation is that <code>HomeController.Get</code> is annotated with an <code>[&lt;AllowAnonymous&gt;]</code> attribute, while the other action methods aren't.
+	</p>
+	<p>
+		Despite these variations, it's possible to make the code less repetitive.
+	</p>
+	<p>
+		You'd think you could easily refactor the code by turning the identical pattern matches into a reusable function. Unfortunately, it's not so simple, because the methods used to return HTTP responses are all <code>protected</code> (to use a C# term for something that F# doesn't even have). You can call <code>this.Ok ()</code> or <code>this.NotFound ()</code> from a derived class, but not from a 'free' <code>let</code>-bound function.
+	</p>
+	<p>
+		After much trial and error, I finally arrived at this reusable base class:
+	</p>
+	<p>
+		<pre><span style="color:blue;">type</span>&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:teal;">Imp</span>&lt;&#39;inp,&nbsp;&#39;out&gt;&nbsp;=&nbsp;&#39;inp&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:teal;">Result</span>&lt;&#39;out,&nbsp;<span style="color:teal;">BoundaryFailure</span>&gt;
+ 
+[&lt;<span style="color:teal;">AbstractClass</span>&gt;]
+<span style="color:blue;">type</span>&nbsp;<span style="color:teal;">FunctionController</span>&nbsp;()&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">inherit</span>&nbsp;<span style="color:teal;">ApiController</span>&nbsp;()
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;Imp&lt;&#39;a,&#39;b&gt;&nbsp;-&gt;&nbsp;&#39;a&nbsp;-&gt;&nbsp;IHttpActionResult</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">member</span>&nbsp;this.<span style="color:navy;">Execute</span>&nbsp;<span style="color:navy;">imp</span>&nbsp;req&nbsp;:&nbsp;<span style="color:teal;">IHttpActionResult</span>&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">match</span>&nbsp;<span style="color:navy;">imp</span>&nbsp;req&nbsp;<span style="color:blue;">with</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:navy;">Success</span>&nbsp;resp&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;this.<span style="color:navy;">Ok</span>&nbsp;resp&nbsp;:&gt;&nbsp;_
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:navy;">Failure</span>&nbsp;<span style="color:navy;">RouteFailure</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;this.<span style="color:navy;">NotFound</span>&nbsp;()&nbsp;:&gt;&nbsp;_
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:navy;">Failure</span>&nbsp;(<span style="color:navy;">ValidationFailure</span>&nbsp;msg)&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;this.<span style="color:navy;">BadRequest</span>&nbsp;msg&nbsp;:&gt;&nbsp;_
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:navy;">Failure</span>&nbsp;(<span style="color:navy;">IntegrationFailure</span>&nbsp;msg)&nbsp;<span style="color:blue;">-&gt;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;this.<span style="color:navy;">InternalServerError</span>&nbsp;(<span style="color:teal;">InvalidOperationException</span>&nbsp;msg)&nbsp;:&gt;&nbsp;_</pre>
+	</p>
+	<p>
+		It's been more than a decade, I think, since I last used inheritance to enable reuse, but in this case I could find no other way because of the design of ApiController. It gets the job done, though:
+	</p>
+	<p>
+		<pre><span style="color:blue;">type</span>&nbsp;<span style="color:teal;">HomeController</span>&nbsp;(<span style="color:navy;">imp</span>&nbsp;:&nbsp;<span style="color:teal;">Imp</span>&lt;_,&nbsp;<span style="color:teal;">HomeDtr</span>&gt;)&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">inherit</span>&nbsp;<span style="color:teal;">FunctionController</span>&nbsp;()
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;[&lt;<span style="color:teal;">AllowAnonymous</span>&gt;]
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">member</span>&nbsp;this.<span style="color:navy;">Get</span>&nbsp;()&nbsp;=&nbsp;this.<span style="color:navy;">Execute</span>&nbsp;<span style="color:navy;">imp</span>&nbsp;()
+ 
+<span style="color:blue;">type</span>&nbsp;<span style="color:teal;">CreditCardController</span>&nbsp;(<span style="color:navy;">imp</span>&nbsp;:&nbsp;<span style="color:teal;">Imp</span>&lt;_,&nbsp;<span style="color:teal;">PaymentDtr</span>&gt;)&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">inherit</span>&nbsp;<span style="color:teal;">FunctionController</span>&nbsp;()
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">member</span>&nbsp;this.<span style="color:navy;">Post</span>&nbsp;(portalId&nbsp;:&nbsp;<span style="color:teal;">string</span>,&nbsp;req&nbsp;:&nbsp;<span style="color:teal;">PaymentDtr</span>)&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;this.<span style="color:navy;">Execute</span>&nbsp;<span style="color:navy;">imp</span>&nbsp;(portalId,&nbsp;req)
+ 
+<span style="color:blue;">type</span>&nbsp;<span style="color:teal;">CreditCardRecurrentStartController</span>&nbsp;(<span style="color:navy;">imp</span>&nbsp;:&nbsp;<span style="color:teal;">Imp</span>&lt;_,&nbsp;<span style="color:teal;">PaymentDtr</span>&gt;)&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">inherit</span>&nbsp;<span style="color:teal;">FunctionController</span>&nbsp;()
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">member</span>&nbsp;this.<span style="color:navy;">Post</span>&nbsp;(portalId&nbsp;:&nbsp;<span style="color:teal;">string</span>,&nbsp;req&nbsp;:&nbsp;<span style="color:teal;">PaymentDtr</span>)&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;this.<span style="color:navy;">Execute</span>&nbsp;<span style="color:navy;">imp</span>&nbsp;(portalId,&nbsp;req)
+ 
+<span style="color:blue;">type</span>&nbsp;<span style="color:teal;">CreditCardRecurrentController</span>&nbsp;(<span style="color:navy;">imp</span>&nbsp;:&nbsp;<span style="color:teal;">Imp</span>&lt;_,&nbsp;<span style="color:teal;">PaymentDtr</span>&gt;)&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">inherit</span>&nbsp;<span style="color:teal;">FunctionController</span>&nbsp;()
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">member</span>&nbsp;this.<span style="color:navy;">Post</span>&nbsp;(portalId&nbsp;:&nbsp;<span style="color:teal;">string</span>,&nbsp;transactionKey&nbsp;:&nbsp;<span style="color:teal;">string</span>,&nbsp;req&nbsp;:&nbsp;<span style="color:teal;">PaymentDtr</span>)&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;this.<span style="color:navy;">Execute</span>&nbsp;<span style="color:navy;">imp</span>&nbsp;(portalId,&nbsp;transactionKey,&nbsp;req)
+ 
+<span style="color:blue;">type</span>&nbsp;<span style="color:teal;">PushController</span>&nbsp;(<span style="color:navy;">imp</span>&nbsp;:&nbsp;<span style="color:teal;">Imp</span>&lt;_,&nbsp;<span style="color:teal;">unit</span>&gt;)&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">inherit</span>&nbsp;<span style="color:teal;">FunctionController</span>&nbsp;()
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">member</span>&nbsp;this.<span style="color:navy;">Post</span>&nbsp;(portalId&nbsp;:&nbsp;<span style="color:teal;">string</span>,&nbsp;req&nbsp;:&nbsp;<span style="color:teal;">PushRequestDtr</span>)&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;this.<span style="color:navy;">Execute</span>&nbsp;<span style="color:navy;">imp</span>&nbsp;(portalId,&nbsp;req)</pre>
+	</p>
+	<p>
+		Notice that all five Controllers now derive from <code>FunctionController</code> instead of <code>ApiController</code>. The <code>HomeController.Get</code> method is still annotated with the <code>[&lt;AllowAnonymous&gt;]</code> attribute, and it's still a GET operation, whereas all the other methods still implement POST operations. You'll also notice that the various <code>Post</code> methods have retained their varying number of parameters.
+	</p>
+	<p>
+		In order to make this work, I had to make one trivial change: previously, all the <code>imp</code> functions were curried, but that doesn't fit into a single reusable base implementation. If you consider the type of <code>FunctionController.Execute</code>, you can see that the <code>imp</code> function is expected to take a single input value of the type <code>'a</code> (and return a value of the type <code>Result&lt;'b, BoundaryFailure&gt;</code>). Since any <code>imp</code> function can only take a single input value, I had to uncurry them all. You can see that now all the <code>Post</code> methods pass their input parameters as a single tuple to their injected <code>imp</code> function.
+	</p>
+	<p>
+		You may be wondering about the <code>Imp&lt;&#39;inp,&nbsp;&#39;out&gt;</code> type alias. It's not strictly necessary, but helps keep the code clean. As I've attempted to indicate with the code comment above the <code>Execute</code> method, it's generic. When used in a derived Controller, the compiler can infer the type of <code>'a</code> because it already knows the types of the input parameters. For example, in <code>CreditCardController.Post</code>, the input parameters are already annotated as <code>string</code> and <code>PaymentDtr</code>, so the compiler can easily infer the type of <code>(portalId, req)</code>.
+	</p>
+	<p>
+		On the other hand, the compiler can't infer the type of <code>'b</code>, because that value doesn't relate to <code>IHttpActionResult</code>. To help the compiler, I introduced the <code>Imp</code> type, because it enabled me to concisely annotate the type of the output value, while using a wild-card type for the input type.
+	</p>
+	<p>
+		I wouldn't mind getting rid of Controllers altogether, but this is as close as I've been able to get with ASP.NET Web API.
+	</p>
+</div>
