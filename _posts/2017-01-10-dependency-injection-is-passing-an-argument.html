@@ -1,0 +1,142 @@
+---
+layout: post
+title: "Dependency injection is passing an argument"
+date: 2017-01-10 17:02 UTC
+tags: [Software Design, Dependency Injection]
+---
+{% include JB/setup %}
+
+<div id="post">
+	<p>
+		<em>Is dependency injection really just passing an argument? A brief review.</em>
+	</p>
+	<p>
+		This is the first article in a small article series called <a href="">from dependency injection to dependency rejection</a>.
+	</p>
+	<p>
+		In a talk at the 2012 Northeast Scala Symposium, <a href="https://t.co/oD1oQYZwbz">Rúnar Bjarnason casually remarked</a> that dependency injection is "really just a pretentious way to say 'taking an argument'". Given that I've written a 500+ pages <a href="http://amzn.to/12p90MG">book about dependency injection</a>, you might expect me to disagree with that. Yet, there's some truth to that statement, although it's not quite as simple as that.
+	</p>
+	<p>
+		In this article, I'll show you some simple examples and explain why, on the one hand, Rúnar Bjarnason is right, but also, on the other hand, why there's a bit more to it.
+	</p>
+	<p>
+		<strong>Restaurant reservation example</strong>
+	</p>
+	<p>
+		Like the other articles in this series, the example scenario is on-line restaurant reservation. Imagine that you've been asked to develop an HTTP-based API that accept JSON documents containing restaurant reservations. Furthermore, assume that you're using ASP.NET Web API with C# for the job, and that you're aspiring to use <a href="http://amzn.to/WBCwx7">domain-driven design</a>.
+	</p>
+	<p>
+		In order to handle the incoming POST request, you could write an action method like this:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">IHttpActionResult</span>&nbsp;Post(<span style="color:#2b91af;">ReservationRequestDto</span>&nbsp;dto)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;validationMsg&nbsp;=&nbsp;Validator.Validate(dto);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;(validationMsg&nbsp;!=&nbsp;<span style="color:#a31515;">&quot;&quot;</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:blue;">this</span>.BadRequest(validationMsg);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;r&nbsp;=&nbsp;Mapper.Map(dto);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;id&nbsp;=&nbsp;MaîtreD.TryAccept(r);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;(id&nbsp;==&nbsp;<span style="color:blue;">null</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:blue;">this</span>.StatusCode(<span style="color:#2b91af;">HttpStatusCode</span>.Forbidden);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:blue;">this</span>.Ok();
+}</pre>
+	</p>
+	<p>
+		This method follows a simple and familiar path: validate input, map to a domain model, delegate to said model, examine posterior state, and return a result.
+	</p>
+	<p>
+		You may have noticed, though, that this method doesn't do all the work itself. It delegates some of the work to collaborators: <code>Validator</code>, <code>Mapper</code>, and <code>MaîtreD</code>. Where do these collaborators come from?
+	</p>
+	<p>
+		They are <em>dependencies</em>. Could you pass these objects as arguments?
+	</p>
+	<p>
+		You can, but not as arguments to the <code>Post</code> method. This method constitutes part of the boundary of the HTTP API. ASP NET Web API routes and dispatches incoming HTTP requests by convention, and <em>action methods</em> must follow that convention. Unfortunately, you can't just make the function take any argument you'd like, so you have to find another place to pass those dependencies into the object.
+	</p>
+	<p>
+		The second-best option (after the <code>Post</code> method itself) is via the constructor:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;ReservationsController(
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">IValidator</span>&nbsp;validator,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">IMapper</span>&nbsp;mapper,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">IMaîtreD</span>&nbsp;maîtreD)
+{&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.Validator&nbsp;=&nbsp;validator;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.Mapper&nbsp;=&nbsp;mapper;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.MaîtreD&nbsp;=&nbsp;maîtreD;
+}</pre>
+	</p>
+	<p>
+		This is the application of a design pattern called <em>constructor injection</em>. It captures the dependencies in class fields or properties, making them available for members (like <code>Post</code>) on the class.
+	</p>
+	<p>
+		This turns out to be a regular pattern.
+	</p>
+	<p>
+		<strong>Turtles all the way down</strong>
+	</p>
+	<p>
+		You could argue that the <code>Post</code> method is a special case, since it's part of the boundary of the system, and therefore must adhere to specific rules. On the other hand, these rule don't apply deeper in the implementation, so could you implement other objects by simply passing in dependencies as arguments?
+	</p>
+	<p>
+		Consider, as an example, the implementation of <code>IMaîtreD.TryAccept</code>:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">int</span>?&nbsp;TryAccept(<span style="color:#2b91af;">Reservation</span>&nbsp;reservation)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;reservedSeats&nbsp;=&nbsp;ReservationsRepository
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.ReadReservations(reservation.Date)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.Sum(r&nbsp;=&gt;&nbsp;r.Quantity);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;(reservedSeats&nbsp;+&nbsp;reservation.Quantity&nbsp;&lt;=&nbsp;Capacity)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;reservation.IsAccepted&nbsp;=&nbsp;<span style="color:blue;">true</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;ReservationsRepository.Create(reservation);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:blue;">null</span>;
+}</pre>
+	</p>
+	<p>
+		This method has another collaborator: <code>ReservationsRepository</code>. It's another dependency. Where does it come from?
+	</p>
+	<p>
+		Could you make the <code>TryAccept</code> method take <code>ReservationsRepository</code> as an argument?
+	</p>
+	<p>
+		Unfortunately, that's not possible either, because the method is defined by the <code>IMaîtreD</code> interface:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">interface</span>&nbsp;<span style="color:#2b91af;">IMaîtreD</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">int</span>?&nbsp;TryAccept(<span style="color:#2b91af;">Reservation</span>&nbsp;reservation);
+}</pre>
+	</p>
+	<p>
+		You may recall that the above <code>Post</code> method is programmed against the <code>IMaîtreD</code> interface, and not the concrete class. It'd be a leaky abstraction to add <code>IReservationsRepository</code> as an argument to <code>IMaîtreD.TryAccept</code>, because not all implementations of the interface may need that dependency. Or perhaps another implementation has another dependency. Should we add that to the parameter list of <code>IMaîtreD.TryAccept</code>as well?
+	</p>
+	<p>
+		Surely, that's not a tenable design. On the other hand, by using constructor injection, you can decouple implementation details from your abstractions:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;MaîtreD(<span style="color:blue;">int</span>&nbsp;capacity,&nbsp;<span style="color:#2b91af;">IReservationsRepository</span>&nbsp;reservationsRepository)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.Capacity&nbsp;=&nbsp;capacity;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.ReservationsRepository&nbsp;=&nbsp;reservationsRepository;
+}</pre>
+	</p>
+	<p>
+		This constructor not only takes an <code>IReservationsRepository</code> object, but also an integer that represents the capacity of the restaurant in question. This once again demonstrates that <a href="http://blog.ploeh.dk/2012/07/02/PrimitiveDependencies">dependencies can also be primitive values</a>.
+	</p>
+	<p>
+		<strong>Summary</strong>
+	</p>
+	<p>
+		Dependency injection is, in a sense, only a specific way for objects to take dependencies. Often, however, objects have roles defined by the the interfaces they implement. Such objects may need collaborators that are not available via the APIs defined by these interfaces, so you'll have to supply dependencies via members that belong to the concrete class in question. Passing dependencies via a class' constructor is the best way to do that.
+	</p>
+	<p>
+		<strong>Next:</strong> <a href="">Partial application is dependency injection</a>.
+	</p>
+</div>
