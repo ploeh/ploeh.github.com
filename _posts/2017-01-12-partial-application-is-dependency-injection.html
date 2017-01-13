@@ -1,0 +1,225 @@
+---
+layout: post
+title: "Partial application is dependency injection"
+date: 2017-01-12 19:01 UTC
+tags: [Software Design, Dependency Injection, F#, Haskell]
+---
+{% include JB/setup %}
+
+<div id="post">
+	<p>
+		<em>The equivalent of dependency injection in F# is partial function application, but it isn't functional.</em>
+	</p>
+	<p>
+		This is the second article in a small article series called <a href="">from dependency injection to dependency rejection</a>.
+	</p>
+	<p>
+		People often ask me how to do dependency injection in F#. That's only natural, since I wrote <a href="http://amzn.to/12p90MG">Dependency Injection in .NET</a> some years ago, and since I've increasingly focused my energy on F# and other functional programming languages.
+	</p>
+	<p>
+		Over the years, I've seen other F# experts respond to that question, and often, the answer is that partial function application is the F# way to do dependency injection. For some years, I believed that as well. It turns out to be true in one sense, but incorrect in another. Partial application <em>is</em> equivalent to dependency injection. It's just not a functional solution to dealing with dependencies.
+	</p>
+	<p>
+		(To be as clear as I can be: I'm not claiming that partial application isn't functional. What I claim is that partial application used for dependency injection isn't functional.)
+	</p>
+	<p>
+		<strong>Attempted dependency injection using functions</strong>
+	</p>
+	<p>
+		Returning to the example from the <a href="">previous article</a>, you could try to rewrite <code>MaîtreD.TryAccept</code> as a function:
+	</p>
+	<p>
+		<pre><span style="color:green;">//&nbsp;int&nbsp;-&gt;&nbsp;(DateTimeOffset&nbsp;-&gt;&nbsp;Reservation&nbsp;list)&nbsp;-&gt;&nbsp;(Reservation&nbsp;-&gt;&nbsp;int)&nbsp;-&gt;&nbsp;Reservation</span>
+<span style="color:green;">//&nbsp;-&gt;&nbsp;int&nbsp;option</span>
+<span style="color:blue;">let</span>&nbsp;<span style="color:navy;">tryAccept</span>&nbsp;capacity&nbsp;<span style="color:navy;">readReservations</span>&nbsp;<span style="color:navy;">createReservation</span>&nbsp;reservation&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;reservedSeats&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:navy;">readReservations</span>&nbsp;reservation.Date&nbsp;|&gt;&nbsp;<span style="color:teal;">List</span>.<span style="color:navy;">sumBy</span>&nbsp;(<span style="color:blue;">fun</span>&nbsp;x&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;x.Quantity)
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;reservedSeats&nbsp;+&nbsp;reservation.Quantity&nbsp;&lt;=&nbsp;capacity
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">then</span>&nbsp;<span style="color:navy;">createReservation</span>&nbsp;{&nbsp;reservation&nbsp;<span style="color:blue;">with</span>&nbsp;IsAccepted&nbsp;=&nbsp;<span style="color:blue;">true</span>&nbsp;}&nbsp;|&gt;&nbsp;<span style="color:navy;">Some</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">else</span>&nbsp;<span style="color:navy;">None</span></pre>
+	</p>
+	<p>
+		You could imagine that this <code>tryAccept</code> function is part of a module called <code>MaîtreD</code>, just to keep the examples as equivalent as possible.
+	</p>
+	<p>
+		The function takes four arguments. The first is the capacity of the restaurant in question; a primitive integer. The next two arguments, <code>readReservations</code> and <code>createReservation</code> fill the role of the injected <code>IReservationsRepository</code> in the previous article. In the object-oriented example, the <code>TryAccept</code> method used two methods on the repository: <code>ReadReservations</code> and <code>Create</code>. Instead of using an interface, in the F# function, I make the function take to independent functions. They have (almost) the same types as their C# counterparts.
+	</p>
+	<p>
+		The first three arguments correspond to the injected dependencies in the previous <code>MaîtreD</code> class. The fourth argument is a <code>Reservation</code> value, which corresponds to the input to the previous <code>TryAccept</code> method.
+	</p>
+	<p>
+		Instead of returning a nullable integer, this F# version returns an <code>int option</code>.
+	</p>
+	<p>
+		The implementation is also equivalent to the C# example: Read the relevant reservations from the database using the <code>readReservations</code> function argument, and sum over their quantities. Based on the number of already reserved seats, decide whether or not to accept the reservation. If you can accept the reservation, set <code>IsAccepted</code> to <code>true</code>, call the <code>createReservation</code> function argument, and pipe the returned ID (integer) to <code>Some</code>. If you can't accept the reservation, then return <code>None</code>.
+	</p>
+	<p>
+		Notice that the first three arguments are 'dependencies', whereas the last argument is the 'actual input', if you will. This means that you can use partial function application to compose this function.
+	</p>
+	<p>
+		<strong>Application</strong>
+	</p>
+	<p>
+		If you recall the definition of the previous <code>IMaîtreD</code> interface, the <code>TryAccept</code> method was defined like this:
+	</p>
+	<p>
+		<pre><span style="color:blue;">int</span>?&nbsp;TryAccept(<span style="color:#2b91af;">Reservation</span>&nbsp;reservation);</pre>
+	</p>
+	<p>
+		You could attempt to define a similar function with the type <code>Reservation -&gt; int option</code>. Normally, you'd want to do this closer to the boundary of the application, but the following example demonstrates how to 'inject' real database operations into the function.
+	</p>
+	<p>
+		Imagine that you have a <code>DB</code> module with these functions:
+	</p>
+	<p>
+		<pre><span style="color:blue;">module</span>&nbsp;<span style="color:teal;">DB</span>&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;string&nbsp;-&gt;&nbsp;DateTimeOffset&nbsp;-&gt;&nbsp;Reservation&nbsp;list</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;<span style="color:navy;">readReservations</span>&nbsp;<span style="color:#9b9b9b;">connectionString</span>&nbsp;<span style="color:#9b9b9b;">date</span>&nbsp;=&nbsp;<span style="color:green;">//&nbsp;..</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;string&nbsp;-&gt;&nbsp;Reservation&nbsp;-&gt;&nbsp;int</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;<span style="color:navy;">createReservation</span>&nbsp;<span style="color:#9b9b9b;">connectionString</span>&nbsp;<span style="color:#9b9b9b;">reservation</span>&nbsp;=&nbsp;<span style="color:green;">//&nbsp;..</span></pre>
+	</p>
+	<p>
+		The <code>readReservations</code> function takes a connection string and a date as arguments, and returns a list of reservations for that date. The <code>createReservation</code> function also takes a connection string, as well as a reservation. When invoked, it creates a new record for the reservation and returns the ID of the newly created row. (This sort of API violates CQS, so you should <a href="http://blog.ploeh.dk/2016/05/06/cqs-and-server-generated-entity-ids">consider alternatives</a>.)
+	</p>
+	<p>
+		If you partially apply these functions with a valid connection string, both have the type desired for their roles in <code>tryAccept</code>. This means that you can create a function from these elements:
+	</p>
+	<p>
+		<pre><span style="color:green;">//&nbsp;Reservation&nbsp;-&gt;&nbsp;int&nbsp;option</span>
+<span style="color:blue;">let</span>&nbsp;<span style="color:navy;">tryAcceptComposition</span>&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;<span style="color:navy;">read</span>&nbsp;&nbsp;&nbsp;=&nbsp;<span style="color:teal;">DB</span>.<span style="color:navy;">readReservations</span>&nbsp;&nbsp;connectionString
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;<span style="color:navy;">create</span>&nbsp;=&nbsp;<span style="color:teal;">DB</span>.<span style="color:navy;">createReservation</span>&nbsp;connectionString
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:navy;">tryAccept</span>&nbsp;10&nbsp;<span style="color:navy;">read</span>&nbsp;<span style="color:navy;">create</span></pre>
+	</p>
+	<p>
+		Notice how <code>tryAccept</code>	itself is partially applied. Only the arguments corresponding to the C# dependencies are passed to it, so the return value is a function that 'waits' for the last argument: the reservation. As I've attempted to indicate by the code comment above the function, it has the desired type of <code>Reservation -&gt; int option</code>.
+	</p>
+	<p>
+		<strong>Equivalence</strong>
+	</p>
+	<p>
+		Partial application used like this is equivalent to dependency injection. To see how, consider the generated Intermediate Language (IL).
+	</p>
+	<p>
+		F# is a .NET language, so it compiles to IL. You can decompile that IL to C# to get a sense of what's going on. If you do that with the above <code>tryAcceptComposition</code>, you get something like this:
+	</p>
+	<p>
+		<pre><span style="color:blue;">internal</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">tryAcceptComposition@17&nbsp;:&nbsp;<span style="color:#2b91af;">FSharpFunc</span>&lt;<span style="color:#2b91af;">Reservation</span>,&nbsp;<span style="color:#2b91af;">FSharpOption</span>&lt;<span style="color:blue;">int</span>&gt;&gt;
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">int</span>&nbsp;capacity;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">FSharpFunc</span>&lt;<span style="color:#2b91af;">Reservation</span>,&nbsp;<span style="color:blue;">int</span>&gt;&nbsp;createReservation;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">FSharpFunc</span>&lt;<span style="color:#2b91af;">DateTimeOffset</span>,&nbsp;<span style="color:#2b91af;">FSharpList</span>&lt;<span style="color:#2b91af;">Reservation</span>&gt;&gt;&nbsp;readReservations;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">internal</span>&nbsp;tryAcceptComposition@17(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">int</span>&nbsp;capacity,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">FSharpFunc</span>&lt;<span style="color:#2b91af;">DateTimeOffset</span>,&nbsp;<span style="color:#2b91af;">FSharpList</span>&lt;<span style="color:#2b91af;">Reservation</span>&gt;&gt;&nbsp;readReservations,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">FSharpFunc</span>&lt;<span style="color:#2b91af;">Reservation</span>,&nbsp;<span style="color:blue;">int</span>&gt;&nbsp;createReservation)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.capacity&nbsp;=&nbsp;capacity;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.readReservations&nbsp;=&nbsp;readReservations;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.createReservation&nbsp;=&nbsp;createReservation;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">override</span>&nbsp;<span style="color:#2b91af;">FSharpOption</span>&lt;<span style="color:blue;">int</span>&gt;&nbsp;Invoke(<span style="color:#2b91af;">Reservation</span>&nbsp;reservation)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:#2b91af;">MaîtreD</span>.tryAccept&lt;<span style="color:blue;">int</span>&gt;(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.capacity,&nbsp;<span style="color:blue;">this</span>.readReservations,&nbsp;<span style="color:blue;">this</span>.createReservation,&nbsp;reservation);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+	</p>
+	<p>
+		I've cleaned it up a bit, mostly by removing all attributes from the various elements. Notice how this is a class, with class fields, and a constructor that takes values for the fields and assigns them. <em>It's constructor injection!</em>
+	</p>
+	<p>
+		Partial application is dependency injection.
+	</p>
+	<p>
+		It compiles, works as expected, but is it functional?
+	</p>
+	<p>
+		<strong>Evaluation</strong>
+	</p>
+	<p>
+		People sometimes ask me: <em>How do I know whether my F# code is functional?</em>
+	</p>
+	<p>
+		I sometimes wonder about that as well, but unfortunately, as nice a language as F# is, it doesn't offer much help in that regard. Its emphasis is on functional programming, but it allows mutation, object-oriented programming, and even procedural programming. It's a friendly and forgiving language. (This also makes it a great 'beginner' functional language, because you can learn functional concepts piecemeal.)
+	</p>
+	<p>
+		Haskell, on the other hand, is a strictly functional language. In Haskell, you can only write your code in the functional way.
+	</p>
+	<p>
+		Fortunately, F# and Haskell are similar enough that it's easy to port F# code to Haskell, as long as the F# code already is 'sufficiently functional'. In order to evaluate if my F# code is properly functional, I sometimes port it to Haskell. If I can get it to compile and run in Haskell, I take that as confirmation that my code is functional.
+	</p>
+	<p>
+		I've <a href="http://blog.ploeh.dk/2016/03/18/functional-architecture-is-ports-and-adapters">previously shown an example similar to this one</a>, but I'll repeat the experiment here. Will porting <code>tryAccept</code> and <code>tryAcceptComposition</code> to Haskell work?
+	</p>
+	<p>
+		It's easy to port <code>tryAccept</code>:
+	</p>
+	<p>
+		<pre><span style="color:#600277;">tryAccept</span>&nbsp;::&nbsp;Int&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;(<span style="color:blue;">ZonedTime</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;[<span style="color:blue;">Reservation</span>])&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;(<span style="color:blue;">Reservation</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;Int)&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">Reservation</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#666666;">-&gt;</span>&nbsp;<span style="color:#dd0000;">Maybe</span>&nbsp;<span style="color:#dd0000;">Int</span>
+tryAccept&nbsp;capacity&nbsp;readReservations&nbsp;createReservation&nbsp;reservation&nbsp;<span style="color:#666666;">=</span>
+&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;reservedSeats&nbsp;<span style="color:#666666;">=</span>&nbsp;sum&nbsp;<span style="color:#666666;">$</span>&nbsp;map&nbsp;quantity&nbsp;<span style="color:#666666;">$</span>&nbsp;readReservations&nbsp;<span style="color:#666666;">$</span>&nbsp;date&nbsp;reservation
+&nbsp;&nbsp;<span style="color:blue;">in</span>&nbsp;&nbsp;<span style="color:#af00db;">if</span>&nbsp;reservedSeats&nbsp;<span style="color:#666666;">+</span>&nbsp;quantity&nbsp;reservation&nbsp;<span style="color:#666666;">&lt;=</span>&nbsp;capacity
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#af00db;">then</span>&nbsp;Just&nbsp;<span style="color:#666666;">$</span>&nbsp;createReservation&nbsp;<span style="color:#666666;">$</span>&nbsp;reservation&nbsp;{&nbsp;isAccepted&nbsp;<span style="color:#666666;">=</span>&nbsp;True&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#af00db;">else</span>&nbsp;Nothing</pre>
+	</p>
+	<p>
+		Clearly, there are differences, but I'm sure that you can also see the similarities. The most important feature of this function is that it's <a href="https://en.wikipedia.org/wiki/Pure_function">pure</a>. All Haskell functions are pure by default, unless explicitly declared to be impure, and that's not the case here. This function is pure, and so are both <code>readReservations</code> and <code>createReservation</code>.
+	</p>
+	<p>
+		The Haskell version of <code>tryAccept</code> compiles, but what about <code>tryAcceptComposition</code>?
+	</p>
+	<p>
+		Like the F# code, the experiment is to see if it's possible to 'inject' functions that actually operate against a database. Equivalent to the F# example, imagine that you have this <code>DB</code> module:
+	</p>
+	<p>
+		<pre><span style="color:#600277;">readReservations</span>&nbsp;::&nbsp;<span style="color:blue;">ConnectionString</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">ZonedTime</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;IO&nbsp;[<span style="color:blue;">Reservation</span>]
+readReservations&nbsp;connectionString&nbsp;date&nbsp;<span style="color:#666666;">=</span>&nbsp;<span style="color:green;">--&nbsp;..
+</span>
+<span style="color:#600277;">createReservation</span>&nbsp;::&nbsp;<span style="color:blue;">ConnectionString</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">Reservation</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;IO&nbsp;Int
+createReservation&nbsp;connectionString&nbsp;reservation&nbsp;<span style="color:#666666;">=</span>&nbsp;<span style="color:green;">--&nbsp;..</span></pre>
+	</p>
+	<p>
+		Database operations are, by definition, impure, and the Haskell type system admirably models that with the type system. Notice how both functions return <code>IO</code> values.
+	</p>
+	<p>
+		If you partially apply both functions with a valid connection string, the <code>IO</code> context remains. The type of <code>DB.readReservations  connectionString</code> is <code>ZonedTime -&gt; IO [Reservation]</code>, and the type of <code>DB.createReservation connectionString</code> is <code>Reservation -&gt; IO Int</code>. You can try to pass them to <code>tryAccept</code>, but the types don't match:
+	</p>
+	<p>
+		<pre><span style="color:#600277;">tryAcceptComposition</span>&nbsp;::&nbsp;<span style="color:blue;">Reservation</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;IO&nbsp;(Maybe&nbsp;Int)
+tryAcceptComposition&nbsp;reservation&nbsp;<span style="color:#666666;">=</span>
+&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;read&nbsp;&nbsp;&nbsp;<span style="color:#666666;">=</span>&nbsp;<span style="color:#dd0000;">DB</span><span style="color:#666666;">.</span>readReservations&nbsp;&nbsp;connectionString
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;create&nbsp;<span style="color:#666666;">=</span>&nbsp;<span style="color:#dd0000;">DB</span><span style="color:#666666;">.</span>createReservation&nbsp;connectionString
+&nbsp;&nbsp;<span style="color:blue;">in</span>&nbsp;tryAccept&nbsp;<span style="color:#09885a;">10</span>&nbsp;read&nbsp;create&nbsp;reservation</pre>
+	</p>
+	<p>
+		<em>This doesn't compile.</em>
+	</p>
+	<p>
+		It doesn't compile, because the database operations are impure, and <code>tryAccept</code> wants pure functions.
+	</p>
+	<p>
+		In short, partial application used for dependency injection isn't functional.
+	</p>
+	<p>
+		<strong>Summary</strong>
+	</p>
+	<p>
+		Partial application in F# can be used to achieve a result equivalent to dependency injection. It compiles and works as expected, but it's not functional. The reason it's not functional is that (most) dependencies are, by their very nature, impure. They're either non-deterministic, have side-effects, or both, and that's often the underlying reason that they are factored into dependencies in the first place.
+	</p>
+	<p>
+		Pure functions, however, can't call impure functions. If they could, they would become impure themselves. This rule is enforced by Haskell, but not by F#.
+	</p>
+	<p>
+		When you inject impure operations into an F# function, that function becomes impure as well. Dependency injection makes everything impure, which explains why it isn't functional.
+	</p>
+	<p>
+		Functional programming solves the problem of decoupling (side) effects from program logic another way. That's the topic of the next article.
+	</p>
+	<p>
+		<strong>Next:</strong> <a href="">Dependency rejection</a>.
+	</p>
+</div>
