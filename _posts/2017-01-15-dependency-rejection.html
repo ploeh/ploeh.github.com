@@ -1,0 +1,181 @@
+---
+layout: post
+title: "Dependency rejection"
+date: 2017-01-15 08:19 UTC
+tags: [Software Design, Dependency Injection, F#, Haskell]
+---
+{% include JB/setup %}
+
+<div id="post">
+	<p>
+		<em>In functional programming, the notion of dependencies must be rejected. Instead, applications should be composed from pure and impure functions.</em>
+	</p>
+	<p>
+		This is the third article in a small article series called <a href="">from dependency injection to dependency rejection</a>. In the <a href="">previous article in the series</a>, you learned that dependency injection can't be functional, because it makes everything impure. In this article, you'll see what to do instead.
+	</p>
+	<p>
+		<strong>Indirect input and output</strong>
+	</p>
+	<p>
+		One of the first concepts you learned when you learned to program was that units of operation (functions, methods, procedures) take input and produce output. Input is in the form or input parameters, and output is in the form of return values. (Sometimes, though, a method returns nothing, but we know from category theory that nothing is also a value (called <em>unit</em>).)
+	</p>
+	<p>
+		In addition to such input and output, a unit with dependencies also take indirect input, and produce indirect output:
+	</p>
+	<p>
+		<img src="/content/binary/unit-with-dependencies-and-direct-and-indirect-input-and-output.png" alt="A unit with dependencies and direct and indirect input and output.">
+	</p>
+	<p>
+		When a unit queries a dependency for data, the data returned from the dependency is indirect input. In the restaurant reservation example used in this article series, when <code>tryAccept</code> calls <code>readReservations</code>, the returned reservations are indirect input.
+	</p>
+	<p>
+		Likewise, when a unit invokes a dependency, all arguments passed to that dependency constitute indirect output. In the example, when <code>tryAccept</code> calls <code>createReservation</code>, the reservation value it uses as input argument to that function call becomes output. The intent, in this case, is to save the reservation in a database.
+	</p>	
+	<p>
+		<strong>From indirect output to direct output</strong>
+	</p>
+	<p>
+		Instead of producing indirect output, you can refactor functions to produce direct output.
+	</p>
+	<p>
+		<img src="/content/binary/unit-with-dependencies-and-direct-input-and-output-but-no-indirect-output.png" alt="A unit with dependencies and direct input and output, but no indirect output.">
+	</p>
+	<p>
+		Such a refactoring is often problematic in mainstream object-oriented languages like C# and Java, because you wish to control the circumstances in which the indirect output must be produced. Indirect output often implies side-effects, but perhaps the side-effect must only happen when certain conditions are fulfilled. In the restaurant reservation example, the desired side-effect is to add a reservation to a database, but this must only happen when the restaurant has sufficient remaining capacity to serve the requested number of people. Since languages like C# and Java are statement-based, it can be difficult to separate the decision from the action.
+	</p>
+	<p>
+		In expression-based languages like F# and Haskell, <a href="http://blog.ploeh.dk/2016/09/26/decoupling-decisions-from-effects">it's trivial to decouple decisions from effects</a>.
+	</p>
+	<p>
+		In the <a href="">previous article</a>, you saw a version of <code>tryAccept</code> with this signature:
+	</p>
+	<p>
+		<pre><span style="color:green;">//&nbsp;int&nbsp;-&gt;&nbsp;(DateTimeOffset&nbsp;-&gt;&nbsp;Reservation&nbsp;list)&nbsp;-&gt;&nbsp;(Reservation&nbsp;-&gt;&nbsp;int)&nbsp;-&gt;&nbsp;Reservation</span>
+<span style="color:green;">//&nbsp;-&gt;&nbsp;int&nbsp;option</span></pre>
+	</p>
+	<p>
+		The second function argument, with the type <code>Reservation&nbsp;-&gt;&nbsp;int</code>, produces indirect output. The <code>Reservation</code> value is the output. The function even violates Command Query Separation and returns the database ID of the added reservation, so that's additional indirect input. The overall function returns <code>int option</code>: the database ID if the reservation was added, and <code>None</code> if it wasn't.
+	</p>
+	<p>
+		Refactoring the indirect output to direct output is easy, then: just remove the <code>createReservation</code> function and return the <code>Reservation</code> value instead:
+	</p>
+	<p>
+		<pre><span style="color:green;">//&nbsp;int&nbsp;-&gt;&nbsp;(DateTimeOffset&nbsp;-&gt;&nbsp;Reservation&nbsp;list)&nbsp;-&gt;&nbsp;Reservation&nbsp;-&gt;&nbsp;Reservation&nbsp;option</span>
+<span style="color:blue;">let</span>&nbsp;<span style="color:navy;">tryAccept</span>&nbsp;capacity&nbsp;<span style="color:navy;">readReservations</span>&nbsp;reservation&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;reservedSeats&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:navy;">readReservations</span>&nbsp;reservation.Date&nbsp;|&gt;&nbsp;<span style="color:teal;">List</span>.<span style="color:navy;">sumBy</span>&nbsp;(<span style="color:blue;">fun</span>&nbsp;x&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;x.Quantity)
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;reservedSeats&nbsp;+&nbsp;reservation.Quantity&nbsp;&lt;=&nbsp;capacity
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">then</span>&nbsp;{&nbsp;reservation&nbsp;<span style="color:blue;">with</span>&nbsp;IsAccepted&nbsp;=&nbsp;<span style="color:blue;">true</span>&nbsp;}&nbsp;|&gt;&nbsp;<span style="color:navy;">Some</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">else</span>&nbsp;<span style="color:navy;">None</span></pre>
+	</p>
+	<p>
+		Notice that this refactored version of <code>tryAccept</code> returns a <code>Reservation option</code> value. The implication is that the reservation was accepted if the return value is a <code>Some</code> case, and rejected if the value is <code>None</code>. The decision is embedded in the value, but decoupled from the side-effect of writing to the database.
+	</p>
+	<p>
+		This function clearly never writes to the database, so at the boundary of your application, you'll have to connect the decision to the effect. To keep the example consistent with the previous article, you can do this in a <code>tryAcceptComposition</code> function, like this:
+	</p>
+	<p>
+		<pre><span style="color:green;">//&nbsp;Reservation&nbsp;-&gt;&nbsp;int&nbsp;option</span>
+<span style="color:blue;">let</span>&nbsp;<span style="color:navy;">tryAcceptComposition</span>&nbsp;reservation&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;reservation
+&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:navy;">tryAccept</span>&nbsp;10&nbsp;(<span style="color:teal;">DB</span>.<span style="color:navy;">readReservations</span>&nbsp;connectionString)
+&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:teal;">Option</span>.<span style="color:navy;">map</span>&nbsp;(<span style="color:teal;">DB</span>.<span style="color:navy;">createReservation</span>&nbsp;connectionString)</pre>
+	</p>
+	<p>
+		Notice that the type of <code>tryAcceptComposition</code> remains <code>Reservation&nbsp;-&gt;&nbsp;int&nbsp;option</code>. This is a true refactoring. The overall API remains the same, as does the behaviour. The reservation is added to the database only if there's sufficient remaining capacity, and in that case, the ID of the reservation is returned.
+	</p>
+	<p>
+		<strong>From indirect input to direct input</strong>
+	</p>
+	<p>
+		Just as you can refactor from indirect output to direct output can you refactor from indirect input to direct input.
+	</p>
+	<p>
+		<img src="/content/binary/unit-with-dependencies-and-direct-input-and-output.png" alt="A unit with dependencies and direct input and output.">
+	</p>
+	<p>
+		Again, in statement-based languages like C# and Java, this may be problematic, because you may wish to defer a query, or base it on a decision inside the unit. In expression-based languages you can decouple decisions from effects, and deferred execution can always be done by lazy evaluation, if that's required. In the case of the current example, however, the refactoring is easy:
+	</p>
+	<p>
+		<pre><span style="color:green;">//&nbsp;int&nbsp;-&gt;&nbsp;Reservation&nbsp;list&nbsp;-&gt;&nbsp;Reservation&nbsp;-&gt;&nbsp;Reservation&nbsp;option</span>
+<span style="color:blue;">let</span>&nbsp;<span style="color:navy;">tryAccept</span>&nbsp;capacity&nbsp;reservations&nbsp;reservation&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;reservedSeats&nbsp;=&nbsp;reservations&nbsp;|&gt;&nbsp;<span style="color:teal;">List</span>.<span style="color:navy;">sumBy</span>&nbsp;(<span style="color:blue;">fun</span>&nbsp;x&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;x.Quantity)
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;reservedSeats&nbsp;+&nbsp;reservation.Quantity&nbsp;&lt;=&nbsp;capacity
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">then</span>&nbsp;{&nbsp;reservation&nbsp;<span style="color:blue;">with</span>&nbsp;IsAccepted&nbsp;=&nbsp;<span style="color:blue;">true</span>&nbsp;}&nbsp;|&gt;&nbsp;<span style="color:navy;">Some</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">else</span>&nbsp;<span style="color:navy;">None</span></pre>
+	</p>
+	<p>
+		Instead of calling a (potentially impure) function, this version of <code>tryAccept</code> takes a list of existing reservations as input. It still sums over all the quantities, and the rest of the code is the same as before.
+	</p>
+	<p>
+		Obviously, the list of existing reservations must come from somewhere, like a database, so <code>tryAcceptComposition</code> will still have to take care of that:
+	</p>
+	<p>
+		<pre><span style="color:green;">//&nbsp;(&#39;a&nbsp;-&gt;&nbsp;&#39;b&nbsp;-&gt;&nbsp;&#39;c)&nbsp;-&gt;&nbsp;&#39;b&nbsp;-&gt;&nbsp;&#39;a&nbsp;-&gt;&nbsp;&#39;c</span>
+<span style="color:blue;">let</span>&nbsp;<span style="color:navy;">flip</span>&nbsp;<span style="color:navy;">f</span>&nbsp;x&nbsp;y&nbsp;=&nbsp;<span style="color:navy;">f</span>&nbsp;y&nbsp;x
+ 
+<span style="color:green;">//&nbsp;Reservation&nbsp;-&gt;&nbsp;int&nbsp;option</span>
+<span style="color:blue;">let</span>&nbsp;<span style="color:navy;">tryAcceptComposition</span>&nbsp;reservation&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;reservation.Date
+&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:teal;">DB</span>.<span style="color:navy;">readReservations</span>&nbsp;connectionString
+&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:navy;">flip</span>&nbsp;(<span style="color:navy;">tryAccept</span>&nbsp;10)&nbsp;reservation
+&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:teal;">Option</span>.<span style="color:navy;">map</span>&nbsp;(<span style="color:teal;">DB</span>.<span style="color:navy;">createReservation</span>&nbsp;connectionString)</pre>
+	</p>
+	<p>
+		The type and behaviour of this composition is still the same as before, but the data flow is different. First, the function queries the database, which is an impure operation. Then, it pipes the resulting list of reservations to <code>tryAccept</code>, which is a <a href="https://en.wikipedia.org/wiki/Pure_function">pure function</a>. It returns a <code>Reservation option</code> that's finally mapped to another impure operation, which writes the reservation to the database if the reservation was accepted.
+	</p>
+	<p>
+		You'll notice that I also added a <code>flip</code> function in order to make the composition more concise, but I could also have used a lambda expression when invoking <code>tryAccept</code>. The <code>flip</code> function is a part of Haskell's standard library, but isn't in F#'s core library. It's not crucial to the example, though.
+	</p>
+	<p>
+		<strong>Evaluation</strong>
+	</p>
+	<p>
+		Did you notice that in the previous diagram, above, all arrows between the unit and its dependencies were gone? This means that the unit no longer has any dependencies:
+	</p>
+	<p>
+		<img src="/content/binary/unit-with-direct-input-and-output.png" alt="A unit with direct input and output, but no dependencies.">
+	</p>
+	<p>
+		Dependencies are, by their nature, impure, and since pure functions can't call impure functions, functional programming must reject the notion of dependencies. Pure functions can't <em>depend</em> on impure functions.
+	</p>
+	<p>
+		Instead, pure functions must take direct input and produce direct output, and the impure boundary of an application must compose impure and pure functions together in order to achieve the desired behaviour.
+	</p>
+	<p>
+		In the previous article, you saw how Haskell can be used to evaluate whether or not an implementation is functional. You can port the above F# code to Haskell to verify that this is the case.
+	</p>
+	<p>
+		<pre><span style="color:#600277;">tryAccept</span>&nbsp;::&nbsp;Int&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;[<span style="color:blue;">Reservation</span>]&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">Reservation</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;Maybe&nbsp;<span style="color:blue;">Reservation</span>
+tryAccept&nbsp;capacity&nbsp;reservations&nbsp;reservation&nbsp;<span style="color:#666666;">=</span>
+&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;reservedSeats&nbsp;<span style="color:#666666;">=</span>&nbsp;sum&nbsp;<span style="color:#666666;">$</span>&nbsp;map&nbsp;quantity&nbsp;reservations
+&nbsp;&nbsp;<span style="color:blue;">in</span>&nbsp;&nbsp;<span style="color:#af00db;">if</span>&nbsp;reservedSeats&nbsp;<span style="color:#666666;">+</span>&nbsp;quantity&nbsp;reservation&nbsp;<span style="color:#666666;">&lt;=</span>&nbsp;capacity
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#af00db;">then</span>&nbsp;Just&nbsp;<span style="color:#666666;">$</span>&nbsp;reservation&nbsp;{&nbsp;isAccepted&nbsp;<span style="color:#666666;">=</span>&nbsp;True&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#af00db;">else</span>&nbsp;Nothing</pre>
+	</p>
+	<p>
+		This version of <code>tryAccept</code> is pure, and compiles, but as you learned in the previous article, that's not the crucial question. The question is whether the composition compiles?
+	</p>
+	<p>
+		<pre><span style="color:#600277;">tryAcceptComposition</span>&nbsp;::&nbsp;<span style="color:blue;">Reservation</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;IO&nbsp;(Maybe&nbsp;Int)
+tryAcceptComposition&nbsp;reservation&nbsp;<span style="color:#666666;">=</span>&nbsp;runMaybeT&nbsp;<span style="color:#666666;">$</span>
+&nbsp;&nbsp;liftIO&nbsp;(<span style="color:#dd0000;">DB</span><span style="color:#666666;">.</span>readReservations&nbsp;connectionString&nbsp;<span style="color:#666666;">$</span>&nbsp;date&nbsp;reservation)
+&nbsp;&nbsp;<span style="color:#666666;">&gt;&gt;=</span>&nbsp;<span style="color:#dd0000;">MaybeT</span>&nbsp;<span style="color:#666666;">.</span>&nbsp;return&nbsp;<span style="color:#666666;">.</span>&nbsp;flip&nbsp;(tryAccept&nbsp;<span style="color:#09885a;">10</span>)&nbsp;reservation
+&nbsp;&nbsp;<span style="color:#666666;">&gt;&gt;=</span>&nbsp;liftIO&nbsp;<span style="color:#666666;">.</span>&nbsp;<span style="color:#dd0000;">DB</span><span style="color:#666666;">.</span>createReservation&nbsp;connectionString</pre>
+	</p>
+	<p>
+		This version of <code>tryAcceptComposition</code> compiles, and works as desired. The code exhibits a common pattern for Haskell: First, gather data from impure sources. Second, pass pure data to pure functions. Third, take the pure output from the pure functions, and do something impure with it.
+	</p>
+	<p>
+		It's like a sandwich, with the best parts in the middle, and some necessary stuff surrounding it.
+	</p>
+	<p>
+		<strong>Summary</strong>
+	</p>
+	<p>
+		Dependencies are, by nature, impure. They're either non-deterministic, have side-effects, or both. Pure functions can't call impure functions (because that would make them impure as well), so pure functions can't have dependencies. Functional programming must reject the notion of dependencies.
+	</p>
+	<p>
+		Obviously, software is only useful with impure behaviour, so instead of injecting dependencies, functional programs must be composed in impure contexts. Impure functions can call pure functions, so at the boundary, an application must gather impure data, and use it to call pure functions. This <a href="http://blog.ploeh.dk/2016/03/18/functional-architecture-is-ports-and-adapters">automatically leads to the ports and adapters architecture</a>.
+	</p>
+</div>
