@@ -1,0 +1,309 @@
+---
+layout: post
+title: "The Test Data Generator functor"
+date: 2017-04-27 9:29 UTC
+tags: [Unit Testing, Software Design]
+---
+{% include JB/setup %}
+
+<div id="post">
+	<p>
+		<em>A Test Data Generator modelled as a functor.</em>
+	</p>
+	<p>
+		In a <a href="">previous article series</a>, you learned that while it's possible to model <a href="http://www.natpryce.com/articles/000714.html">Test Data Builders</a> as a functor, it adds little value. You shouldn't, however, dismiss the value of functors. It's an abstraction that applies broadly.
+	</p>
+	<p>
+		Closely related to Test Data Builders is the concept of a generator of random test data. You could call it a Test Data Generator instead. Such a generator can be modelled as a functor.
+	</p>
+	<p>
+		<strong>A C# Generator</strong>
+	</p>
+	<p>
+		At its core, the idea behind a Test Data Generator is to create random test data. Still, you'll like to be able control various parts of the process, because you'd often need to pin parts of the generated data to deterministic values, while allowing other parts to vary randomly.
+	</p>
+	<p>
+		In C#, you can write a generic Generator like this:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">Generator</span>&lt;<span style="color:#2b91af;">T</span>&gt;
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:#2b91af;">Random</span>,&nbsp;<span style="color:#2b91af;">T</span>&gt;&nbsp;generate;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;Generator(<span style="color:#2b91af;">Func</span>&lt;<span style="color:#2b91af;">Random</span>,&nbsp;<span style="color:#2b91af;">T</span>&gt;&nbsp;generate)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;(generate&nbsp;==&nbsp;<span style="color:blue;">null</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">throw</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">ArgumentNullException</span>(<span style="color:blue;">nameof</span>(generate));
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.generate&nbsp;=&nbsp;generate;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">Generator</span>&lt;<span style="color:#2b91af;">T1</span>&gt;&nbsp;Select&lt;<span style="color:#2b91af;">T1</span>&gt;(<span style="color:#2b91af;">Func</span>&lt;<span style="color:#2b91af;">T</span>,&nbsp;<span style="color:#2b91af;">T1</span>&gt;&nbsp;f)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;(f&nbsp;==&nbsp;<span style="color:blue;">null</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">throw</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">ArgumentNullException</span>(<span style="color:blue;">nameof</span>(f));
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:#2b91af;">Random</span>,&nbsp;<span style="color:#2b91af;">T1</span>&gt;&nbsp;newGenerator&nbsp;=&nbsp;r&nbsp;=&gt;&nbsp;f(<span style="color:blue;">this</span>.generate(r));
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Generator</span>&lt;<span style="color:#2b91af;">T1</span>&gt;(newGenerator);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">T</span>&nbsp;Generate(<span style="color:#2b91af;">Random</span>&nbsp;random)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;(random&nbsp;==&nbsp;<span style="color:blue;">null</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">throw</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">ArgumentNullException</span>(<span style="color:blue;">nameof</span>(random));
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:blue;">this</span>.generate(random);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+	</p>
+	<p>
+		The <code>Generate</code> method takes a <code>Random</code> object as input, and produces a value of the generic type <code>T</code> as output. This enables you to deterministically reproduce a particular randomly generated value, if you know the seed of the <code>Random</code> object.
+	</p>
+	<p>
+		Notice how <code>Generator&lt;T&gt;</code> is a simple <a href="https://en.wikipedia.org/wiki/Adapter_pattern">Adapter</a> over a (lazily evaluated) function. This function also takes a <code>Random</code> object as input, and produces a <code>T</code> value as output.
+	</p>
+	<p>
+		The <code>Select</code> method makes <code>Generator&lt;T&gt;</code> a functor. It takes a map function <code>f</code> as input, and uses it to define a new <code>generate</code> function. The return value is a <code>Generator&lt;T1&gt;</code>.
+	</p>
+	<p>
+		<strong>General-purpose building blocks</strong>
+	</p>
+	<p>
+		Functors are immanently composable. You can compose complex Test Data Generators from simpler building blocks, like the following.
+	</p>
+	<p>
+		For instance, you may need a generator of alphanumeric strings. You can write it like this:
+	</p>
+	<p>
+		<pre><span style="color:blue;">private</span>&nbsp;<span style="color:blue;">const</span>&nbsp;<span style="color:blue;">string</span>&nbsp;alphaNumericCharacters&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#a31515;">&quot;0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ&quot;</span>;
+ 
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:#2b91af;">Generator</span>&lt;<span style="color:blue;">string</span>&gt;&nbsp;AlphaNumericString&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Generator</span>&lt;<span style="color:blue;">string</span>&gt;(r&nbsp;=&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;length&nbsp;=&nbsp;r.Next(25);&nbsp;<span style="color:green;">//&nbsp;Arbitrarily&nbsp;chosen&nbsp;max&nbsp;length</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;chars&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:blue;">char</span>[length];
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">for</span>&nbsp;(<span style="color:blue;">int</span>&nbsp;i&nbsp;=&nbsp;0;&nbsp;i&nbsp;&lt;&nbsp;length;&nbsp;i++)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;idx&nbsp;=&nbsp;r.Next(alphaNumericCharacters.Length);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;chars[i]&nbsp;=&nbsp;alphaNumericCharacters[idx];
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:blue;">string</span>(chars);
+&nbsp;&nbsp;&nbsp;&nbsp;});</pre>
+	</p>
+	<p>
+		This <code>Generator&lt;string&gt;</code> can generate a random string with alphanumeric characters. It randomly picks a length between 0 and 24, and fills it with randomly selected alphanumeric characters. The maximum length of 24 is arbitrarily chosen. The generated string may be empty.
+	</p>
+	<p>
+		Notice that the argument passed to the constructor is a function. It's not evaluated at initialisation, but only if <code>Generate</code> is called.
+	</p>
+	<p>
+		The <code>r</code> argument is the <code>Random</code> object passed to <code>Generate</code>.
+	</p>
+	<p>
+		Another useful general-purpose building block is a generator that can use a single-object generator to create many objects:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:#2b91af;">Generator</span>&lt;<span style="color:#2b91af;">IEnumerable</span>&lt;<span style="color:#2b91af;">T</span>&gt;&gt;&nbsp;Many&lt;<span style="color:#2b91af;">T</span>&gt;(<span style="color:#2b91af;">Generator</span>&lt;<span style="color:#2b91af;">T</span>&gt;&nbsp;generator)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Generator</span>&lt;<span style="color:#2b91af;">IEnumerable</span>&lt;<span style="color:#2b91af;">T</span>&gt;&gt;(r&nbsp;=&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;length&nbsp;=&nbsp;r.Next(25);&nbsp;<span style="color:green;">//&nbsp;Arbitrarily&nbsp;chosen&nbsp;max&nbsp;length</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;elements&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">List</span>&lt;<span style="color:#2b91af;">T</span>&gt;();
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">for</span>&nbsp;(<span style="color:blue;">int</span>&nbsp;i&nbsp;=&nbsp;0;&nbsp;i&nbsp;&lt;&nbsp;length;&nbsp;i++)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;elements.Add(generator.Generate(r));
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;elements;
+&nbsp;&nbsp;&nbsp;&nbsp;});
+}</pre>
+	</p>
+	<p>
+		This method takes a <code>Generator&lt;T&gt;</code> as input, and uses it to generate zero or more <code>T</code> objects. Again, the maximum length of 24 is arbitrarily chosen. It could have been a method argument, but in order to keep the example simple, I hard-coded it.
+	</p>
+	<p>
+		<strong>Domain-specific generators</strong>
+	</p>
+	<p>
+		From such general-purpose building blocks, you can define custom generators for your domain model. This enables you to use such generators in your unit tests.
+	</p>
+	<p>
+		In order to generate post codes, you can combine the <code>AlphaNumericString</code> and the <code>Many</code> generators:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:#2b91af;">Generator</span>&lt;<span style="color:#2b91af;">PostCode</span>&gt;&nbsp;PostCode&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Generator</span>&lt;<span style="color:#2b91af;">PostCode</span>&gt;(r&nbsp;=&gt;&nbsp;
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;postCodes&nbsp;=&nbsp;Many(AlphaNumericString).Generate(r);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">PostCode</span>(postCodes.ToArray());
+&nbsp;&nbsp;&nbsp;&nbsp;});</pre>
+	</p>
+	<p>
+		The <code>PostCode</code> class is part of your domain model; it takes an array of strings as input to its constructor. The <code>PostCode</code> generator uses the <code>AlphaNumericString</code> generator as input to the <code>Many</code> method. This generates zero or many alphanumeric strings, which you can pass to the <code>PostCode</code> constructor.
+	</p>
+	<p>
+		This, in turn, gives you all the building blocks you need to generate <code>Address</code> objects:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:#2b91af;">Generator</span>&lt;<span style="color:#2b91af;">Address</span>&gt;&nbsp;Address&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Generator</span>&lt;<span style="color:#2b91af;">Address</span>&gt;(r&nbsp;=&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;street&nbsp;=&nbsp;AlphaNumericString.Generate(r);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;city&nbsp;=&nbsp;AlphaNumericString.Generate(r);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;postCode&nbsp;=&nbsp;PostCode.Generate(r);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Address</span>(street,&nbsp;city,&nbsp;postCode);
+&nbsp;&nbsp;&nbsp;&nbsp;});</pre>
+	</p>
+	<p>
+		This <code>Generator&lt;Address&gt;</code> uses the <code>AlphaNumericString</code> generator to generate street and city strings. It uses the <code>PostCode</code> generator to generate a <code>PostCode</code> object. All these objects are passed to the <code>Address</code> constructor.
+	</p>
+	<p>
+		Keep in mind that all of this logic is defined in lazily evaluated functions. Only when you invoke the <code>Generate</code> method on a generator does the code execute.
+	</p>
+	<p>
+		<strong>Generating values</strong>
+	</p>
+	<p>
+		You can now write tests similar to the tests shown in the the article series about Test Data Builders. If, for example, you need an address in Paris, you can generate it like this:
+	</p>
+	<p>
+		<pre><span style="color:blue;">var</span>&nbsp;rnd&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Random</span>();
+<span style="color:blue;">var</span>&nbsp;address&nbsp;=&nbsp;<span style="color:#2b91af;">Gen</span>.Address.Select(a&nbsp;=&gt;&nbsp;a.WithCity(<span style="color:#a31515;">&quot;Paris&quot;</span>)).Generate(rnd);</pre>
+	</p>
+	<p>
+		<code>Gen.Address</code> is the <code>Address</code> generator shown above; I put all those generators in a static class called <code>Gen</code>. If you don't modify it, <code>Gen.Address</code> will generate a random <code>Address</code> object, but by using <code>Select</code>, you can pin the city to Paris.
+	</p>
+	<p>
+		You can also start with one type of generator and use <code>Select</code> to map to another type of generator, like this:
+	</p>
+	<p>
+		<pre><span style="color:blue;">var</span>&nbsp;rnd&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Random</span>();
+<span style="color:blue;">var</span>&nbsp;address&nbsp;=&nbsp;<span style="color:#2b91af;">Gen</span>.PostCode
+&nbsp;&nbsp;&nbsp;&nbsp;.Select(pc&nbsp;=&gt;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Address</span>(<span style="color:#a31515;">&quot;Rue&nbsp;Morgue&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;Paris&quot;</span>,&nbsp;pc))
+&nbsp;&nbsp;&nbsp;&nbsp;.Generate(rnd);</pre>
+	</p>
+	<p>
+		You use <code>Gen.PostCode</code> as the initial generator, and then <code>Select</code> a new <code>Address</code> in Rue Morgue, Paris, with a randomly generated post code.
+	</p>
+	<p>
+		<strong>Functor</strong>
+	</p>
+	<p>
+		Such a Test Data Generator is a functor. One way to see that is to use query syntax instead of the <a href="">fluent API</a>:
+	</p>
+	<p>
+		<pre><span style="color:blue;">var</span>&nbsp;rnd&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Random</span>();
+<span style="color:blue;">var</span>&nbsp;address&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;(<span style="color:blue;">from</span>&nbsp;a&nbsp;<span style="color:blue;">in</span>&nbsp;<span style="color:#2b91af;">Gen</span>.Address&nbsp;<span style="color:blue;">select</span>&nbsp;a.WithCity(<span style="color:#a31515;">&quot;Paris&quot;</span>)).Generate(rnd);</pre>
+	</p>
+	<p>
+		Likewise, you can also translate the Rue Morgue generator to query syntax:
+	</p>
+	<p>
+		<pre><span style="color:blue;">var</span>&nbsp;address&nbsp;=&nbsp;(
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">from</span>&nbsp;pc&nbsp;<span style="color:blue;">in</span>&nbsp;<span style="color:#2b91af;">Gen</span>.PostCode
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">select</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Address</span>(<span style="color:#a31515;">&quot;Rue&nbsp;Morgue&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;Paris&quot;</span>,&nbsp;pc)).Generate(rnd);</pre>
+	</p>
+	<p>
+		This is, however, awkward, because you have to enclose the query expression in brackets in order to be able to invoke the <code>Generate</code> method. Alternatively, you can separate the query from the generation, like this:
+	</p>
+	<p>
+		<pre><span style="color:blue;">var</span>&nbsp;g&nbsp;=&nbsp;<span style="color:blue;">from</span>&nbsp;a&nbsp;<span style="color:blue;">in</span>&nbsp;<span style="color:#2b91af;">Gen</span>.Address&nbsp;<span style="color:blue;">select</span>&nbsp;a.WithCity(<span style="color:#a31515;">&quot;Paris&quot;</span>);
+<span style="color:blue;">var</span>&nbsp;rnd&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Random</span>();
+<span style="color:blue;">var</span>&nbsp;address&nbsp;=&nbsp;g.Generate(rnd);</pre>
+	</p>
+	<p>
+		Or this:
+	</p>
+	<p>
+		<pre><span style="color:blue;">var</span>&nbsp;g&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">from</span>&nbsp;pc&nbsp;<span style="color:blue;">in</span>&nbsp;<span style="color:#2b91af;">Gen</span>.PostCode
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">select</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Address</span>(<span style="color:#a31515;">&quot;Rue&nbsp;Morgue&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;Paris&quot;</span>,&nbsp;pc);
+<span style="color:blue;">var</span>&nbsp;rnd&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Random</span>();
+<span style="color:blue;">var</span>&nbsp;address&nbsp;=&nbsp;g.Generate(rnd);</pre>
+	</p>
+	<p>
+		You'd probably still prefer the fluent API over this syntax. The reason I show this alternative is to demonstrate that the functor gives you the ability to separate the definition of data generation from the actual generation. In order to emphasise this point, I defined the <code>g</code> variables <em>before</em> creating the <code>Random</code> object <code>rnd</code>.
+	</p>
+	<p>
+		<strong>Property-based testing</strong>
+	</p>
+	<p>
+		The above <code>Generator&lt;T&gt;</code> is only a crude example of a Test Data Generator. In order to demonstrate how such a generator is a functor, I left out several useful features. Still, this should have given you a sense for how the <code>Generator&lt;T&gt;</code> class itself, as well as such general-purpose building blocks as <code>Many</code> and <code>AlphaNumericString</code>, could be packaged in a reusable library.
+	</p>
+	<p>
+		The examples above show how to use a generator to create a single random object. You could, however, easily generate many (say, 100) random objects, and run unit tests for each object created. This is the idea behind property-based testing.
+	</p>
+	<p>
+		There's more to property-based testing than generation of random values, but the implementations I've seen are all based on Test Data Generators as functors (and monads).
+	</p>
+	<p>
+		<strong>FsCheck</strong>
+	</p>
+	<p>
+		<a href="">FsCheck</a> is an open source F# library for property-based testing. It defines a <code>Gen</code> functor (and monad) that you can use to generate <code>Address</code> values, just like the above examples:
+	</p>
+	<p>
+		<pre><span style="color:blue;">let!</span>&nbsp;address&nbsp;=&nbsp;<span style="color:teal;">Gen</span>.address&nbsp;|&gt;&nbsp;<span style="color:teal;">Gen</span>.<span style="color:navy;">map</span>&nbsp;(<span style="color:blue;">fun</span>&nbsp;a&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;{&nbsp;a&nbsp;<span style="color:blue;">with</span>&nbsp;City&nbsp;=&nbsp;<span style="color:#a31515;">&quot;Paris&quot;</span>}&nbsp;)
+</pre>
+	</p>
+	<p>
+		Here, <code>Gen.address</code> is a <code>Gen&lt;Address&gt;</code> value. By itself, it'll generate random <code>Address</code> values, but by using <code>Gen.map</code>, you can pin the city to Paris.
+	</p>
+	<p>
+		The <code>map</code> function corresponds to the C# <code>Select</code> method. In functional programming, <em>map</em> is the most common name, although Haskell calls the function <code>fmap</code>; the <code>Select</code> name is, in fact, the odd man out.
+	</p>
+	<p>
+		Likewise, you can map from one generator type to another:
+	</p>
+	<p>
+		<pre><span style="color:blue;">let!</span>&nbsp;address&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:teal;">Gen</span>.postCode
+&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:teal;">Gen</span>.<span style="color:navy;">map</span>&nbsp;(<span style="color:blue;">fun</span>&nbsp;pc&nbsp;<span style="color:blue;">-&gt;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{&nbsp;Street&nbsp;=&nbsp;<span style="color:#a31515;">&quot;Rue&nbsp;Morgue&quot;</span>;&nbsp;City&nbsp;=&nbsp;<span style="color:#a31515;">&quot;Paris&quot;</span>;&nbsp;PostCode&nbsp;=&nbsp;pc&nbsp;})</pre>
+	</p>
+	<p>
+		This example uses <code>Gen.postCode</code> as the initial generator. This is, as the name implies, a <code>Gen&lt;PostCode&gt;</code> value. For every random <code>PostCode</code> value generated, <code>map</code> turns it into an address in Rue Morgue, Paris.
+	</p>
+	<p>
+		There's more going on here than I'd like to cover in this article. The use of <code>let!</code> syntax actually requires <code>Gen&lt;'a&gt;</code> to be a monad (which it is), but that's a topic for another day. Both of these examples are contained in a computation expression, and the implication of that is that the <code>address</code> values represent a multitude of randomly generated <code>Address</code> values.
+	</p>
+	<p>
+		<strong>Hedgehog</strong>
+	</p>
+	<p>
+		<a href="">Hedgehog</a> is another open source F# library for property-based testing. With Hedgehog, the <code>Address</code> code examples look like this:
+	</p>
+	<p>
+		<pre><span style="color:blue;">let!</span>&nbsp;address&nbsp;=&nbsp;<span style="color:teal;">Gen</span>.address&nbsp;|&gt;&nbsp;<span style="color:teal;">Gen</span>.<span style="color:navy;">map</span>&nbsp;(<span style="color:blue;">fun</span>&nbsp;a&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;{&nbsp;a&nbsp;<span style="color:blue;">with</span>&nbsp;City&nbsp;=&nbsp;<span style="color:#a31515;">&quot;Paris&quot;</span>}&nbsp;)
+</pre>
+	</p>
+	<p>
+		And:
+	</p>
+	<p>
+		<pre><span style="color:blue;">let!</span>&nbsp;address&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:teal;">Gen</span>.postCode
+&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:teal;">Gen</span>.<span style="color:navy;">map</span>&nbsp;(<span style="color:blue;">fun</span>&nbsp;pc&nbsp;<span style="color:blue;">-&gt;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{&nbsp;Street&nbsp;=&nbsp;<span style="color:#a31515;">&quot;Rue&nbsp;Morgue&quot;</span>;&nbsp;City&nbsp;=&nbsp;<span style="color:#a31515;">&quot;Paris&quot;</span>;&nbsp;PostCode&nbsp;=&nbsp;pc&nbsp;})</pre>
+	</p>
+	<p>
+		Did you notice something?
+	</p>
+	<p>
+		This is <em>literally</em> the same syntax as FsCheck! This isn't because Hedgehog is copying FsCheck, but because both are based on the same underlying abstraction: functor (and monad). There are other parts of the API where Hedgehog differs from FsCheck, but their generators are similar.
+	</p>
+	<p>
+		This is one of the most important advantages of using well-known abstractions like functors. Once you understand such an abstraction, it's easy to learn a new library. With professional experience with FsCheck, it only took me a few minutes to figure out how to use Hedgehog.
+	</p>
+	<p>
+		<strong>Summary</strong>
+	</p>
+	<p>
+		Functors are well-defined objects from category theory. It may seem abstract, and far removed from 'real' programming, but it's extraordinarily useful. Many category theory abstractions can be applied to a host of different situations. Once you've learned what a functor is, you'll find it easy to learn to use new libraries that build on that abstraction.
+	</p>
+	<p>
+		In this article you saw a sketch of how the functor abstraction can be used to model Test Data Generators. Contrary to Test Data Builders, which turned out to be a redundant abstraction, a Test Data Generator is truly useful.
+	</p>
+	<p>
+		Many years ago, I had the idea to create a Test Data Generator for unit testing purposes. I called it <a href="">AutoFixture</a>, and although it's had some success, the API isn't as clean as it could be. Back then, I didn't know about functors, so I had to invent an API for AutoFixture. This API is proprietary to AutoFixture, so anyone learning AutoFixture must learn this particular API, and its abstractions. It would have been so much easier for all involved if I had designed AutoFixture as a functor instead.
+	</p>
+</div>
