@@ -1,0 +1,100 @@
+---
+layout: post
+title: "Using Polly with F# async workflows"
+date: 2017-05-30 11:42 UTC
+tags: [F#]
+---
+{% include JB/setup %}
+
+<div id="post">
+	<p>
+		<em>How to use Polly as a Circuit Breaker in F# async workflows.</em>
+	</p>
+	<p>
+		<a href="http://amzn.to/11Kmrb2">Release It!</a> describes a stability design pattern called <a href="https://en.wikipedia.org/wiki/Circuit_breaker_design_pattern">Circuit Breaker</a>, which is used to fail fast if a downstream service is experiencing problems.
+	</p>
+	<p>
+		I recently had to add a Circuit Breaker to an F# async workflow, and although Circuit Breaker isn't that difficult to implement (<a href="http://amzn.to/12p90MG">my book</a> contains an example in C#), I found it most prudent to use an existing implementation. <a href="http://www.thepollyproject.org">Polly</a> seemed a good choice.
+	</p>
+	<p>
+		In my F# code base, I was already working with an 'abstraction' of the type <code>HttpRequestMessage -> Async&lt;HttpResponseMessage&gt;</code>: given an <code>HttpClient</code> called <code>client</code>, the implementation is as simple as <code>client.SendAsync &gt;&gt; Async.AwaitTask</code>. Since <code>SendAsync</code> can throw <code>HttpRequestException</code> or <code>WebException</code>, I wanted to define a Circuit Breaker policy for these two exception types.
+	</p>
+	<p>
+		While Polly supports policies for Task-based APIs, it doesn't automatically work with F# async workflows. The problem is that whenever you convert an async workflow into a Task (using <code>Async.AwaitTask</code>), or a Task into an async workflow (using <code>Async.StartAsTask</code>), any exceptions thrown will end up buried within an <code>AggregateException</code>. In order to dig them out again, I first had to write this function:
+	</p>
+	<p>
+		<pre><span style="color:green;">//&nbsp;Exception&nbsp;-&gt;&nbsp;bool</span>
+<span style="color:blue;">let</span>&nbsp;<span style="color:blue;">rec</span>&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:navy;">isNestedHttpException</span>&nbsp;(e&nbsp;:&nbsp;<span style="color:teal;">Exception</span>)&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">match</span>&nbsp;e&nbsp;<span style="color:blue;">with</span>
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;:?&nbsp;<span style="color:teal;">AggregateException</span>&nbsp;<span style="color:blue;">as</span>&nbsp;ae&nbsp;<span style="color:blue;">-&gt;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;ae.InnerException&nbsp;<span style="color:navy;">::</span>&nbsp;<span style="color:teal;">Seq</span>.<span style="color:navy;">toList</span>&nbsp;ae.InnerExceptions
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:teal;">Seq</span>.<span style="color:navy;">exists</span>&nbsp;<span style="color:navy;">isNestedHttpException</span>
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;:?&nbsp;<span style="color:teal;">HttpRequestException</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">true</span>
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;:?&nbsp;<span style="color:teal;">WebException</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">true</span>
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;_&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">false</span></pre>
+	</p>
+	<p>
+		This function recursively searches through all inner exceptions of an <code>AggregateException</code> and returns <code>true</code> if if finds one of the exception types I'm interested in handling; otherwise, it returns <code>false</code>.
+	</p>
+	<p>
+		This predicate enabled me to write the Polly policy I needed:
+	</p>
+	<p>
+		<pre><span style="color:blue;">open</span>&nbsp;Polly
+ 
+<span style="color:green;">//&nbsp;int&nbsp;-&gt;&nbsp;TimeSpan&nbsp;-&gt;&nbsp;CircuitBreaker.CircuitBreakerPolicy</span>
+<span style="color:blue;">let</span>&nbsp;<span style="color:navy;">createPolicy</span>&nbsp;exceptionsAllowedBeforeBreaking&nbsp;durationOfBreak&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:teal;">Policy</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.<span style="color:navy;">Handle</span>&lt;<span style="color:teal;">AggregateException</span>&gt;(<span style="color:blue;">fun</span>&nbsp;ae&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:navy;">isNestedHttpException</span>&nbsp;ae)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.<span style="color:navy;">CircuitBreakerAsync</span>(exceptionsAllowedBeforeBreaking,&nbsp;durationOfBreak)</pre>
+	</p>
+	<p>
+		Since Polly exposes an object-oriented API, I wanted a curried alternative, so I also wrote this curried helper function:
+	</p>
+	<p>
+		<pre><span style="color:green;">//&nbsp;Policy&nbsp;-&gt;&nbsp;(&#39;a&nbsp;-&gt;&nbsp;Async&lt;&#39;b&gt;)&nbsp;-&gt;&nbsp;&#39;a&nbsp;-&gt;&nbsp;Async&lt;&#39;b&gt;</span>
+<span style="color:blue;">let</span>&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:navy;">execute</span>&nbsp;(policy&nbsp;:&nbsp;<span style="color:teal;">Policy</span>)&nbsp;<span style="color:navy;">f</span>&nbsp;&nbsp;req&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;policy.<span style="color:navy;">ExecuteAsync</span>(<span style="color:blue;">fun</span>&nbsp;()&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:navy;">f</span>&nbsp;req&nbsp;|&gt;&nbsp;<span style="color:teal;">Async</span>.<span style="color:navy;">StartAsTask</span>)&nbsp;|&gt;&nbsp;<span style="color:teal;">Async</span>.<span style="color:navy;">AwaitTask</span></pre>
+	</p>
+	<p>
+		The <code>execute</code> function executes any function of the type <code>'a -> Async&lt;'b&gt;</code> with a Polly policy. As you can see, there's some back-and-forth between Tasks and async workflows, so this is probably not the most efficient Circuit Breaker ever configured, but I wagered that since the underlying operation was going to involve an HTTP request and response, the overhead would be insignificant. No one has complained yet.
+	</p>
+	<p>
+		When Polly opens the Circuit Breaker, it throws an exception of the type <code>BrokenCircuitException</code>. Again because of all the marshalling, this also gets wrapped within an <code>AggregateException</code>, so I had to write another function to unwrap it: 
+	</p>
+	<p>
+		<pre><span style="color:green;">//&nbsp;Exception&nbsp;-&gt;&nbsp;bool</span>
+<span style="color:blue;">let</span>&nbsp;<span style="color:blue;">rec</span>&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:navy;">isNestedCircuitBreakerException</span>&nbsp;(e&nbsp;:&nbsp;<span style="color:teal;">Exception</span>)&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">match</span>&nbsp;e&nbsp;<span style="color:blue;">with</span>
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;:?&nbsp;<span style="color:teal;">AggregateException</span>&nbsp;<span style="color:blue;">as</span>&nbsp;ae&nbsp;<span style="color:blue;">-&gt;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;ae.InnerException&nbsp;<span style="color:navy;">::</span>&nbsp;<span style="color:teal;">Seq</span>.<span style="color:navy;">toList</span>&nbsp;ae.InnerExceptions
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:teal;">Seq</span>.<span style="color:navy;">exists</span>&nbsp;<span style="color:navy;">isNestedCircuitBreakerException</span>
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;:?&nbsp;CircuitBreaker.<span style="color:teal;">BrokenCircuitException</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">true</span>
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;_&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">false</span></pre>
+	</p>
+	<p>
+		The <code>isNestedCircuitBreakerException</code> is similar to <code>isNestedHttpException</code>, so it'd be tempting to refactor. I decided, however, to rely on the <a href="https://en.wikipedia.org/wiki/Rule_of_three_(computer_programming)">rule of three</a> and leave both functions as they were.
+	</p>
+	<p>
+		In my F# code I prefer to handle application errors using Either values instead of relying on exceptions, so I wanted to translate any <code>BrokenCircuitException</code> to a particular <a href="http://blog.ploeh.dk/2017/01/03/decoupling-application-errors-from-domain-models">application error</a>. With the above <code>isNestedCircuitBreakerException</code> predicate, this was now possible with a <code>try/with</code> expression:
+	</p>
+	<p>
+		<pre><span style="color:green;">//&nbsp;Policy&nbsp;-&gt;&nbsp;(&#39;a&nbsp;-&gt;&nbsp;Async&lt;&#39;b&gt;)&nbsp;-&gt;&nbsp;&#39;a&nbsp;-&gt;&nbsp;Async&lt;Result&lt;&#39;b,&nbsp;BoundaryFailure&gt;&gt;</span>
+<span style="color:blue;">let</span>&nbsp;<span style="color:navy;">sendUsingPolicy</span>&nbsp;policy&nbsp;<span style="color:navy;">send</span>&nbsp;req&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">async</span>&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">try</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;resp&nbsp;=&nbsp;req&nbsp;|&gt;&nbsp;<span style="color:navy;">execute</span>&nbsp;policy&nbsp;<span style="color:navy;">send</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:teal;">Result</span>.<span style="color:navy;">succeed</span>&nbsp;resp
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">with</span>&nbsp;e&nbsp;<span style="color:blue;">when</span>&nbsp;<span style="color:navy;">isNestedCircuitBreakerException</span>&nbsp;e&nbsp;<span style="color:blue;">-&gt;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:teal;">Result</span>.<span style="color:navy;">fail</span>&nbsp;<span style="color:teal;">Controllers</span>.<span style="color:navy;">StabilityFailure</span>&nbsp;}</pre>
+	</p>
+	<p>
+		This function takes a policy, a <code>send</code> function that actually sends the request, and the request to send. If all goes well, the <code>resp</code>onse is lifted into a <code>Success</code> case and returned. If the Circuit Breaker is open, a <code>StabilityFailure</code> value is returned instead.
+	</p>
+	<p>
+		Since the <code>with</code> expression uses an exception filter, all other exceptions will still be thrown from this function.
+	</p>
+	<p>
+		It might still be worthwhile to look into options for a more F#-friendly Circuit Breaker. One option would be to work with the Polly maintainers to add such an API to Polly itself. Another option would be to write a separate F# implementation.
+	</p>
+</div>
