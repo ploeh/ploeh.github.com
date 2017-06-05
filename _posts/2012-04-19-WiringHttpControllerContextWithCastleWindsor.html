@@ -7,10 +7,11 @@ title: "Wiring HttpControllerContext With Castle Windsor"
 {% include JB/setup %}
 
 <div id="post">
-	<p>In a previous post I demonstrated <a href="http://blog.ploeh.dk/2012/04/17/InjectingHttpControllerContextWiththeASP.NETWebAPI">how to wire up HttpControllerContext with Poor Man's DI</a>. In this article I'll show how to wire up HttpControllerContext with Castle Windsor.</p> <p>This turns out to be remarkably difficult, at least with the constraints I tend to set for myself:</p> <ul> <li>Readers of this blog may have an inkling that I have an absolute abhorrence of static state, so anything relying on that is out of the question.  <li>In addition to that, I also prefer to leverage the container as much as possible, so I'm not keen on duplicating a responsibility that really belongs to the container.  <li>No injecting the container into itself. That's just unnatural and lewd (without being fun).  <li>If possible, the solution should be thread-safe.  <li>The overall solution should still adhere to the <a href="http://blog.ploeh.dk/2010/09/29/TheRegisterResolveReleasepattern">Register Resolve Release pattern</a>, so registering a captured HttpControllerContext is a no-go. It's also unlikely to work, since you'd need to somehow scope each registered instance to its source request.  <li>That also rules out nested containers.</li></ul> <p>OK, so given these constraints, how can an object graph like this one be created, only with Castle Windsor instead of Poor Man's DI?</p> <div style="font-family: consolas, 'Courier New'; background: white; color: black; font-size: 10pt"><pre style="margin: 0px"><span style="color: blue">return</span> <span style="color: blue">new</span> <span style="color: #2b91af">CatalogController</span>(
+	<p>In a previous post I demonstrated <a href="http://blog.ploeh.dk/2012/04/17/InjectingHttpControllerContextWiththeASP.NETWebAPI">how to wire up HttpControllerContext with Poor Man's DI</a>. In this article I'll show how to wire up HttpControllerContext with Castle Windsor.</p> <p>This turns out to be remarkably difficult, at least with the constraints I tend to set for myself:</p> <ul> <li>Readers of this blog may have an inkling that I have an absolute abhorrence of static state, so anything relying on that is out of the question.  <li>In addition to that, I also prefer to leverage the container as much as possible, so I'm not keen on duplicating a responsibility that really belongs to the container.  <li>No injecting the container into itself. That's just unnatural and lewd (without being fun).  <li>If possible, the solution should be thread-safe.  <li>The overall solution should still adhere to the <a href="http://blog.ploeh.dk/2010/09/29/TheRegisterResolveReleasepattern">Register Resolve Release pattern</a>, so registering a captured HttpControllerContext is a no-go. It's also unlikely to work, since you'd need to somehow scope each registered instance to its source request.  <li>That also rules out nested containers.</li></ul> <p>OK, so given these constraints, how can an object graph like this one be created, only with Castle Windsor instead of Poor Man's DI?</p>
+	<p><pre style="margin: 0px"><span style="color: blue">return</span> <span style="color: blue">new</span> <span style="color: #2b91af">CatalogController</span>(
 &nbsp;&nbsp;&nbsp; <span style="color: blue">new</span> <span style="color: #2b91af">RouteLinker</span>(
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; baseUri,
-&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; controllerContext));</pre></div>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; controllerContext));</pre></p>
 <p>Somehow, the HttpControllerContext instance must be captured and made available for further resolution of a CatalogController instance.</p>
 <p><strong>Capturing the HttpControllerContext</strong></p>
 <p>The first step is to capture the HttpControllerContext instance, as early as possible. From my previous post it should be reasonably clear that the best place to capture this instance is from within IHttpControllerActivator.Create.</p>
@@ -22,7 +23,7 @@ title: "Wiring HttpControllerContext With Castle Windsor"
 <p>With Dependency Injection, the common solution to bridge the gap between a long-lasting lifestyle and a shorter lifestyle is a factory.</p></blockquote>
 <p>Thus, instead of injecting TaskCompletionSource&lt;HttpControllerContext&gt; into a custom IHttpControllerActivator, a Func&lt;TaskCompletionSource&lt;HttpControllerContext&gt;&gt; can be injected to bridge the lifestyle gap.</p>
 <p>One other thing: the custom IHttpControllerActivator is only required to capture the HttpControllerContext for further reference, so I don't want to reimplement all the functionality of DefaultHttpControllerActivator. This is the reason why the custom IHttpControllerActivator ends up being a <a href="http://en.wikipedia.org/wiki/Decorator_pattern">Decorator</a>:</p>
-<div style="font-family: consolas, 'Courier New'; background: white; color: black; font-size: 10pt"><pre style="margin: 0px"><span style="color: blue">public</span> <span style="color: blue">class</span> <span style="color: #2b91af">ContextCapturingControllerActivator</span> :
+<p><pre style="margin: 0px"><span style="color: blue">public</span> <span style="color: blue">class</span> <span style="color: #2b91af">ContextCapturingControllerActivator</span> :
 &nbsp;&nbsp;&nbsp; <span style="color: #2b91af">IHttpControllerActivator</span>
 {
 &nbsp;&nbsp;&nbsp; <span style="color: blue">private</span> <span style="color: blue">readonly</span> <span style="color: #2b91af">IHttpControllerActivator</span> activator;
@@ -44,35 +45,35 @@ title: "Wiring HttpControllerContext With Castle Windsor"
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <span style="color: blue">this</span>.promiseFactory().SetResult(controllerContext);
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <span style="color: blue">return</span> <span style="color: blue">this</span>.activator.Create(controllerContext, controllerType);
 &nbsp;&nbsp;&nbsp; }
-}</pre></div>
+}</pre></p>
 <p>The ContextCapturingControllerActivator class simply Decorates another IHttpControllerActivator and does <em>one</em> thing before delegating the call to the inner implementation: it uses the factory to create a new instance of TaskCompletionSource&lt;HttpControllerContext&gt; and assigns the HttpControllerContext instance to that <em>promise</em>.</p>
 <p><strong>Scoping</strong></p>
 <p>Because the Web API is basically being an ass (I can write this here, because I'm gambling that the solitary reader making it this far is so desperate that he or she is not going to care about the swearing) by treating framework Services as Singletons, it doesn't matter how it's being registered:</p>
-<div style="font-family: consolas, 'Courier New'; background: white; color: black; font-size: 10pt"><pre style="margin: 0px">container.Register(<span style="color: #2b91af">Component</span>
+<p><pre style="margin: 0px">container.Register(<span style="color: #2b91af">Component</span>
 &nbsp;&nbsp;&nbsp; .For&lt;<span style="color: #2b91af">IHttpControllerActivator</span>&gt;()
 &nbsp;&nbsp;&nbsp; .ImplementedBy&lt;<span style="color: #2b91af">ContextCapturingControllerActivator</span>&gt;());
 container.Register(<span style="color: #2b91af">Component</span>
 &nbsp;&nbsp;&nbsp; .For&lt;<span style="color: #2b91af">IHttpControllerActivator</span>&gt;()
-&nbsp;&nbsp;&nbsp; .ImplementedBy&lt;<span style="color: #2b91af">DefaultHttpControllerActivator</span>&gt;());</pre></div>
+&nbsp;&nbsp;&nbsp; .ImplementedBy&lt;<span style="color: #2b91af">DefaultHttpControllerActivator</span>&gt;());</pre></p>
 <p>Notice that because Castle Windsor is being such an awesome library that it implicitly understands the Decorator pattern, I can simple register both Decorator and Decoratee in an ordered sequence.</p>
 <p>The factory itself must also be registered as a Singleton (the default in Castle Windsor):</p>
-<div style="font-family: consolas, 'Courier New'; background: white; color: black; font-size: 10pt"><pre style="margin: 0px">container.Register(<span style="color: #2b91af">Component</span>
+<p><pre style="margin: 0px">container.Register(<span style="color: #2b91af">Component</span>
 &nbsp;&nbsp;&nbsp; .For&lt;<span style="color: #2b91af">Func</span>&lt;<span style="color: #2b91af">TaskCompletionSource</span>&lt;<span style="color: #2b91af">HttpControllerContext</span>&gt;&gt;&gt;()
-&nbsp;&nbsp;&nbsp; .AsFactory());</pre></div>
+&nbsp;&nbsp;&nbsp; .AsFactory());</pre></p>
 <p>Here, I'm taking advantage of Castle Windsor's <a href="http://stw.castleproject.org/Windsor.Typed-Factory-Facility.ashx">Typed Factory Facility</a>, so I'm simply asking it to treat a Func&lt;TaskCompletionSource&lt;HttpControllerContext&gt;&gt; as an <a href="http://en.wikipedia.org/wiki/Abstract_factory_pattern">Abstract Factory</a>. Doing that means that every time the delegate is being invoked, Castle Windsor will create an instance of TaskCompletionSource&lt;HttpControllerContext&gt; with the correct lifetime.</p>
 <p>This provides the bridge from Singleton lifestyle to PerWebRequest:</p>
-<div style="font-family: consolas, 'Courier New'; background: white; color: black; font-size: 10pt"><pre style="margin: 0px">container.Register(<span style="color: #2b91af">Component</span>
+<p><pre style="margin: 0px">container.Register(<span style="color: #2b91af">Component</span>
 &nbsp;&nbsp;&nbsp; .For&lt;<span style="color: #2b91af">TaskCompletionSource</span>&lt;<span style="color: #2b91af">HttpControllerContext</span>&gt;&gt;()
-&nbsp;&nbsp;&nbsp; .LifestylePerWebRequest());</pre></div>
+&nbsp;&nbsp;&nbsp; .LifestylePerWebRequest());</pre></p>
 <p>Notice that TaskCompletionSource&lt;HttpControllerContext&gt; is registered with a PerWebRequest lifestyle, which means that every time the above delegate is invoked, it's going to create an instance which is scoped to the current request. This is exactly the desired behavior.</p>
 <p><strong>Registering HttpControllerContext</strong></p>
 <p>The only thing left is registering the HttpControllerContext class itself:</p>
-<div style="font-family: consolas, 'Courier New'; background: white; color: black; font-size: 10pt"><pre style="margin: 0px">container.Register(<span style="color: #2b91af">Component</span>
+<p><pre style="margin: 0px">container.Register(<span style="color: #2b91af">Component</span>
 &nbsp;&nbsp;&nbsp; .For&lt;<span style="color: #2b91af">HttpControllerContext</span>&gt;()
 &nbsp;&nbsp;&nbsp; .UsingFactoryMethod(k =&gt; 
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; k.Resolve&lt;<span style="color: #2b91af">TaskCompletionSource</span>&lt;<span style="color: #2b91af">HttpControllerContext</span>&gt;&gt;()
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; .Task.Result)
-&nbsp;&nbsp;&nbsp; .LifestylePerWebRequest());</pre></div>
+&nbsp;&nbsp;&nbsp; .LifestylePerWebRequest());</pre></p>
 <p>This defines that HttpControllerContext instances are going to be resolved the following way: each time an HttpControllerContext instance is requested, the container is going to look up a TaskCompletionSource&lt;HttpControllerContext&gt; and return the result from that task.</p>
 <p>The TaskCompletionSource&lt;HttpControllerContext&gt; instance is scoped per web request and previously captured (as you may recall) by the ContextCapturingControllerActivator class.</p>
 <p>That's all (sic!) there's to it :)</p>
