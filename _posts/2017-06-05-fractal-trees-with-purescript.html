@@ -1,0 +1,277 @@
+---
+layout: post
+title: "Fractal trees with PureScript"
+date: 2017-06-05 6:17 UTC
+tags: [Languages]
+---
+{% include JB/setup %}
+
+<div id="post">
+	<p>
+		<em>A fractal tree drawn with PureScript</em>
+	</p>
+	<p>
+		Last week, I attended <a href="http://brandewinder.com">Mathias Brandewinder's</a> F# (and <a href="https://clojure.org">Clojure</a>) dojo in Copenhagen, and had great fun drawing a fractal tree in F# together with other attendees. Afterwards, I started thinking that it'd be fairly easy to port the F# code to <a href="https://www.haskell.org">Haskell</a>, but then I reconsidered. The combination of Haskell, Windows, and drawing sounded intimidating. This seemed a good opportunity to take <a href="http://www.purescript.org">PureScript</a> for a spin, because that would enable me to draw the tree on an HTML canvas.
+	</p>
+	<p>
+		In case you're wondering, a fractal tree is simply a tree that branches infinitely in (I suppose) a deterministic fashion. Here's an example of the output of of the code of this article:
+	</p>
+	<p>
+		<img src="/content/binary/symmetric-fractal-tree.png" alt="A symmetric fractal tree.">
+	</p>
+	<p>
+		This is my first attempt at PureScript, and I think I spent between five and ten hours in total. Most of them I used to figure out how to install PureScript, how to set up a development environment, and so on. All in all I found the process pleasing.
+	</p>
+	<p>
+		While it's a separate, independent language, PureScript is clearly a descendant of Haskell, and the syntax is similar.
+	</p>
+	<p>
+		<strong>Separating data from effects</strong>
+	</p>
+	<p>
+		In functional programming, you routinely separate data from effects. Instead of trying to both draw and calculate branches of a tree in a single operation, you figure out how to first define a fractal tree as data, and then subsequently you can draw it.
+	</p>
+	<p>
+		A generic binary tree is a staple of functional programming. Here's one way to do it:
+	</p>
+	<p>
+		<pre><span style="color:blue;">data</span>&nbsp;<span style="color:#dd0000;">Tree</span>&nbsp;a&nbsp;<span style="color:#666666;">=</span>&nbsp;<span style="color:#dd0000;">Leaf</span>&nbsp;a&nbsp;<span style="color:#666666;">|</span>&nbsp;<span style="color:#dd0000;">Node</span>&nbsp;a&nbsp;(<span style="color:#dd0000;">Tree</span>&nbsp;a)&nbsp;(<span style="color:#dd0000;">Tree</span>&nbsp;a)
+</pre>
+	</p>
+	<p>
+		Such a tree is either a leaf node with a generically typed value, or an (intermediate) node with a value and two branches, which are themselves (sub)trees.
+	</p>
+	<p>
+		In a sense, this definition is an approximation, because a 'real' fractal tree has no leafs. In Haskell you can easily define infinite trees, because Haskell is lazily evaluated. PureScript, on the other hand, is eagerly evaluated, so infinite recursion would require jumping through some hoops, and I don't think it's important in this exercise.
+	</p>
+	<p>
+		While the above tree type can contain values of any type, in this exercise, it should contain line segments. One way to do this is to define a <code>Line</code> record type:
+	</p>
+	<p>
+		<pre><span style="color:blue;">data</span>&nbsp;<span style="color:#dd0000;">Line</span>&nbsp;<span style="color:#666666;">=</span>&nbsp;<span style="color:#dd0000;">Line</span>&nbsp;{
+&nbsp;&nbsp;<span style="color:#600277;">x</span>&nbsp;::&nbsp;<span style="color:blue;">Number</span>,
+&nbsp;&nbsp;<span style="color:#600277;">y</span>&nbsp;::&nbsp;<span style="color:blue;">Number</span>,
+&nbsp;&nbsp;<span style="color:#600277;">angle</span>&nbsp;::&nbsp;<span style="color:blue;">Number</span>,
+&nbsp;&nbsp;<span style="color:#600277;">length</span>&nbsp;::&nbsp;<span style="color:blue;">Number</span>,
+&nbsp;&nbsp;<span style="color:#600277;">width</span>&nbsp;::&nbsp;<span style="color:blue;">Number</span>&nbsp;}
+</pre>
+	</p>
+	<p>
+		This is a type with five labelled values, all of them numbers. <code>x</code> and <code>y</code> are coordinates for the origin of the line, <code>angle</code> defines the angle (measured in <a href="https://en.wikipedia.org/wiki/Radian">radians</a>) from the origin, and <code>length</code> the length of the line. In a similarly obvious vein, <code>width</code> denotes the width of the line, although this data element has no impact on the calculation of the tree. It's purely a display concern.
+	</p>
+	<p>
+		Given the first four numbers in a <code>Line</code> value, you can calculate the endpoint of a line:
+	</p>
+	<p>
+		<pre><span style="color:#600277;">endpoint</span>&nbsp;::&nbsp;forall&nbsp;r.
+&nbsp;&nbsp;{&nbsp;x&nbsp;<span style="color:#666666;">::</span>&nbsp;<span style="color:#dd0000;">Number</span>
+&nbsp;&nbsp;,&nbsp;y&nbsp;<span style="color:#666666;">::</span>&nbsp;<span style="color:#dd0000;">Number</span>
+&nbsp;&nbsp;,&nbsp;angle&nbsp;<span style="color:#666666;">::</span>&nbsp;<span style="color:#dd0000;">Number</span>
+&nbsp;&nbsp;,&nbsp;length&nbsp;<span style="color:#666666;">::</span>&nbsp;<span style="color:#dd0000;">Number</span>
+&nbsp;&nbsp;<span style="color:#666666;">|</span>&nbsp;r&nbsp;}
+&nbsp;&nbsp;<span style="color:#666666;">-&gt;</span>&nbsp;<span style="color:#dd0000;">Tuple</span>&nbsp;<span style="color:#dd0000;">Number</span>&nbsp;<span style="color:#dd0000;">Number</span>
+endpoint&nbsp;line&nbsp;<span style="color:#666666;">=</span>
+&nbsp;&nbsp;<span style="color:green;">--&nbsp;Flip&nbsp;the&nbsp;y&nbsp;value&nbsp;because&nbsp;Canvas&nbsp;coordinate&nbsp;system&nbsp;points&nbsp;down&nbsp;from&nbsp;upper
+</span>&nbsp;&nbsp;<span style="color:green;">--&nbsp;left&nbsp;corner
+</span>&nbsp;&nbsp;<span style="color:#dd0000;">Tuple</span>
+&nbsp;&nbsp;&nbsp;&nbsp;(line<span style="color:#666666;">.</span>x&nbsp;<span style="color:#666666;">+</span>&nbsp;line<span style="color:#666666;">.</span>length&nbsp;<span style="color:#666666;">*</span>&nbsp;cos&nbsp;line<span style="color:#666666;">.</span>angle)
+&nbsp;&nbsp;&nbsp;&nbsp;(<span style="color:#666666;">-</span>(<span style="color:#666666;">-</span>line<span style="color:#666666;">.</span>y&nbsp;<span style="color:#666666;">+</span>&nbsp;line<span style="color:#666666;">.</span>length&nbsp;<span style="color:#666666;">*</span>&nbsp;sin&nbsp;line<span style="color:#666666;">.</span>angle))
+</pre>
+	</p>
+	<p>
+		This may look more intimidating than it really is. The first seven lines are simply the (optional) type declaration; ignore that for a minute. The function itself is a one-liner, although I've formatted it on several lines in order to stay within an 80 characters line width. It simply performs a bit of <a href="https://en.wikipedia.org/wiki/Trigonometry">trigonometry</a> in order to find the endpoint of a line with an origin, angle, and length. As the code comment states, it negates the <code>y</code> value because the HTML canvas coordinate system points down instead of up (larger <code>y</code> values are further towards the bottom of the screen than smaller values).
+	</p>
+	<p>
+		The function calculates a new set of coordinates for the endpoint, and returns them as a tuple. In PureScript, tuples are explicit and created with the <code>Tuple</code> data constructor.
+	</p>
+	<p>
+		In general, as far as I can tell, you have less need of tuples in PureScript, because instead, you have <em>row type polymorphism</em>. This is still a new concept to me, but as far as I can tell, it's a sort of static duck typing. You can see it in the type declaration of the <code>endpoint</code> function. The function takes a <code>line</code> argument, the type of which is <em>any</em> record type that contains <code>x</code>, <code>y</code>, <code>angle</code>, and <code>length</code> labels of the <code>Number</code> type. For instance, as you'll soon see, you can pass a <code>Line</code> value to the <code>endpoint</code> function.
+	</p>
+	<p>
+		<strong>Creating branches</strong>
+	</p>
+	<p>
+		In a fractal tree, you calculate two branches for any given branch. Typically, in order to draw a pretty picture, you make the sub-branches smaller than the parent branch. You also incline each branch an angle from the parent branch. While you can hard-code the values for these operations, you can also pass them as arguments. In order to prevent an explosion of primitive function arguments, I collected all such parameters in a single data type:
+	</p>
+	<p>
+		<pre><span style="color:blue;">data</span>&nbsp;<span style="color:#dd0000;">FractalParameters</span>&nbsp;<span style="color:#666666;">=</span>&nbsp;<span style="color:#dd0000;">FractalParameters</span>&nbsp;{
+&nbsp;&nbsp;<span style="color:#600277;">leftAngle</span>&nbsp;::&nbsp;<span style="color:blue;">Number</span>,
+&nbsp;&nbsp;<span style="color:#600277;">rightAngle</span>&nbsp;::&nbsp;<span style="color:blue;">Number</span>,
+&nbsp;&nbsp;<span style="color:#600277;">shrinkFactor</span>&nbsp;::&nbsp;<span style="color:blue;">Number</span>&nbsp;}
+</pre>
+	</p>
+	<p>
+		This is a record type similar to the <code>Line</code> type you've already seen.
+	</p>
+	<p>
+		When you have a <code>FractalParameters</code> value and a (parent) line, you can calculate its branches:
+	</p>
+	<p>
+		<pre><span style="color:#600277;">createBranches</span>&nbsp;::&nbsp;<span style="color:blue;">FractalParameters</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">Line</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">Tuple</span>&nbsp;<span style="color:blue;">Line</span>&nbsp;<span style="color:blue;">Line</span>
+createBranches&nbsp;(<span style="color:#dd0000;">FractalParameters</span>&nbsp;p)&nbsp;(<span style="color:#dd0000;">Line</span>&nbsp;line)&nbsp;<span style="color:#666666;">=</span>
+&nbsp;&nbsp;<span style="color:#dd0000;">Tuple</span>&nbsp;left&nbsp;right
+&nbsp;&nbsp;<span style="color:blue;">where</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#dd0000;">Tuple</span>&nbsp;x&nbsp;y&nbsp;<span style="color:#666666;">=</span>&nbsp;endpoint&nbsp;line
+&nbsp;&nbsp;&nbsp;&nbsp;left&nbsp;<span style="color:#666666;">=</span>&nbsp;<span style="color:#dd0000;">Line</span>&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;x<span style="color:#666666;">:</span>&nbsp;x,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;y<span style="color:#666666;">:</span>&nbsp;y,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;angle<span style="color:#666666;">:</span>&nbsp;pi&nbsp;<span style="color:#666666;">*</span>&nbsp;(line<span style="color:#666666;">.</span>angle&nbsp;<span style="color:#666666;">/</span>&nbsp;pi&nbsp;<span style="color:#666666;">+</span>&nbsp;p<span style="color:#666666;">.</span>leftAngle),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;length<span style="color:#666666;">:</span>&nbsp;(line<span style="color:#666666;">.</span>length&nbsp;<span style="color:#666666;">*</span>&nbsp;p<span style="color:#666666;">.</span>shrinkFactor),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;width<span style="color:#666666;">:</span>&nbsp;(line<span style="color:#666666;">.</span>width&nbsp;<span style="color:#666666;">*</span>&nbsp;p<span style="color:#666666;">.</span>shrinkFactor)&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;right&nbsp;<span style="color:#666666;">=</span>&nbsp;<span style="color:#dd0000;">Line</span>&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;x<span style="color:#666666;">:</span>&nbsp;x,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;y<span style="color:#666666;">:</span>&nbsp;y,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;angle<span style="color:#666666;">:</span>&nbsp;pi&nbsp;<span style="color:#666666;">*</span>&nbsp;(line<span style="color:#666666;">.</span>angle&nbsp;<span style="color:#666666;">/</span>&nbsp;pi&nbsp;<span style="color:#666666;">-</span>&nbsp;p<span style="color:#666666;">.</span>rightAngle),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;length<span style="color:#666666;">:</span>&nbsp;(line<span style="color:#666666;">.</span>length&nbsp;<span style="color:#666666;">*</span>&nbsp;p<span style="color:#666666;">.</span>shrinkFactor),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;width<span style="color:#666666;">:</span>&nbsp;(line<span style="color:#666666;">.</span>width&nbsp;<span style="color:#666666;">*</span>&nbsp;p<span style="color:#666666;">.</span>shrinkFactor)&nbsp;}
+</pre>
+	</p>
+	<p>
+		The <code>createBranches</code> function returns a tuple of <code>Line</code> values, one for the left branch, and one for the right branch. First, it calls <code>endpoint</code> with <code>line</code>. Notice that <code>line</code> is a <code>Line</code> value, and because <code>Line</code> defines <code>x</code>, <code>y</code>, <code>angle</code>, and <code>length</code> labels, it can be used as an input argument. This type-checks because of row type polymorphism.
+	</p>
+	<p>
+		Given the endpoint of the parent line, <code>createBranches</code> then creates two new <code>Line</code> values (<code>left</code> and <code>right</code>) with that endpoint as their origins. Both of these values are modified with the <code>FractalParameters</code> argument, so that they branch off to the left and the right, and also shrink in an aesthetically pleasing manner.
+	</p>
+	<p>
+		<strong>Creating a tree</strong>
+	</p>
+	<p>
+		Now that you can calculate the branches of a line, you can create a tree using recursion:
+	</p>
+	<p>
+		<pre><span style="color:#600277;">createTree</span>&nbsp;::&nbsp;Int&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">FractalParameters</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">Line</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">Tree</span>&nbsp;<span style="color:blue;">Line</span>
+createTree&nbsp;depth&nbsp;p&nbsp;line&nbsp;<span style="color:#666666;">=</span>
+&nbsp;&nbsp;<span style="color:#af00db;">if</span>&nbsp;depth&nbsp;<span style="color:#666666;">&lt;=</span>&nbsp;<span style="color:#09885a;">0</span>
+&nbsp;&nbsp;<span style="color:#af00db;">then</span>&nbsp;<span style="color:#dd0000;">Leaf</span>&nbsp;line
+&nbsp;&nbsp;<span style="color:#af00db;">else</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;<span style="color:#dd0000;">Tuple</span>&nbsp;leftLine&nbsp;rightLine&nbsp;<span style="color:#666666;">=</span>&nbsp;createBranches&nbsp;p&nbsp;line
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;left&nbsp;&nbsp;<span style="color:#666666;">=</span>&nbsp;createTree&nbsp;(depth&nbsp;<span style="color:#666666;">-</span>&nbsp;<span style="color:#09885a;">1</span>)&nbsp;p&nbsp;leftLine
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;right&nbsp;<span style="color:#666666;">=</span>&nbsp;createTree&nbsp;(depth&nbsp;<span style="color:#666666;">-</span>&nbsp;<span style="color:#09885a;">1</span>)&nbsp;p&nbsp;rightLine
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">in</span>&nbsp;<span style="color:#dd0000;">Node</span>&nbsp;line&nbsp;left&nbsp;right
+</pre>
+	</p>
+	<p>
+		The <code>createTree</code> function takes a <code>depth</code> argument, which specifies the depth (or is it the height?) of the tree. The reason I called it <code>depth</code> is because <code>createTree</code> is recursive, and <code>depth</code> controls the depth of the recursion. If <code>depth</code> is zero or less, the function returns a <code>Leaf</code> node containing the input <code>line</code>.
+	</p>
+	<p>
+		Otherwise, it calls <code>createBranches</code> with the input <code>line</code>, and recursively calls <code>createTree</code> for each of these branches, but with a decremented <code>depth</code>. It then returns a <code>Node</code> containing the input <code>line</code> and the two sub-trees <code>left</code> and <code>right</code>.
+	</p>
+	<p>
+		This implementation isn't tail-recursive, but the above image was generated with a recursion depth of 10, so running out of stack space wasn't my biggest concern.
+	</p>
+	<p>
+		<strong>Drawing the tree</strong>
+	</p>
+	<p>
+		With the <code>createTree</code> function you can create a fractal tree, but it's no fun if you can't draw it. You can use the <code>Graphics.Canvas</code> module in order to draw on an HTML canvas. First, here's how to draw a single line:
+	</p>
+	<p>
+		<pre><span style="color:#600277;">drawLine</span>&nbsp;::&nbsp;<span style="color:blue;">Context2D</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">Line</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">Eff</span>&nbsp;(canvas&nbsp;::&nbsp;<span style="color:blue;">CANVAS</span>)&nbsp;<span style="color:blue;">Unit</span>
+drawLine&nbsp;ctx&nbsp;(<span style="color:#dd0000;">Line</span>&nbsp;line)&nbsp;<span style="color:#666666;">=</span>&nbsp;<span style="color:#af00db;">do</span>
+&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;<span style="color:#dd0000;">Tuple</span>&nbsp;x&#39;&nbsp;y&#39;&nbsp;<span style="color:#666666;">=</span>&nbsp;endpoint&nbsp;line
+&nbsp;&nbsp;void&nbsp;<span style="color:#666666;">$</span>&nbsp;strokePath&nbsp;ctx&nbsp;<span style="color:#666666;">$</span>&nbsp;<span style="color:#af00db;">do</span>
+&nbsp;&nbsp;&nbsp;&nbsp;void&nbsp;<span style="color:#666666;">$</span>&nbsp;moveTo&nbsp;ctx&nbsp;line<span style="color:#666666;">.</span>x&nbsp;line<span style="color:#666666;">.</span>y
+&nbsp;&nbsp;&nbsp;&nbsp;void&nbsp;<span style="color:#666666;">$</span>&nbsp;setLineWidth&nbsp;line<span style="color:#666666;">.</span>width&nbsp;ctx
+&nbsp;&nbsp;&nbsp;&nbsp;void&nbsp;<span style="color:#666666;">$</span>&nbsp;lineTo&nbsp;ctx&nbsp;x&#39;&nbsp;y&#39;
+&nbsp;&nbsp;&nbsp;&nbsp;closePath&nbsp;ctx
+</pre>
+	</p>
+	<p>
+		While hardly unmanageable, I was surprised that I wasn't able to find a pre-defined function that would let me draw a line. Perhaps I was looking in the wrong place.
+	</p>
+	<p>
+		With this helper function, you can now draw a tree using pattern matching:
+	</p>
+	<p>
+		<pre><span style="color:#600277;">drawTree</span>&nbsp;::&nbsp;<span style="color:blue;">Context2D</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">Tree</span>&nbsp;<span style="color:blue;">Line</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">Eff</span>&nbsp;(canvas&nbsp;::&nbsp;<span style="color:blue;">CANVAS</span>)&nbsp;<span style="color:blue;">Unit</span>
+drawTree&nbsp;ctx&nbsp;(<span style="color:#dd0000;">Leaf</span>&nbsp;line)&nbsp;<span style="color:#666666;">=</span>&nbsp;drawLine&nbsp;ctx&nbsp;line
+drawTree&nbsp;ctx&nbsp;(<span style="color:#dd0000;">Node</span>&nbsp;line&nbsp;left&nbsp;right)&nbsp;<span style="color:#666666;">=</span>&nbsp;<span style="color:#af00db;">do</span>
+&nbsp;&nbsp;drawLine&nbsp;ctx&nbsp;line
+&nbsp;&nbsp;drawTree&nbsp;ctx&nbsp;left
+&nbsp;&nbsp;drawTree&nbsp;ctx&nbsp;right
+</pre>
+	</p>
+	<p>
+		If the input tree is a <code>Leaf</code> value, the first line matches and the function simply draws the line, using the <code>drawLine</code> function.
+	</p>
+	<p>
+		When the input tree is a <code>Node</code> value, the function first draws the <code>line</code> associated with that node, and then recursively calls itself with the <code>left</code> and <code>right</code> sub-trees.
+	</p>
+	<p>
+		<strong>Execution</strong>
+	</p>
+	<p>
+		The <code>drawTree</code> function enables you to draw using a <code>Context2D</code> value, which you can create from an HTML canvas:
+	</p>
+	<p>
+		<pre>mcanvas&nbsp;<span style="color:#666666;">&lt;-</span>&nbsp;getCanvasElementById&nbsp;<span style="color:#a31515;">&quot;canvas&quot;</span>
+<span style="color:blue;">let</span>&nbsp;canvas&nbsp;<span style="color:#666666;">=</span>&nbsp;unsafePartial&nbsp;(fromJust&nbsp;mcanvas)
+ctx&nbsp;<span style="color:#666666;">&lt;-</span>&nbsp;getContext2D&nbsp;canvas
+</pre>
+	</p>
+	<p>
+		From where does the <code>"canvas"</code> element come? Ultimately, PureScript compiles to JavaScript, and you can put the compiled script in an HTML file together with a <code>canvas</code> element:
+	</p>
+	<p>
+		<pre><span style="color:blue;">&lt;</span><span style="color:maroon;">body</span><span style="color:blue;">&gt;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">&lt;</span><span style="color:maroon;">canvas</span>&nbsp;<span style="color:red;">id</span><span style="color:blue;">=</span><span style="color:blue;">&quot;canvas&quot;</span>&nbsp;<span style="color:red;">width</span><span style="color:blue;">=</span><span style="color:blue;">&quot;800&quot;</span>&nbsp;<span style="color:red;">height</span><span style="color:blue;">=</span><span style="color:blue;">&quot;800&quot;</span><span style="color:blue;">&gt;&lt;/</span><span style="color:maroon;">canvas</span><span style="color:blue;">&gt;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">&lt;</span><span style="color:maroon;">script</span>&nbsp;<span style="color:red;">src</span><span style="color:blue;">=</span><span style="color:blue;">&quot;index.js&quot;</span>&nbsp;<span style="color:red;">type</span><span style="color:blue;">=</span><span style="color:blue;">&quot;text/javascript&quot;</span><span style="color:blue;">&gt;&lt;/</span><span style="color:maroon;">script</span><span style="color:blue;">&gt;</span>
+<span style="color:blue;">&lt;/</span><span style="color:maroon;">body</span><span style="color:blue;">&gt;</span></pre>
+	</p>
+	<p>
+		Once you have a <code>Context2D</code> value, you can draw a tree. Here's the whole entry point, including the above canvas-finding code:
+	</p>
+	<p>
+		<pre><span style="color:#600277;">main</span>&nbsp;::&nbsp;<span style="color:blue;">Eff</span>&nbsp;(canvas&nbsp;::&nbsp;<span style="color:blue;">CANVAS</span>)&nbsp;<span style="color:blue;">Unit</span>
+main&nbsp;<span style="color:#666666;">=</span>&nbsp;<span style="color:#af00db;">do</span>
+&nbsp;&nbsp;mcanvas&nbsp;<span style="color:#666666;">&lt;-</span>&nbsp;getCanvasElementById&nbsp;<span style="color:#a31515;">&quot;canvas&quot;</span>
+&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;canvas&nbsp;<span style="color:#666666;">=</span>&nbsp;unsafePartial&nbsp;(fromJust&nbsp;mcanvas)
+&nbsp;&nbsp;ctx&nbsp;<span style="color:#666666;">&lt;-</span>&nbsp;getContext2D&nbsp;canvas
+
+&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;trunk&nbsp;<span style="color:#666666;">=</span>&nbsp;<span style="color:#dd0000;">Line</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{&nbsp;x<span style="color:#666666;">:</span>&nbsp;<span style="color:#09885a;">300.0</span>,&nbsp;y<span style="color:#666666;">:</span>&nbsp;<span style="color:#09885a;">600.0</span>,&nbsp;angle<span style="color:#666666;">:</span>&nbsp;(pi&nbsp;<span style="color:#666666;">/</span>&nbsp;<span style="color:#09885a;">2.0</span>),&nbsp;length<span style="color:#666666;">:</span>&nbsp;<span style="color:#09885a;">100.0</span>,&nbsp;width<span style="color:#666666;">:</span>&nbsp;<span style="color:#09885a;">4.0</span>&nbsp;}
+&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;p&nbsp;<span style="color:#666666;">=</span>&nbsp;<span style="color:#dd0000;">FractalParameters</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{&nbsp;leftAngle<span style="color:#666666;">:</span>&nbsp;<span style="color:#09885a;">0.1</span>,&nbsp;rightAngle<span style="color:#666666;">:</span>&nbsp;<span style="color:#09885a;">0.1</span>,&nbsp;shrinkFactor<span style="color:#666666;">:</span>&nbsp;<span style="color:#09885a;">0.8</span>&nbsp;}
+&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;tree&nbsp;<span style="color:#666666;">=</span>&nbsp;createTree&nbsp;<span style="color:#09885a;">10</span>&nbsp;p&nbsp;trunk
+&nbsp;&nbsp;drawTree&nbsp;ctx&nbsp;tree
+</pre>
+	</p>
+	<p>
+		After it finds the <code>Context2D</code> value, it hard-codes a <code>trunk</code> <code>Line</code> and a set of <code>FractalParameters</code>. From these, it creates a tree of size 10 and draws the tree in the beginning of this article.
+	</p>
+	<p>
+		You can fiddle with the parameters to your liking. For example, you can make the right angle wider than the left angle:
+	</p>
+	<p>
+		<pre><span style="color:blue;">let</span>&nbsp;p&nbsp;<span style="color:#666666;">=</span>&nbsp;<span style="color:#dd0000;">FractalParameters</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{&nbsp;leftAngle<span style="color:#666666;">:</span>&nbsp;<span style="color:#09885a;">0.1</span>,&nbsp;rightAngle<span style="color:#666666;">:</span>&nbsp;<span style="color:#09885a;">0.2</span>,&nbsp;shrinkFactor<span style="color:#666666;">:</span>&nbsp;<span style="color:#09885a;">0.8</span>&nbsp;}
+</pre>
+	</p>
+	<p>
+		This produces an asymmetric tree:
+	</p>
+	<p>
+		<img src="/content/binary/asymmetric-fractal-tree.png" alt="An asymmetric fractal tree.">
+	</p>
+	<p>
+		In order to compile the code, I used this command:
+	</p>
+	<p>
+		<pre>$ pulp browserify -t html/index.js</pre>
+	</p>
+	<p>
+		This compiles the PureScript code to a single <code>index.js</code> file, which is output to the <code>html</code> directory. This directory also contains the HTML file with the canvas.
+	</p>
+	<p>
+		You can find the entire PureScript file in this Gist.
+	</p>
+	<p>
+		<strong>Summary</strong>
+	</p>
+	<p>
+		It was fun to try PureScript. I've been staying away from JavaScript-based development for many years now, but if I ever have to do some client-side development, I may consider it. So far, I've found that PureScript seems viable for drawing. How good it is if you need to interact with 'normal' web-pages or SPAs, I don't know (yet).
+	</p>
+	<p>
+		If you have some experience with Haskell, it looks like it's easy to get started with PureScript.
+	</p>
+</div>
