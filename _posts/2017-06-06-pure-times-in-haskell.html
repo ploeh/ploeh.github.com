@@ -1,0 +1,474 @@
+---
+layout: post
+title: "Pure times in Haskell"
+date: 2017-06-06 13:59 UTC
+tags: [Software Design, Haskell]
+---
+{% include JB/setup %}
+
+<div id="post">
+	<p>
+		<em>A Polling Consumer implementation written in Haskell.</em>
+	</p>
+	<p>
+		As you can read in the <a href="">introductory article</a>, I've come to realise that the <a href="http://www.enterpriseintegrationpatterns.com/PollingConsumer.html">Polling Consumer</a> that I <a href="http://blog.ploeh.dk/2015/08/10/type-driven-development">originally wrote in F#</a> isn't particularly functional. Being the friendly and productive language that it is, F# doesn't protect you from mixing pure and impure code, but <a href="https://www.haskell.org">Haskell</a> does. For that reason, you can develop a prototype in Haskell, and later port it to F#, if you want to learn how to solve the problem in a strictly functional way.
+	</p>
+	<p>
+		To recapitulate, the task is to implement a Polling Consumer that runs for a predefined duration, after which it exits (so that it can be restarted by a scheduler).
+	</p>
+	<p>
+    <img src="/content/binary/polling-consumer-finite-state-machine.png" alt="Polling Consumer state machine transition diagram"> 
+  </p>
+	<p>
+		The program is a finite state machine that moves between four states. From the <em>ready</em> state, it'll need to decide whether to poll for a new message or exit. Polling and handling takes time (and at compile-time we don't know how long), and the program ought to stop at a pre-defined time. If it gets too close to that time, it should exit, but otherwise, it should attempt to handle a message (and keep track of how long this takes). You can read a more elaborate description of the problem in the <a href="http://blog.ploeh.dk/2015/08/10/type-driven-development">original article</a>.
+	</p>
+	<p>
+		<strong>State data types</strong>
+	</p>
+	<p>
+		The premise in that previous article was that F#'s type system is so powerful that it can aid you in designing a good solution. Haskell's type system is even more powerful, so it can give you even better help.
+	</p>
+	<p>
+		The Polling Consumer program must measure and keep track of how long it takes to poll, handle a message, or idle. All of these are durations. In Haskell, we can represent them as <code>NominalDiffTime</code> values. I'm a bit concerned, though, that if I represent all of these durations as <code>NominalDiffTime</code> values, I may accidentally use a poll duration where I really need a handle duration, and so on. Perhaps I'm being overly cautious, but I like to get help from the type system. In the words of <a href="http://hmemcpy.com">Igal Tabachnik</a>, <em><a href="https://twitter.com/hmemcpy/status/867647943108681728">types prevent typos</a>:</em>
+	</p>
+	<p>
+		<pre><span style="color:blue;">newtype</span>&nbsp;<span style="color:#dd0000;">PollDuration</span>&nbsp;<span style="color:#666666;">=</span>&nbsp;<span style="color:#dd0000;">PollDuration</span>&nbsp;<span style="color:#dd0000;">NominalDiffTime</span>&nbsp;<span style="color:blue;">deriving</span>&nbsp;(<span style="color:#a31515;">Eq</span>,&nbsp;<span style="color:#a31515;">Show</span>)
+<span style="color:blue;">newtype</span>&nbsp;<span style="color:#dd0000;">IdleDuration</span>&nbsp;<span style="color:#666666;">=</span>&nbsp;<span style="color:#dd0000;">IdleDuration</span>&nbsp;<span style="color:#dd0000;">NominalDiffTime</span>&nbsp;<span style="color:blue;">deriving</span>&nbsp;(<span style="color:#a31515;">Eq</span>,&nbsp;<span style="color:#a31515;">Show</span>)
+<span style="color:blue;">newtype</span>&nbsp;<span style="color:#dd0000;">HandleDuration</span>&nbsp;<span style="color:#666666;">=</span>&nbsp;<span style="color:#dd0000;">HandleDuration</span>&nbsp;<span style="color:#dd0000;">NominalDiffTime</span>&nbsp;<span style="color:blue;">deriving</span>&nbsp;(<span style="color:#a31515;">Eq</span>,&nbsp;<span style="color:#a31515;">Show</span>)
+<span style="color:blue;">data</span>&nbsp;<span style="color:#dd0000;">CycleDuration</span>&nbsp;<span style="color:#666666;">=</span>&nbsp;<span style="color:#dd0000;">CycleDuration</span>
+&nbsp;&nbsp;{&nbsp;pollDuration&nbsp;<span style="color:#666666;">::</span>&nbsp;<span style="color:#dd0000;">PollDuration</span>,&nbsp;handleDuration&nbsp;<span style="color:#666666;">::</span>&nbsp;<span style="color:#dd0000;">HandleDuration</span>&nbsp;}
+&nbsp;&nbsp;<span style="color:blue;">deriving</span>&nbsp;(<span style="color:#a31515;">Eq</span>,&nbsp;<span style="color:#a31515;">Show</span>)</pre>
+	</p>
+	<p>
+		This simply declares that <code>PollDuration</code>, <code>IdleDuration</code>, and <code>HandleDuration</code> are all <code>NominalDiffTime</code> values, but you can't mistakenly use a <code>PollDuration</code> where a <code>HandleDuration</code> is required, and so on.
+	</p>
+	<p>
+		In addition to those three types of duration, I also define a <code>CycleDuration</code>. This is the data that I actually need to keep track of: <em>how long does it take to handle a single message?</em> I'm assuming that polling for a message is an I/O-bound operation, so it may take significant time. Likewise, handling a message may take time. When deciding whether to exit or handle a new message, both durations count. Instead of defining <code>CycleDuration</code> as a <code>newtype</code> alias for <code>NominalDiffTime</code>, I decided to define it as a record type comprised of a <code>PollDuration</code> and a <code>HandleDuration</code>. It's not that I'm really interested in keeping track of these two values individually, but it protects me from making stupid mistakes. I can only create a <code>CycleDuration</code> value if I have both a <code>PollDuration</code> and a <code>HandleDuration</code> value.
+	</p>
+	<p>
+		In short, I'm trying to combat <a href="http://blog.ploeh.dk/2011/05/25/DesignSmellPrimitiveObsession">primitive obsession</a>.
+	</p>
+	<p>
+		With these duration types in place, you can define the states of the finite state machine:
+	</p>
+	<p>
+		<pre><span style="color:blue;">data</span>&nbsp;<span style="color:#dd0000;">PollingState</span>&nbsp;msg&nbsp;<span style="color:#666666;">=</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#dd0000;">Ready</span>&nbsp;[<span style="color:#dd0000;">CycleDuration</span>]
+&nbsp;&nbsp;<span style="color:#666666;">|</span>&nbsp;<span style="color:#dd0000;">ReceivedMessage</span>&nbsp;[<span style="color:#dd0000;">CycleDuration</span>]&nbsp;<span style="color:#dd0000;">PollDuration</span>&nbsp;msg
+&nbsp;&nbsp;<span style="color:#666666;">|</span>&nbsp;<span style="color:#dd0000;">NoMessage</span>&nbsp;[<span style="color:#dd0000;">CycleDuration</span>]&nbsp;<span style="color:#dd0000;">PollDuration</span>
+&nbsp;&nbsp;<span style="color:#666666;">|</span>&nbsp;<span style="color:#dd0000;">Stopped</span>&nbsp;[<span style="color:#dd0000;">CycleDuration</span>]
+&nbsp;&nbsp;<span style="color:blue;">deriving</span>&nbsp;(<span style="color:#a31515;">Show</span>)</pre>
+	</p>
+	<p>
+		Like the original F# code, state data can be represented as a sum type, with a case for each state. In all four cases, a <code>CycleDuration</code> list keeps track of the observed message handling statistics. This is the way the program should attempt to calculate whether it's safe to handle another message, or exit. Two of the cases (<code>ReceivedMessage</code> and <code>NoMessage</code>) also contain a <code>PollDuration</code>, which informs the program about the duration of the poll operation that caused it to reach that state. Additionally, the <code>ReceivedMessage</code> case contains a message of the generic type <code>msg</code>. This makes the entire <code>PollingState</code> type generic. A message can be of any type: a string, a number, or a complex data structure. The Polling Consumer program doesn't care, because it doesn't handle messages; it only schedules the polling.
+	</p>
+	<p>
+		This is reminiscent of the previous F# attempt, with the most notable difference that it doesn't attempt to capture durations as <code>Timed&lt;'a&gt;</code> values. It <em>does</em> capture durations, but not when the operations started and stopped. So how will it know what time it is?
+	</p>
+	<p>
+		<strong>Interactions as pure values</strong>
+	</p>
+	<p>
+		This is the heart of the matter. The Polling Consumer must constantly look at the clock. It's under a deadline, and it must also measure durations of poll, handle, and idle operations. All of this is non-deterministic, so not <a href="https://en.wikipedia.org/wiki/Pure_function">pure</a>. The program has to interact with impure operations during its entire lifetime. In fact, its ultimate decision to exit will be based on impure data. How can you model this in a pure fashion?
+	</p>
+	<p>
+		You can model long-running (impure) interactions by defining a small instruction set for an Abstract Syntax Tree (AST). That sounds intimidating, but once you get the hang of it, it becomes routine. In later articles, I'll expand on this, but for now I'll refer you to <a href="https://fsharpforfunandprofit.com/posts/13-ways-of-looking-at-a-turtle-2/#way13">an excellent article</a> by <a href="https://fsharpforfunandprofit.com">Scott Wlaschin</a>, who explains the approach in F#.
+	</p>
+	<p>
+		<pre><span style="color:blue;">data</span>&nbsp;<span style="color:#dd0000;">PollingInstruction</span>&nbsp;msg&nbsp;next&nbsp;<span style="color:#666666;">=</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#dd0000;">CurrentTime</span>&nbsp;(<span style="color:#dd0000;">UTCTime</span>&nbsp;<span style="color:#666666;">-&gt;</span>&nbsp;next)
+&nbsp;&nbsp;<span style="color:#666666;">|</span>&nbsp;<span style="color:#dd0000;">Poll</span>&nbsp;((<span style="color:#dd0000;">Maybe</span>&nbsp;msg,&nbsp;<span style="color:#dd0000;">PollDuration</span>)&nbsp;<span style="color:#666666;">-&gt;</span>&nbsp;next)
+&nbsp;&nbsp;<span style="color:#666666;">|</span>&nbsp;<span style="color:#dd0000;">Handle</span>&nbsp;msg&nbsp;(<span style="color:#dd0000;">HandleDuration</span>&nbsp;<span style="color:#666666;">-&gt;</span>&nbsp;next)
+&nbsp;&nbsp;<span style="color:#666666;">|</span>&nbsp;<span style="color:#dd0000;">Idle</span>&nbsp;<span style="color:#dd0000;">IdleDuration</span>&nbsp;(<span style="color:#dd0000;">IdleDuration</span>&nbsp;<span style="color:#666666;">-&gt;</span>&nbsp;next)
+&nbsp;&nbsp;<span style="color:blue;">deriving</span>&nbsp;(<span style="color:#a31515;">Functor</span>)</pre>
+	</p>
+	<p>
+		This <code>PollingInstruction</code> sum type defines four cases of interaction. Each case is
+		<ol>
+			<li>named after the interaction</li>
+			<li>defines the type of data used as input arguments for the interaction</li>
+			<li>and also defines a <em>continuation</em>; that is: a function that will be executed with the return value of the interaction</li>
+		</ol>
+		Half of the above cases are degenerate, but the <code>Handle</code> case contains all three elements: the interaction is named <code>Handle</code>, the input to the interaction is of the generic type <code>msg</code>, and the continuation is a function that takes a <code>HandleDuration</code> value as input, and returns a value of the generic type <code>next</code>. In other words, the interaction takes a <code>msg</code> value as input, and returns a <code>HandleDuration</code> value as output. That duration is the time it took to handle the input message. (The intent is that the operation that 'implements' this interaction also actually <em>handles</em> the message, whatever that means.)
+	</p>
+	<p>
+		Likewise, the <code>Idle</code> interaction takes an <code>IdleDuration</code> as input, and also returns an <code>IdleDuration</code>. The intent here is that the 'implementation' of the interaction suspends itself for the duration of the input value, and returns the time it actually spent in suspension (which is likely to be slightly longer than the requested duration).
+	</p>
+	<p>
+		Both <code>CurrentTime</code> and <code>Poll</code>, on the other hand, are degenerate, because they take no input. You don't need to supply any input argument to read the current time. You could model that interaction as taking <code>()</code> ('unit') as an input argument (<code>CurrentTime () (UTCTime -&gt; next)</code>), but the <code>()</code> is redundant and can be omitted. The same is the case for the <code>Poll</code> case, which returns a <code>Maybe msg</code> and how long the poll took.
+	</p>
+	<p>
+		(The <code>PollingInstruction</code> sum type defines four cases, which is also the number of cases defined by <code>PollingState</code>. This is a coincidence; don't read anything into it.)
+	</p>
+	<p>
+		The <code>PollingInstruction</code> type is generic in a way that you can make it a <code>Functor</code>. Haskell can do this for you automatically, using the <code>DeriveFunctor</code> language extension; that's what <code>deriving (Functor)</code> does. If you'd like to see how to explicitly make such a data structure a functor, please refer to the F# example; F# can't automatically derive functors, so you'll have to do it manually.
+	</p>
+	<p>
+		Since <code>PollingInstruction</code> is a <code>Functor</code>, we can make a <code>Monad</code> out of it. <a href="https://twitter.com/hmemcpy/status/771359835514368000">You use a free monad, which allows you to build a monad from any functor</a>:
+	</p>
+	<p>
+		<pre><span style="color:blue;">type</span>&nbsp;<span style="color:#dd0000;">PollingProgram</span>&nbsp;msg&nbsp;<span style="color:#666666;">=</span>&nbsp;<span style="color:#dd0000;">Free</span>&nbsp;(<span style="color:#dd0000;">PollingInstruction</span>&nbsp;msg)
+</pre>
+	</p>
+	<p>
+		In Haskell, it's literally a one-liner, but in F# you'll have to write the code yourself. Thus, if you're interested in learning how this magic happens, I'm going to dissect this step in the next article.
+	</p>
+	<p>
+		The motivation for defining a <code>Monad</code> is that we get automatic syntactic sugar for our <code>PollingProgram</code> ASTs, via Haskell's <code>do</code> notation. In F#, we're going to write a computation expression builder to achieve the same effect.
+	</p>
+	<p>
+		The final building blocks for the specialised <code>PollingProgram</code> API is a convenience function for each case:
+	</p>
+	<p>
+		<pre><span style="color:#600277;">currentTime</span>&nbsp;::&nbsp;<span style="color:blue;">PollingProgram</span>&nbsp;msg&nbsp;<span style="color:blue;">UTCTime</span>
+currentTime&nbsp;<span style="color:#666666;">=</span>&nbsp;liftF&nbsp;(<span style="color:#dd0000;">CurrentTime</span>&nbsp;id)
+ 
+<span style="color:#600277;">poll</span>&nbsp;::&nbsp;<span style="color:blue;">PollingProgram</span>&nbsp;msg&nbsp;(Maybe&nbsp;msg,&nbsp;<span style="color:blue;">PollDuration</span>)
+poll&nbsp;<span style="color:#666666;">=</span>&nbsp;liftF&nbsp;(<span style="color:#dd0000;">Poll</span>&nbsp;id)
+ 
+<span style="color:#600277;">handle</span>&nbsp;::&nbsp;msg&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">PollingProgram</span>&nbsp;msg&nbsp;<span style="color:blue;">HandleDuration</span>
+handle&nbsp;msg&nbsp;<span style="color:#666666;">=</span>&nbsp;liftF&nbsp;(<span style="color:#dd0000;">Handle</span>&nbsp;msg&nbsp;id)
+ 
+<span style="color:#600277;">idle</span>&nbsp;::&nbsp;<span style="color:blue;">IdleDuration</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">PollingProgram</span>&nbsp;msg&nbsp;<span style="color:blue;">IdleDuration</span>
+idle&nbsp;d&nbsp;<span style="color:#666666;">=</span>&nbsp;liftF&nbsp;(<span style="color:#dd0000;">Idle</span>&nbsp;d&nbsp;id)</pre>
+	</p>
+	<p>
+		More one-liners, as you can tell. These all use <code>liftF</code> to turn <code>PollingInstruction</code> cases into <code>PollingProgram</code> values. The degenerate cases <code>CurrentTime</code> and <code>Poll</code> simply become values, whereas the complete cases become (pure) functions.
+	</p>
+	<p>
+		<strong>Support functions</strong>
+	</p>
+	<p>
+		You may have noticed that until now, I haven't written much 'code' in the sense that most people think of it. It's mostly been type declarations and a few one-liners. A strong and sophisticated type system like Haskell's enable you to shift some of the programming burden from 'real programming' to type definitions, but you'll still have to write some code.
+	</p>
+	<p>
+		Before we get to the state transitions proper, we'll look at some support functions. These will, I hope, serve as a good introduction to how to use the <code>PollingProgram</code> API.
+	</p>
+	<p>
+		One decision the Polling Consumer program has to make is to decide whether it should suspend itself for a short time. That's easy to express using the API:
+	</p>
+	<p>
+		<pre><span style="color:#600277;">shouldIdle</span>&nbsp;::&nbsp;<span style="color:blue;">IdleDuration</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">UTCTime</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">PollingProgram</span>&nbsp;msg&nbsp;Bool
+shouldIdle&nbsp;(<span style="color:#dd0000;">IdleDuration</span>&nbsp;d)&nbsp;stopBefore&nbsp;<span style="color:#666666;">=</span>&nbsp;<span style="color:#af00db;">do</span>
+&nbsp;&nbsp;now&nbsp;<span style="color:#666666;">&lt;-</span>&nbsp;currentTime
+&nbsp;&nbsp;return&nbsp;<span style="color:#666666;">$</span>&nbsp;d&nbsp;<span style="color:#666666;">`addUTCTime`</span>&nbsp;now&nbsp;<span style="color:#666666;">&lt;</span>&nbsp;stopBefore</pre>
+	</p>
+	<p>
+		The <code>shouldIdle</code> function returns a small program that, when evaluated, will decide whether or not to suspend itself. It first reads the current time using the above <code>currentTime</code> value. While <code>currentTime</code> has the type <code>PollingProgram msg UTCTime</code>, due to Haskell's <code>do</code> notation, the <code>now</code> value simply has the type <code>UTCTime</code>. This enables you to use the built-in <code>addUTCTime</code> function (here written using infix notation) to add <code>now</code> to <code>d</code> (a <code>NominalDiffTime</code> value, due to pattern matching into <code>IdleDuration</code>).
+	</p>
+	<p>
+		 Adding the idle duration <code>d</code> to the current time <code>now</code> gives you the time the program would resume, were it to suspend itself. The <code>shouldIdle</code> function compares that time to the <code>stopBefore</code> argument (another <code>UTCTime</code> value). If the time the program would resume is before the time it ought to stop, the return value is <code>True</code>; otherwise, it's <code>False</code>.
+	</p>
+	<p>
+		Since the entire function is defined within a <code>do</code> block, the return type isn't just <code>Bool</code>, but rather <code>PollingProgram msg Bool</code>. It's a little <code>PollingProgram</code> AST, but it looks like imperative code.
+	</p>
+	<p>
+		You sometimes hear the bon mot that <em>Haskell is the world's greatest imperative language</em>. The combination of free monads and <code>do</code> notation certainly makes it easy to define small grammars (dare I say <a href="https://en.wikipedia.org/wiki/Domain-specific_language">DSL</a>s?) that look like imperative code, while still being strictly functional.
+	</p>
+	<p>
+		The crux is that <code>shouldIdle</code> is pure. It looks impure, but it's not. It's an Abstract Syntax Tree, and it only becomes non-deterministic if interpreted by an impure interpreter (more on that later).
+	</p>
+	<p>
+		The purpose of <code>shouldIdle</code> is to decide whether or not to idle or exit. If the program decides to idle, it should return to the <em>ready</em> state, as per the above state diagram. In this state, it needs to decide whether or not to poll for a message. If there's a message, it should be handled, and all of that takes time. In the <em>ready</em> state, then, the program must figure out how much time it thinks that handling a message will take.
+	</p>
+	<p>
+		One way to do that is to consider the observed durations so far. This helper function calculates the expected duration based on the average and standard deviation of the previous durations:
+	</p>
+	<p>
+		<pre><span style="color:#600277;">calculateExpectedDuration</span>&nbsp;::&nbsp;<span style="color:blue;">NominalDiffTime</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#666666;">-&gt;</span>&nbsp;[<span style="color:#dd0000;">CycleDuration</span>]
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#666666;">-&gt;</span>&nbsp;<span style="color:#dd0000;">NominalDiffTime</span>
+calculateExpectedDuration&nbsp;estimatedDuration&nbsp;<span style="color:blue;">[]</span>&nbsp;<span style="color:#666666;">=</span>&nbsp;estimatedDuration
+calculateExpectedDuration&nbsp;_&nbsp;statistics&nbsp;<span style="color:#666666;">=</span>
+&nbsp;&nbsp;toEnum&nbsp;<span style="color:#666666;">$</span>&nbsp;fromEnum&nbsp;<span style="color:#666666;">$</span>&nbsp;avg&nbsp;<span style="color:#666666;">+</span>&nbsp;stdDev&nbsp;<span style="color:#666666;">*</span>&nbsp;<span style="color:#09885a;">3</span>
+&nbsp;&nbsp;<span style="color:blue;">where</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#600277;">fromCycleDuration</span>&nbsp;::&nbsp;<span style="color:blue;">CycleDuration</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;Float
+&nbsp;&nbsp;&nbsp;&nbsp;fromCycleDuration&nbsp;(<span style="color:#dd0000;">CycleDuration</span>&nbsp;(<span style="color:#dd0000;">PollDuration</span>&nbsp;pd)&nbsp;(<span style="color:#dd0000;">HandleDuration</span>&nbsp;hd))&nbsp;<span style="color:#666666;">=</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;toEnum&nbsp;<span style="color:#666666;">$</span>&nbsp;fromEnum&nbsp;<span style="color:#666666;">$</span>&nbsp;pd&nbsp;<span style="color:#666666;">+</span>&nbsp;hd
+&nbsp;&nbsp;&nbsp;&nbsp;durations&nbsp;<span style="color:#666666;">=</span>&nbsp;fmap&nbsp;fromCycleDuration&nbsp;statistics
+&nbsp;&nbsp;&nbsp;&nbsp;l&nbsp;<span style="color:#666666;">=</span>&nbsp;toEnum&nbsp;<span style="color:#666666;">$</span>&nbsp;length&nbsp;durations
+&nbsp;&nbsp;&nbsp;&nbsp;avg&nbsp;<span style="color:#666666;">=</span>&nbsp;sum&nbsp;durations&nbsp;<span style="color:#666666;">/</span>&nbsp;l
+&nbsp;&nbsp;&nbsp;&nbsp;stdDev&nbsp;<span style="color:#666666;">=</span>&nbsp;sqrt&nbsp;(sum&nbsp;(fmap&nbsp;(<span style="color:#666666;">\</span>x&nbsp;<span style="color:#666666;">-&gt;</span>&nbsp;(x&nbsp;<span style="color:#666666;">-</span>&nbsp;avg)&nbsp;<span style="color:#666666;">**</span>&nbsp;<span style="color:#09885a;">2</span>)&nbsp;durations)&nbsp;<span style="color:#666666;">/</span>&nbsp;l)</pre>
+	</p>
+	<p>
+		I'm not going to dwell much on this function, as it's a normal, pure, mathematical function. The only feature I'll emphasise is that in order to call it, you must pass an <code>estimatedDuration</code> that will be used when <code>statistics</code> is empty. This is because you can't calculate the average of an empty list. This estimated duration is simply your wild guess at how long you think it'll take to handle a message.
+	</p>
+	<p>
+		With this helper function, you can now write a small <code>PollingProgram</code> that decides whether or not to poll:
+	</p>
+	<p>
+		<pre><span style="color:#600277;">shouldPoll</span>&nbsp;::&nbsp;<span style="color:blue;">NominalDiffTime</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#666666;">-&gt;</span>&nbsp;<span style="color:#dd0000;">UTCTime</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#666666;">-&gt;</span>&nbsp;[<span style="color:#dd0000;">CycleDuration</span>]
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#666666;">-&gt;</span>&nbsp;<span style="color:#dd0000;">PollingProgram</span>&nbsp;msg&nbsp;<span style="color:#dd0000;">Bool</span>
+shouldPoll&nbsp;estimatedDuration&nbsp;stopBefore&nbsp;statistics&nbsp;<span style="color:#666666;">=</span>&nbsp;<span style="color:#af00db;">do</span>
+&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;expectedHandleDuration&nbsp;<span style="color:#666666;">=</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;calculateExpectedDuration&nbsp;estimatedDuration&nbsp;statistics
+&nbsp;&nbsp;now&nbsp;<span style="color:#666666;">&lt;-</span>&nbsp;currentTime
+&nbsp;&nbsp;return&nbsp;<span style="color:#666666;">$</span>&nbsp;expectedHandleDuration&nbsp;<span style="color:#666666;">`addUTCTime`</span>&nbsp;now&nbsp;<span style="color:#666666;">&lt;</span>&nbsp;stopBefore</pre>
+	</p>
+	<p>
+		Notice that the <code>shouldPoll</code> function looks similar to <code>shouldIdle</code>. As an extra initial step, it first calculates <code>expectedHandleDuration</code> using the above <code>calculateExpectedDuration</code> function. With that, it follows the same two steps as <code>shouldIdle</code>.
+	</p>
+	<p>
+		This function is also pure, because it returns an AST. While it <em>looks</em> impure, it's not, because it doesn't actually <code>do</code> anything.
+	</p>
+	<p>
+		<strong>Transitions</strong>
+	</p>
+	<p>
+		Those are all the building blocks required to write the state transitions. In order to break down the problem in manageable chunks, you can write a transition function for each state. Such a function would return the next state, given a particular input state.
+	</p>
+	<p>
+		While it'd be intuitive to begin with the <em>ready</em> state, let's instead start with the simplest transition. In the <em>end</em> state, nothing should happen, so the transition is a one-liner:
+	</p>
+	<p>
+		<pre><span style="color:#600277;">transitionFromStopped</span>&nbsp;::&nbsp;<span style="color:blue;">Monad</span>&nbsp;m&nbsp;<span style="color:blue;">=&gt;</span>&nbsp;[<span style="color:blue;">CycleDuration</span>]&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;m&nbsp;(<span style="color:blue;">PollingState</span>&nbsp;msg)
+transitionFromStopped&nbsp;statistics&nbsp;<span style="color:#666666;">=</span>&nbsp;return&nbsp;<span style="color:#666666;">$</span>&nbsp;<span style="color:#dd0000;">Stopped</span>&nbsp;statistics</pre>
+	</p>
+	<p>
+		Once stopped, the program stays in the <code>Stopped</code> state. This function simply takes a list of <code>CycleDuration</code> values and elevates them to a monad type. Notice that the return value isn't specifically a <code>PollingProgram</code>, but any monad. Since <code>PollingProgram</code> is a monad, that'll work too, though.
+	</p>
+	<p>
+		Slightly more complicated than <code>transitionFromStopped</code> is the transition from the <em>received</em> state. There's no branching in that case; simply handle the message, measure how long it took, add the observed duration to the statistics, and transition back to <em>ready:</em>
+	</p>
+	<p>
+		<pre><span style="color:#600277;">transitionFromReceived</span>&nbsp;::&nbsp;[<span style="color:blue;">CycleDuration</span>]
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#666666;">-&gt;</span>&nbsp;<span style="color:#dd0000;">PollDuration</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#666666;">-&gt;</span>&nbsp;msg
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#666666;">-&gt;</span>&nbsp;<span style="color:#dd0000;">PollingProgram</span>&nbsp;msg&nbsp;(<span style="color:#dd0000;">PollingState</span>&nbsp;msg)
+transitionFromReceived&nbsp;statistics&nbsp;pd&nbsp;msg&nbsp;<span style="color:#666666;">=</span>&nbsp;<span style="color:#af00db;">do</span>
+&nbsp;&nbsp;hd&nbsp;<span style="color:#666666;">&lt;-</span>&nbsp;handle&nbsp;msg
+&nbsp;&nbsp;return&nbsp;<span style="color:#666666;">$</span>&nbsp;<span style="color:#dd0000;">Ready</span>&nbsp;(<span style="color:#dd0000;">CycleDuration</span>&nbsp;pd&nbsp;hd&nbsp;<span style="color:#666666;">:</span>&nbsp;statistics)</pre>
+	</p>
+	<p>
+		Again, this <em>looks</em> impure, but the return type is <code>PollingProgram msg (PollingState msg)</code>, indicating that the return value is an AST. As is not uncommon in Haskell, the type declaration is larger than the implementation.
+	</p>
+	<p>
+		Things get slightly more interesting in the <code>no message</code> state. Here you get to use the above <code>shouldIdle</code> support function:
+	</p>
+	<p>
+		<pre><span style="color:#600277;">transitionFromNoMessage</span>&nbsp;::&nbsp;<span style="color:blue;">IdleDuration</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#666666;">-&gt;</span>&nbsp;<span style="color:#dd0000;">UTCTime</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#666666;">-&gt;</span>&nbsp;[<span style="color:#dd0000;">CycleDuration</span>]
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#666666;">-&gt;</span>&nbsp;<span style="color:#dd0000;">PollingProgram</span>&nbsp;msg&nbsp;(<span style="color:#dd0000;">PollingState</span>&nbsp;msg)
+transitionFromNoMessage&nbsp;d&nbsp;stopBefore&nbsp;statistics&nbsp;<span style="color:#666666;">=</span>&nbsp;<span style="color:#af00db;">do</span>
+&nbsp;&nbsp;b&nbsp;<span style="color:#666666;">&lt;-</span>&nbsp;shouldIdle&nbsp;d&nbsp;stopBefore
+&nbsp;&nbsp;<span style="color:#af00db;">if</span>&nbsp;b
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#af00db;">then</span>&nbsp;idle&nbsp;d&nbsp;<span style="color:#666666;">&gt;&gt;</span>&nbsp;return&nbsp;(<span style="color:#dd0000;">Ready</span>&nbsp;statistics)
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#af00db;">else</span>&nbsp;return&nbsp;<span style="color:#666666;">$</span>&nbsp;<span style="color:#dd0000;">Stopped</span>&nbsp;statistics</pre>
+	</p>
+	<p>
+		The first step in <code>transitionFromNoMessage</code> is calling <code>shouldIdle</code>. Thanks to Haskell's <code>do</code> notation, the <code>b</code> value is a simple <code>Bool</code> value that you can use to branch. If <code>b</code> is <code>True</code>, then first call <code>idle</code> and then return to the <code>Ready</code> state; otherwise, exit to the <code>Stopped</code> state.
+	</p>
+	<p>
+		Notice how <code>PollingProgram</code> values are <em>composable</em>. For instance, <code>shouldIdle</code> defines a small <code>PollingProgram</code> that can be (re)used in a bigger program, such as in <code>transitionFromNoMessage</code>.
+	</p>
+	<p>
+		Finally, from the <em>ready</em> state, the program can transition to three other states, so this is the most complex transition:
+	</p>
+	<p>
+		<pre><span style="color:#600277;">transitionFromReady</span>&nbsp;::&nbsp;<span style="color:blue;">NominalDiffTime</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#666666;">-&gt;</span>&nbsp;<span style="color:#dd0000;">UTCTime</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#666666;">-&gt;</span>&nbsp;[<span style="color:#dd0000;">CycleDuration</span>]
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#666666;">-&gt;</span>&nbsp;<span style="color:#dd0000;">PollingProgram</span>&nbsp;msg&nbsp;(<span style="color:#dd0000;">PollingState</span>&nbsp;msg)
+transitionFromReady&nbsp;estimatedDuration&nbsp;stopBefore&nbsp;statistics&nbsp;<span style="color:#666666;">=</span>&nbsp;<span style="color:#af00db;">do</span>
+&nbsp;&nbsp;b&nbsp;<span style="color:#666666;">&lt;-</span>&nbsp;shouldPoll&nbsp;estimatedDuration&nbsp;stopBefore&nbsp;statistics
+&nbsp;&nbsp;<span style="color:#af00db;">if</span>&nbsp;b
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#af00db;">then</span>&nbsp;<span style="color:#af00db;">do</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;pollResult&nbsp;<span style="color:#666666;">&lt;-</span>&nbsp;poll
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">case</span>&nbsp;pollResult&nbsp;<span style="color:blue;">of</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(Just&nbsp;msg,&nbsp;pd)&nbsp;<span style="color:#666666;">-&gt;</span>&nbsp;return&nbsp;<span style="color:#666666;">$</span>&nbsp;<span style="color:#dd0000;">ReceivedMessage</span>&nbsp;statistics&nbsp;pd&nbsp;msg
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(Nothing&nbsp;,&nbsp;pd)&nbsp;<span style="color:#666666;">-&gt;</span>&nbsp;return&nbsp;<span style="color:#666666;">$</span>&nbsp;<span style="color:#dd0000;">NoMessage</span>&nbsp;statistics&nbsp;pd
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#af00db;">else</span>&nbsp;return&nbsp;<span style="color:#666666;">$</span>&nbsp;<span style="color:#dd0000;">Stopped</span>&nbsp;statistics</pre>
+	</p>
+	<p>
+		Like <code>transitionFromNoMessage</code>, the <code>transitionFromReady</code> function first calls a supporting function (this time <code>shouldPoll</code>) in order to make a decision. If <code>b</code> is <code>False</code>, the next state is <code>Stopped</code>; otherwise, the program moves on to the next step.
+	</p>
+	<p>
+		The program polls for a message using the <code>poll</code> helper function defined above. While <code>poll</code> is a <code>PollingProgram msg (Maybe msg, PollDuration)</code> value, thanks to <code>do</code> notation, <code>pollResult</code> is a <code>Maybe msg, PollDuration</code> value. Matching on that value requires you to handle two separate cases: If a message was received (<code>Just msg</code>), then return a <code>ReceivedMessage</code> state with the message. Otherwise (<code>Nothing</code>), return a <code>NoMessage</code> state.
+	</p>
+	<p>
+		With those four functions you can now define a function that can transition from any input state:
+	</p>
+	<p>
+		<pre><span style="color:#600277;">transition</span>&nbsp;::&nbsp;<span style="color:blue;">NominalDiffTime</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#666666;">-&gt;</span>&nbsp;<span style="color:#dd0000;">IdleDuration</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#666666;">-&gt;</span>&nbsp;<span style="color:#dd0000;">UTCTime</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#666666;">-&gt;</span>&nbsp;<span style="color:#dd0000;">PollingState</span>&nbsp;msg
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#666666;">-&gt;</span>&nbsp;<span style="color:#dd0000;">PollingProgram</span>&nbsp;msg&nbsp;(<span style="color:#dd0000;">PollingState</span>&nbsp;msg)
+transition&nbsp;estimatedDuration&nbsp;idleDuration&nbsp;stopBefore&nbsp;state&nbsp;<span style="color:#666666;">=</span>
+&nbsp;&nbsp;<span style="color:blue;">case</span>&nbsp;state&nbsp;<span style="color:blue;">of</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#dd0000;">Ready</span>&nbsp;stats&nbsp;<span style="color:#666666;">-&gt;</span>&nbsp;transitionFromReady&nbsp;estimatedDuration&nbsp;stopBefore&nbsp;stats
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#dd0000;">ReceivedMessage</span>&nbsp;stats&nbsp;pd&nbsp;msg&nbsp;<span style="color:#666666;">-&gt;</span>&nbsp;transitionFromReceived&nbsp;stats&nbsp;pd&nbsp;msg
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#dd0000;">NoMessage</span>&nbsp;stats&nbsp;_&nbsp;<span style="color:#666666;">-&gt;</span>&nbsp;transitionFromNoMessage&nbsp;idleDuration&nbsp;stopBefore&nbsp;stats
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#dd0000;">Stopped</span>&nbsp;stats&nbsp;<span style="color:#666666;">-&gt;</span>&nbsp;transitionFromStopped&nbsp;stats</pre>
+	</p>
+	<p>
+		The <code>transition</code> function simply pattern matches on the input <code>state</code> and delegates to each of the four above transition functions.
+	</p>
+	<p>
+		<strong>A short philosophical interlude</strong>
+	</p>
+	<p>
+		All code so far has been pure, although it may not look that way. At this stage, it may be reasonable to pause and consider: <em>what's the point, even?</em>
+	</p>
+	<p>
+		After all, when interpreted, a <code>PollingProgram</code> can (and, in reality, almost certainly <em>will</em>) have impure behaviour. If we create an entire executable upon this abstraction, then we've essentially developed a big program with impure behaviour...
+	</p>
+	<p>
+		Indeed we have, but the alternative would have been to write it all in the context of <code>IO</code>. If you'd done that, then you'd allow <em>any</em> non-deterministic, side-effecty behaviour anywhere in your program. At least with a <code>PollingProgram</code>, any reader will quickly learn that only a maximum of four impure operations can happen. In other words, you've managed to control and restrict the impurity to exactly those interactions you want to model.
+	</p>
+	<p>
+		Not only that, but the type of impurity is immediately visible as part of a value's type. In a later article, you'll see how different impure interaction APIs can be composed.
+	</p>
+	<p>
+		<strong>Interpretation</strong>
+	</p>
+	<p>
+		At this point, you have a program in the form of an AST. How do you execute it?
+	</p>
+	<p>
+		You write an interpreter:
+	</p>
+	<p>
+		<pre><span style="color:#600277;">interpret</span>&nbsp;::&nbsp;<span style="color:blue;">PollingProgram</span>&nbsp;<span style="color:blue;">Message</span>&nbsp;a&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;IO&nbsp;a
+interpret&nbsp;program&nbsp;<span style="color:#666666;">=</span>
+&nbsp;&nbsp;<span style="color:blue;">case</span>&nbsp;runFree&nbsp;program&nbsp;<span style="color:blue;">of</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#dd0000;">Pure</span>&nbsp;r&nbsp;<span style="color:#666666;">-&gt;</span>&nbsp;return&nbsp;r
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#dd0000;">Free</span>&nbsp;(<span style="color:#dd0000;">CurrentTime</span>&nbsp;next)&nbsp;<span style="color:#666666;">-&gt;</span>&nbsp;getCurrentTime&nbsp;<span style="color:#666666;">&gt;&gt;=</span>&nbsp;interpret&nbsp;<span style="color:#666666;">.</span>&nbsp;next
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#dd0000;">Free</span>&nbsp;(<span style="color:#dd0000;">Poll</span>&nbsp;next)&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#666666;">-&gt;</span>&nbsp;pollImp&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#666666;">&gt;&gt;=</span>&nbsp;interpret&nbsp;<span style="color:#666666;">.</span>&nbsp;next
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#dd0000;">Free</span>&nbsp;(<span style="color:#dd0000;">Handle</span>&nbsp;msg&nbsp;next)&nbsp;&nbsp;<span style="color:#666666;">-&gt;</span>&nbsp;handleImp&nbsp;msg&nbsp;&nbsp;<span style="color:#666666;">&gt;&gt;=</span>&nbsp;interpret&nbsp;<span style="color:#666666;">.</span>&nbsp;next
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#dd0000;">Free</span>&nbsp;(<span style="color:#dd0000;">Idle</span>&nbsp;d&nbsp;next)&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#666666;">-&gt;</span>&nbsp;idleImp&nbsp;d&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#666666;">&gt;&gt;=</span>&nbsp;interpret&nbsp;<span style="color:#666666;">.</span>&nbsp;next</pre>
+	</p>
+	<p>
+		When you turn a functor into a monad using the <code>Free</code> constructor (see above), your functor is wrapped in a general-purpose sum type with two cases: <code>Pure</code> and <code>Free</code>. Your functor is always contained in the <code>Free</code> case, whereas <code>Pure</code> is the escape hatch. This is where you return the value of the entire computation.
+	</p>
+	<p>
+		An interpreter must match both <code>Pure</code> and <code>Free</code>. <code>Pure</code> is easy, because you simply return the result value.
+	</p>
+	<p>
+		In the <code>Free</code> case, you'll need to match each of the four cases of <code>PollingInstruction</code>. In all four cases, you invoke an impure implementation function, pass its return value to <code>next</code>, and finally recursively invoke <code>interpret</code> with the value returned by <code>next</code>.
+	</p>
+	<p>
+		Three of the implementations are details that aren't of importance here, but if you want to review them, the entire source code for this article is available <a href="">as a gist</a>. The fourth implementation is the built-in <code>getCurrentTime</code> function. They are all impure; all return <code>IO</code> values. This also implies that the return type of the entire <code>interpret</code> function is <code>IO a</code>.
+	</p>
+	<p>
+		This particular interpreter is impure, but nothing prevents you from writing a pure interpreter, for example for use in unit testing.
+	</p>
+	<p>
+		<strong>Execution</strong>
+	</p>
+	<p>
+		You're almost done. You have a function that returns a new state for any given input state, as well as an interpreter. You need a function that can repeat this in a loop until it reaches the <code>Stopped</code> state:
+	</p>
+	<p>
+		<pre><span style="color:#600277;">run</span>&nbsp;::&nbsp;<span style="color:blue;">NominalDiffTime</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#666666;">-&gt;</span>&nbsp;<span style="color:#dd0000;">IdleDuration</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#666666;">-&gt;</span>&nbsp;<span style="color:#dd0000;">UTCTime</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#666666;">-&gt;</span>&nbsp;<span style="color:#dd0000;">PollingState</span>&nbsp;<span style="color:#dd0000;">Message</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#666666;">-&gt;</span>&nbsp;<span style="color:#dd0000;">IO</span>&nbsp;(<span style="color:#dd0000;">PollingState</span>&nbsp;<span style="color:#dd0000;">Message</span>)
+run&nbsp;estimatedDuration&nbsp;idleDuration&nbsp;stopBefore&nbsp;state&nbsp;<span style="color:#666666;">=</span>&nbsp;<span style="color:#af00db;">do</span>
+&nbsp;&nbsp;ns&nbsp;<span style="color:#666666;">&lt;-</span>&nbsp;interpret&nbsp;<span style="color:#666666;">$</span>&nbsp;transition&nbsp;estimatedDuration&nbsp;idleDuration&nbsp;stopBefore&nbsp;state
+&nbsp;&nbsp;<span style="color:blue;">case</span>&nbsp;ns&nbsp;<span style="color:blue;">of</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#dd0000;">Stopped</span>&nbsp;_&nbsp;<span style="color:#666666;">-&gt;</span>&nbsp;return&nbsp;ns
+&nbsp;&nbsp;&nbsp;&nbsp;_&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#666666;">-&gt;</span>&nbsp;run&nbsp;estimatedDuration&nbsp;idleDuration&nbsp;stopBefore&nbsp;ns</pre>
+	</p>
+	<p>
+		This recursive function calls <code>transition</code> with the input <code>state</code>. You may recall that <code>transition</code> returns a <code>PollingProgram msg (PollingState msg)</code> value. Passing this value to <code>interpret</code> returns an <code>IO (PollingState Message)</code> value, and because of the <code>do</code> notation, the new state (<code>ns</code>) is a <code>PollingState Message</code> value.
+	</p>
+	<p>
+		You can now pattern match on <code>ns</code>. If it's a <code>Stopped</code> value, you return the value. Otherwise, you recursively call <code>run</code> once more.
+	</p>
+	<p>
+		The <code>run</code> function keeps doing this until it reaches the <code>Stopped</code> state.
+	</p>
+	<p>
+		<em>Finally</em>, then, you can write the entry point for the program:
+	</p>
+	<p>
+		<pre><span style="color:#600277;">main</span>&nbsp;::&nbsp;IO&nbsp;()
+main&nbsp;<span style="color:#666666;">=</span>&nbsp;<span style="color:#af00db;">do</span>
+&nbsp;&nbsp;timeAtEntry&nbsp;<span style="color:#666666;">&lt;-</span>&nbsp;getCurrentTime
+ 
+&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;estimatedDuration&nbsp;<span style="color:#666666;">=</span>&nbsp;<span style="color:#09885a;">2</span>
+&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;idleDuration&nbsp;<span style="color:#666666;">=</span>&nbsp;<span style="color:#dd0000;">IdleDuration</span>&nbsp;<span style="color:#09885a;">5</span>
+&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;stopBefore&nbsp;<span style="color:#666666;">=</span>&nbsp;addUTCTime&nbsp;<span style="color:#09885a;">60</span>&nbsp;timeAtEntry
+&nbsp;&nbsp;s&nbsp;<span style="color:#666666;">&lt;-</span>&nbsp;run&nbsp;estimatedDuration&nbsp;idleDuration&nbsp;stopBefore&nbsp;<span style="color:#666666;">$</span>&nbsp;<span style="color:#dd0000;">Ready</span>&nbsp;<span style="color:blue;">[]</span>
+ 
+&nbsp;&nbsp;timeAtExit&nbsp;<span style="color:#666666;">&lt;-</span>&nbsp;getCurrentTime
+&nbsp;&nbsp;putStrLn&nbsp;<span style="color:#666666;">$</span>&nbsp;<span style="color:#a31515;">&quot;Elapsed&nbsp;time:&nbsp;&quot;</span>&nbsp;<span style="color:#666666;">++</span>&nbsp;show&nbsp;(diffUTCTime&nbsp;timeAtExit&nbsp;timeAtEntry)
+&nbsp;&nbsp;putStrLn&nbsp;<span style="color:#666666;">$</span>&nbsp;printf&nbsp;<span style="color:#a31515;">&quot;%d&nbsp;message(s)&nbsp;handled.&quot;</span>&nbsp;<span style="color:#666666;">$</span>&nbsp;report&nbsp;s</pre>
+	</p>
+	<p>
+		It defines the initial input parameters:
+		<ul>
+			<li>My wild guess about the handle duration is 2 seconds</li>
+			<li>I'd like the idle duration to be 5 seconds</li>
+			<li>The program should run for 60 seconds</li>
+		</ul>
+		The initial state is <code>Ready []</code>. These are all the arguments you need to call <code>run</code>.
+	</p>
+	<p>
+		Once <code>run</code> returns, you can print the number of messages handled using a (trivial) <code>report</code> function that I haven't shown (but that's available in the gist).
+	</p>
+	<p>
+		If you run the program, it'll produce output similar to this:
+	</p>
+	<p>
+		<pre>Polling
+ Handling
+Polling
+ Handling
+Polling
+ Handling
+Polling
+ Sleeping
+Polling
+ Handling
+Polling
+ Sleeping
+Polling
+ Handling
+Polling
+ Handling
+Polling
+ Sleeping
+Polling
+ Sleeping
+Polling
+ Sleeping
+Polling
+ Sleeping
+Polling
+ Sleeping
+Polling
+ Handling
+Polling
+ Handling
+Polling
+ Handling
+Polling
+ Handling
+Polling
+ Sleeping
+Polling
+Elapsed time: 56.6835022s
+10 message(s) handled.</pre>
+	</p>
+	<p>
+		It does, indeed, exit before 60 seconds have elapsed.		
+	</p>
+	<p>
+		<strong>Summary</strong>
+	</p>
+	<p>
+		You can model long-running interactions with an Abstract Syntax Tree. Without <code>do</code> notation, writing programs as 'raw' ASTs would be cumbersome, but turning the AST into a (free) monad makes it all quite palatable.
+	</p>
+	<p>
+		Haskell's sophisticated type system makes this a fairly low-hanging fruit, once you understand how to do it. You can also port this type of design to F#, although, as you shall see next, more boilerplate is required.
+	</p>
+	<p>
+		<strong>Next:</strong> <a href="">Pure times in F#</a>.
+	</p>
+</div>
