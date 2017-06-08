@@ -1,0 +1,458 @@
+---
+layout: post
+title: "Pure times in F#"
+date: 2017-06-08 5:36 UTC
+tags: [Software Design, F#]
+---
+{% include JB/setup %}
+
+<div id="post">
+	<p>
+		<em>A Polling Consumer implementation written in F#.</em>
+	</p>
+	<p>
+		<a href="">Previously</a>, you saw how to implement a <a href="http://www.enterpriseintegrationpatterns.com/PollingConsumer.html">Polling Consumer</a> in <a href="https://www.haskell.org">Haskell</a>. This proves that it's possible to write <a href="https://en.wikipedia.org/wiki/Pure_function">pure</a> functional code modelling long-running interactions with the (impure) world. In this article, you'll see how to port the Haskell code to F#.
+	</p>
+	<p>
+		For reference, I'll repeat the state transition diagram here:
+	</p>
+	<p>
+    <img src="/content/binary/polling-consumer-finite-state-machine.png" alt="Polling Consumer state machine transition diagram"> 
+  </p>
+  <p>
+  	For a complete description of the goals and constraints of this particular Polling Consumer implementation, see my earlier <a href="http://blog.ploeh.dk/2015/08/10/type-driven-development">Type Driven Development</a> article, or, even better, watch my Pluralsight course <a href="http://www.shareasale.com/r.cfm?u=1017843&b=611266&m=53701&afftrack=&urllink=www%2Epluralsight%2Ecom%2Fcourses%2Ffsharp%2Dtype%2Ddriven%2Ddevelopment">Type-Driven Development with F#</a>.
+  </p>
+	<p>
+		<strong>State data types</strong>
+	</p>
+  <p>
+  	The program has to keep track of various durations. You can model these as naked <code>TimeSpan</code> values, but in order to add extra type safety, you can, instead, define them as separate types:
+  </p>
+  <p>
+  	<pre><span style="color:blue;">type</span>&nbsp;<span style="color:teal;">PollDuration</span>&nbsp;=&nbsp;<span style="color:navy;">PollDuration</span>&nbsp;<span style="color:blue;">of</span>&nbsp;<span style="color:teal;">TimeSpan</span>
+<span style="color:blue;">type</span>&nbsp;<span style="color:teal;">IdleDuration</span>&nbsp;=&nbsp;<span style="color:navy;">IdleDuration</span>&nbsp;<span style="color:blue;">of</span>&nbsp;<span style="color:teal;">TimeSpan</span>
+<span style="color:blue;">type</span>&nbsp;<span style="color:teal;">HandleDuration</span>&nbsp;=&nbsp;<span style="color:navy;">HandleDuration</span>&nbsp;<span style="color:blue;">of</span>&nbsp;<span style="color:teal;">TimeSpan</span>
+<span style="color:blue;">type</span>&nbsp;<span style="color:teal;">CycleDuration</span>&nbsp;=&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;PollDuration&nbsp;:&nbsp;<span style="color:teal;">PollDuration</span>
+&nbsp;&nbsp;&nbsp;&nbsp;HandleDuration&nbsp;:&nbsp;<span style="color:teal;">HandleDuration</span>&nbsp;}</pre>
+  </p>
+  <p>
+  	This is a straightforward port of the Haskell code. See the <a href="">previous article</a> for more details about the motivation for doing this.
+  </p>
+  <p>
+  	You can now define the states of the finite state machine:
+  </p>
+  <p>
+  	<pre><span style="color:blue;">type</span>&nbsp;<span style="color:teal;">State</span>&lt;&#39;msg&gt;&nbsp;=
+|&nbsp;<span style="color:navy;">ReadyState</span>&nbsp;<span style="color:blue;">of</span>&nbsp;<span style="color:teal;">CycleDuration</span>&nbsp;<span style="color:teal;">list</span>
+|&nbsp;<span style="color:navy;">ReceivedMessageState</span>&nbsp;<span style="color:blue;">of</span>&nbsp;(<span style="color:teal;">CycleDuration</span>&nbsp;<span style="color:teal;">list</span>&nbsp;*&nbsp;<span style="color:teal;">PollDuration</span>&nbsp;*&nbsp;&#39;msg)
+|&nbsp;<span style="color:navy;">NoMessageState</span>&nbsp;<span style="color:blue;">of</span>&nbsp;(<span style="color:teal;">CycleDuration</span>&nbsp;<span style="color:teal;">list</span>&nbsp;*&nbsp;<span style="color:teal;">PollDuration</span>)
+|&nbsp;<span style="color:navy;">StoppedState</span>&nbsp;<span style="color:blue;">of</span>&nbsp;<span style="color:teal;">CycleDuration</span>&nbsp;<span style="color:teal;">list</span></pre>
+  </p>
+  <p>
+  	Again, this is a straight port of the Haskell code.
+  </p>
+  <p>
+  	<strong>From instruction set to syntactic sugar</strong>
+  </p>
+  <p>
+  	The Polling Consumer must interact with its environment in various ways:
+  	<ol>
+  		<li>Query the system clock</li>
+  		<li>Poll for messages</li>
+  		<li>Handle messages</li>
+  		<li>Idle</li>
+  	</ol>
+  	You can model these four cases of interactions as a single discriminated union that describe a small instruction set:
+  </p>
+  <p>
+  	<pre><span style="color:blue;">type</span>&nbsp;<span style="color:teal;">PollingInstruction</span>&lt;&#39;msg,&nbsp;&#39;next&gt;&nbsp;=
+|&nbsp;<span style="color:navy;">CurrentTime</span>&nbsp;<span style="color:blue;">of</span>&nbsp;(<span style="color:teal;">DateTimeOffset</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;&#39;next)
+|&nbsp;<span style="color:navy;">Poll</span>&nbsp;<span style="color:blue;">of</span>&nbsp;((&#39;msg&nbsp;<span style="color:teal;">option</span>&nbsp;*&nbsp;<span style="color:teal;">PollDuration</span>)&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;&#39;next)
+|&nbsp;<span style="color:navy;">Handle</span>&nbsp;<span style="color:blue;">of</span>&nbsp;(&#39;msg&nbsp;*&nbsp;(<span style="color:teal;">HandleDuration</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;&#39;next))
+|&nbsp;<span style="color:navy;">Idle</span>&nbsp;<span style="color:blue;">of</span>&nbsp;(<span style="color:teal;">IdleDuration</span>&nbsp;*&nbsp;(<span style="color:teal;">IdleDuration</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;&#39;next))</pre>
+  </p>
+  <p>
+  	Once more, this is a direct translation of the Haskell code, but from here, this is where your F# code will have to deviate from Haskell. In Haskell, you can, with a single line of code, declare that such a type is a functor. This isn't possible in F#. Instead, you have to explicitly write a map function. This isn't difficult, though. There's a reason that the Haskell compiler can automate this:
+  </p>
+  <p>
+  	<pre><span style="color:green;">//&nbsp;(&#39;a&nbsp;-&gt;&nbsp;&#39;b)&nbsp;-&gt;&nbsp;PollingInstruction&lt;&#39;c,&#39;a&gt;&nbsp;-&gt;&nbsp;PollingInstruction&lt;&#39;c,&#39;b&gt;</span>
+<span style="color:blue;">let</span>&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:navy;">mapI</span>&nbsp;<span style="color:navy;">f</span>&nbsp;=&nbsp;<span style="color:blue;">function</span>
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:navy;">CurrentTime</span>&nbsp;<span style="color:navy;">next</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:navy;">CurrentTime</span>&nbsp;(<span style="color:navy;">next</span>&nbsp;&gt;&gt;&nbsp;<span style="color:navy;">f</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:navy;">Poll</span>&nbsp;<span style="color:navy;">next</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:navy;">Poll</span>&nbsp;(<span style="color:navy;">next</span>&nbsp;&gt;&gt;&nbsp;<span style="color:navy;">f</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:navy;">Handle</span>&nbsp;(x,&nbsp;<span style="color:navy;">next</span>)&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:navy;">Handle</span>&nbsp;(x,&nbsp;<span style="color:navy;">next</span>&nbsp;&gt;&gt;&nbsp;<span style="color:navy;">f</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:navy;">Idle</span>&nbsp;(x,&nbsp;<span style="color:navy;">next</span>)&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:navy;">Idle</span>&nbsp;(x,&nbsp;<span style="color:navy;">next</span>&nbsp;&gt;&gt;&nbsp;<span style="color:navy;">f</span>)</pre>
+  </p>
+  <p>
+  	The function is named <code>mapI</code>, where the <code>I</code> stands for <em>instruction</em>. It's <code>private</code> because the next step is to package the functor in a monad. From that monad, you can define a new functor, so in order to prevent any confusion, I decided to hide the underlying functor from any consumers of the API.
+  </p>
+  <p>
+  	Defining a map function for a generic type like <code>PollingInstruction&lt;'msg, 'next&gt;</code> is well-defined. Pattern-match each union case and return the same case, but with the <code>next</code> function composed with the input function argument <code>f</code>: <code>next &gt;&gt; f</code>. In later articles, you'll see more examples, and you'll see how this recipe is entirely repeatable and automatable.
+  </p>
+  <p>
+  	While a <em>functor</em> isn't an explicit concept in F#, this is how <code>PollingInstruction msg next</code> is a <code>Functor</code> in Haskell. Given a functor, you can produce a free monad. The reason you'd want to do this is that once you have a monad, you can get syntactic sugar. Currently, <code>PollingInstruction&lt;'msg, 'next&gt;</code> only enables you to create Abstract Syntax Trees (ASTs), but the programming experience would be cumbersome and alien. Monads give you automatic <code>do</code> notation in Haskell; in F#, it enables you to write a <a href="https://docs.microsoft.com/en-us/dotnet/fsharp/language-reference/computation-expressions">computation expression builder</a>.
+  </p>
+  <p>
+  	Haskell's type system enables you to make a monad from a functor with a one-liner: <code>type PollingProgram msg = Free (PollingInstruction msg)</code>. In F#, you'll have to write some boilerplate code. First, you have to define the monadic type:
+  </p>
+  <p>
+  	<pre><span style="color:blue;">type</span>&nbsp;<span style="color:teal;">PollingProgram</span>&lt;&#39;msg,&nbsp;&#39;next&gt;&nbsp;=
+|&nbsp;<span style="color:navy;">Free</span>&nbsp;<span style="color:blue;">of</span>&nbsp;<span style="color:teal;">PollingInstruction</span>&lt;&#39;msg,&nbsp;<span style="color:teal;">PollingProgram</span>&lt;&#39;msg,&nbsp;&#39;next&gt;&gt;
+|&nbsp;<span style="color:navy;">Pure</span>&nbsp;<span style="color:blue;">of</span>&nbsp;&#39;next</pre>
+  </p>
+  <p>
+  	You already saw a hint of such a type in the previous article. The <code>PollingProgram&lt;'msg, 'next&gt;</code> discriminated union defines two cases: <code>Free</code> and <code>Pure</code>. The <code>Free</code> case is a <code>PollingInstruction</code> that produces a new <code>PollingProgram</code> as its next step. In essence, this enables you to build an AST, but you also need a signal to stop and return a value from the AST. That's the purpose of the <code>Pure</code> case.
+  </p>
+  <p>
+  	Such a type is only a monad if it defines a <code>bind</code> function (that obey the monad laws):
+  </p>
+  <p>
+  	<pre><span style="color:green;">//&nbsp;(&#39;a&nbsp;-&gt;&nbsp;PollingProgram&lt;&#39;b,&#39;c&gt;)&nbsp;-&gt;&nbsp;PollingProgram&lt;&#39;b,&#39;a&gt;</span>
+<span style="color:green;">//&nbsp;-&gt;&nbsp;PollingProgram&lt;&#39;b,&#39;c&gt;</span>
+<span style="color:blue;">let</span>&nbsp;<span style="color:blue;">rec</span>&nbsp;bind&nbsp;f&nbsp;=&nbsp;<span style="color:blue;">function</span>
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;Free&nbsp;instruction&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;instruction&nbsp;|&gt;&nbsp;mapI&nbsp;(bind&nbsp;f)&nbsp;|&gt;&nbsp;Free
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;Pure&nbsp;x&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;f&nbsp;x</pre>
+  </p>
+  <p>
+  	This <code>bind</code> function pattern-matches on <code>Free</code> and <code>Pure</code>, respectively. In the <code>Pure</code> case, it simply uses the underlying result value <code>x</code> as an input argument to <code>f</code>. In the <code>Free</code> case, it composes the underlying functor (<code>mapI</code>) with itself recursively. If you find this step obscure, I will not blame you. Just like the implementation of <code>mapI</code> is a bit of boilerplate code, then so is this. It always seems to work this way. If you want to dig deeper into the inner workings of this, then <a href="https://fsharpforfunandprofit.com">Scott Wlaschin</a> has a <a href="https://fsharpforfunandprofit.com/posts/13-ways-of-looking-at-a-turtle-2/#way13">detailed explanation</a>.
+  </p>
+  <p>
+  	With the addition of <code>bind</code> <code>PollingProgram&lt;'msg, 'next&gt;</code> becomes a monad (I'm not going to show that the monad laws hold, but they do). Making it a functor is trivial:
+  </p>
+  <p>
+  	<pre><span style="color:green;">//&nbsp;&nbsp;(&#39;a&nbsp;-&gt;&nbsp;&#39;b)&nbsp;-&gt;&nbsp;PollingProgram&lt;&#39;c,&#39;a&gt;&nbsp;-&gt;&nbsp;PollingProgram&lt;&#39;c,&#39;b&gt;</span>
+<span style="color:blue;">let</span>&nbsp;map&nbsp;f&nbsp;=&nbsp;bind&nbsp;(f&nbsp;&gt;&gt;&nbsp;Pure)</pre>
+  </p>
+  <p>
+  	The underlying <code>PollingInstruction</code> type was already a functor. This function makes <code>PollingProgram</code> a functor as well.
+  </p>
+  <p>
+  	It'll be convenient with some functions that lifts each <code>PollingInstruction</code> case to a corresponding <code>PollingProgram</code> value. In Haskell, you can use the <code>liftF</code> function for this, but in F# you'll have to be slightly more explicit:
+  </p>
+  <p>
+  	<pre><span style="color:green;">//&nbsp;PollingProgram&lt;&#39;a,DateTimeOffset&gt;</span>
+<span style="color:blue;">let</span>&nbsp;currentTime&nbsp;=&nbsp;Free&nbsp;(CurrentTime&nbsp;Pure)
+ 
+<span style="color:green;">//&nbsp;PollingProgram&lt;&#39;a,(&#39;a&nbsp;option&nbsp;*&nbsp;PollDuration)&gt;</span>
+<span style="color:blue;">let</span>&nbsp;poll&nbsp;=&nbsp;Free&nbsp;(Poll&nbsp;Pure)
+ 
+<span style="color:green;">//&nbsp;&#39;a&nbsp;-&gt;&nbsp;PollingProgram&lt;&#39;a,HandleDuration&gt;</span>
+<span style="color:blue;">let</span>&nbsp;handle&nbsp;msg&nbsp;=&nbsp;Free&nbsp;(Handle&nbsp;(msg,&nbsp;Pure))
+ 
+<span style="color:green;">//&nbsp;IdleDuration&nbsp;-&gt;&nbsp;PollingProgram&lt;&#39;a,IdleDuration&gt;</span>
+<span style="color:blue;">let</span>&nbsp;idle&nbsp;duration&nbsp;=&nbsp;Free&nbsp;(Idle&nbsp;(duration,&nbsp;Pure))</pre>
+  </p>
+  <p>
+  	<code>currentTime</code> and <code>poll</code> aren't even functions, but <em>values</em>. They are, however, small <code>PollingProgram</code> values, so while they look like values (as contrasted to functions), they represent singular executable instructions.
+  </p>
+  <p>
+  	<code>handle</code> and <code>idle</code> are both functions that return <code>PollingProgram</code> values.
+  </p>
+  <p>
+  	You can now implement a small computation expression builder:
+  </p>
+  <p>
+  	<pre><span style="color:blue;">type</span>&nbsp;<span style="color:teal;">PollingBuilder</span>&nbsp;()&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">member</span>&nbsp;<span style="color:#9b9b9b;">this</span>.<span style="color:navy;">Bind</span>&nbsp;(x,&nbsp;<span style="color:navy;">f</span>)&nbsp;=&nbsp;<span style="color:teal;">Polling</span>.<span style="color:navy;">bind</span>&nbsp;<span style="color:navy;">f</span>&nbsp;x
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">member</span>&nbsp;<span style="color:#9b9b9b;">this</span>.<span style="color:navy;">Return</span>&nbsp;x&nbsp;=&nbsp;<span style="color:navy;">Pure</span>&nbsp;x
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">member</span>&nbsp;<span style="color:#9b9b9b;">this</span>.<span style="color:navy;">ReturnFrom</span>&nbsp;x&nbsp;=&nbsp;x
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">member</span>&nbsp;<span style="color:#9b9b9b;">this</span>.<span style="color:navy;">Zero</span>&nbsp;()&nbsp;=&nbsp;this.<span style="color:navy;">Return</span>&nbsp;()</pre>
+  </p>
+  <p>
+  	As you can tell, not much is going on here. The <code>Bind</code> method simply delegates to the above <code>bind</code> function, and the rest are trivial one-liners.
+  </p>
+  <p>
+  	You can create an instance of the <code>PollingBuilder</code> class so that you can write <code>PollingProgram</code>s with syntactic sugar:
+  </p>
+  <p>
+  	<pre><span style="color:blue;">let</span>&nbsp;polling&nbsp;=&nbsp;<span style="color:teal;">PollingBuilder</span>&nbsp;()
+</pre>
+  </p>
+  <p>
+  	This enables you to write <code>polling</code> computation expressions. You'll see examples of this shortly.
+  </p>
+  <p>
+  	Most of the code you've seen here is automated in Haskell. This means that while you'll have to explicitly write it in F#, it follows a recipe. Once you get the hang of it, it doesn't take much time. The maintenance overhead of the code is also minimal, because you're essentially implementing a universal abstraction. It's not going to change.
+  </p>
+  <p>
+  	<strong>Support functions</strong>
+  </p>
+  <p>
+  	Continuing the port of the previous article's Haskell code, you can write a pair of support functions. These are small <code>PollingProgram</code> values:
+  </p>
+  <p>
+  	<pre><span style="color:green;">//&nbsp;IdleDuration&nbsp;-&gt;&nbsp;DateTimeOffset&nbsp;-&gt;&nbsp;PollingProgram&lt;&#39;a,bool&gt;</span>
+<span style="color:blue;">let</span>&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:navy;">shouldIdle</span>&nbsp;(<span style="color:navy;">IdleDuration</span>&nbsp;d)&nbsp;stopBefore&nbsp;=&nbsp;<span style="color:blue;">polling</span>&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;now&nbsp;=&nbsp;<span style="color:teal;">Polling</span>.currentTime
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;now&nbsp;+&nbsp;d&nbsp;&lt;&nbsp;stopBefore&nbsp;}</pre>
+  </p>
+  <p>
+  	This <code>shouldIdle</code> function uses the <code>polling</code> computation expression defined above. It first uses the above <code>Polling.currentTime</code> value to get the current time. While <code>Polling.currentTime</code> is a value of the type <code>PollingProgram&lt;'b,DateTimeOffset&gt;</code>, the <code>let!</code> binding makes <code>now</code> a simple <code>DateTimeOffset</code> value. Computation expressions give you the same sort of syntactic sugar that <code>do</code> notation does in Haskell.
+  </p>
+  <p>
+  	If you add <code>now</code> to <code>d</code>, you get a new <code>DateTimeOffset</code> value that represents the time that the program will resume, <em>if</em> it decides to suspend itself for the idle duration. If this time is before <code>stopBefore</code>, the return value is <code>true</code>; otherwise, it's <code>false</code>. Similar to the Haskell example, the return value of <code>shouldIdle</code> isn't just <code>bool</code>, but rather <code>PollingProgram&lt;'a,bool&gt;</code>, because it all takes place inside the <code>polling</code> computation expression.
+  </p>
+  <p>
+  	The function looks impure, but it <em>is</em> pure.
+  </p>
+  <p>
+  	In the same vein, you can implement a <code>shouldPoll</code> function:
+  </p>
+  <p>
+  	<pre><span style="color:green;">//&nbsp;CycleDuration&nbsp;-&gt;&nbsp;TimeSpan</span>
+<span style="color:blue;">let</span>&nbsp;<span style="color:navy;">toTotalCycleTimeSpan</span>&nbsp;x&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;(<span style="color:navy;">PollDuration</span>&nbsp;pd)&nbsp;=&nbsp;x.PollDuration
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;(<span style="color:navy;">HandleDuration</span>&nbsp;hd)&nbsp;=&nbsp;x.HandleDuration
+&nbsp;&nbsp;&nbsp;&nbsp;pd&nbsp;+&nbsp;hd
+ 
+<span style="color:green;">//&nbsp;TimeSpan&nbsp;-&gt;&nbsp;DateTimeOffset&nbsp;-&gt;&nbsp;CycleDuration&nbsp;list&nbsp;-&gt;&nbsp;PollingProgram&lt;&#39;a,bool&gt;</span>
+<span style="color:blue;">let</span>&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:navy;">shouldPoll</span>&nbsp;estimatedDuration&nbsp;stopBefore&nbsp;statistics&nbsp;=&nbsp;<span style="color:blue;">polling</span>&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;expectedHandleDuration&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;statistics
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:teal;">List</span>.<span style="color:navy;">map</span>&nbsp;<span style="color:navy;">toTotalCycleTimeSpan</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:teal;">Statistics</span>.<span style="color:navy;">calculateExpectedDuration</span>&nbsp;estimatedDuration
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;now&nbsp;=&nbsp;<span style="color:teal;">Polling</span>.currentTime
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;now&nbsp;+&nbsp;expectedHandleDuration&nbsp;&lt;&nbsp;stopBefore&nbsp;}</pre>
+  </p>
+  <p>
+  	This function uses two helper functions: <code>toTotalCycleTimeSpan</code> and <code>Statistics.calculateExpectedDuration</code>. I've included <code>toTotalCycleTimeSpan</code> in the code shown here, while I'm skipping <code>Statistics.calculateExpectedDuration</code>, because it hasn't changed since the code I show in <a href="http://www.shareasale.com/r.cfm?u=1017843&b=611266&m=53701&afftrack=&urllink=www%2Epluralsight%2Ecom%2Fcourses%2Ffsharp%2Dtype%2Ddriven%2Ddevelopment">my Pluralsight course</a>. You can also see the function in the <a href="">GitHub repository accompanying this article</a>.
+  </p>
+  <p>
+  	Compared to <code>shouldIdle</code>, the <code>shouldPoll</code> function needs an extra (pure) step in order to figure out the <code>expectedHandleDuration</code>, but from there, the two functions are similar.
+  </p>
+  <p>
+  	<strong>Transitions</strong>
+  </p>
+  <p>
+  	All building blocks are now ready for the finite state machine. In order to break the problem into manageable pieces, you can write a function for each state. Such a function should take as input the data associated with a particular state, and return the next state, based on the input.
+  </p>
+  <p>
+  	The simplest transition is when the program reaches the <em>end</em> state, because there's no way out of that state:
+  </p>
+  <p>
+  	<pre><span style="color:green;">//&nbsp;CycleDuration&nbsp;list&nbsp;-&gt;&nbsp;PollingProgram&lt;&#39;a,State&lt;&#39;b&gt;&gt;</span>
+<span style="color:blue;">let</span>&nbsp;<span style="color:navy;">transitionFromStopped</span>&nbsp;s&nbsp;=&nbsp;<span style="color:blue;">polling</span>&nbsp;{&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:navy;">StoppedState</span>&nbsp;s&nbsp;}</pre>
+  </p>
+  <p>
+  	The data contained in a <code>StoppedState</code> case has the type <code>CycleDuration list</code>, so the <code>transitionFromStopped</code> function simply lifts such a list to a <code>PollingProgram</code> value by returning a <code>StoppedState</code> value from within a <code>polling</code> computation expression.
+  </p>
+  <p>
+  	Slightly more complex, but still simple, is the transition out of the <em>received</em> state. There's no branching logic involved. You just have to handle the message, measure how much time it takes, append the measurements to previous statistics, and return to the <em>ready</em> state:
+  </p>
+  <p>
+  	<pre><span style="color:green;">//&nbsp;CycleDuration&nbsp;list&nbsp;*&nbsp;PollDuration&nbsp;*&nbsp;&#39;a&nbsp;-&gt;&nbsp;PollingProgram&lt;&#39;a,State&lt;&#39;b&gt;&gt;</span>
+<span style="color:blue;">let</span>&nbsp;<span style="color:navy;">transitionFromReceived</span>&nbsp;(statistics,&nbsp;pd,&nbsp;msg)&nbsp;=&nbsp;<span style="color:blue;">polling</span>&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;hd&nbsp;=&nbsp;<span style="color:teal;">Polling</span>.<span style="color:navy;">handle</span>&nbsp;msg
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{&nbsp;PollDuration&nbsp;=&nbsp;pd;&nbsp;HandleDuration&nbsp;=&nbsp;hd&nbsp;}&nbsp;<span style="color:navy;">::</span>&nbsp;statistics
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:navy;">ReadyState</span>&nbsp;}</pre>
+  </p>
+  <p>
+  	This function uses the <code>Polling.handle</code> convenience function to handle the input message. Although the <code>handle</code> function returns a <code>PollingProgram&lt;'a,HandleDuration&gt;</code> value, the <code>let!</code> binding inside of a <code>polling</code> computation expression makes <code>hd</code> a <code>HandleDuration</code> value.
+  </p>
+  <p>
+  	The data contained within a <code>ReceivedMessageState</code> case is a <code>CycleDuration list * PollDuration * 'msg</code> tuple. That's the input argument to the <code>transitionFromReceived</code> function, which immediately pattern-matches the tuple's three elements into <code>statistics</code>, <code>pd</code>, and <code>msg</code>.
+  </p>
+  <p>
+  	The <code>pd</code> element is the <code>PollDuration</code> - i.e. the time it took to reach the <em>received</em> state. The <code>hd</code> value returned by <code>Polling.handle</code> gives you the time it took to handle the message. From those two values you can create a new <code>CycleDuration</code> value, and cons (<code>::</code>) it onto the previous <code>statistics</code>. This returns an updated list of statistics that you can pipe to the <code>ReadyState</code> case constructor.
+  </p>
+  <p>
+  	<code>ReadyState</code> in itself creates a new <code>State&lt;'msg&gt;</code> value, but since all of this takes place inside a <code>polling</code> computation expression, the return type of the function becomes <code>PollingProgram&lt;'a,State&lt;'b&gt;&gt;</code>.
+  </p>
+  <p>
+  	The <code>transitionFromReceived</code> function handles the state when the program has received a message, but you also need to handle the state when no message was received:
+  </p>
+  <p>
+  	<pre><span style="color:green;">//&nbsp;IdleDuration&nbsp;-&gt;&nbsp;DateTimeOffset&nbsp;-&gt;&nbsp;CycleDuration&nbsp;list&nbsp;*&nbsp;&#39;a</span>
+<span style="color:green;">//&nbsp;-&gt;&nbsp;PollingProgram&lt;&#39;b,State&lt;&#39;c&gt;&gt;</span>
+<span style="color:blue;">let</span>&nbsp;<span style="color:navy;">transitionFromNoMessage</span>&nbsp;d&nbsp;stopBefore&nbsp;(statistics,&nbsp;_)&nbsp;=&nbsp;<span style="color:blue;">polling</span>&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;b&nbsp;=&nbsp;<span style="color:navy;">shouldIdle</span>&nbsp;d&nbsp;stopBefore
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;b&nbsp;<span style="color:blue;">then</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">do!</span>&nbsp;<span style="color:teal;">Polling</span>.<span style="color:navy;">idle</span>&nbsp;d&nbsp;|&gt;&nbsp;<span style="color:teal;">Polling</span>.<span style="color:navy;">map</span>&nbsp;<span style="color:navy;">ignore</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:navy;">ReadyState</span>&nbsp;statistics
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">else</span>&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:navy;">StoppedState</span>&nbsp;statistics&nbsp;}</pre>
+  </p>
+  <p>
+  	This function first calls the <code>shouldIdle</code> support function. Similar to Haskell, you can see how you can compose larger <code>PollingProgram</code>s from smaller <code>PollingProgram</code> values - just like you can compose 'normal' functions from smaller functions.
+  </p>
+  <p>
+  	With the syntactic sugar in place, <code>b</code> is simply a <code>bool</code> value that you can use in a standard <code>if/then/else</code> expression. If <code>b</code> is <code>false</code>, then return a <code>StoppedState</code> value; otherwise, continue with the next steps.
+  </p>
+  <p>
+  	<code>Polling.idle</code> returns the duration of the suspension, but you don't actually need this data, so you can <code>ignore</code> it. When <code>Polling.idle</code> returns, you can return a <code>ReadyState</code> value.
+  </p>
+  <p>
+  	It may look as though that <code>do!</code> expression is a blocking call, but it really isn't. The <code>transitionFromNoMessage</code> function only builds an Abstract Syntax Tree, where one of the instructions suggests that an interpreter could block. Unless evaluated by an impure interpreter, <code>transitionFromNoMessage</code> is pure.
+  </p>
+  <p>
+  	The final transition is the most complex, because there are three possible outcomes:
+  </p>
+  <p>
+  	<pre><span style="color:green;">//&nbsp;TimeSpan&nbsp;-&gt;&nbsp;DateTimeOffset&nbsp;-&gt;&nbsp;CycleDuration&nbsp;list</span>
+<span style="color:green;">//&nbsp;-&gt;&nbsp;PollingProgram&lt;&#39;a,State&lt;&#39;a&gt;&gt;</span>
+<span style="color:blue;">let</span>&nbsp;<span style="color:navy;">transitionFromReady</span>&nbsp;estimatedDuration&nbsp;stopBefore&nbsp;statistics&nbsp;=&nbsp;<span style="color:blue;">polling</span>&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;b&nbsp;=&nbsp;<span style="color:navy;">shouldPoll</span>&nbsp;estimatedDuration&nbsp;stopBefore&nbsp;statistics
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;b&nbsp;<span style="color:blue;">then</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;pollResult&nbsp;=&nbsp;<span style="color:teal;">Polling</span>.poll
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">match</span>&nbsp;pollResult&nbsp;<span style="color:blue;">with</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:navy;">Some</span>&nbsp;msg,&nbsp;pd&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:navy;">ReceivedMessageState</span>&nbsp;(statistics,&nbsp;pd,&nbsp;msg)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:navy;">None</span>,&nbsp;pd&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:navy;">NoMessageState</span>&nbsp;(statistics,&nbsp;pd)
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">else</span>&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:navy;">StoppedState</span>&nbsp;statistics&nbsp;}</pre>
+  </p>
+  <p>
+  	In the same way that <code>transitionFromNoMessage</code> uses <code>shouldIdle</code>, the <code>transitionFromReady</code> function uses the <code>shouldPoll</code> support function to decide whether or not to keep going. If <code>b</code> is <code>false</code>, it returns a <code>StoppedState</code> value.
+  </p>
+  <p>
+  	Otherwise, it goes on to <code>poll</code>. Thanks to all the syntactic sugar, <code>pollResult</code> is an <code>'a option * PollDuration</code> value. As always, when you have a discriminated union, you can handle all cases with pattern matching (and the compiler will help you keep track of whether or not you've handled all of them).
+  </p>
+  <p>
+  	In the <code>Some</code> case, you have a message, and the duration it took to poll for that message. This is all the data you need to return a <code>ReceivedMessageState</code> value.
+  </p>
+  <p>
+  	In the <code>None</code> case, you also have the poll duration <code>pd</code>; return a <code>NoMessageState</code> value.
+  </p>
+  <p>
+  	That's four transition functions that you can combine in a single function that, for any state returns a new state:
+  </p>
+  <p>
+  	<pre><span style="color:green;">//&nbsp;TimeSpan&nbsp;-&gt;&nbsp;IdleDuration&nbsp;-&gt;&nbsp;DateTimeOffset&nbsp;-&gt;&nbsp;State&lt;&#39;a&gt;</span>
+<span style="color:green;">//&nbsp;-&gt;&nbsp;PollingProgram&lt;&#39;a,State&lt;&#39;a&gt;&gt;</span>
+<span style="color:blue;">let</span>&nbsp;<span style="color:navy;">transition</span>&nbsp;estimatedDuration&nbsp;idleDuration&nbsp;stopBefore&nbsp;=&nbsp;<span style="color:blue;">function</span>
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:navy;">ReadyState</span>&nbsp;s&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:navy;">transitionFromReady</span>&nbsp;estimatedDuration&nbsp;stopBefore&nbsp;s
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:navy;">ReceivedMessageState</span>&nbsp;s&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:navy;">transitionFromReceived</span>&nbsp;s
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:navy;">NoMessageState</span>&nbsp;s&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:navy;">transitionFromNoMessage</span>&nbsp;idleDuration&nbsp;stopBefore&nbsp;s
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:navy;">StoppedState</span>&nbsp;s&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:navy;">transitionFromStopped</span>&nbsp;s</pre>
+  </p>
+  <p>
+  	You simply pattern-match the (implicit) input argument with the four state cases, and call the appropriate transition function for each case.
+  </p>
+  <p>
+  	<strong>Interpretation</strong>
+  </p>
+  <p>
+  	The <code>transition</code> function is pure. It returns a <code>PollingProgram</code> value. How do you turn it into something that performs real work?
+  </p>
+  <p>
+  	You write an interpreter:
+  </p>
+  <p>
+  	<pre><span style="color:green;">//&nbsp;PollingProgram&lt;Msg,&#39;a&gt;&nbsp;-&gt;&nbsp;&#39;a</span>
+<span style="color:blue;">let</span>&nbsp;<span style="color:blue;">rec</span>&nbsp;<span style="color:navy;">interpret</span>&nbsp;=&nbsp;<span style="color:blue;">function</span>
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:navy;">Pure</span>&nbsp;x&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;x
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:navy;">Free</span>&nbsp;(<span style="color:navy;">CurrentTime</span>&nbsp;<span style="color:navy;">next</span>)&nbsp;&nbsp;&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:teal;">DateTimeOffset</span>.Now&nbsp;|&gt;&nbsp;<span style="color:navy;">next</span>&nbsp;|&gt;&nbsp;<span style="color:navy;">interpret</span>
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:navy;">Free</span>&nbsp;(<span style="color:navy;">Poll</span>&nbsp;<span style="color:navy;">next</span>)&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:teal;">Imp</span>.<span style="color:navy;">poll</span>&nbsp;()&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:navy;">next</span>&nbsp;|&gt;&nbsp;<span style="color:navy;">interpret</span>
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:navy;">Free</span>&nbsp;(<span style="color:navy;">Handle</span>&nbsp;(msg,&nbsp;<span style="color:navy;">next</span>))&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:teal;">Imp</span>.<span style="color:navy;">handle</span>&nbsp;msg&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:navy;">next</span>&nbsp;|&gt;&nbsp;<span style="color:navy;">interpret</span>
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:navy;">Free</span>&nbsp;(<span style="color:navy;">Idle</span>&nbsp;(d,&nbsp;<span style="color:navy;">next</span>))&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:teal;">Imp</span>.<span style="color:navy;">idle</span>&nbsp;d&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:navy;">next</span>&nbsp;|&gt;&nbsp;<span style="color:navy;">interpret</span></pre>
+  </p>
+  <p>
+  	A <code>PollingProgram</code> is either a <code>Pure</code> or a <code>Free</code> case. In the <code>Free</code> case, the contained data is a <code>PollingInstruction</code> value, which can be one of four separate cases. With pattern matching, the interpreter handles all five cases.
+  </p>
+  <p>
+  	In the <code>Pure</code> case, it returns the value, but in all the <code>Free</code> cases, it recursively calls itself after having first followed the instruction in each <code>PollingInstruction</code> case. For instance, when the instruction is <code>CurrentTime</code>, it invokes <code>DateTimeOffset.Now</code>, passes the return value (a <code>DateTimeOffset</code> value) to the <code>next</code> continuation, and then recursively calls <code>interpret</code>. The next instruction, then, could be another <code>Free</code> case, or it could be <code>Pure</code>.
+  </p>
+  <p>
+  	The other three instruction cases delegate to implementation functions defined in an <code>Imp</code> module. I'm not going to show them here. They're normal, although impure, F# functions.
+  </p>
+  <p>
+  	<strong>Execution</strong>
+  </p>
+  <p>
+  	You're almost done. You have a function that returns a new state for any given input state, as well as an interpreter. You need a function that can repeat this in a loop until it reaches <code>StoppedState</code>:
+  </p>
+  <p>
+  	<pre><span style="color:green;">//&nbsp;TimeSpan&nbsp;-&gt;&nbsp;IdleDuration&nbsp;-&gt;&nbsp;DateTimeOffset&nbsp;-&gt;&nbsp;State&lt;Msg&gt;&nbsp;-&gt;&nbsp;State&lt;Msg&gt;</span>
+<span style="color:blue;">let</span>&nbsp;<span style="color:blue;">rec</span>&nbsp;<span style="color:navy;">run</span>&nbsp;estimatedDuration&nbsp;idleDuration&nbsp;stopBefore&nbsp;s&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;ns&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:teal;">PollingConsumer</span>.<span style="color:navy;">transition</span>&nbsp;estimatedDuration&nbsp;idleDuration&nbsp;stopBefore&nbsp;s
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:navy;">interpret</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">match</span>&nbsp;ns&nbsp;<span style="color:blue;">with</span>
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:teal;">PollingConsumer</span>.<span style="color:navy;">StoppedState</span>&nbsp;_&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;ns
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;_&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:navy;">run</span>&nbsp;estimatedDuration&nbsp;idleDuration&nbsp;stopBefore&nbsp;ns</pre>
+  </p>
+  <p>
+  	This function calls <code>PollingConsumer.transition</code> with the input state <code>s</code>, which returns a new <code>PollingProgram&lt;Msg,PollingConsumer.State&lt;Msg&gt;&gt;</code> value that you can pipe to the <code>interpret</code> function. That gives you the new state <code>ns</code>. If <code>ns</code> is a <code>StoppedState</code>, you return; otherwise, you recurse into <code>run</code> for another round.
+  </p>
+  <p>
+  	Finally, you can write the entry point for the application:
+  </p>
+  <p>
+  	<pre>[&lt;<span style="color:teal;">EntryPoint</span>&gt;]
+<span style="color:blue;">let</span>&nbsp;<span style="color:navy;">main</span>&nbsp;_&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;timeAtEntry&nbsp;=&nbsp;<span style="color:teal;">DateTimeOffset</span>.Now
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:navy;">printOnEntry</span>&nbsp;timeAtEntry
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;stopBefore&nbsp;=&nbsp;timeAtEntry&nbsp;+&nbsp;limit
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;estimatedDuration&nbsp;=&nbsp;<span style="color:teal;">TimeSpan</span>.<span style="color:navy;">FromSeconds</span>&nbsp;2.
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;idleDuration&nbsp;=&nbsp;<span style="color:teal;">TimeSpan</span>.<span style="color:navy;">FromSeconds</span>&nbsp;5.&nbsp;|&gt;&nbsp;<span style="color:navy;">IdleDuration</span>
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;durations&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:teal;">PollingConsumer</span>.<span style="color:navy;">ReadyState</span>&nbsp;[]
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:navy;">run</span>&nbsp;estimatedDuration&nbsp;idleDuration&nbsp;stopBefore
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:teal;">PollingConsumer</span>.<span style="color:navy;">durations</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:teal;">List</span>.<span style="color:navy;">map</span>&nbsp;<span style="color:teal;">PollingConsumer</span>.<span style="color:navy;">toTotalCycleTimeSpan</span>
+&nbsp;&nbsp;&nbsp;&nbsp;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:navy;">printOnExit</span>&nbsp;timeAtEntry&nbsp;durations
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;Return&nbsp;0.&nbsp;This&nbsp;indicates&nbsp;success.</span>
+&nbsp;&nbsp;&nbsp;&nbsp;0</pre>
+  </p>
+  <p>
+  	This defines an estimated duration of 2 seconds, an idle duration of 5 seconds, and a maximum run time of 60 seconds (<code>limit</code>). The initial state is <code>ReadyState</code> with no prior statistics. Pass all these arguments to the <code>run</code> function, and you have a running program.
+  </p>
+  <p>
+  	This function also uses a few printout functions that I'm not going to show here. When you run the program, you should see output like this:
+  </p>
+  <p>
+  	<pre>Started polling at 11:18:28.
+
+Polling
+<span style="color:green;">Handling</span>
+Polling
+<span style="color:green;">Handling</span>
+Polling
+<span style="color:orange;">Sleeping</span>
+Polling
+<span style="color:orange;">Sleeping</span>
+Polling
+<span style="color:green;">Handling</span>
+Polling
+<span style="color:green;">Handling</span>
+Polling
+<span style="color:orange;">Sleeping</span>
+Polling
+<span style="color:orange;">Sleeping</span>
+Polling
+<span style="color:orange;">Sleeping</span>
+Polling
+<span style="color:green;">Handling</span>
+Polling
+<span style="color:orange;">Sleeping</span>
+Polling
+<span style="color:orange;">Sleeping</span>
+Polling
+<span style="color:orange;">Sleeping</span>
+Polling
+<span style="color:orange;">Sleeping</span>
+Polling
+<span style="color:green;">Handling</span>
+
+Stopped polling at 11:19:26.
+Elapsed time: <span style="color:green;">00:00:58.4428980</span>.
+Handled 6 message(s).
+Average duration: 00:00:01.0550346
+Standard deviation: 00:00:00.3970599</pre>
+  </p>
+  <p>
+  	It does, indeed, exit before 60 seconds have elapsed.
+  </p>
+  <p>
+  	<strong>Summary</strong>
+  </p>
+  <p>
+  	You can model long-running interactions with an Abstract Syntax Tree. Without computation expressions, writing programs as 'raw' ASTs would be cumbersome, but turning the AST into a (free) monad makes it all quite palatable.
+  </p>
+  <p>
+  	Haskell code with a free monad can be ported to F#, although some boilerplate code is required. That code, however, is unlikely to be much of a burden, because it follows a well-known recipe that implements a universal abstraction.
+  </p>
+</div>
