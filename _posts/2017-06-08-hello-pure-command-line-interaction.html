@@ -1,0 +1,328 @@
+---
+layout: post
+title: "Hello, pure command-line interaction"
+date: 2017-06-08 15:18 UTC
+tags: [Software Design, Dependency Injection, F#]
+---
+{% include JB/setup %}
+
+<div id="post">
+	<p>
+		<em>A gentle introduction to modelling impure interactions with pure code.</em>
+	</p>
+	<p>
+		Dependency Injection is a <a href="http://amzn.to/12p90MG">well-described</a> concept in object-oriented programming, but as I've <a href="http://blog.ploeh.dk/2017/01/30/partial-application-is-dependency-injection">explained earlier</a>, its not functional, because it makes everything impure. In general, you should <a href="http://blog.ploeh.dk/2017/02/02/dependency-rejection">reject the notion of dependencies</a> by instead designing your application on the concept of an impure/pure/impure sandwich. This is possible more often than you'd think, but <a href="">there's still a large group of applications where this will not work</a>. If your application needs to interact with the impure world for an extended time, you need a way to model such interactions in a pure way.
+	</p>
+	<p>
+		This article introduces a way to do that.
+	</p>
+	<p>
+		<strong>Command line API</strong>
+	</p>
+	<p>
+		Imagine that you have to write a command-line program that can ask a series of questions and print appropriate responses. In the general case, this is a (potentially) long-running series of interactions between the user and the program. To keep it simple, though, in this article we'll start by looking at a degenerate example:
+	</p>
+	<p>
+		<pre>Please enter your name.
+Mark
+Hello, Mark!</pre>
+	</p>
+	<p>
+		The program is simply going to request that you enter your name. Once you've done that, it prints the greeting. In object-oriented programming, using Dependency Injection, you might introduce an interface. Keeping it simple, you can restrict such an interface to two methods:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">interface</span>&nbsp;<span style="color:#2b91af;">ICommandLine</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">string</span>&nbsp;ReadLine();
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">void</span>&nbsp;WriteLine(<span style="color:blue;">string</span>&nbsp;text);
+}</pre>
+	</p>
+	<p>
+		Please note that this is clearly a toy example. In later articles, you'll see how to expand the example to cover some more complex interactions, but you could also <a href="">read a more realistic example already</a>. Initially, the example is degenerate, because there's only a single interaction. In this case, an impure/pure/impure sandwich is still possible, but such a design wouldn't scale to more complex interactions.
+	</p>
+	<p>
+		The problem with defining and injecting an interface is that it isn't functional. What's the functional equivalent, then?
+	</p>
+	<p>
+		<strong>Instruction set</strong>
+	</p>
+	<p>
+		Instead of defining an interface, you can define a discriminated union that describes a limited instruction set for command-line interactions:
+	</p>
+	<p>
+		<pre><span style="color:blue;">type</span>&nbsp;<span style="color:teal;">CommandLineInstruction</span>&lt;&#39;a&gt;&nbsp;=
+|&nbsp;<span style="color:navy;">ReadLine</span>&nbsp;<span style="color:blue;">of</span>&nbsp;(<span style="color:teal;">string</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;&#39;a)
+|&nbsp;<span style="color:navy;">WriteLine</span>&nbsp;<span style="color:blue;">of</span>&nbsp;<span style="color:teal;">string</span>&nbsp;*&nbsp;&#39;a</pre>
+	</p>
+	<p>
+		You may notice that it looks a bit like the above C# interface. Instead of defining two methods, it defines two cases, but the names are similar.
+	</p>
+	<p>
+		The <code>ReadLine</code> case is an <em>instruction</em> that an interpreter can evaluate. The data contained in the case is a continuation function. After evaluating the instruction, an interpreter must invoke this function with a string. It's up to the interpreter to figure out which string to use, but it could, for example, come from reading an input string from the command line. The continuation function is the next step in whatever program you're writing.
+	</p>
+	<p>
+		The <code>WriteLine</code> case is another instruction for interpreters. The data contained in this case is a tuple. The first element of the tuple is input for the interpreter, which can choose to e.g. print the value on the command line, or ignore it, and so on. The second element of the tuple is a value used to continue whatever program this case is a part of.
+	</p>
+	<p>
+		This enables you to write a small, specialised Abstract Syntax Tree (AST), but there's currently no way to return from it. One way to do that is to add a third 'stop' case. If you're interested in that option, <a href="https://fsharpforfunandprofit.com">Scott Wlaschin</a> covers this as one iteration in his <a href="https://fsharpforfunandprofit.com/posts/13-ways-of-looking-at-a-turtle-2/#way13">excellent explanation of the AST design</a>.
+	</p>
+	<p>
+		Instead of add a third 'stop' case to <code>CommandLineInstruction&lt;'a&gt;</code>, another option is to add a new wrapper type around it:
+	</p>
+	<p>
+		<pre><span style="color:blue;">type</span>&nbsp;<span style="color:teal;">CommandLineProgram</span>&lt;&#39;a&gt;&nbsp;=
+|&nbsp;<span style="color:navy;">Free</span>&nbsp;<span style="color:blue;">of</span>&nbsp;<span style="color:teal;">CommandLineInstruction</span>&lt;<span style="color:teal;">CommandLineProgram</span>&lt;&#39;a&gt;&gt;
+|&nbsp;<span style="color:navy;">Pure</span>&nbsp;<span style="color:blue;">of</span>&nbsp;&#39;a</pre>
+	</p>
+	<p>
+		The <code>Free</code> case contains a <code>CommandLineInstruction</code> that always continues to a new <code>CommandLineProgram</code> value. The only way you can escape the AST is via the <code>Pure</code> case, which simply contains the 'return' value.
+	</p>
+	<p>
+		<strong>Abstract Syntax Trees</strong>
+	</p>
+	<p>
+		With these two types you can write specialised programs that contain instructions for an interpreter. Notice that the types are pure by intent, although in F# we can't really tell. You can, however, repeat this exercise in <a href="https://www.haskell.org">Haskell</a>, where the instruction set looks like this:
+	</p>
+	<p>
+		<pre><span style="color:blue;">data</span>&nbsp;<span style="color:#dd0000;">CommandLineInstruction</span>&nbsp;next&nbsp;<span style="color:#666666;">=</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#dd0000;">ReadLine</span>&nbsp;(<span style="color:#dd0000;">String</span>&nbsp;<span style="color:#666666;">-&gt;</span>&nbsp;next)
+&nbsp;&nbsp;<span style="color:#666666;">|</span>&nbsp;<span style="color:#dd0000;">WriteLine</span>&nbsp;<span style="color:#dd0000;">String</span>&nbsp;next
+&nbsp;&nbsp;<span style="color:blue;">deriving</span>&nbsp;(<span style="color:#a31515;">Functor</span>)
+ 
+<span style="color:blue;">type</span>&nbsp;<span style="color:#dd0000;">CommandLineProgram</span>&nbsp;<span style="color:#666666;">=</span>&nbsp;<span style="color:#dd0000;">Free</span>&nbsp;<span style="color:#dd0000;">CommandLineInstruction</span></pre>
+	</p>
+	<p>
+		Both of these types are <a href="https://en.wikipedia.org/wiki/Pure_function">pure</a>, because <code>IO</code> is nowhere in sight. In Haskell, functions are pure by default. This also applies to the <code>String -&gt; next</code> function contained in the <code>ReadLine</code> case.
+	</p>
+	<p>
+		Back in F# land, you can write an AST that implements the command-line interaction shown in the beginning of the article:
+	</p>
+	<p>
+		<pre><span style="color:green;">//&nbsp;CommandLineProgram&lt;unit&gt;</span>
+<span style="color:blue;">let</span>&nbsp;<span style="color:#9b9b9b;">program</span>&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:navy;">Free</span>&nbsp;(<span style="color:navy;">WriteLine</span>&nbsp;(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#a31515;">&quot;Please&nbsp;enter&nbsp;your&nbsp;name.&quot;</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:navy;">Free</span>&nbsp;(<span style="color:navy;">ReadLine</span>&nbsp;(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">fun</span>&nbsp;s&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:navy;">Free</span>&nbsp;(<span style="color:navy;">WriteLine</span>&nbsp;(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:navy;">sprintf</span>&nbsp;<span style="color:#a31515;">&quot;Hello,&nbsp;</span><span style="color:teal;">%s</span><span style="color:#a31515;">!&quot;</span>&nbsp;s,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:navy;">Pure</span>&nbsp;()))))))</pre>
+	</p>
+	<p>
+		This AST defines a little program. The first step is a <code>WriteLine</code> instruction with the input value <code>"Please enter your name."</code>. The <code>WriteLine</code> case constructor takes a tuple as input argument. The first tuple element is that prompt, and the second element is the continuation, which has to be a new <code>CommandLineInstruction&lt;CommandLineProgram&lt;'a&gt;&gt;</code> value.
+	</p>
+	<p>
+		In this example, the continuation value is a <code>ReadLine</code> case, which takes a continuation function as input. This function should return a new program value, which it does by returning a <code>WriteLine</code>.
+	</p>
+	<p>
+		This second <code>WriteLine</code> value creates a <code>string</code> from the outer value <code>s</code>. The second tuple element for the <code>WriteLine</code> case must, again, be a new program value, but now the program is done, so you can use the 'stop' value <code>Pure ()</code>.
+	</p>
+	<p>
+		You probably think I should quit the mushrooms. No one in their right mind will want to write code like this. Neither would I. Fortunately, you can make the coding experience <em>much</em> better, but you'll see how to do that later.
+	</p>
+	<p>
+		<strong>Interpretation</strong>
+	</p>
+	<p>
+		The <code>program</code> value is a small <code>CommandLineProgram&lt;unit&gt;</code>. It's a pure value. In itself, it doesn't do anything.
+	</p>
+	<p>
+		Clearly, we'd like it to <em>do</em> something. In order to make that happen, you can write an interpreter:
+	</p>
+	<p>
+		<pre><span style="color:green;">//&nbsp;CommandLineProgram&lt;&#39;a&gt;&nbsp;-&gt;&nbsp;&#39;a</span>
+<span style="color:blue;">let</span>&nbsp;<span style="color:blue;">rec</span>&nbsp;<span style="color:navy;">interpret</span>&nbsp;=&nbsp;<span style="color:blue;">function</span>
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:navy;">Pure</span>&nbsp;x&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;x
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:navy;">Free</span>&nbsp;(<span style="color:navy;">ReadLine</span>&nbsp;&nbsp;<span style="color:navy;">next</span>)&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:teal;">Console</span>.<span style="color:navy;">ReadLine</span>&nbsp;()&nbsp;|&gt;&nbsp;<span style="color:navy;">next</span>&nbsp;|&gt;&nbsp;<span style="color:navy;">interpret</span>
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:navy;">Free</span>&nbsp;(<span style="color:navy;">WriteLine</span>&nbsp;(s,&nbsp;next))&nbsp;<span style="color:blue;">-&gt;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:teal;">Console</span>.<span style="color:navy;">WriteLine</span>&nbsp;s
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;next&nbsp;|&gt;&nbsp;<span style="color:navy;">interpret</span></pre>
+	</p>
+	<p>
+		This interpreter is a recursive function that pattern-matches all the cases in any <code>CommandLineProgram&lt;'a&gt;</code>. When it encounters a <code>Pure</code> case, it simply returns the contained value.
+	</p>
+	<p>
+		When it encounters a <code>ReadLine</code> value, it calls <code>Console.ReadLine ()</code>, which returns a <code>string</code> value read from the command line. It then pipes that input value to its <code>next</code> continuation function, which produces a new <code>CommandLineInstruction&lt;CommandLineProgram&lt;'a&gt;&gt;</code> value. Finally, it pipes that continuation value recursively to itself.
+	</p>
+	<p>
+		A similar treatment is given to the <code>WriteLine</code> case. <code>Console.WriteLine s</code> writes <code>s</code> to the command line, where after <code>next</code> is recursively piped to <code>interpret</code>.
+	</p>
+	<p>
+		When you run <code>interpret program</code>, you get an interaction like this:
+	</p>
+	<p>
+		<pre>Please enter your name.
+ploeh
+Hello, ploeh!</pre>
+	</p>
+	<p>
+		The <code>program</code> is pure; the <code>interpret</code> function is impure.
+	</p>
+	<p>
+		<strong>Syntactic sugar</strong>
+	</p>
+	<p>
+		Clearly, you don't want to write programs as ASTs like the above. Fortunately, you don't have to. You can add syntactic sugar in the form of computation expressions. The way to do that is to turn your AST types into a monad. In Haskell, you'd already be done, because <code>Free</code> is a monad. In F#, some code is required.
+	</p>
+	<p>
+		<strong>Source functor</strong>
+	</p>
+	<p>
+		The first step is to define a map function for the underlying instruction set union type. Conceptually, when you can define a map function for a type, you've created a <em>functor</em> (if it obeys the functor laws, that is). Functors are common, so it often pays off being aware of them.
+	</p>
+	<p>
+		<pre><span style="color:green;">//&nbsp;(&#39;a&nbsp;-&gt;&nbsp;&#39;b)&nbsp;-&gt;&nbsp;CommandLineInstruction&lt;&#39;a&gt;&nbsp;-&gt;&nbsp;CommandLineInstruction&lt;&#39;b&gt;</span>
+<span style="color:blue;">let</span>&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:navy;">mapI</span>&nbsp;<span style="color:navy;">f</span>&nbsp;=&nbsp;<span style="color:blue;">function</span>
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:navy;">ReadLine</span>&nbsp;<span style="color:navy;">next</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:navy;">ReadLine</span>&nbsp;(<span style="color:navy;">next</span>&nbsp;&gt;&gt;&nbsp;<span style="color:navy;">f</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:navy;">WriteLine</span>&nbsp;(x,&nbsp;next)&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:navy;">WriteLine</span>&nbsp;(x,&nbsp;next&nbsp;|&gt;&nbsp;<span style="color:navy;">f</span>)</pre>
+	</p>
+	<p>
+		The <code>mapI</code> function takes a <code>CommandLineInstruction&lt;'a&gt;</code> value and maps it to a new value by mapping the 'underlying value'. I decided to make the function <code>private</code> because later, I'm also going to define a map function for <code>CommandLineProgram&lt;'a&gt;</code>, and I don't want to confuse users of the API with two different map functions. This is also the reason that the name of the function isn't simply <code>map</code>, but rather <code>mapI</code>, where the <em>I</em> stands for <em>instruction</em>.
+	</p>
+	<p>
+		<code>mapI</code> pattern-matches on the (implicit) input argument. If it's a <code>ReadLine</code> case, it returns a new <code>ReadLine</code> value, but it uses the mapper function <code>f</code> to translate the <code>next</code> function. Recall that <code>next</code> is a function of the type <code>string -&gt; 'a</code>. When you compose it with <code>f</code> (which is a function of the type <code>'a -&gt; 'b</code>), you get <code>(string -&gt; 'a) &gt;&gt; ('a -&gt; 'b)</code>, or <code>string -&gt; 'b</code>. You've transformed the <code>'a</code> to a <code>'b</code> for the <code>ReadLine</code> case. If you can do the same for the <code>WriteLine</code> case, you'll have a functor.
+	</p>
+	<p>
+		Fortunately, the <code>WriteLine</code> case is similar, although a small tweak is required. This case contains a tuple of data. The first element (<code>x</code>) isn't a generic type (it's a <code>string</code>), so there's nothing to map. You can use it as-is in the new <code>WriteLine</code> value that you'll return. The <code>WriteLine</code> case is degenerate because <code>next</code> isn't a function, but rather a value. It has a type of <code>'a</code>, and <code>f</code> is a function of the type <code>'a -&gt; 'b</code>, so piping <code>next</code> to <code>f</code> returns a <code>'b</code>.
+	</p>
+	<p>
+		That's it: now you have a functor.
+	</p>
+	<p>
+		(In order to keep the category theorists happy, I should point out that such functors are really a sub-type of functors called <em>endo-functors</em>. Additionally, functors must obey some simple and intuitive laws in order to be functors, but that's all I'll say about that here.)
+	</p>
+	<p>
+		<strong>Free monad</strong>
+	</p>
+	<p>
+		There's a reason I spend so much time talking about functors. The goal is syntactic sugar. You can get that with computation expressions. In order to create a computation expression builder, you need a monad.
+	</p>
+	<p>
+		You need a recipe for creating a monad. Fortunately, there's a type of monad called a <em>free monad</em>. It has the virtue that it enables you to create a monad from any functor.
+	</p>
+	<p>
+		Just what you need.
+	</p>
+	<p>
+		In Haskell, this happens automatically when you declare <code>type CommandLineProgram = Free CommandLineInstruction</code>. Thanks to Haskell's type system, <code>Free</code> is automatically a <code>Monad</code> when the underlying type is a <code>Functor</code>. In F#, you have to work for your monads, but the fact that Haskell can automate this means that there's a recipe that you can follow.
+	</p>
+	<p>
+		Earlier in this article, I mentioned in passing that there are alternative ways in which you can define a 'stop' case for your instruction set. The reason I chose to separate the API into two types (an 'instruction set', and a 'program') is that the instruction set is the underlying functor. The 'program' is part of the free monad. The other part is a <code>bind</code> function (that obeys the monad laws).
+	</p>
+	<p>
+		<pre><span style="color:green;">//&nbsp;(&#39;a&nbsp;-&gt;&nbsp;CommandLineProgram&lt;&#39;b&gt;)&nbsp;-&gt;&nbsp;CommandLineProgram&lt;&#39;a&gt;</span>
+<span style="color:green;">//&nbsp;-&gt;&nbsp;CommandLineProgram&lt;&#39;b&gt;</span>
+<span style="color:blue;">let</span>&nbsp;<span style="color:blue;">rec</span>&nbsp;bind&nbsp;f&nbsp;=&nbsp;<span style="color:blue;">function</span>
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;Free&nbsp;instruction&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;instruction&nbsp;|&gt;&nbsp;mapI&nbsp;(bind&nbsp;f)&nbsp;|&gt;&nbsp;Free
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;Pure&nbsp;x&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;f&nbsp;x</pre>
+	</p>
+	<p>
+		This recursive function pattern-matches on the (implicit) <code>CommandLineProgram&lt;'a&gt;</code> argument. In the <code>Pure</code> case, the 'return' value <code>x</code> has the type <code>'a</code>, which fits as input for the <code>f</code> function. The result is a value of type <code>CommandLineProgram&lt;'b&gt;</code>.
+	</p>
+	<p>
+		In the <code>Free</code> case, the <code>instruction</code> is a functor with the map function <code>mapI</code>. The first argument to the <code>mapI</code> function must be a function with the type <code>'a -&gt; 'b</code>. How can you compose such a function?
+	</p>
+	<p>
+		If you partially apply the recursive <code>bind</code> function with <code>f</code> (that is: <code>bind f</code>), you get a function of the type <code>CommandLineProgram&lt;'a&gt; -&gt; CommandLineProgram&lt;'b&gt;</code>. This fits with <code>mapI</code>, because <code>instruction</code> has the type <code>CommandLineInstruction&lt;CommandLineProgram&lt;'a&gt;&gt;</code> (refer back to the definition of the <code>Free</code> case if need to convince yourself of that). The result of calling <code>mapI</code> with <code>instruction</code> is a <code>CommandLineInstruction&lt;CommandLineProgram&lt;'b&gt;&gt;</code> value. In order to turn it into a <code>CommandLineProgram&lt;'b&gt;</code> value, you wrap it in a new <code>Free</code> case.
+	</p>
+	<p>
+		Although this required a bit of explanation, defining a <code>bind</code> function for a free monad is a repeatable process. After all, in Haskell it's automated. In F#, you have to explicitly write the code, but it follows a recipe. Once you get the hang of it, there's not much to it.
+	</p>
+	<p>
+		<strong>Functor</strong>
+	</p>
+	<p>
+		You'll occasionally need to explicitly use the <code>bind</code> function, but often it'll 'disappear' into a computation expression. There are other building blocks to an API than a <code>bind</code> function, though. You may, for example, need a <code>map</code> function:
+	</p>
+	<p>
+		<pre><span style="color:green;">//&nbsp;(&#39;a&nbsp;-&gt;&nbsp;&#39;b)&nbsp;-&gt;&nbsp;CommandLineProgram&lt;&#39;a&gt;&nbsp;-&gt;&nbsp;CommandLineProgram&lt;&#39;b&gt;</span>
+<span style="color:blue;">let</span>&nbsp;map&nbsp;f&nbsp;=&nbsp;bind&nbsp;(f&nbsp;&gt;&gt;&nbsp;Pure)</pre>
+	</p>
+	<p>
+		This makes <code>CommandLineProgram&lt;'a&gt;</code> a functor as well. This is the reason I made <code>mapI</code> private, because <code>mapI</code> makes the instruction set a functor, but the API is expressed in terms of AST programs, and it should be consistent. Within the same module, <code>map</code> should work on the same data type as <code>bind</code>.
+	</p>
+	<p>
+		Notice that <code>map</code> can be defined as a composition of <code>bind</code> and <code>Pure</code>. This is part of the recipe. For a free monad, the <code>map</code> function always looks like that. The <code>f</code> function is a function with the type <code>'a -&gt; 'b</code>, and <code>Pure</code> is a case constructor with the type <code>'b -&gt; CommandLineProgram&lt;'b&gt;</code>. Notice that I've used <code>'b</code> for the generic type argument instead of the usual <code>'a</code>. Hopefully, this makes it clear that when you compose these two functions together (<code>f &gt;&gt; Pure</code>), you get a function of the type <code>('a -&gt; 'b) &gt;&gt; ('b -&gt; CommandLineProgram&lt;'b&gt;)</code>, or <code>'a -&gt; CommandLineProgram&lt;'b&gt;</code>. That's just the type of function needed for the <code>bind</code> function, so the whole composition turns out to type-check and work as intended.
+	</p>
+	<p>
+		<strong>API</strong>
+	</p>
+	<p>
+		In order to work with an API, you need the ability to create values of the API's type(s). In this case, you must be able to create <code>CommandLineProgram&lt;'a&gt;</code> values. While you can create them explicitly using the <code>ReadLine</code>, <code>WriteLine</code>, <code>Free</code>, and <code>Pure</code> case constructors, it'll be more convenient to if you have some predefined functions and values for that.
+	</p>
+	<p>
+		<pre><span style="color:green;">//&nbsp;CommandLineProgram&lt;string&gt;</span>
+<span style="color:blue;">let</span>&nbsp;readLine&nbsp;=&nbsp;Free&nbsp;(ReadLine&nbsp;Pure)
+ 
+<span style="color:green;">//&nbsp;string&nbsp;-&gt;&nbsp;CommandLineProgram&lt;unit&gt;</span>
+<span style="color:blue;">let</span>&nbsp;writeLine&nbsp;s&nbsp;=&nbsp;Free&nbsp;(WriteLine&nbsp;(s,&nbsp;Pure&nbsp;()))</pre>
+	</p>
+	<p>
+		In the <code>ReadLine</code> case, there's no input to the instruction, so you can define <code>readLine</code> as a predefined <code>CommandLineProgram&lt;string&gt;</code> value.
+	</p>
+	<p>
+		The <code>WriteLine</code> case, on the other hand, takes as an input argument a string to write, so you can define <code>writeLine</code> as a function that returns a <code>CommandLineProgram&lt;unit&gt;</code> value.
+	</p>
+	<p>
+		<strong>Computation expression</strong>
+	</p>
+	<p>
+		The addition of <code>map</code> and supporting API is, to be honest, a bit of digression. You're going to use these functions later, but they aren't required in order to create a <a href="https://docs.microsoft.com/en-us/dotnet/fsharp/language-reference/computation-expressions">computation expression builder</a>. All you need is a <code>bind</code> function and a way to lift a raw value into the monad. All of these are in place, so the builder is a matter of delegation:
+	</p>
+	<p>
+		<pre><span style="color:blue;">type</span>&nbsp;<span style="color:teal;">CommandLineBuilder</span>&nbsp;()&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">member</span>&nbsp;<span style="color:#9b9b9b;">this</span>.<span style="color:navy;">Bind</span>&nbsp;(x,&nbsp;<span style="color:navy;">f</span>)&nbsp;=&nbsp;<span style="color:teal;">CommandLine</span>.<span style="color:navy;">bind</span>&nbsp;<span style="color:navy;">f</span>&nbsp;x
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">member</span>&nbsp;<span style="color:#9b9b9b;">this</span>.<span style="color:navy;">Return</span>&nbsp;x&nbsp;=&nbsp;<span style="color:navy;">Pure</span>&nbsp;x
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">member</span>&nbsp;<span style="color:#9b9b9b;">this</span>.<span style="color:navy;">ReturnFrom</span>&nbsp;x&nbsp;=&nbsp;x
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">member</span>&nbsp;<span style="color:#9b9b9b;">this</span>.<span style="color:navy;">Zero</span>&nbsp;()&nbsp;=&nbsp;<span style="color:navy;">Pure</span>&nbsp;()</pre>
+	</p>
+	<p>
+		This is a fairly minimal builder, but in my experience, most of times, this is all you need.
+	</p>
+	<p>
+		Create an instance of the <code>CommandLineBuilder</code> class, and you can write computation expressions:
+	</p>
+	<p>
+		<pre><span style="color:blue;">let</span>&nbsp;commandLine&nbsp;=&nbsp;<span style="color:teal;">CommandLineBuilder</span>&nbsp;()
+</pre>
+	</p>
+	<p>
+		I usually put such an object in a module with an <code>[&lt;AutoOpen&gt;]</code> attribute, so that it's available as a global object.
+	</p>
+	<p>
+		<strong>Producing ASTs with pretty code</strong>
+	</p>
+	<p>
+		Using the <code>commandLine</code> computation expression is like using the built-in <code>async</code> or <code>seq</code> expressions. You can use it to rewrite the above AST as readable code:
+	</p>
+	<p>
+		<pre><span style="color:green;">//&nbsp;CommandLineProgram&lt;unit&gt;</span>
+<span style="color:blue;">let</span>&nbsp;<span style="color:#9b9b9b;">program</span>&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">commandLine</span>&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">do!</span>&nbsp;&nbsp;<span style="color:teal;">CommandLine</span>.<span style="color:navy;">writeLine</span>&nbsp;<span style="color:#a31515;">&quot;Please&nbsp;enter&nbsp;your&nbsp;name.&quot;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;name&nbsp;=&nbsp;<span style="color:teal;">CommandLine</span>.readLine
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">do!</span>&nbsp;&nbsp;<span style="color:navy;">sprintf</span>&nbsp;<span style="color:#a31515;">&quot;Hello,&nbsp;</span><span style="color:teal;">%s</span><span style="color:#a31515;">!&quot;</span>&nbsp;name&nbsp;|&gt;&nbsp;<span style="color:teal;">CommandLine</span>.<span style="color:navy;">writeLine</span>&nbsp;}</pre>
+	</p>
+	<p>
+		This produces the same AST as before, but with much more readable syntax. The AST is the same, and you can use the above <code>interpret</code> function to run it. The interaction is the same as before:
+	</p>
+	<p>
+		<pre>Please enter your name.
+Free
+Hello, Free!</pre>
+	</p>
+	<p>
+		This is, obviously, a toy example, but in coming articles, you'll see how to gradually enhance the code to perform some more complex interactions.
+	</p>
+	<p>
+		<strong>Summary</strong>
+	</p>
+	<p>
+		Functional programming emphasises pure functions, and a separation of pure and impure code. The simplest way to achieve such a separation is to design your code as an impure/pure/impure sandwich, but sometimes this isn't possible. When it's not possible, an alternative is to define an instruction set for an AST, and turn it into a free monad in order to enable enough syntactic sugar to keep the code readable.
+	</p>
+	<p>
+		While this may seem complicated, it has the benefit of making impurities explicit in the code. Whenever you see a <code>CommandLineProgram</code> value, you know that, at run-time, something impure is likely to happen. It's not <em>uncontrolled</em> impurity, though. Inside a <code>CommandLineProgram</code>, only reading from, and writing to, the command line will happen. It's not going to generate random values, change global variables, send an email, or any other unpredictable operation - that is, unless the interpreter does that...
+	</p>
+	<p>
+		<strong>Next:</strong> A pure command-line wizard.
+	</p>
+</div>
