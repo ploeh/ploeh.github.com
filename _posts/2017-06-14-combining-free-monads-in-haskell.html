@@ -1,0 +1,317 @@
+---
+layout: post
+title: "Combining free monads in Haskell"
+date: 2017-06-14 12:03 UTC
+tags: [Software Design, Haskell]
+---
+{% include JB/setup %}
+
+<div id="post">
+	<p>
+		<em>An example on how to compose free monads in Haskell.</em>
+	</p>
+	<p>
+		In the <a href="">previous article</a> in this <a href="">series on pure interactions</a>, you saw how to write a command-line wizard in F#, using a free monad to build an Abstract Syntax Tree (AST). The example collects information about a potential restaurant reservations you'd like to make. That example, however, didn't do more than that.
+	</p>
+	<p>
+		For a more complete experience, you'd like your command-line interface (CLI) to not only collect data about a reservation, but actually <em>make</em> the reservation, using the available HTTP API. This means that you'll also need to model interaction with the HTTP API as an AST, but a different AST. Then, you'll have to figure out how to compose these two APIs into a combined API.
+	</p>
+	<p>
+		In order to figure out how to do this in F#, I first had to do it in <a href="https://www.haskell.org">Haskell</a>. In this article, you'll see how to do it in Haskell, and in the next article, you'll see how to translate this Haskell prototype to F#. This should ensure that you get a functional F# code base as well.
+	</p>
+	<p>
+		<strong>Command line API</strong>
+	</p>
+	<p>
+		Let's make an easy start of it. In a previous article, you saw <a href="">how to model command-line interactions as ASTs</a>, complete with syntactic sugar provided by a <a href="https://docs.microsoft.com/en-us/dotnet/fsharp/language-reference/computation-expressions">computation expression</a>. That took a fair amount of boilerplate code in F#, but in Haskell, it's declarative:
+	</p>
+	<p>
+		<pre><span style="color:blue;">import</span>&nbsp;Control.Monad.Trans.Free&nbsp;(<span style="color:blue;">Free</span>,&nbsp;<span style="color:#600277;">liftF</span>)
+ 
+<span style="color:blue;">data</span>&nbsp;<span style="color:#dd0000;">CommandLineInstruction</span>&nbsp;next&nbsp;<span style="color:#666666;">=</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#dd0000;">ReadLine</span>&nbsp;(<span style="color:#dd0000;">String</span>&nbsp;<span style="color:#666666;">-&gt;</span>&nbsp;next)
+&nbsp;&nbsp;<span style="color:#666666;">|</span>&nbsp;<span style="color:#dd0000;">WriteLine</span>&nbsp;<span style="color:#dd0000;">String</span>&nbsp;next
+&nbsp;&nbsp;<span style="color:blue;">deriving</span>&nbsp;(<span style="color:#a31515;">Functor</span>)
+ 
+<span style="color:blue;">type</span>&nbsp;<span style="color:#dd0000;">CommandLineProgram</span>&nbsp;<span style="color:#666666;">=</span>&nbsp;<span style="color:#dd0000;">Free</span>&nbsp;<span style="color:#dd0000;">CommandLineInstruction</span>
+ 
+<span style="color:#600277;">readLine</span>&nbsp;::&nbsp;<span style="color:blue;">CommandLineProgram</span>&nbsp;String
+readLine&nbsp;<span style="color:#666666;">=</span>&nbsp;liftF&nbsp;(<span style="color:#dd0000;">ReadLine</span>&nbsp;id)
+ 
+<span style="color:#600277;">writeLine</span>&nbsp;::&nbsp;String&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">CommandLineProgram</span>&nbsp;()
+writeLine&nbsp;s&nbsp;<span style="color:#666666;">=</span>&nbsp;liftF&nbsp;(<span style="color:#dd0000;">WriteLine</span>&nbsp;s&nbsp;<span style="color:blue;">()</span>)</pre>
+	</p>
+	<p>
+		This is <em>all</em> the code required to define you AST and make it a monad in Haskell. Contrast that with <a href="">all the code you have to write in F#</a>!
+	</p>
+	<p>
+		The <code>CommandLineInstruction</code> type defines the instruction set, and makes use of a language extension called <code>DeriveFunctor</code>, which enables Haskell to automatically create a <code>Functor</code> instance from the type.
+	</p>
+	<p>
+		The type alias <code>type CommandLineProgram = Free CommandLineInstruction</code> creates a monad from <code>CommandLineInstruction</code>, since <code>Free</code> is a <code>Monad</code> when the underlying type is a <code>Functor</code>.
+	</p>
+	<p>
+		The <code>readLine</code> value and <code>writeLine</code> function are conveniences that lift the instructions from <code>CommandLineInstruction</code> into <code>CommandLineProgram</code> values. These were also one-liners in F#.
+	</p>
+	<p>
+		<strong>HTTP client API</strong>
+	</p>
+	<p>
+		You can write a small wizard to collect restaurant reservation data with the <code>CommandLineProgram</code> API, but the new requirement is to make HTTP calls so that the CLI program actually makes the reservation against the back-end system. You could extend <code>CommandLineProgram</code> with more instructions, but that would be to mix concerns. It'd be more appropriate to define a new instruction set for making the required HTTP requests.
+	</p>
+	<p>
+		This API will send and receive more complex values than simple <code>String</code> values, so you can start by defining their types:
+	</p>
+	<p>
+		<pre><span style="color:blue;">data</span>&nbsp;<span style="color:#dd0000;">Slot</span>&nbsp;<span style="color:#666666;">=</span>&nbsp;<span style="color:#dd0000;">Slot</span>&nbsp;{&nbsp;slotDate&nbsp;<span style="color:#666666;">::</span>&nbsp;<span style="color:#dd0000;">ZonedTime</span>,&nbsp;seatsLeft&nbsp;<span style="color:#666666;">::</span>&nbsp;<span style="color:#dd0000;">Int</span>&nbsp;}&nbsp;<span style="color:blue;">deriving</span>&nbsp;(<span style="color:#a31515;">Show</span>)
+ 
+<span style="color:blue;">data</span>&nbsp;<span style="color:#dd0000;">Reservation</span>&nbsp;<span style="color:#666666;">=</span>
+&nbsp;&nbsp;<span style="color:#dd0000;">Reservation</span>&nbsp;{&nbsp;reservationDate&nbsp;<span style="color:#666666;">::</span>&nbsp;<span style="color:#dd0000;">ZonedTime</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;,&nbsp;reservationName&nbsp;<span style="color:#666666;">::</span>&nbsp;<span style="color:#dd0000;">String</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;,&nbsp;reservationEmail&nbsp;<span style="color:#666666;">::</span>&nbsp;<span style="color:#dd0000;">String</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;,&nbsp;reservationQuantity&nbsp;<span style="color:#666666;">::</span>&nbsp;<span style="color:#dd0000;">Int</span>&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">deriving</span>&nbsp;(<span style="color:#a31515;">Show</span>)</pre>
+	</p>
+	<p>
+		The <code>Slot</code> type contains information about how many available seats are left on a particular date. The <code>Reservation</code> type contains the information required in order to make a reservation. It's similar to the <code>Reservation</code> F# record type you saw in the previous article.
+	</p>
+	<p>
+		The on-line restaurant reservation HTTP API may afford more functionality than you need, but there's no reason to model more instructions than required:
+	</p>
+	<p>
+		<pre><span style="color:blue;">data</span>&nbsp;<span style="color:#dd0000;">ReservationsApiInstruction</span>&nbsp;next&nbsp;<span style="color:#666666;">=</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#dd0000;">GetSlots</span>&nbsp;<span style="color:#dd0000;">ZonedTime</span>&nbsp;([<span style="color:#dd0000;">Slot</span>]&nbsp;<span style="color:#666666;">-&gt;</span>&nbsp;next)
+&nbsp;&nbsp;<span style="color:#666666;">|</span>&nbsp;<span style="color:#dd0000;">PostReservation</span>&nbsp;<span style="color:#dd0000;">Reservation</span>&nbsp;next
+&nbsp;&nbsp;<span style="color:blue;">deriving</span>&nbsp;(<span style="color:#a31515;">Functor</span>)</pre>
+	</p>
+	<p>
+		This instruction set models two interactions. The <code>GetSlots</code> case models an instruction to request, from the HTTP API, the slots for a particular date. The <code>PostReservation</code> case models an instruction to make a POST HTTP request with a <code>Reservation</code>, thereby making a reservation.
+	</p>
+	<p>
+		Like the above <code>CommandLineInstruction</code>, this type is (automatically) a <code>Functor</code>, which means that we can create a <code>Monad</code> from it:
+	</p>
+	<p>
+		<pre><span style="color:blue;">type</span>&nbsp;<span style="color:#dd0000;">ReservationsApiProgram</span>&nbsp;<span style="color:#666666;">=</span>&nbsp;<span style="color:#dd0000;">Free</span>&nbsp;<span style="color:#dd0000;">ReservationsApiInstruction</span>
+</pre>
+	</p>
+	<p>
+		Once again, the monad is nothing but a type alias.
+	</p>
+	<p>
+		Finally, you're going to need the usual lifts:
+	</p>
+	<p>
+		<pre><span style="color:#600277;">getSlots</span>&nbsp;::&nbsp;<span style="color:blue;">ZonedTime</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">ReservationsApiProgram</span>&nbsp;[<span style="color:blue;">Slot</span>]
+getSlots&nbsp;d&nbsp;<span style="color:#666666;">=</span>&nbsp;liftF&nbsp;(<span style="color:#dd0000;">GetSlots</span>&nbsp;d&nbsp;id)
+ 
+<span style="color:#600277;">postReservation</span>&nbsp;::&nbsp;<span style="color:blue;">Reservation</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">ReservationsApiProgram</span>&nbsp;()
+postReservation&nbsp;r&nbsp;<span style="color:#666666;">=</span>&nbsp;liftF&nbsp;(<span style="color:#dd0000;">PostReservation</span>&nbsp;r&nbsp;<span style="color:blue;">()</span>)</pre>
+	</p>
+	<p>
+		This is all you need to write a wizard that interleaves <code>CommandLineProgram</code> and <code>ReservationsApiProgram</code> instructions in order to create a more complex AST.
+	</p>
+	<p>
+		<strong>Wizard</strong>
+	</p>
+	<p>
+		The wizard should do the following:
+		<ul>
+			<li>Collect the number of diners, and the date for the reservation.</li>
+			<li>Query the HTTP API about availability for the requested date. If insufficient seats are available, it should exit.</li>
+			<li>If sufficient capacity remains, collect name and email.</li>
+			<li>Make the reservation against the HTTP API.</li>
+		</ul>
+		Like in the previous F# examples, you can factor some of the work that the wizard performs into helper functions. The first is one that prompts the user for a value and tries to parse it:
+	</p>
+	<p>
+		<pre><span style="color:#600277;">readParse</span>&nbsp;::&nbsp;<span style="color:blue;">Read</span>&nbsp;a&nbsp;<span style="color:blue;">=&gt;</span>&nbsp;String&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;String&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">CommandLineProgram</span>&nbsp;a
+readParse&nbsp;prompt&nbsp;errorMessage&nbsp;<span style="color:#666666;">=</span>&nbsp;<span style="color:#af00db;">do</span>
+&nbsp;&nbsp;writeLine&nbsp;prompt
+&nbsp;&nbsp;l&nbsp;<span style="color:#666666;">&lt;-</span>&nbsp;readLine
+&nbsp;&nbsp;<span style="color:blue;">case</span>&nbsp;readMaybe&nbsp;l&nbsp;<span style="color:blue;">of</span>
+&nbsp;&nbsp;&nbsp;&nbsp;Just&nbsp;dt&nbsp;<span style="color:#666666;">-&gt;</span>&nbsp;return&nbsp;dt
+&nbsp;&nbsp;&nbsp;&nbsp;Nothing&nbsp;<span style="color:#666666;">-&gt;</span>&nbsp;<span style="color:#af00db;">do</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;writeLine&nbsp;errorMessage
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;readParse&nbsp;prompt&nbsp;errorMessage</pre>
+	</p>
+	<p>
+		If first uses <code>writeLine</code> to write <code>prompt</code> to the command line - or rather, it creates an <em>instruction</em> to do so. The instruction is a <a href="https://en.wikipedia.org/wiki/Pure_function">pure</a> value. No side-effects are involved until an interpreter evaluates the AST.
+	</p>
+	<p>
+		The next line uses <code>readLine</code> to read the user's input. While <code>readLine</code> is a <code>CommandLineProgram String</code> value, due to Haskell's <code>do</code> notation, <code>l</code> is a <code>String</code> value. You can now attempt to parse that <code>String</code> value with <code>readMaybe</code>, which returns a <code>Maybe a</code> value that you can handle with pattern matching. If <code>readMaybe</code> returns a <code>Just</code> value, then return the contained value; otherwise, write <code>errorMessage</code> and recursively call <code>readParse</code> again.
+	</p>
+	<p>
+		Like in the previous F# example, the only way to continue is to write something that <code>readMaybe</code> can parse. There's no other way to exit; there probably should be an option to quit, but it's not important for this demo purpose.
+	</p>
+	<p>
+		You may also have noticed that, contrary to the previous F# example, I here succumbed to the temptation to break the <a href="https://en.wikipedia.org/wiki/Rule_of_three_(computer_programming)">rule of three</a>. It's easier to define a reusable function in Haskell, because you can leave it generic, with the proviso that the generic value must be an instance of the <code>Read</code> typeclass.
+	</p>
+	<p>
+		The <code>readParse</code> function returns a <code>CommandLineProgram a</code> value. It doesn't combine <code>CommandLineProgram</code> with <code>ReservationsApiProgram</code>. That's going to happen in another function, but before we look at that, you're also going to need another little helper:
+	</p>
+	<p>
+		<pre><span style="color:#600277;">readAnything</span>&nbsp;::&nbsp;String&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">CommandLineProgram</span>&nbsp;String
+readAnything&nbsp;prompt&nbsp;<span style="color:#666666;">=</span>&nbsp;<span style="color:#af00db;">do</span>
+&nbsp;&nbsp;writeLine&nbsp;prompt
+&nbsp;&nbsp;readLine</pre>
+	</p>
+	<p>
+		The <code>readAnything</code> function simply writes a prompt, reads the user's input, and unconditionally returns it. You could also have written it as a one-liner like <code>readAnything prompt = writeLine prompt &gt;&gt; readLine</code>, but I find the above code more readable, even though it's slightly more verbose.
+	</p>
+	<p>
+		That's all you need to write the wizard:
+	</p>
+	<p>
+		<pre><span style="color:#600277;">tryReserve</span>&nbsp;::&nbsp;<span style="color:blue;">FreeT</span>&nbsp;<span style="color:blue;">ReservationsApiProgram</span>&nbsp;<span style="color:blue;">CommandLineProgram</span>&nbsp;()
+tryReserve&nbsp;<span style="color:#666666;">=</span>&nbsp;<span style="color:#af00db;">do</span>
+&nbsp;&nbsp;q&nbsp;<span style="color:#666666;">&lt;-</span>&nbsp;lift&nbsp;<span style="color:#666666;">$</span>&nbsp;readParse&nbsp;<span style="color:#a31515;">&quot;Please&nbsp;enter&nbsp;number&nbsp;of&nbsp;diners:&quot;</span>&nbsp;<span style="color:#a31515;">&quot;Not&nbsp;an&nbsp;Integer.&quot;</span>
+&nbsp;&nbsp;d&nbsp;<span style="color:#666666;">&lt;-</span>&nbsp;lift&nbsp;<span style="color:#666666;">$</span>&nbsp;readParse&nbsp;<span style="color:#a31515;">&quot;Please&nbsp;enter&nbsp;your&nbsp;desired&nbsp;date:&quot;</span>&nbsp;<span style="color:#a31515;">&quot;Not&nbsp;a&nbsp;date.&quot;</span>
+&nbsp;&nbsp;availableSeats&nbsp;<span style="color:#666666;">&lt;-</span>&nbsp;liftF&nbsp;<span style="color:#666666;">$</span>&nbsp;(sum&nbsp;<span style="color:#666666;">.</span>&nbsp;fmap&nbsp;seatsLeft)&nbsp;<span style="color:#666666;">&lt;$&gt;</span>&nbsp;getSlots&nbsp;d
+&nbsp;&nbsp;<span style="color:#af00db;">if</span>&nbsp;availableSeats&nbsp;<span style="color:#666666;">&lt;</span>&nbsp;q
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#af00db;">then</span>&nbsp;lift&nbsp;<span style="color:#666666;">$</span>&nbsp;writeLine&nbsp;<span style="color:#666666;">$</span>&nbsp;<span style="color:#a31515;">&quot;Only&nbsp;&quot;</span>&nbsp;<span style="color:#666666;">++</span>&nbsp;show&nbsp;availableSeats&nbsp;<span style="color:#666666;">++</span>&nbsp;<span style="color:#a31515;">&quot;&nbsp;remaining&nbsp;seats.&quot;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#af00db;">else</span>&nbsp;<span style="color:#af00db;">do</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;n&nbsp;<span style="color:#666666;">&lt;-</span>&nbsp;lift&nbsp;<span style="color:#666666;">$</span>&nbsp;readAnything&nbsp;<span style="color:#a31515;">&quot;Please&nbsp;enter&nbsp;your&nbsp;name:&quot;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;e&nbsp;<span style="color:#666666;">&lt;-</span>&nbsp;lift&nbsp;<span style="color:#666666;">$</span>&nbsp;readAnything&nbsp;<span style="color:#a31515;">&quot;Please&nbsp;enter&nbsp;your&nbsp;email&nbsp;address:&quot;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;liftF&nbsp;<span style="color:#666666;">$</span>&nbsp;postReservation&nbsp;<span style="color:#dd0000;">Reservation</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{&nbsp;reservationDate&nbsp;<span style="color:#666666;">=</span>&nbsp;d
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;,&nbsp;reservationName&nbsp;<span style="color:#666666;">=</span>&nbsp;n
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;,&nbsp;reservationEmail&nbsp;<span style="color:#666666;">=</span>&nbsp;e
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;,&nbsp;reservationQuantity&nbsp;<span style="color:#666666;">=</span>&nbsp;q&nbsp;}</pre>
+	</p>
+	<p>
+		The <code>tryReserve</code> program first prompt the user for a number of diners and a date. Once it has the date <code>d</code>, it calls <code>getSlots</code> and calculates the sum of the remaining seats. <code>availableSeats</code> is an <code>Int</code> value like <code>q</code>, so you can compare those two values with each other. If the number of available seats is less than the desired quantity, the program writes that and exits.
+	</p>
+	<p>
+		This interaction demonstrates how to interleave <code>CommandLineProgram</code> and <code>ReservationsApiProgram</code> instructions. It would be a bad user experience if the program would ask the user to input all information, and only then discover that there's insufficient capacity.
+	</p>
+	<p>
+		If, on the other hand, there's enough remaining capacity, the program continues collecting information from the user, by prompting for the user's name and email address. Once all data is collected, it creates a new <code>Reservation</code> value and invokes <code>postReservation</code>.
+	</p>
+	<p>
+		Consider the type of <code>tryReserve</code>. It's a combination of <code>CommandLineProgram</code> and <code>ReservationsApiProgram</code>, contained within a type called <code>FreeT</code>. This type is also a <code>Monad</code>, which is the reason the <code>do</code> notation still works. This also begins to explain the various <code>lift</code> and <code>liftF</code> calls sprinkled over the code.
+	</p>
+	<p>
+		Whenever you use a <code>&lt;-</code> arrow to 'pull the value out of the monad' within a <code>do</code> block, the right-hand side of the arrow must have the same type as the return type of the overall function (or value). In this case, the return type is <code>FreeT ReservationsApiProgram CommandLineProgram ()</code>, whereas <code>readParse</code> returns a <code>CommandLineProgram a</code> value. As an example, <code>lift</code> turns <code>CommandLineProgram Int</code> into <code>FreeT ReservationsApiProgram CommandLineProgram Int</code>.
+	</p>
+	<p>
+		The way the type of <code>tryReserve</code> is declared, when you have a <code>CommandLineProgram a</code> value, you use <code>lift</code>, but when you have a <code>ReservationsApiProgram a</code>, you use <code>liftF</code>. This depends on the order of the monads contained within <code>FreeT</code>. If you swap <code>CommandLineProgram</code> and <code>ReservationsApiProgram</code>, you'll also need to use <code>lift</code> instead of <code>liftF</code>, and vice versa.
+	</p>
+	<p>
+		<strong>Interpreters</strong>
+	</p>
+	<p>
+		<code>tryReserve</code> is a pure value. It's an Abstract Syntax Tree that combines two separate instruction sets to describe a complex interaction between user, command line, and an HTTP client. The program doesn't do anything until interpreted.
+	</p>
+	<p>
+		You can write an impure interpreter for each of the APIs, and a third one that uses the other two to interpret <code>tryReserve</code>.
+	</p>
+	<p>
+		Interpreting <code>CommandLineProgram</code> values is similar to the previous F# example:
+	</p>
+	<p>
+		<pre><span style="color:#600277;">interpretCommandLine</span>&nbsp;::&nbsp;<span style="color:blue;">CommandLineProgram</span>&nbsp;a&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;IO&nbsp;a
+interpretCommandLine&nbsp;program&nbsp;<span style="color:#666666;">=</span>
+&nbsp;&nbsp;<span style="color:blue;">case</span>&nbsp;runFree&nbsp;program&nbsp;<span style="color:blue;">of</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#dd0000;">Pure</span>&nbsp;r&nbsp;<span style="color:#666666;">-&gt;</span>&nbsp;return&nbsp;r
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#dd0000;">Free</span>&nbsp;(<span style="color:#dd0000;">ReadLine</span>&nbsp;next)&nbsp;<span style="color:#666666;">-&gt;</span>&nbsp;<span style="color:#af00db;">do</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;line&nbsp;<span style="color:#666666;">&lt;-</span>&nbsp;getLine
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;interpretCommandLine&nbsp;<span style="color:#666666;">$</span>&nbsp;next&nbsp;line
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#dd0000;">Free</span>&nbsp;(<span style="color:#dd0000;">WriteLine</span>&nbsp;line&nbsp;next)&nbsp;<span style="color:#666666;">-&gt;</span>&nbsp;<span style="color:#af00db;">do</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;putStrLn&nbsp;line
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;interpretCommandLine&nbsp;next</pre>
+	</p>
+	<p>
+		This interpreter is a recursive function that pattern-matches all the cases in any <code>CommandLineProgram a</code>. When it encounters a <code>Pure</code> case, it simply returns the contained value.
+	</p>
+	<p>
+		When it encounters a <code>ReadLine</code> value, it calls <code>getLine</code>, which returns an <code>IO String</code> value read from the command line, but thanks to the <code>do</code> block, <code>line</code> is a <code>String</code> value. The interpreter then calls <code>next</code> with <code>line</code>, and passes the return value of that recursively to itself.
+	</p>
+	<p>
+		A similar treatment is given to the <code>WriteLine</code> case. <code>putStrLn line</code> writes <code>line</code> to the command line, where after <code>next</code> is used as an input argument to <code>interpretCommandLine</code>.
+	</p>
+	<p>
+		Thanks to Haskell's type system, you can easily tell that <code>interpretCommandLine</code> is impure, because for every <code>CommandLineProgram a</code> it returns <code>IO a</code>. That was the intent all along.
+	</p>
+	<p>
+		Likewise, you can write an interpreter for <code>ReservationsApiProgram</code> values:
+	</p>
+	<p>
+		<pre><span style="color:#600277;">interpretReservationsApi</span>&nbsp;::&nbsp;<span style="color:blue;">ReservationsApiProgram</span>&nbsp;a&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;IO&nbsp;a
+interpretReservationsApi&nbsp;program&nbsp;<span style="color:#666666;">=</span>
+&nbsp;&nbsp;<span style="color:blue;">case</span>&nbsp;runFree&nbsp;program&nbsp;<span style="color:blue;">of</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#dd0000;">Pure</span>&nbsp;x&nbsp;<span style="color:#666666;">-&gt;</span>&nbsp;return&nbsp;x
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#dd0000;">Free</span>&nbsp;(<span style="color:#dd0000;">GetSlots</span>&nbsp;zt&nbsp;next)&nbsp;<span style="color:#666666;">-&gt;</span>&nbsp;<span style="color:#af00db;">do</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;slots&nbsp;<span style="color:#666666;">&lt;-</span>&nbsp;<span style="color:#dd0000;">HttpClient</span><span style="color:#666666;">.</span>getSlots&nbsp;zt
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;interpretReservationsApi&nbsp;<span style="color:#666666;">$</span>&nbsp;next&nbsp;slots
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#dd0000;">Free</span>&nbsp;(<span style="color:#dd0000;">PostReservation</span>&nbsp;r&nbsp;next)&nbsp;<span style="color:#666666;">-&gt;</span>&nbsp;<span style="color:#af00db;">do</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#dd0000;">HttpClient</span><span style="color:#666666;">.</span>postReservation&nbsp;r
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;interpretReservationsApi&nbsp;next</pre>
+	</p>
+	<p>
+		The structure of <code>interpretReservationsApi</code> is similar to <code>interpretCommandLine</code>. It delegates its implementation to an <code>HttpClient</code> module that contains the impure interactions with the HTTP API. This module isn't shown in this article, but you can see it in <a href="">the Gist that accompanies this article</a>.
+	</p>
+	<p>
+		From these two interpreters, you can create a combined interpreter:
+	</p>
+	<p>
+		<pre><span style="color:#600277;">interpret</span>&nbsp;::&nbsp;<span style="color:blue;">FreeT</span>&nbsp;<span style="color:blue;">ReservationsApiProgram</span>&nbsp;<span style="color:blue;">CommandLineProgram</span>&nbsp;a&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;IO&nbsp;a
+interpret&nbsp;program&nbsp;<span style="color:#666666;">=</span>&nbsp;<span style="color:#af00db;">do</span>
+&nbsp;&nbsp;r&nbsp;<span style="color:#666666;">&lt;-</span>&nbsp;interpretCommandLine&nbsp;<span style="color:#666666;">$</span>&nbsp;runFreeT&nbsp;program
+&nbsp;&nbsp;<span style="color:blue;">case</span>&nbsp;r&nbsp;<span style="color:blue;">of</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#dd0000;">Pure</span>&nbsp;x&nbsp;<span style="color:#666666;">-&gt;</span>&nbsp;return&nbsp;x
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#dd0000;">Free</span>&nbsp;p&nbsp;<span style="color:#666666;">-&gt;</span>&nbsp;<span style="color:#af00db;">do</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;y&nbsp;<span style="color:#666666;">&lt;-</span>&nbsp;interpretReservationsApi&nbsp;p
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;interpret&nbsp;y</pre>
+	</p>
+	<p>
+		This function has the required type: it evaluates any <code>FreeT ReservationsApiProgram CommandLineProgram a</code> and returns an <code>IO a</code>. <code>runFreeT</code> returns the <code>CommandLineProgram</code> part of the combined program. Passing this value to <code>interpretCommandLine</code>, you get the underlying type - the <code>a</code> in <code>CommandLineProgram a</code>, if you will. In this case, however, the <code>a</code> is quite a complex type that I'm not going to write out here. Suffice it to say that, at the container level, it's a <code>FreeF</code> value, which can be either a <code>Pure</code> or a <code>Free</code> case that you can use for pattern matching.
+	</p>
+	<p>
+		In the <code>Pure</code> case, you're done, so you can simply return the underlying value.
+	</p>
+	<p>
+		In the <code>Free</code> case, the <code>p</code> contained inside is a <code>ReservationsApiProgram</code> value, which you can interpret with <code>interpretReservationsApi</code>. That returns an <code>IO a</code> value, and due to the <code>do</code> block, <code>y</code> is the <code>a</code>. In this case, however, <code>a</code> is <code>FreeT ReservationsApiProgram CommandLineProgram a</code>, but that means that the function can now recursively call itself with <code>y</code> in order to interpret the next instruction.
+	</p>
+	<p>
+		<strong>Execution</strong>
+	</p>
+	<p>
+		Armed with both an AST and an interpreter, executing the program is trivial:
+	</p>
+	<p>
+		<pre><span style="color:#600277;">main</span>&nbsp;::&nbsp;IO&nbsp;()
+main&nbsp;<span style="color:#666666;">=</span>&nbsp;interpret&nbsp;tryReserve</pre>
+	</p>
+	<p>
+		When you run the program, you could produce an interaction like this:
+	</p>
+	<p>
+		<pre>Please enter number of diners:
+4
+Please enter your desired date:
+2017-11-25 18-30-00Z
+Not a date.
+Please enter your desired date:
+2017-11-25 18:30:00Z
+Please enter your name:
+Mark Seemann
+Please enter your email address:
+mark@example.org
+Status {statusCode = 200, statusMessage = "OK"}</pre>
+	</p>
+	<p>
+		You'll notice that I initially made a mistake on the date format, which caused <code>readParse</code> to prompt me again.
+	</p>
+	<p>
+		If you want to run this code sample yourself, you're going to need an appropriate HTTP API with which you can interact. I hosted the API on my local machine, and afterwards verified that the record was, indeed, written in the reservations database.
+	</p>
+	<p>
+		<strong>Summary</strong>
+	</p>
+	<p>
+		This proof of concept proves that it's possible to combine separate free monads. Now that we know that it works, and the overall outline of it, it should be possible to translate this to F#. You should, however, expect more boilerplate code.
+	</p>
+	<p>
+		<strong>Next:</strong> Combining free monads in F#.
+	</p>
+</div>
