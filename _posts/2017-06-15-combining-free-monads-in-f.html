@@ -1,0 +1,416 @@
+---
+layout: post
+title: "Combining free monads in F#"
+date: 2017-06-15 5:44 UTC
+tags: [Software Design, F#]
+---
+{% include JB/setup %}
+
+<div id="post">
+	<p>
+		<em>An example of how to compose free monads in F#.</em>
+	</p>
+	<p>
+		This article is an instalment in a <a href="">series of articles</a> about modelling long-running interactions with <a href="https://en.wikipedia.org/wiki/Pure_function">pure</a>, functional code. In the <a href="">previous article</a>, you saw how to combine a pure command-line API with an HTTP-client API in <a href="https://www.haskell.org">Haskell</a>. In this article, you'll see how to translate the Haskell proof of concept to F#.
+	</p>
+	<p>
+		<strong>HTTP API client module</strong>
+	</p>
+	<p>
+		You've already seen how to model command-line interactions as pure code in <a href="">a previous article</a>. You can define interactions with the on-line restaurant reservation HTTP API in the same way. First, define some types required for input and output to the API:
+	</p>
+	<p>
+		<pre><span style="color:blue;">type</span>&nbsp;<span style="color:teal;">Slot</span>&nbsp;=&nbsp;{&nbsp;Date&nbsp;:&nbsp;<span style="color:teal;">DateTimeOffset</span>;&nbsp;SeatsLeft&nbsp;:&nbsp;<span style="color:teal;">int</span>&nbsp;}
+ 
+<span style="color:blue;">type</span>&nbsp;<span style="color:teal;">Reservation</span>&nbsp;=&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;Date&nbsp;:&nbsp;<span style="color:teal;">DateTimeOffset</span>
+&nbsp;&nbsp;&nbsp;&nbsp;Name&nbsp;:&nbsp;<span style="color:teal;">string</span>
+&nbsp;&nbsp;&nbsp;&nbsp;Email&nbsp;:&nbsp;<span style="color:teal;">string</span>
+&nbsp;&nbsp;&nbsp;&nbsp;Quantity&nbsp;:&nbsp;<span style="color:teal;">int</span>&nbsp;}</pre>
+	</p>
+	<p>
+		The <code>Slot</code> type contains information about how many available seats are left on a particular date. The <code>Reservation</code> type contains the information required in order to make a reservation. It's the same <code>Reservation</code> F# record type you saw in <a href="">a previous article</a>, but now it's moved here.
+	</p>
+	<p>
+		The on-line restaurant reservation HTTP API may afford more functionality than you need, but there's no reason to model more instructions than required:
+	</p>
+	<p>
+		<pre><span style="color:blue;">type</span>&nbsp;<span style="color:teal;">ReservationsApiInstruction</span>&lt;&#39;a&gt;&nbsp;=
+|&nbsp;<span style="color:navy;">GetSlots</span>&nbsp;<span style="color:blue;">of</span>&nbsp;(<span style="color:teal;">DateTimeOffset</span>&nbsp;*&nbsp;(<span style="color:teal;">Slot</span>&nbsp;<span style="color:teal;">list</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;&#39;a))
+|&nbsp;<span style="color:navy;">PostReservation</span>&nbsp;<span style="color:blue;">of</span>&nbsp;<span style="color:teal;">Reservation</span>&nbsp;*&nbsp;&#39;a</pre>
+	</p>
+	<p>
+		This instruction set models two interactions. The <code>GetSlots</code> case models an instruction to request, from the HTTP API, the slots for a particular date. The <code>PostReservation</code> case models an instruction to make a POST HTTP request with a <code>Reservation</code>, thereby making a reservation.
+	</p>
+	<p>
+		While Haskell can automatically make this type a <code>Functor</code>, in F# you have to write the code yourself:
+	</p>
+	<p>
+		<pre><span style="color:green;">//&nbsp;(&#39;a&nbsp;-&gt;&nbsp;&#39;b)&nbsp;-&gt;&nbsp;ReservationsApiInstruction&lt;&#39;a&gt;</span>
+<span style="color:green;">//&nbsp;-&gt;&nbsp;ReservationsApiInstruction&lt;&#39;b&gt;</span>
+<span style="color:blue;">let</span>&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:navy;">mapI</span>&nbsp;<span style="color:navy;">f</span>&nbsp;=&nbsp;<span style="color:blue;">function</span>
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:navy;">GetSlots</span>&nbsp;(x,&nbsp;<span style="color:navy;">next</span>)&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:navy;">GetSlots</span>&nbsp;(x,&nbsp;<span style="color:navy;">next</span>&nbsp;&gt;&gt;&nbsp;<span style="color:navy;">f</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:navy;">PostReservation</span>&nbsp;(x,&nbsp;next)&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:navy;">PostReservation</span>&nbsp;(x,&nbsp;next&nbsp;|&gt;&nbsp;<span style="color:navy;">f</span>)</pre>
+	</p>
+	<p>
+		This turns <code>ReservationsApiInstruction&lt;'a&gt;</code> into a functor, which is, however, not the ultimate goal. The final objective is to enable syntactic sugar, so that you can write pure <code>ReservationsApiInstruction&lt;'a&gt;</code> Abstract Syntax Trees (ASTs) in standard F# syntax. In order to fulfil that ambition, you need a <a href="https://docs.microsoft.com/en-us/dotnet/fsharp/language-reference/computation-expressions">computation expression builder</a>, and to create one of those, you need a monad.
+	</p>
+	<p>
+		You can turn <code>ReservationsApiInstruction&lt;'a&gt;</code> into a monad using the 'free monad recipe' that you've <a href="">already seen</a>. Creating a free monad, however, involves adding another type that will become both monad and functor, so I deliberately make <code>mapI</code> private in order to prevent confusion. This is also the reason I didn't name the function <code>map</code>: you'll need that name for a different type. The <em>I</em> in <code>mapI</code> stands for <em>instruction</em>.
+	</p>
+	<p>
+		The <code>mapI</code> function pattern-matches on the (implicit) <code>ReservationsApiInstruction</code> argument. In the <code>GetSlots</code> case, it returns a new <code>GetSlots</code> value, but composes the <code>next</code> continuation with <code>f</code>. In the <code>PostReservation</code> case, it returns a new <code>PostReservation</code> value, but pipes <code>next</code> to <code>f</code>. The reason for the difference is that <code>PostReservation</code> is degenerate: <code>next</code> isn't a function, but a value.
+	</p>
+	<p>
+		Now that <code>ReservationsApiInstruction&lt;'a&gt;</code> is a functor, you can create a free monad from it. The first step is to introduce a new type for the monad:
+	</p>
+	<p>
+		<pre><span style="color:blue;">type</span>&nbsp;<span style="color:teal;">ReservationsApiProgram</span>&lt;&#39;a&gt;&nbsp;=
+|&nbsp;<span style="color:navy;">Free</span>&nbsp;<span style="color:blue;">of</span>&nbsp;<span style="color:teal;">ReservationsApiInstruction</span>&lt;<span style="color:teal;">ReservationsApiProgram</span>&lt;&#39;a&gt;&gt;
+|&nbsp;<span style="color:navy;">Pure</span>&nbsp;<span style="color:blue;">of</span>&nbsp;&#39;a</pre>
+	</p>
+	<p>
+		This is a recursive type that enables you to assemble ASTs that ultimately can return a value. The <code>Pure</code> case enables you to return a value, while the <code>Free</code> case lets you describe what should happen next.
+	</p>
+	<p>
+		Using <code>mapI</code>, you can make a monad out of <code>ReservationsApiProgram&lt;'a&gt;</code> by adding a <code>bind</code> function:
+	</p>
+	<p>
+		<pre><span style="color:green;">//&nbsp;(&#39;a&nbsp;-&gt;&nbsp;ReservationsApiProgram&lt;&#39;b&gt;)&nbsp;-&gt;&nbsp;ReservationsApiProgram&lt;&#39;a&gt;</span>
+<span style="color:green;">//&nbsp;-&gt;&nbsp;ReservationsApiProgram&lt;&#39;b&gt;</span>
+<span style="color:blue;">let</span>&nbsp;<span style="color:blue;">rec</span>&nbsp;bind&nbsp;f&nbsp;=&nbsp;<span style="color:blue;">function</span>
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;Free&nbsp;instruction&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;instruction&nbsp;|&gt;&nbsp;mapI&nbsp;(bind&nbsp;f)&nbsp;|&gt;&nbsp;Free
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;Pure&nbsp;x&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;f&nbsp;x</pre>
+	</p>
+	<p>
+		If you <a href="">refer back to the <code>bind</code> implementation for <code>CommandLineProgram&lt;'a&gt;</code></a>, you'll see that <em>it's the exact same code</em>. In Haskell, creating a free monad from a functor is automatic. In F#, it's boilerplate.
+	</p>
+	<p>
+		Likewise, you can make <code>ReservationsApiProgram&lt;'a&gt;</code> a functor:
+	</p>
+	<p>
+		<pre><span style="color:green;">//&nbsp;(&#39;a&nbsp;-&gt;&nbsp;&#39;b)&nbsp;-&gt;&nbsp;ReservationsApiProgram&lt;&#39;a&gt;&nbsp;-&gt;&nbsp;ReservationsApiProgram&lt;&#39;b&gt;</span>
+<span style="color:blue;">let</span>&nbsp;map&nbsp;f&nbsp;=&nbsp;bind&nbsp;(f&nbsp;&gt;&gt;&nbsp;Pure)</pre>
+	</p>
+	<p>
+		Again, this is the same code as in the <code>CommandLine</code> module. You can copy and paste it. It is, however, not the same function, because the types are different.
+	</p>
+	<p>
+		Finally, to round off the reservations HTTP client API, you can supply functions that lift instructions to programs:
+	</p>
+	<p>
+		<pre><span style="color:green;">//&nbsp;DateTimeOffset&nbsp;-&gt;&nbsp;ReservationsApiProgram&lt;Slot&nbsp;list&gt;</span>
+<span style="color:blue;">let</span>&nbsp;getSlots&nbsp;date&nbsp;=&nbsp;Free&nbsp;(GetSlots&nbsp;(date,&nbsp;Pure))
+ 
+<span style="color:green;">//&nbsp;Reservation&nbsp;-&gt;&nbsp;ReservationsApiProgram&lt;unit&gt;</span>
+<span style="color:blue;">let</span>&nbsp;postReservation&nbsp;r&nbsp;=&nbsp;Free&nbsp;(PostReservation&nbsp;(r,&nbsp;Pure&nbsp;()))</pre>
+	</p>
+	<p>
+		That's everything you need to create a small computation expression builder:
+	</p>
+	<p>
+		<pre><span style="color:blue;">type</span>&nbsp;<span style="color:teal;">ReservationsApiBuilder</span>&nbsp;()&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">member</span>&nbsp;<span style="color:#9b9b9b;">this</span>.<span style="color:navy;">Bind</span>&nbsp;(x,&nbsp;<span style="color:navy;">f</span>)&nbsp;=&nbsp;<span style="color:teal;">ReservationsApi</span>.<span style="color:navy;">bind</span>&nbsp;<span style="color:navy;">f</span>&nbsp;x
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">member</span>&nbsp;<span style="color:#9b9b9b;">this</span>.<span style="color:navy;">Return</span>&nbsp;x&nbsp;=&nbsp;<span style="color:navy;">Pure</span>&nbsp;x
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">member</span>&nbsp;<span style="color:#9b9b9b;">this</span>.<span style="color:navy;">ReturnFrom</span>&nbsp;x&nbsp;=&nbsp;x
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">member</span>&nbsp;<span style="color:#9b9b9b;">this</span>.<span style="color:navy;">Zero</span>&nbsp;()&nbsp;=&nbsp;<span style="color:navy;">Pure</span>&nbsp;()</pre>
+	</p>
+	<p>
+		Create an instance of the <code>ReservationsApiBuilder</code> class in order to use <code>reservationsApi</code> computation expressions:
+	</p>
+	<p>
+		<pre><span style="color:blue;">let</span>&nbsp;reservationsApi&nbsp;=&nbsp;<span style="color:teal;">ReservationsApiBuilder</span>&nbsp;()
+</pre>
+	</p>
+	<p>
+		This, in total, defines a pure API for interacting with the on-line restaurant reservation system, including all the syntactic sugar you'll need to stay sane. As usual, some boilerplate code is required, but I'm not too worried about its maintenance overhead, as it's unlikely to change much, once you've added it. If you've followed the recipe, the API obeys the category, functor, and monad laws, so it's not something you've invented; it's an instance of a universal abstraction.
+	</p>
+	<p>
+		<strong>Monad stack</strong>
+	</p>
+	<p>
+		The addition of the above <code>ReservationsApi</code> module is only a step towards the overall goal, which is to write a command-line wizard you can use to make reservations against the on-line API. In order to do so, you must combine the two monads <code>CommandLineProgram&lt;'a&gt;</code> and <code>ReservationsApiProgram&lt;'a&gt;</code>. In Haskell, you get that combination for free via the built-in generic <code>FreeT</code> type, which enables you to stack monads. In F#, you have to explicitly declare the type:
+	</p>
+	<p>
+		<pre><span style="color:blue;">type</span>&nbsp;<span style="color:teal;">CommandLineReservationsApiT</span>&lt;&#39;a&gt;&nbsp;=
+|&nbsp;<span style="color:navy;">Run</span>&nbsp;<span style="color:blue;">of</span>&nbsp;<span style="color:teal;">CommandLineProgram</span>&lt;<span style="color:teal;">ReservationsApiProgram</span>&lt;&#39;a&gt;&gt;</pre>
+	</p>
+	<p>
+		This is a single-case discriminated union that stacks <code>ReservationsApiProgram</code> and <code>CommandLineProgram</code>. In this incarnation, it defines a single case called <code>Run</code>. The reason for this is that it enables you to follow the 'free monad recipe' without having to do much thinking. Later, you'll see that it's possible to simplify the type.
+	</p>
+	<p>
+		The naming is inspired by Haskell. This type is a piece of the puzzle corresponding to Haskell's <code>FreeT</code> type. The <em>T</em> in <code>FreeT</code> stands for <em>transformer</em>, because <code>FreeT</code> is actually something called a <em>monad transformer</em>. That's not terribly important in an F# context, but that's the reason I also tagged on the <em>T</em> in <code>CommandLineReservationsApiT&lt;'a&gt;</code>.
+	</p>
+	<p>
+		<code>FreeT</code> is actually only a 'wrapper' around another monad. In order to extract the contained monad, you can use a function called <code>runFreeT</code>. That's the reason I called the F# case <code>Run</code>.
+	</p>
+	<p>
+		You can easily make your stack of monads a functor:
+	</p>
+	<p>
+		<pre><span style="color:green;">//&nbsp;(&#39;a&nbsp;-&gt;&nbsp;&#39;b)&nbsp;-&gt;&nbsp;CommandLineProgram&lt;ReservationsApiProgram&lt;&#39;a&gt;&gt;</span>
+<span style="color:green;">//&nbsp;-&gt;&nbsp;CommandLineProgram&lt;ReservationsApiProgram&lt;&#39;b&gt;&gt;</span>
+<span style="color:blue;">let</span>&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:navy;">mapStack</span>&nbsp;<span style="color:navy;">f</span>&nbsp;x&nbsp;=&nbsp;<span style="color:blue;">commandLine</span>&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;x&#39;&nbsp;=&nbsp;x
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:teal;">ReservationsApi</span>.<span style="color:navy;">map</span>&nbsp;<span style="color:navy;">f</span>&nbsp;x&#39;&nbsp;}</pre>
+	</p>
+	<p>
+		The <code>mapStack</code> function uses the <code>commandLine</code> computation expression to access the <code>ReservationsApiProgram</code> contained within the <code>CommandLineProgram</code>. Thanks to the <code>let!</code> binding, <code>x'</code> is a <code>ReservationsApiProgram&lt;'a&gt;</code> value. You can use <code>ReservationsApi.map</code> to map <code>x'</code> with <code>f</code>.
+	</p>
+	<p>
+		It's now trivial to make <code>CommandLineReservationsApiT&lt;'a&gt;</code> a functor as well:
+	</p>
+	<p>
+		<pre><span style="color:green;">//&nbsp;(&#39;a&nbsp;-&gt;&nbsp;&#39;b)&nbsp;-&gt;&nbsp;CommandLineReservationsApiT&lt;&#39;a&gt;</span>
+<span style="color:green;">//&nbsp;-&gt;&nbsp;CommandLineReservationsApiT&lt;&#39;b&gt;</span>
+<span style="color:blue;">let</span>&nbsp;<span style="color:blue;">private</span>&nbsp;mapT&nbsp;f&nbsp;(Run&nbsp;p)&nbsp;=&nbsp;mapStack&nbsp;f&nbsp;p&nbsp;|&gt;&nbsp;Run</pre>
+	</p>
+	<p>
+		The <code>mapT</code> function simply pattern-matches the monad stack out of the <code>Run</code> case, calls <code>mapStack</code>, and pipes the return value into another <code>Run</code> case.
+	</p>
+	<p>
+		By now, it's should be fairly clear that we're following the same recipe as before. You have a functor; make a monad out of it. First, define a type for the monad:
+	</p>
+	<p>
+		<pre><span style="color:blue;">type</span>&nbsp;<span style="color:teal;">CommandLineReservationsApiProgram</span>&lt;&#39;a&gt;&nbsp;=
+|&nbsp;<span style="color:navy;">Free</span>&nbsp;<span style="color:blue;">of</span>&nbsp;<span style="color:teal;">CommandLineReservationsApiT</span>&lt;<span style="color:teal;">CommandLineReservationsApiProgram</span>&lt;&#39;a&gt;&gt;
+|&nbsp;<span style="color:navy;">Pure</span>&nbsp;<span style="color:blue;">of</span>&nbsp;&#39;a</pre>
+	</p>
+	<p>
+		Then add a <code>bind</code> function:
+	</p>
+	<p>
+		<pre><span style="color:green;">//&nbsp;(&#39;a&nbsp;-&gt;&nbsp;CommandLineReservationsApiProgram&lt;&#39;b&gt;)</span>
+<span style="color:green;">//&nbsp;-&gt;&nbsp;CommandLineReservationsApiProgram&lt;&#39;a&gt;</span>
+<span style="color:green;">//&nbsp;-&gt;&nbsp;CommandLineReservationsApiProgram&lt;&#39;b&gt;</span>
+<span style="color:blue;">let</span>&nbsp;<span style="color:blue;">rec</span>&nbsp;bind&nbsp;f&nbsp;=&nbsp;<span style="color:blue;">function</span>
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;Free&nbsp;instruction&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;instruction&nbsp;|&gt;&nbsp;mapT&nbsp;(bind&nbsp;f)&nbsp;|&gt;&nbsp;Free
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;Pure&nbsp;x&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;f&nbsp;x</pre>
+	</p>
+	<p>
+		This is almost the same code as the above <code>bind</code> function for <code>ReservationsApi</code>. The only difference is that the underlying map function is named <code>mapT</code> instead of <code>mapI</code>. The types involved, however, are different.
+	</p>
+	<p>
+		You can also add a <code>map</code> function:
+	</p>
+	<p>
+		<pre><span style="color:green;">//&nbsp;(&#39;a&nbsp;-&gt;&nbsp;&#39;b)&nbsp;-&gt;&nbsp;(CommandLineReservationsApiProgram&lt;&#39;a&gt;</span>
+<span style="color:green;">//&nbsp;-&gt;&nbsp;CommandLineReservationsApiProgram&lt;&#39;b&gt;)</span>
+<span style="color:blue;">let</span>&nbsp;map&nbsp;f&nbsp;=&nbsp;bind&nbsp;(f&nbsp;&gt;&gt;&nbsp;Pure)</pre>
+	</p>
+	<p>
+		This is another copy-and-paste job. Such repeatable. Wow.
+	</p>
+	<p>
+		When you create a monad stack, you need a way to lift values from each of the constituent monads up to the combined monad. In Haskell, this is done with the <code>lift</code> and <code>liftF</code> functions, but in F#, you must explicitly add such functions:
+	</p>
+	<p>
+		<pre><span style="color:green;">//&nbsp;CommandLineProgram&lt;ReservationsApiProgram&lt;&#39;a&gt;&gt;</span>
+<span style="color:green;">//&nbsp;-&gt;&nbsp;CommandLineReservationsApiProgram&lt;&#39;a&gt;</span>
+<span style="color:blue;">let</span>&nbsp;<span style="color:blue;">private</span>&nbsp;wrap&nbsp;x&nbsp;=&nbsp;x&nbsp;|&gt;&nbsp;Run&nbsp;|&gt;&nbsp;mapT&nbsp;Pure&nbsp;|&gt;&nbsp;Free
+<span style="color:green;">//&nbsp;CommandLineProgram&lt;&#39;a&gt;&nbsp;-&gt;&nbsp;CommandLineReservationsApiProgram&lt;&#39;a&gt;</span>
+<span style="color:blue;">let</span>&nbsp;liftCL&nbsp;x&nbsp;=&nbsp;wrap&nbsp;&lt;|&nbsp;CommandLine.map&nbsp;ReservationsApiProgram.Pure&nbsp;x
+<span style="color:green;">//&nbsp;ReservationsApiProgram&lt;&#39;a&gt;&nbsp;-&gt;&nbsp;CommandLineReservationsApiProgram&lt;&#39;a&gt;</span>
+<span style="color:blue;">let</span>&nbsp;liftRA&nbsp;x&nbsp;=&nbsp;wrap&nbsp;&lt;|&nbsp;CommandLineProgram.Pure&nbsp;x</pre>
+	</p>
+	<p>
+		The private <code>wrap</code> function takes the underlying 'naked' monad stack (<code>CommandLineProgram&lt;ReservationsApiProgram&lt;'a&gt;&gt;</code>) and turns it into a <code>CommandLineReservationsApiProgram&lt;'a&gt;</code> value. It first wraps <code>x</code> in <code>Run</code>, which turns <code>x</code> into a <code>CommandLineReservationsApiT&lt;'a&gt;</code> value. By piping that value into <code>mapT Pure</code>, you get a <code>CommandLineReservationsApiT&lt;CommandLineReservationsApiProgram&lt;'a&gt;&gt;</code> value that you can finally pipe into <code>Free</code> in order to produce a <code>CommandLineReservationsApiProgram&lt;'a&gt;</code> value. Phew!
+	</p>
+	<p>
+		The <code>liftCL</code> function lifts a <code>CommandLineProgram</code> (<em>CL</em>) to <code>CommandLineReservationsApiProgram</code> by first using <code>CommandLine.map</code> to lift <code>x</code> to a <code>CommandLineProgram&lt;ReservationsApiProgram&lt;'a&gt;&gt;</code> value. It then pipes that value to <code>wrap</code>.
+	</p>
+	<p>
+		Likewise, the <code>liftRA</code> function lifts a <code>ReservationsApiProgram</code> (<em>RA</em>) to <code>CommandLineReservationsApiProgram</code>. It simply elevates <code>x</code> to a <code>CommandLineProgram</code> value by using <code>CommandLineProgram.Pure</code>. Subsequently, it pipes that value to <code>wrap</code>.
+	</p>
+	<p>
+		In both of these functions, I used the slightly unusual backwards pipe operator <code>&lt;|</code>. The reason for that is that it emphasises the similarity between <code>liftCL</code> and <code>liftRA</code>. This is easier to see if you remove the type comments:
+	</p>
+	<p>
+		<pre><span style="color:blue;">let</span>&nbsp;liftCL&nbsp;x&nbsp;=&nbsp;wrap&nbsp;&lt;|&nbsp;CommandLine.map&nbsp;ReservationsApiProgram.Pure&nbsp;x
+<span style="color:blue;">let</span>&nbsp;liftRA&nbsp;x&nbsp;=&nbsp;wrap&nbsp;&lt;|&nbsp;CommandLineProgram.Pure&nbsp;x</pre>
+	</p>
+	<p>
+		This is how I normally write my F# code. I only add the type comments for the benefit of you, dear reader. Normally, when you have an IDE, you can always inspect the types using the built-in tools.
+	</p>
+	<p>
+		Using the backwards pipe operator makes it immediately clear that both functions depend in the <code>wrap</code> function. This would have been muddied by use of the normal forward pipe operator:
+	</p>
+	<p>
+		<pre><span style="color:blue;">let</span>&nbsp;liftCL&nbsp;x&nbsp;=&nbsp;CommandLine.map&nbsp;ReservationsApiProgram.Pure&nbsp;x&nbsp;|&gt;&nbsp;wrap
+<span style="color:blue;">let</span>&nbsp;liftRA&nbsp;x&nbsp;=&nbsp;CommandLineProgram.Pure&nbsp;x&nbsp;|&gt;&nbsp;wrap</pre>
+	</p>
+	<p>
+		The behaviour is the same, but now <code>wrap</code> doesn't align, making it harder to discover the kinship between the two functions. My use of the backward pipe operator is motivated by readability concerns.
+	</p>
+	<p>
+		Following the 'free monad recipe', now create a computation expression builder:
+	</p>
+	<p>
+		<pre><span style="color:blue;">type</span>&nbsp;<span style="color:teal;">CommandLineReservationsApiBuilder</span>&nbsp;()&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">member</span>&nbsp;<span style="color:#9b9b9b;">this</span>.<span style="color:navy;">Bind</span>&nbsp;(x,&nbsp;<span style="color:navy;">f</span>)&nbsp;=&nbsp;<span style="color:teal;">CommandLineReservationsApi</span>.<span style="color:navy;">bind</span>&nbsp;<span style="color:navy;">f</span>&nbsp;x
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">member</span>&nbsp;<span style="color:#9b9b9b;">this</span>.<span style="color:navy;">Return</span>&nbsp;x&nbsp;=&nbsp;<span style="color:navy;">Pure</span>&nbsp;x
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">member</span>&nbsp;<span style="color:#9b9b9b;">this</span>.<span style="color:navy;">ReturnFrom</span>&nbsp;x&nbsp;=&nbsp;x
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">member</span>&nbsp;<span style="color:#9b9b9b;">this</span>.<span style="color:navy;">Zero</span>&nbsp;()&nbsp;=&nbsp;<span style="color:navy;">Pure</span>&nbsp;()</pre>
+	</p>
+	<p>
+		Finally, create an instance of the class:
+	</p>
+	<p>
+		<pre><span style="color:blue;">let</span>&nbsp;commandLineReservationsApi&nbsp;=&nbsp;<span style="color:teal;">CommandLineReservationsApiBuilder</span>&nbsp;()
+</pre>
+	</p>
+	<p>
+		Putting the <code>commandLineReservationsApi</code> value in a module will enable you to use it for computation expressions whenever you open that module. I normally put it in a module with the <code>[&lt;AutoOpen&gt;]</code> attribute so that it automatically becomes available as soon as I open the containing namespace.
+	</p>
+	<p>
+		<strong>Simplification</strong>
+	</p>
+	<p>
+		While there <em>can</em> be good reasons to introduce single-case discriminated unions in your F# code, they're isomorphic with their contained type. (This means that there's a lossless conversion between the union type and the contained type, in both directions.) Following the 'free monad recipe', I introduced <code>CommandLineReservationsApiT</code> as a discriminated union, but since it's a single-case union, you can refactor it to its contained type.
+	</p>
+	<p>
+		If you delete the <code>CommandLineReservationsApiT</code> type, you'll first have to change the definition of the program type to this:
+	</p>
+	<p>
+		<pre><span style="color:blue;">type</span>&nbsp;<span style="color:teal;">CommandLineReservationsApiProgram</span>&lt;&#39;a&gt;&nbsp;=
+|&nbsp;<span style="color:navy;">Free</span>&nbsp;<span style="color:blue;">of</span>&nbsp;<span style="color:teal;">CommandLineProgram</span>&lt;<span style="color:teal;">ReservationsApiProgram</span>&lt;<span style="color:teal;">CommandLineReservationsApiProgram</span>&lt;&#39;a&gt;&gt;&gt;
+|&nbsp;<span style="color:navy;">Pure</span>&nbsp;<span style="color:blue;">of</span>&nbsp;&#39;a</pre>
+	</p>
+	<p>
+		You simply replace <code>CommandLineReservationsApiT&lt;_&gt;</code> with <code>CommandLineProgram&lt;ReservationsApiProgram&lt;_&gt;&gt;</code>, effectively promoting the type contained in the <code>Run</code> case to be the container in the <code>Free</code> case.
+	</p>
+	<p>
+		Once <code>CommandLineReservationsApiT</code> is gone, you'll also need to delete the <code>mapT</code> function, and amend <code>bind</code>:
+	</p>
+	<p>
+		<pre><span style="color:green;">//&nbsp;(&#39;a&nbsp;-&gt;&nbsp;CommandLineReservationsApiProgram&lt;&#39;b&gt;)</span>
+<span style="color:green;">//&nbsp;-&gt;&nbsp;CommandLineReservationsApiProgram&lt;&#39;a&gt;</span>
+<span style="color:green;">//&nbsp;-&gt;&nbsp;CommandLineReservationsApiProgram&lt;&#39;b&gt;</span>
+<span style="color:blue;">let</span>&nbsp;<span style="color:blue;">rec</span>&nbsp;bind&nbsp;f&nbsp;=&nbsp;<span style="color:blue;">function</span>
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;Free&nbsp;instruction&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;instruction&nbsp;|&gt;&nbsp;mapStack&nbsp;(bind&nbsp;f)&nbsp;|&gt;&nbsp;Free
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;Pure&nbsp;x&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;f&nbsp;x</pre>
+	</p>
+	<p>
+		Likewise, you must also adjust the <code>wrap</code> function:
+	</p>
+	<p>
+		<pre><span style="color:blue;">let</span>&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:navy;">wrap</span>&nbsp;x&nbsp;=&nbsp;x&nbsp;|&gt;&nbsp;<span style="color:navy;">mapStack</span>&nbsp;<span style="color:navy;">Pure</span>&nbsp;|&gt;&nbsp;<span style="color:navy;">Free</span>
+</pre>
+	</p>
+	<p>
+		The rest of the above code stays the same.
+	</p>
+	<p>
+		<strong>Wizard</strong>
+	</p>
+	<p>
+		In Haskell, you get combinations of monads for free via the <code>FreeT</code> type, whereas in F#, you have to work for it. Once you have the combination in monadic form as well, you can write programs with that combination. Here's the wizard that collects your data and attempts to make a restaurant reservation on your behalf:
+	</p>
+	<p>
+		<pre><span style="color:green;">//&nbsp;CommandLineReservationsApiProgram&lt;unit&gt;</span>
+<span style="color:blue;">let</span>&nbsp;tryReserve&nbsp;=&nbsp;commandLineReservationsApi&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;count&nbsp;=&nbsp;<span style="color:navy;">liftCL</span>&nbsp;readQuantity
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;date&nbsp;&nbsp;=&nbsp;<span style="color:navy;">liftCL</span>&nbsp;readDate
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;availableSeats&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:teal;">ReservationsApi</span>.<span style="color:navy;">getSlots</span>&nbsp;date
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:teal;">ReservationsApi</span>.<span style="color:navy;">map</span>&nbsp;(<span style="color:teal;">List</span>.<span style="color:navy;">sumBy</span>&nbsp;(<span style="color:blue;">fun</span>&nbsp;slot&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;slot.SeatsLeft))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:navy;">liftRA</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;availableSeats&nbsp;&lt;&nbsp;count
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">then</span>&nbsp;<span style="color:blue;">do!</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:navy;">sprintf</span>&nbsp;<span style="color:#a31515;">&quot;Only&nbsp;</span><span style="color:teal;">%i</span><span style="color:#a31515;">&nbsp;remaining&nbsp;seats.&quot;</span>&nbsp;availableSeats
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:teal;">CommandLine</span>.<span style="color:navy;">writeLine</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:navy;">liftCL</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">else</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;name&nbsp;&nbsp;=&nbsp;<span style="color:navy;">liftCL</span>&nbsp;readName
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;email&nbsp;=&nbsp;<span style="color:navy;">liftCL</span>&nbsp;readEmail
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">do!</span>&nbsp;{&nbsp;Date&nbsp;=&nbsp;date;&nbsp;Name&nbsp;=&nbsp;name;&nbsp;Email&nbsp;=&nbsp;email;&nbsp;Quantity&nbsp;=&nbsp;count&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:teal;">ReservationsApi</span>.<span style="color:navy;">postReservation</span>&nbsp;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:navy;">liftRA</span>
+&nbsp;&nbsp;&nbsp;&nbsp;}</pre>
+	</p>
+	<p>
+		Notice that <code>tryReserve</code> is a <em>value</em>, and not a function. It's a pure value that contains an AST - a small program that describes the impure interactions that you'd like to take place. It's defined entirely within a <code>commandLineReservationsApi</code> computation expression.
+	</p>
+	<p>
+		It starts by using the <code>readQuantity</code> and <code>readDate</code> program values you saw in the <a href="">previous F# article</a>. Both of these values are <code>CommandLineProgram</code> values, so you have to use <code>liftCL</code> to lift them to <code>CommandLineReservationsApiProgram</code> values - only then can you <code>let!</code> bind them to an <code>int</code> and a <code>DateTimeOffset</code>, respectively. This is just like the use of <code>lift</code> in the previous article's Haskell example.
+	</p>
+	<p>
+		Once the program has collected the desired <code>date</code> from the user, it calls <code>ReservationsApi.getSlots</code> and calculates the sum over all the returned <code>SeatsLeft</code> labels. The <code>ReservationsApi.getSlots</code> function returns a <code>ReservationsApiProgram&lt;Slot list&gt;</code>, the <code>ReservationsApi.map</code> turns it into a <code>ReservationsApiProgram&lt;int&gt;</code> value that you must <code>liftRA</code> in order to be able to <code>let!</code> bind it to an <code>int</code> value. Let me stress once again: the program actually doesn't <em>do</em> any of that; it constructs an AST with instructions to that effect.
+	</p>
+	<p>
+		If it turns out that there's too few seats left, the program writes that on the command line and exits. Otherwise, it continues to collect the user's name and email address. That's all the data required to create a <code>Reservation</code> record and pipe it to <code>ReservationsApi.postReservation</code>.
+	</p>
+	<p>
+		<strong>Interpreters</strong>
+	</p>
+	<p>
+		The <code>tryReserve</code> wizard is a pure value. It contains an AST that can be interpreted in such a way that impure operations happen. You've already seen the <code>CommandLineProgram</code> interpreter <a href="">in a previous article</a>, so I'm not going to repeat it here. I'll only note that I renamed it to <code>interpretCommandLine</code> because I want to use the name <code>interpret</code> for the combined interpreter.
+	</p>
+	<p>
+		The interpreter for <code>ReservationsApiProgram</code> values is similar to the <code>CommandLineProgram</code> interpreter:
+	</p>
+	<p>
+		<pre><span style="color:green;">//&nbsp;ReservationsApiProgram&lt;&#39;a&gt;&nbsp;-&gt;&nbsp;&#39;a</span>
+<span style="color:blue;">let</span>&nbsp;<span style="color:blue;">rec</span>&nbsp;<span style="color:navy;">interpretReservationsApi</span>&nbsp;=&nbsp;<span style="color:blue;">function</span>
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:teal;">ReservationsApiProgram</span>.<span style="color:navy;">Pure</span>&nbsp;x&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;x
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:teal;">ReservationsApiProgram</span>.<span style="color:navy;">Free</span>&nbsp;(<span style="color:navy;">GetSlots</span>&nbsp;(d,&nbsp;<span style="color:navy;">next</span>))&nbsp;<span style="color:blue;">-&gt;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:teal;">ReservationHttpClient</span>.<span style="color:navy;">getSlots</span>&nbsp;d
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:teal;">Async</span>.<span style="color:navy;">RunSynchronously</span>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:navy;">next</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:navy;">interpretReservationsApi</span>
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:teal;">ReservationsApiProgram</span>.<span style="color:navy;">Free</span>&nbsp;(<span style="color:navy;">PostReservation</span>&nbsp;(r,&nbsp;next))&nbsp;<span style="color:blue;">-&gt;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:teal;">ReservationHttpClient</span>.<span style="color:navy;">postReservation</span>&nbsp;r&nbsp;|&gt;&nbsp;<span style="color:teal;">Async</span>.<span style="color:navy;">RunSynchronously</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;next&nbsp;|&gt;&nbsp;<span style="color:navy;">interpretReservationsApi</span></pre>
+	</p>
+	<p>
+		The <code>interpretReservationsApi</code> function pattern-matches on its (implicit) <code>ReservationsApiProgram</code> argument, and performs the appropriate actions according to each instruction. In all <code>Free</code> cases, it delegates to implementations defined in a <code>ReservationHttpClient</code> module. The code in that module isn't shown here, but you can see it in <a href="">the GitHub repository that accompanies this article</a>.
+	</p>
+	<p>
+		You can combine the two 'leaf' interpreters in an interpreter of <code>CommandLineReservationsApiProgram</code> values:
+	</p>
+	<p>
+		<pre><span style="color:green;">//&nbsp;CommandLineReservationsApiProgram&lt;&#39;a&gt;&nbsp;-&gt;&nbsp;&#39;a</span>
+<span style="color:blue;">let</span>&nbsp;<span style="color:blue;">rec</span>&nbsp;<span style="color:navy;">interpret</span>&nbsp;=&nbsp;<span style="color:blue;">function</span>
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:teal;">CommandLineReservationsApiProgram</span>.<span style="color:navy;">Pure</span>&nbsp;x&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;x
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:teal;">CommandLineReservationsApiProgram</span>.<span style="color:navy;">Free</span>&nbsp;p&nbsp;<span style="color:blue;">-&gt;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;p&nbsp;|&gt;&nbsp;<span style="color:navy;">interpretCommandLine</span>&nbsp;|&gt;&nbsp;<span style="color:navy;">interpretReservationsApi</span>&nbsp;|&gt;&nbsp;<span style="color:navy;">interpret</span></pre>
+	</p>
+	<p>
+		As usual, in the <code>Pure</code> case, it simply returns the contained value. In the <code>Free</code> case, <code>p</code> is a <code>CommandLineProgram&lt;ReservationsApiProgram&lt;CommandLineReservationsApiProgram&lt;'a&gt;&gt;&gt;</code>. Since it's a <code>CommandLineProgram</code> value, you can interpret it with <code>interpretCommandLine</code>, which returns a <code>ReservationsApiProgram&lt;CommandLineReservationsApiProgram&lt;'a&gt;&gt;</code>. Since that's a <code>ReservationsApiProgram</code>, you can pipe it to <code>interpretReservationsApi</code>, which then returns a <code>CommandLineReservationsApiProgram&lt;'a&gt;</code>. An interpreter exists for that type as well, namely the <code>interpret</code> function itself, so recursively invoke it again. In other words, <code>interpret</code> will keep recursing until it hits a <code>Pure</code> case.
+	</p>
+	<p>
+		<strong>Execution</strong>
+	</p>
+	<p>
+		Everything is now in place so that you can execute your program. This is the program's entry point:
+	</p>
+	<p>
+		<pre>[&lt;<span style="color:teal;">EntryPoint</span>&gt;]
+<span style="color:blue;">let</span>&nbsp;<span style="color:navy;">main</span>&nbsp;_&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:navy;">interpret</span>&nbsp;<span style="color:teal;">Wizard</span>.tryReserve
+&nbsp;&nbsp;&nbsp;&nbsp;0&nbsp;<span style="color:green;">//&nbsp;return&nbsp;an&nbsp;integer&nbsp;exit&nbsp;code</span></pre>
+	</p>
+	<p>
+		When you run it, you'll be able to have an interaction like this:
+	</p>
+	<p>
+		<pre>Please enter number of diners:
+4
+Please enter your desired date:
+2017-11-25
+Please enter your name:
+Mark Seemann
+Please enter your email address:
+mark@example.net
+OK</pre>
+	</p>
+	<p>
+		If you want to run this code sample yourself, you're going to need an appropriate HTTP API with which you can interact. I hosted the API on my local machine, and afterwards verified that the record was, indeed, written in the reservations database.
+	</p>
+	<p>
+		<strong>Summary</strong>
+	</p>
+	<p>
+		As expected, you can combine free monads in F#, although it requires more boilerplate code than in Haskell.
+	</p>
+</div>
