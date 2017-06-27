@@ -1,0 +1,277 @@
+---
+layout: post
+title: "Applicative validation"
+date: 2017-06-27 9:16 UTC
+tags: [Software Design, Haskell]
+---
+{% include JB/setup %}
+
+<div id="post">
+	<p>
+		<em>Validate input in applicative style for superior readability and composability.</em>
+	</p>
+	<p>
+		This article is an instalment in <a href="">an article series about applicative functors</a>. It demonstrates how applicative style can be used to compose small validation functions to a larger validation function in such a way that no validation messages are lost, and the composition remains readable.
+	</p>
+	<p>
+		All example code in this article is given in <a href="https://www.haskell.org">Haskell</a>. No F# translation is offered, because <a href="http://fsharpforfunandprofit.com">Scott Wlaschin</a> has an <a href="https://fsharpforfunandprofit.com/posts/elevated-world-3/#validation">equivalent example covering input validation in F#</a>.
+	</p>
+	<p>
+		<strong>JSON validation</strong>
+	</p>
+	<p>
+		In my <a href="http://www.shareasale.com/r.cfm?u=1017843&b=611266&m=53701&afftrack=&urllink=pluralsight%2Ecom%2Fcourses%2Ffunctional%2Darchitecture%2Dfsharp">Pluralsight course about a functional architecture in F#</a>, you can see an example of an on-line restaurant reservation system. I often return to that example scenario, so for regular readers of this blog, it should be known territory. For newcomers, imagine that you've been asked to develop an HTTP-based API that accepts JSON documents containing restaurant reservations. Such a JSON document could look like this:
+	</p>
+	<p>
+		<pre>{
+&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;date&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;2017-06-27&nbsp;18:30:00+02:00&quot;</span>,
+&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;name&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;Mark&nbsp;Seemann&quot;</span>,
+&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;email&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;mark@example.com&quot;</span>,
+&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;quantity&quot;</span>:&nbsp;4
+}</pre>
+	</p>
+	<p>
+		It contains the date and time of the (requested) reservation, the email address and name of the person making the reservation, as well as the number of people who will be dining. Particularly, notice that the date and time is represented as a string value (specifically, in <a href="https://en.wikipedia.org/wiki/ISO_8601">ISO 8601</a> format), since JSON has no built-in date and time data type.
+	</p>
+	<p>
+		In Haskell, you can represent such a JSON document using a type like this:
+	</p>
+	<p>
+		<pre><span style="color:blue;">data</span>&nbsp;<span style="color:#dd0000;">ReservationJson</span>&nbsp;<span style="color:#666666;">=</span>&nbsp;<span style="color:#dd0000;">ReservationJson</span>&nbsp;{
+&nbsp;&nbsp;<span style="color:#600277;">jsonDate</span>&nbsp;::&nbsp;String,
+&nbsp;&nbsp;<span style="color:#600277;">jsonQuantity</span>&nbsp;::&nbsp;Double,
+&nbsp;&nbsp;<span style="color:#600277;">jsonName</span>&nbsp;::&nbsp;String,
+&nbsp;&nbsp;<span style="color:#600277;">jsonEmail</span>&nbsp;::&nbsp;String&nbsp;}
+&nbsp;&nbsp;<span style="color:blue;">deriving</span>&nbsp;(<span style="color:#a31515;">Eq</span>,&nbsp;<span style="color:#a31515;">Show</span>,&nbsp;<span style="color:#a31515;">Read</span>,&nbsp;<span style="color:#a31515;">Generic</span>)</pre>
+	</p>
+	<p>
+		Haskell's strength is in its type system, so you should prefer to model a reservation using a strong type:
+	</p>
+	<p>
+		<pre><span style="color:blue;">data</span>&nbsp;<span style="color:#dd0000;">Reservation</span>&nbsp;<span style="color:#666666;">=</span>&nbsp;<span style="color:#dd0000;">Reservation</span>&nbsp;{
+&nbsp;&nbsp;<span style="color:#600277;">reservationDate</span>&nbsp;::&nbsp;<span style="color:blue;">ZonedTime</span>,
+&nbsp;&nbsp;<span style="color:#600277;">reservationQuantity</span>&nbsp;::&nbsp;Int,
+&nbsp;&nbsp;<span style="color:#600277;">reservationName</span>&nbsp;::&nbsp;String,
+&nbsp;&nbsp;<span style="color:#600277;">reservationEmail</span>&nbsp;::&nbsp;String&nbsp;}
+&nbsp;&nbsp;<span style="color:blue;">deriving</span>&nbsp;(<span style="color:#a31515;">Show</span>,&nbsp;<span style="color:#a31515;">Read</span>)</pre>
+	</p>
+	<p>
+		Instead of modelling the date and time as a string, you model it as a <code>ZonedTime</code> value. Additionally, you should model quantity as an integer, since a floating point value doesn't make much sense.
+	</p>
+	<p>
+		While you can always translate a <code>Reservation</code> value to a <code>ReservationJson</code> value, the converse doesn't hold. There are <code>ReservationJson</code> value that you can't translate to <code>Reservation</code>. Such <code>ReservationJson</code> values are invalid.
+	</p>
+	<p>
+		You should write code to validate and translate <code>ReservationJson</code> values to <code>Reservation</code> values, if possible.
+	</p>
+	<p>
+		<strong>Specialised validations</strong>
+	</p>
+	<p>
+		The <code>ReservationJson</code> type is a complex type, because it's composed of multiple (four) elements of different types. You can easily define at least three validation rules that ought to hold:
+		<ol>
+			<li>You should be able to convert the <code>jsonDate</code> value to a <code>ZonedTime</code> value.</li>
+			<li><code>jsonQuantity</code> must be a positive integer.</li>
+			<li><code>jsonEmail</code> should look believably like an email address.</li>
+		</ol>
+		When you have a complex type where more than one validation rule applies, your code will be most readable and maintainable if you can write each rule as an independent function.
+	</p>
+	<p>
+		In Haskell, people often use <code>Either</code> for validation, but instead of using <code>Either</code> directly, I'll introduce a specialised <code>Validation</code> type:
+	</p>
+	<p>
+		<pre><span style="color:blue;">newtype</span>&nbsp;<span style="color:#dd0000;">Validation</span>&nbsp;e&nbsp;r&nbsp;<span style="color:#666666;">=</span>&nbsp;<span style="color:#dd0000;">Validation</span>&nbsp;(<span style="color:#dd0000;">Either</span>&nbsp;e&nbsp;r)&nbsp;<span style="color:blue;">deriving</span>&nbsp;(<span style="color:#a31515;">Eq</span>,&nbsp;<span style="color:#a31515;">Show</span>,&nbsp;<span style="color:#a31515;">Functor</span>)
+</pre>
+	</p>
+	<p>
+		You'll notice that this is simply a redefinition of <code>Either</code>. Haskell can automatically derive its <code>Functor</code> instance with the <code>DeriveFunctor</code> language extension.
+	</p>
+	<p>
+		My motivation for introducing a new type is that the way that <code>Either</code> is <code>Applicative</code> is not quite how I'd like it to be. Introducing a <code>newtype</code> enables you to change how a type behaves. More on that later. First, you can implement the three individual validation functions.
+	</p>
+	<p>
+		<strong>Date validation</strong>
+	</p>
+	<p>
+		If the JSON date value is an ISO 8601-formatted string, then you can parse it as a <code>ZonedTime</code>. In that case, you should return the <code>Right</code> case of <code>Validation</code>. If you can't parse the string into a <code>ZonedTime</code> value, you should return a <code>Left</code> value containing a helpful error message.
+	</p>
+	<p>
+		<pre><span style="color:#600277;">validateDate</span>&nbsp;::&nbsp;String&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">Validation</span>&nbsp;[String]&nbsp;<span style="color:blue;">ZonedTime</span>
+validateDate&nbsp;candidate&nbsp;<span style="color:#666666;">=</span>
+&nbsp;&nbsp;<span style="color:blue;">case</span>&nbsp;readMaybe&nbsp;candidate&nbsp;<span style="color:blue;">of</span>
+&nbsp;&nbsp;&nbsp;&nbsp;Just&nbsp;d&nbsp;&nbsp;<span style="color:#666666;">-&gt;</span>&nbsp;<span style="color:#dd0000;">Validation</span>&nbsp;<span style="color:#666666;">$</span>&nbsp;Right&nbsp;d
+&nbsp;&nbsp;&nbsp;&nbsp;Nothing&nbsp;<span style="color:#666666;">-&gt;</span>&nbsp;<span style="color:#dd0000;">Validation</span>&nbsp;<span style="color:#666666;">$</span>&nbsp;Left&nbsp;[<span style="color:#a31515;">&quot;Not&nbsp;a&nbsp;date.&quot;</span>]</pre>
+	</p>
+	<p>
+		This function uses <code>readMaybe</code> from <code>Text.Read</code> to attempt to parse the <code>candidate</code> <code>String</code>. When <code>readMaybe</code> can read the <code>String</code> value, it returns a <code>Just</code> value with the parsed value inside; otherwise, it returns <code>Nothing</code>. The function pattern-matches on those two cases and returns the appropriate value in each case.
+	</p>
+	<p>
+		Notice that errors are represented as a list of <code>String</code> values, although this particular function only returns a single message in its list of error messages. The reason for that is that you should be able to collect multiple validation issues for a complex value such as <code>ReservationJson</code>, and keeping track of errors in a list makes that possible.
+	</p>
+	<p>
+		Haskell <a href="https://en.wikipedia.org/wiki/Code_golf">golfers</a> may argue that this implementation is overly verbose, and it could, for instance, instead be written as:
+	</p>
+	<p>
+		<pre>validateDate&nbsp;<span style="color:#666666;">=</span>&nbsp;<span style="color:#dd0000;">Validation</span>&nbsp;<span style="color:#666666;">.</span>&nbsp;maybe&nbsp;(Left&nbsp;[<span style="color:#a31515;">&quot;Not&nbsp;a&nbsp;date.&quot;</span>])&nbsp;Right&nbsp;<span style="color:#666666;">.</span>&nbsp;readMaybe
+</pre>
+	</p>
+	<p>
+		which is true, but not as readable. Both versions get the job done, though, as these GCHI-based ad-hoc tests demonstrate:
+	</p>
+	<p>
+		<pre>λ&gt; validateDate "2017/27/06 18:30:00 UTC+2"
+Validation (Left ["Not a date."])
+λ&gt; validateDate "2017-06-27 18:30:00+02:00"
+Validation (Right 2017-06-27 18:30:00 +0200)</pre>
+	</p>
+	<p>
+		That takes care of parsing dates. On to the next validation function.
+	</p>
+	<p>
+		<strong>Quantity validation</strong>
+	</p>
+	<p>
+		JSON numbers aren't integers, so it's possible that even a well-formed Reservation JSON document could contain a <code>quantity</code> property of <code>9.7</code>, <code>-11.9463</code>, or similar. When handling restaurant reservations, however, it only makes sense to handle positive integers. Even <code>0</code> is useless in this context. Thus, validation must check for two conditions, so in principle, you could write two separate functions for that. In order to keep the example simple, though, I've included both tests in the same function:
+	</p>
+	<p>
+		<pre><span style="color:#600277;">validateQuantity</span>&nbsp;::&nbsp;Double&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">Validation</span>&nbsp;[String]&nbsp;Int
+validateQuantity&nbsp;candidate&nbsp;<span style="color:#666666;">=</span>
+&nbsp;&nbsp;<span style="color:#af00db;">if</span>&nbsp;isInt&nbsp;candidate&nbsp;<span style="color:#666666;">&amp;&amp;</span>&nbsp;candidate&nbsp;<span style="color:#666666;">&gt;</span>&nbsp;<span style="color:#09885a;">0</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#af00db;">then</span>&nbsp;<span style="color:#dd0000;">Validation</span>&nbsp;<span style="color:#666666;">$</span>&nbsp;Right&nbsp;<span style="color:#666666;">$</span>&nbsp;round&nbsp;candidate
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#af00db;">else</span>&nbsp;<span style="color:#dd0000;">Validation</span>&nbsp;<span style="color:#666666;">$</span>&nbsp;Left&nbsp;[<span style="color:#a31515;">&quot;Not&nbsp;a&nbsp;positive&nbsp;integer.&quot;</span>]
+&nbsp;&nbsp;<span style="color:blue;">where</span>&nbsp;isInt&nbsp;x&nbsp;<span style="color:#666666;">=</span>&nbsp;x&nbsp;<span style="color:#666666;">==</span>&nbsp;fromInteger&nbsp;(round&nbsp;x)</pre>
+	</p>
+	<p>
+		If <code>candidate</code> is both an integer, and greater than zero, then <code>validateQuantity</code> returns <code>Right</code>; otherwise, it returns a <code>Left</code> value containing an error message. Like <code>validateDate</code>, you can easily test <code>validateQuantity</code> in GHCI:
+	</p>
+	<p>
+		<pre>λ&gt; validateQuantity 4
+Validation (Right 4)
+λ&gt; validateQuantity (-1)
+Validation (Left ["Not a positive integer."])
+λ&gt; validateQuantity 2.32
+Validation (Left ["Not a positive integer."])</pre>
+	</p>
+	<p>
+		Perhaps you can think of rules for names, but I can't, so we'll leave the name be and move on to validating email addresses.
+	</p>
+	<p>
+		<strong>Email validation</strong>
+	</p>
+	<p>
+		It's <a href="http://haacked.com/archive/2007/08/21/i-knew-how-to-validate-an-email-address-until-i.aspx">notoriously difficult to validate SMTP addresses</a>, so you shouldn't even try. It seems fairly safe to assume, however, that an email address must contain at least one <code>@</code> character, so that's going to be all the validation you have to implement:
+	</p>
+	<p>
+		<pre><span style="color:#600277;">validateEmail</span>&nbsp;::&nbsp;String&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">Validation</span>&nbsp;[String]&nbsp;String
+validateEmail&nbsp;candidate&nbsp;<span style="color:#666666;">=</span>
+&nbsp;&nbsp;<span style="color:#af00db;">if</span>&nbsp;<span style="color:#a31515;">&#39;@&#39;</span>&nbsp;<span style="color:#666666;">`elem`</span>&nbsp;candidate
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#af00db;">then</span>&nbsp;<span style="color:#dd0000;">Validation</span>&nbsp;<span style="color:#666666;">$</span>&nbsp;Right&nbsp;candidate
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#af00db;">else</span>&nbsp;<span style="color:#dd0000;">Validation</span>&nbsp;<span style="color:#666666;">$</span>&nbsp;Left&nbsp;[<span style="color:#a31515;">&quot;Not&nbsp;an&nbsp;email&nbsp;address.&quot;</span>]</pre>
+	</p>
+	<p>
+		Straightforward. Try it out in GHCI:
+	</p>
+	<p>
+		<pre>λ&gt; validateEmail "foo"
+Validation (Left ["Not an email address."])
+λ&gt; validateEmail "foo@example.org"
+Validation (Right "foo@example.org")</pre>
+	</p>
+	<p>
+		Indeed, that works.
+	</p>
+	<p>
+		<strong>Applicative composition</strong>
+	</p>
+	<p>
+		What you really should be doing is to validate a <code>ReservationJson</code> value. You have the three validation rules implemented, so now you have to compose them. There is, however, a catch: you must evaluate all rules, and return a list of <em>all</em> the errors you encountered. That's probably going to be a better user experience for a user.
+	</p>
+	<p>
+		That's the reason you can't use <code>Either</code>. While it's <code>Applicative</code>, it doesn't behave like you'd like it to behave in this scenario. Particularly, the problem is that it throws away all but the first <code>Left</code> value it finds:
+	</p>
+	<p>
+		<pre>λ&gt; Right (,,) &lt;*&gt; Right 42 &lt;*&gt; Left "foo" &lt;*&gt; Left "bar"
+Left "foo"</pre>
+	</p>
+	<p>
+		Notice how <code>Left "bar"</code> is ignored.
+	</p>
+	<p>
+		With the new type <code>Validation</code> based on <code>Either</code>, you can now define how it behaves as an applicative functor:
+	</p>
+	<p>
+		<pre><span style="color:blue;">instance</span>&nbsp;<span style="color:blue;">Monoid</span>&nbsp;m&nbsp;<span style="color:blue;">=&gt;</span>&nbsp;<span style="color:blue;">Applicative</span>&nbsp;(<span style="color:blue;">Validation</span>&nbsp;m)&nbsp;<span style="color:blue;">where</span>
+&nbsp;&nbsp;pure&nbsp;<span style="color:#666666;">=</span>&nbsp;<span style="color:#dd0000;">Validation</span>&nbsp;<span style="color:#666666;">.</span>&nbsp;pure
+&nbsp;&nbsp;<span style="color:#dd0000;">Validation</span>&nbsp;(Left&nbsp;x)&nbsp;<span style="color:#666666;">&lt;*&gt;</span>&nbsp;<span style="color:#dd0000;">Validation</span>&nbsp;(Left&nbsp;y)&nbsp;<span style="color:#666666;">=</span>&nbsp;<span style="color:#dd0000;">Validation</span>&nbsp;(Left&nbsp;(mappend&nbsp;x&nbsp;y))
+&nbsp;&nbsp;<span style="color:#dd0000;">Validation</span>&nbsp;f&nbsp;<span style="color:#666666;">&lt;*&gt;</span>&nbsp;<span style="color:#dd0000;">Validation</span>&nbsp;r&nbsp;<span style="color:#666666;">=</span>&nbsp;<span style="color:#dd0000;">Validation</span>&nbsp;(f&nbsp;<span style="color:#666666;">&lt;*&gt;</span>&nbsp;r)</pre>
+	</p>
+	<p>
+		This instance is restricted to <code>Monoid</code> <code>Left</code> types. It has special behaviour for the case where both expressions passed to <code>&lt;*&gt;</code> are <code>Left</code> values. In that case, it uses <code>mappend</code> (from <code>Monoid</code>) to 'add' the two <code>Left</code> values together in a new <code>Left</code> value.
+	</p>
+	<p>
+		For all other cases, this instance of <code>Applicative</code> delegates to the behaviour defined for <code>Either</code>. It also uses <code>pure</code> from <code>Either</code> to implement its own <code>pure</code> function.
+	</p>
+	<p>
+		Lists (<code>[]</code>) are monoids, and since all the above validation functions return lists of errors, it means that you can compose them using this definition of <code>Applicative</code>:
+	</p>
+	<p>
+		<pre><span style="color:#600277;">validateReservation</span>&nbsp;::&nbsp;<span style="color:blue;">ReservationJson</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">Validation</span>&nbsp;[String]&nbsp;<span style="color:blue;">Reservation</span>
+validateReservation&nbsp;candidate&nbsp;<span style="color:#666666;">=</span>
+&nbsp;&nbsp;pure&nbsp;<span style="color:#dd0000;">Reservation</span>&nbsp;<span style="color:#666666;">&lt;*&gt;</span>&nbsp;vDate&nbsp;<span style="color:#666666;">&lt;*&gt;</span>&nbsp;vQuantity&nbsp;<span style="color:#666666;">&lt;*&gt;</span>&nbsp;vName&nbsp;<span style="color:#666666;">&lt;*&gt;</span>&nbsp;vEmail
+&nbsp;&nbsp;<span style="color:blue;">where</span>
+&nbsp;&nbsp;&nbsp;&nbsp;vDate&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#666666;">=</span>&nbsp;validateDate&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#666666;">$</span>&nbsp;jsonDate&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;candidate
+&nbsp;&nbsp;&nbsp;&nbsp;vQuantity&nbsp;<span style="color:#666666;">=</span>&nbsp;validateQuantity&nbsp;<span style="color:#666666;">$</span>&nbsp;jsonQuantity&nbsp;candidate
+&nbsp;&nbsp;&nbsp;&nbsp;vName&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#666666;">=</span>&nbsp;pure&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#666666;">$</span>&nbsp;jsonName&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;candidate
+&nbsp;&nbsp;&nbsp;&nbsp;vEmail&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#666666;">=</span>&nbsp;validateEmail&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#666666;">$</span>&nbsp;jsonEmail&nbsp;&nbsp;&nbsp;&nbsp;candidate</pre>
+	</p>
+	<p>
+		The <code>candidate</code> is a <code>ReservationJson</code> value, but each of the validation functions work on either <code>String</code> or <code>Double</code>, so you'll have to use the <code>ReservationJson</code> type's access functions (<code>jsonDate</code>, <code>jsonQuantity</code>, and so on) to pull the relevant values out of it. Once you have those, you can pass them as arguments to the appropriate validation function.
+	</p>
+	<p>
+		Since there's no rule for <code>jsonName</code>, you can use <code>pure</code> to create a <code>Validation</code> value. All four resulting values (<code>vDate</code>, <code>vQuantity</code>, <code>vName</code>, and <code>vEmail</code>) are <code>Validation [String]</code> values; only their <code>Right</code> types differ.
+	</p>
+	<p>
+		The <code>Reservation</code> record constructor is a function of the type <code>ZonedTime -&gt; Int -&gt; String -&gt; String -&gt; Reservation</code>, so when you arrange the four <code>v*</code> values correctly between the <code>&lt;*&gt;</code> operator, you have the desired composition.
+	</p>
+	<p>
+		Try it in GHCI:
+	</p>
+	<p>
+		<pre>λ&gt; validateReservation $ ReservationJson "2017-06-30 19:00:00+02:00" 4 "Jane Doe" "j@example.com"
+Validation (Right (Reservation {
+&nbsp;&nbsp;&nbsp;&nbsp;reservationDate = 2017-06-30 19:00:00 +0200,
+&nbsp;&nbsp;&nbsp;&nbsp;reservationQuantity = 4,
+&nbsp;&nbsp;&nbsp;&nbsp;reservationName = "Jane Doe",
+&nbsp;&nbsp;&nbsp;&nbsp;reservationEmail = "j@example.com"}))
+
+λ&gt; validateReservation $ ReservationJson "2017/14/12 6pm" 4.1 "Jane Doe" "jane.example.com"
+Validation (Left ["Not a date.","Not a positive integer.","Not an email address."])
+
+λ&gt; validateReservation $ ReservationJson "2017-06-30 19:00:00+02:00" (-3) "Jane Doe" "j@example.com"
+Validation (Left ["Not a positive integer."])</pre>
+	</p>
+	<p>
+		The first <code>ReservationJson</code> value passed to <code>validateReservation</code> is valid, so the return value is a <code>Right</code> value.
+	</p>
+	<p>
+		The next <code>ReservationJson</code> value is about as wrong as it can be, so three different error messages are returned in a <code>Left</code> value. This demonstrates that <code>Validation</code> doesn't give up the first time it encounters a <code>Left</code> value, but rather collects them all.
+	</p>
+	<p>
+		The third example demonstrates that even a single invalid value (in this case a negative quantity) is enough to make the entire input invalid, but as expected, there's only a single error message.
+	</p>
+	<p>
+		<strong>Summary</strong>
+	</p>
+	<p>
+		Validation may be the poster child of applicative functors, but it <em>is</em> a convenient way to solve the problem. In this article you saw how to validate a complex data type, collecting and reporting on all problems, if any.
+	</p>
+	<p>
+		In order to collect all errors, instead of immediately short-circuiting on the first error, you have to deviate from the standard <code>Either</code> implementation of <code>&lt;*&gt;</code>. If you go back to read Scott Wlaschin's article, you should be aware that it specifically implements its applicative functor in that way, instead of the normal behaviour of <code>Either</code>.
+	</p>
+	<p>
+		More applicative functors exist. This article series has, I think, room for one more example.
+	</p>
+	<p>
+		<strong>Next:</strong> The Test Data Generator applicative functor.
+	</p>
+</div>
