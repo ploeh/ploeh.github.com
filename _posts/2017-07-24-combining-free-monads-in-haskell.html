@@ -315,3 +315,72 @@ Status {statusCode = 200, statusMessage = "OK"}</pre>
 		<strong>Next:</strong> Combining free monads in F#.
 	</p>
 </div>
+
+<div class="comment">
+<div class="comment-author"><a href="https://twitter.com/porges">George Pollard</a></div>
+<div class="comment-content">
+<p>Here's an additional simplification. Rather than writing <code>FreeT ReservationsApiProgram CommandLineProgram</code> which requires you to lift, you can instead form the sum (coproduct) of both functors:</p>
+<pre>
+import Data.Functor.Sum
+
+type Program = Free (Sum CommandLineInstruction ReservationsApiInstruction)
+
+liftCommandLine :: CommandLineInstruction a -> Program a
+liftCommandLine = liftF . InL
+
+liftReservation :: ReservationsApiInstruction a -> Program a
+liftReservation = liftF . InR
+</pre>
+<p>Now you can lift the helpers directly to <code>Program</code>, like so:</p>
+<pre>
+readLine :: Program String
+readLine = liftCommandLine (ReadLine id)
+ 
+writeLine :: String -> Program ()
+writeLine s = liftCommandLine (WriteLine s ())
+
+getSlots :: ZonedTime -> Program [Slot]
+getSlots d = liftReservation (GetSlots d id)
+ 
+postReservation :: Reservation -> Program ()
+postReservation r = liftReservation (PostReservation r ())
+</pre>
+<p>Then (after you change the types of the <code>read*</code> helpers), you can drop all <code>lift</code>s from <code>tryReserve</code>:</p>
+<pre>
+tryReserve :: Program ()
+tryReserve = do
+  q &lt;- readParse "Please enter number of diners:" "Not an Integer."
+  d &lt;- readParse "Please enter your desired date:" "Not a date."
+  availableSeats &lt;- (sum . fmap seatsLeft) &lt;$> getSlots d
+  if availableSeats &lt; q
+    then writeLine $ "Only " ++ show availableSeats ++ " remaining seats."
+    else do
+      n &lt;- readAnything "Please enter your name:"
+      e &lt;- readAnything "Please enter your email address:"
+      postReservation Reservation
+        { reservationDate = d
+        , reservationName = n
+        , reservationEmail = e
+        , reservationQuantity = q }
+</pre>
+<p>And finally your interpreter needs to dispatch over <code>InL</code>/<code>InR</code> (this is using functions from <code>Control.Monad.Free</code>, you can actually drop the <code>Trans</code> import at this point):</p>
+<pre>
+interpretCommandLine :: CommandLineInstruction (IO a) -> IO a
+interpretCommandLine (ReadLine next) = getLine >>= next
+interpretCommandLine (WriteLine line next) = putStrLn line >> next
+
+interpretReservationsApi :: ReservationsApiInstruction (IO a) -> IO a
+interpretReservationsApi (GetSlots zt next) = HttpClient.getSlots zt >>= next
+interpretReservationsApi (PostReservation r next) = HttpClient.postReservation r >> next
+
+interpret :: Program a -> IO a
+interpret program =
+  iterM go program
+  where
+    go (InL cmd) = interpretCommandLine cmd
+    go (InR res) = interpretReservationsApi res
+</pre>
+<p>I find this to be quite clean!</p>
+</div>
+<div class="comment-date">2017-07-27T13:58:25.8210689+10:00</div>
+</div>
