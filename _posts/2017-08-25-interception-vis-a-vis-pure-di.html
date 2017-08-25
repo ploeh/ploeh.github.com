@@ -1,0 +1,351 @@
+---
+layout: post
+title: "Interception vis-à-vis Pure DI"
+date: 2017-08-25 13:57 UTC
+tags: [Dependency Injection, Software Design]
+---
+{% include JB/setup %}
+
+<div id="post">
+	<p>
+		<em>How do you do AOP with Pure DI?</em>
+	</p>
+	<p>
+		One of my readers, Nick Ball, asks me this question:
+	</p>
+	<blockquote>
+		<p>
+			"Just spent the last couple of hours reading chapter 9 of your book about Interceptors. The final few pages show how to use Castle Windsor to make the code DRYer. That's cool, but I'm quite a fan of Pure DI as I tend to think it keeps things simpler. Plus I'm working in a legacy C++ application which limits the tooling available to me.
+		</p>
+		<p>
+			"So, I was wondering if you had any suggestions on how to DRY up an interceptor in Pure DI? I know in your book you state that this is where DI containers come into their own, but I also know through reading your blog that you prefer going the Pure DI route too. Hence I wondered whether you'd had any further insight since the book publication?"
+		</p>
+	</blockquote>
+	<p>
+		It's been more than 15 years since I last did C++, so I'm going to give an answer based on C#, and hope it translates.
+	</p>
+	<p>
+		<strong>Position</strong>
+	</p>
+	<p>
+		I do, indeed, prefer <a href="http://blog.ploeh.dk/2014/06/10/pure-di">Pure DI</a>, but there may be <a href="http://blog.ploeh.dk/2012/11/06/WhentouseaDIContainer">cases where a DI Container is warranted</a>. Interception, or Aspect-Oriented Programming (AOP), is one such case, but obviously that doesn't help if you can't use a DI Container.
+	</p>
+	<p>
+		Another option for AOP is some sort of post-processor of your code. As I briefly cover in chapter 9 of <a href="http://amzn.to/12p90MG">my book</a>, in .NET this is typically done by a custom tool using 'IL-weaving'. As I also outline in the book, I'm not a big fan of this approach, but perhaps that could be an option in C++ as well. In any case, I'll proceed under the assumption that you want a strictly code-based solution, involving no custom tools or build steps.
+	</p>
+	<p>
+		All that said, I doubt that this is as much of a problem than one would think. AOP is typically used for cross-cutting concerns such as logging, caching, instrumentation, authorization, metering, or auditing. As an alternative, you can also <a href="http://blog.ploeh.dk/2010/04/07/DependencyInjectionisLooseCoupling">use Decorators for such cross-cutting concerns</a>. This seems daunting if you truly need to decorate hundreds, or even thousands, of classes. In such a case, convention-based interception seems like a <a href="https://en.wikipedia.org/wiki/Don%27t_repeat_yourself">DRY</a>er option.
+	</p>
+	<p>
+		You'd think.
+	</p>
+	<p>
+		In my experience, however, this is rarely the case. Typically, even when applying caching, logging, or authorisation logic, I've only had to create a handful of <a href="https://en.wikipedia.org/wiki/Decorator_pattern">Decorators</a>. Perhaps it's because I tend to keep my code bases to a manageable size.
+	</p>
+	<p>
+		If you only need a dozen Decorators, I don't think that the loss of compile-time safety and the added dependency warrants the use of a DI Container. That doesn't mean, however, that I can't aim for as DRY code as possible.
+	</p>
+	<p>
+		<strong>Instrument</strong>
+	</p>
+	<p>
+		If you don't have a DI Container or an AOP tool, I believe that a Decorator is the best way to address cross-cutting concerns, but I don't think there's any way around adding those Decorator classes. The aim, then, becomes to minimise the effort involved in creating and maintaining such classes.
+	</p>
+	<p>
+		As an example, I'll revisit <a href="http://blog.ploeh.dk/2010/09/20/InstrumentationwithDecoratorsandInterceptors">an old blog post</a>. In that post, the task was to instrument an <code>OrderProcessor</code> class. The solution shown in that article was to use <a href="http://www.castleproject.org/projects/windsor">Castle Windsor</a> to define an <code>IInterceptor</code>.
+	</p>
+	<p>
+		To recapitulate, the code for the Interceptor looks like this:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">InstrumentingInterceptor</span>&nbsp;:&nbsp;<span style="color:#2b91af;">IInterceptor</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;<span style="color:#2b91af;">IRegistrar</span>&nbsp;registrar;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;InstrumentingInterceptor(<span style="color:#2b91af;">IRegistrar</span>&nbsp;registrar)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;(registrar&nbsp;==&nbsp;<span style="color:blue;">null</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">throw</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">ArgumentNullException</span>(<span style="color:blue;">nameof</span>(registrar));
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.registrar&nbsp;=&nbsp;registrar;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;Intercept(<span style="color:#2b91af;">IInvocation</span>&nbsp;invocation)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;correlationId&nbsp;=&nbsp;<span style="color:#2b91af;">Guid</span>.NewGuid();
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.registrar.Register(correlationId,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">string</span>.Format(<span style="color:#a31515;">&quot;{0}&nbsp;begins&nbsp;({1})&quot;</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;invocation.Method.Name,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;invocation.TargetType.Name));
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;invocation.Proceed();
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.registrar.Register(correlationId,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">string</span>.Format(<span style="color:#a31515;">&quot;{0}&nbsp;ends&nbsp;&nbsp;&nbsp;({1})&quot;</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;invocation.Method.Name,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;invocation.TargetType.Name));
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+	</p>
+	<p>
+		While you can't use Castle Windsor, you can take the code and make a similar class out of it. Call it <code>Instrument</code>, because classes should have noun names, and <em>instrument</em> is a noun (right?).
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">Instrument</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;<span style="color:#2b91af;">IRegistrar</span>&nbsp;registrar;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;Instrument(<span style="color:#2b91af;">IRegistrar</span>&nbsp;registrar)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;(registrar&nbsp;==&nbsp;<span style="color:blue;">null</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">throw</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">ArgumentNullException</span>(<span style="color:blue;">nameof</span>(registrar));
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.registrar&nbsp;=&nbsp;registrar;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">T</span>&nbsp;Intercept&lt;<span style="color:#2b91af;">T</span>&gt;(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">string</span>&nbsp;methodName,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">string</span>&nbsp;typeName,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:#2b91af;">T</span>&gt;&nbsp;proceed)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;correlationId&nbsp;=&nbsp;<span style="color:#2b91af;">Guid</span>.NewGuid();
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.registrar.Register(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;correlationId,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">string</span>.Format(<span style="color:#a31515;">&quot;{0}&nbsp;begins&nbsp;({1})&quot;</span>,&nbsp;methodName,&nbsp;typeName));
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;result&nbsp;=&nbsp;proceed();
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.registrar.Register(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;correlationId,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">string</span>.Format(<span style="color:#a31515;">&quot;{0}&nbsp;ends&nbsp;&nbsp;&nbsp;({1})&quot;</span>,&nbsp;methodName,&nbsp;typeName));
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;result;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;Intercept(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">string</span>&nbsp;methodName,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">string</span>&nbsp;typeName,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Action</span>&nbsp;proceed)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;correlationId&nbsp;=&nbsp;<span style="color:#2b91af;">Guid</span>.NewGuid();
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.registrar.Register(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;correlationId,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">string</span>.Format(<span style="color:#a31515;">&quot;{0}&nbsp;begins&nbsp;({1})&quot;</span>,&nbsp;methodName,&nbsp;typeName));
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;proceed();
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.registrar.Register(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;correlationId,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">string</span>.Format(<span style="color:#a31515;">&quot;{0}&nbsp;ends&nbsp;&nbsp;&nbsp;({1})&quot;</span>,&nbsp;methodName,&nbsp;typeName));
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+	</p>
+	<p>
+		Instead of a single <code>Intercept</code> method, the <code>Instrument</code> class exposes two <code>Intercept</code> overloads; one for methods without a return value, and one for methods that return a value. Instead of an <code>IInvocation</code> argument, the overload for methods without a return value takes an <a href="https://msdn.microsoft.com/en-us/library/system.action">Action</a> delegate, whereas the other overload takes a <a href="https://msdn.microsoft.com/en-us/library/bb534960">Func&lt;T&gt;</a>.
+	</p>
+	<p>
+		Both overload also take <code>methodName</code> and <code>typeName</code> arguments.
+	</p>
+	<p>
+		Most of the code in the two methods is similar. While you could refactor to a <a href="https://en.wikipedia.org/wiki/Template_method_pattern">Template Method</a>, I invoke the <a href="https://en.wikipedia.org/wiki/Rule_of_three_(computer_programming)">Rule of three</a> and let the duplication stay for now.
+	</p>
+	<p>
+		<strong>Decorators</strong>
+	</p>
+	<p>
+		The <code>Instrument</code> class isn't going to magically create Decorators for you, but it reduces the effort of creating one:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">InstrumentedOrderProcessor2</span>&nbsp;:&nbsp;<span style="color:#2b91af;">IOrderProcessor</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;<span style="color:#2b91af;">IOrderProcessor</span>&nbsp;orderProcessor;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;<span style="color:#2b91af;">Instrument</span>&nbsp;instrument;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;InstrumentedOrderProcessor2(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">IOrderProcessor</span>&nbsp;orderProcessor,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Instrument</span>&nbsp;instrument)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;(orderProcessor&nbsp;==&nbsp;<span style="color:blue;">null</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">throw</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">ArgumentNullException</span>(<span style="color:blue;">nameof</span>(orderProcessor));
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;(instrument&nbsp;==&nbsp;<span style="color:blue;">null</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">throw</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">ArgumentNullException</span>(<span style="color:blue;">nameof</span>(instrument));
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.orderProcessor&nbsp;=&nbsp;orderProcessor;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.instrument&nbsp;=&nbsp;instrument;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">SuccessResult</span>&nbsp;Process(<span style="color:#2b91af;">Order</span>&nbsp;order)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:blue;">this</span>.instrument.Intercept(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">nameof</span>(Process),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.orderProcessor.GetType().Name,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;()&nbsp;=&gt;&nbsp;<span style="color:blue;">this</span>.orderProcessor.Process(order));
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+	</p>
+	<p>
+		I called this class <code>InstrumentedOrderProcessor2</code> with the <code>2</code> postfix because the previous article already contains a <code>InstrumentedOrderProcessor</code> class, and I wanted to make it clear that this is a new class.
+	</p>
+	<p>
+		Notice that <code>InstrumentedOrderProcessor2</code> is a Decorator of <code>IOrderProcessor</code>. It both implements the interface, and takes one as a dependency. It also takes an <code>Instrument</code> object as a <a href="http://blog.ploeh.dk/2012/08/31/ConcreteDependencies">Concrete Dependency</a>. This is mostly to enable reuse of a single <code>Instrument</code> object; no polymorphism is implied.
+	</p>
+	<p>
+		The decorated <code>Process</code> method simply delegates to the <code>instrument</code>'s <code>Intercept</code> method, passing as parameters the name of the method, the name of the decorated class, and a lambda expression that closes over the outer <code>order</code> method argument.
+	</p>
+	<p>
+		For simplicity's sake, the <code>Process</code> method invokes <code>this.orderProcessor.GetType().Name</code> every time it's called, which may not be efficient. Since the <code>orderProcessor</code> class field is <code>readonly</code>, though, you could optimise this by getting the name once and for all in the constructor, and assign the string to a third class field. I didn't want to complicate the example with irrelevant code, though.
+	</p>
+	<p>
+		Here's another Decorator:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">InstrumentedOrderShipper</span>&nbsp;:&nbsp;<span style="color:#2b91af;">IOrderShipper</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;<span style="color:#2b91af;">IOrderShipper</span>&nbsp;orderShipper;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;<span style="color:#2b91af;">Instrument</span>&nbsp;instrument;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;InstrumentedOrderShipper(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">IOrderShipper</span>&nbsp;orderShipper,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Instrument</span>&nbsp;instrument)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;(orderShipper&nbsp;==&nbsp;<span style="color:blue;">null</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">throw</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">ArgumentNullException</span>(<span style="color:blue;">nameof</span>(orderShipper));
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;(instrument&nbsp;==&nbsp;<span style="color:blue;">null</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">throw</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">ArgumentNullException</span>(<span style="color:blue;">nameof</span>(instrument));
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.orderShipper&nbsp;=&nbsp;orderShipper;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.instrument&nbsp;=&nbsp;instrument;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;Ship(<span style="color:#2b91af;">Order</span>&nbsp;order)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.instrument.Intercept(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">nameof</span>(Ship),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.orderShipper.GetType().Name,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;()&nbsp;=&gt;&nbsp;<span style="color:blue;">this</span>.orderShipper.Ship(order));
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+	</p>
+	<p>
+		As you can tell, it's similar to <code>InstrumentedOrderProcessor2</code>, but instead of <code>IOrderProcessor</code> it decorates <code>IOrderShipper</code>. The most significant difference is that the <code>Ship</code> method doesn't return any value, so you have to use the <code>Action</code>-based overload of <code>Intercept</code>.
+	</p>
+	<p>
+		For completeness sake, here's a third interesting example:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">InstrumentedUserContext</span>&nbsp;:&nbsp;<span style="color:#2b91af;">IUserContext</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;<span style="color:#2b91af;">IUserContext</span>&nbsp;userContext;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;<span style="color:#2b91af;">Instrument</span>&nbsp;instrument;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;InstrumentedUserContext(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">IUserContext</span>&nbsp;userContext,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Instrument</span>&nbsp;instrument)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;(userContext&nbsp;==&nbsp;<span style="color:blue;">null</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">throw</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">ArgumentNullException</span>(<span style="color:blue;">nameof</span>(userContext));
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;(instrument&nbsp;==&nbsp;<span style="color:blue;">null</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">throw</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">ArgumentNullException</span>(<span style="color:blue;">nameof</span>(instrument));
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.userContext&nbsp;=&nbsp;userContext;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.instrument&nbsp;=&nbsp;instrument;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">User</span>&nbsp;GetCurrentUser()
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:blue;">this</span>.instrument.Intercept(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">nameof</span>(GetCurrentUser),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.userContext.GetType().Name,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.userContext.GetCurrentUser);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">Currency</span>&nbsp;GetSelectedCurrency(<span style="color:#2b91af;">User</span>&nbsp;currentUser)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:blue;">this</span>.instrument.Intercept(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">nameof</span>(GetSelectedCurrency),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.userContext.GetType().Name,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;()&nbsp;=&gt;&nbsp;<span style="color:blue;">this</span>.userContext.GetSelectedCurrency(currentUser));
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+	</p>
+	<p>
+		This example demonstrates that you can also decorate an interface that defines more than a single method. The <code>IUserContext</code> interface defines both <code>GetCurrentUser</code> and <code>GetSelectedCurrency</code>. The <code>GetCurrentUser</code> method takes no arguments, so instead of a lambda expression, you can pass the delegate using method group syntax.
+	</p>
+	<p>
+		<strong>Composition</strong>
+	</p>
+	<p>
+		You can add such instrumenting Decorators for all appropriate interfaces. It's trivial (and automatable) work, but it's easy to do. While it seems repetitive, I can't come up with a more DRY way to do it without resorting to some sort of run-time Interception or AOP tool.
+	</p>
+	<p>
+		There's some repetitive code, but I don't think that the maintenance overhead is particularly great. The Decorators do minimal work, so it's unlikely that there are many defects in that area of your code base. If you need to change the instrumentation implementation in itself, the <code>Instrument</code> class has that (single) responsibility.
+	</p>
+	<p>
+		Assuming that you've added all desired Decorators, you can use Pure DI to compose an object graph:
+	</p>
+	<p>
+		<pre><span style="color:blue;">var</span>&nbsp;instrument&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Instrument</span>(registrar);
+<span style="color:blue;">var</span>&nbsp;sut&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">InstrumentedOrderProcessor2</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">OrderProcessor</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">InstrumentedOrderValidator</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">TrueOrderValidator</span>(),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;instrument),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">InstrumentedOrderShipper</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">OrderShipper</span>(),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;instrument),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">InstrumentedOrderCollector</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">OrderCollector</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">InstrumentedAccountsReceivable</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">AccountsReceivable</span>(),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;instrument),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">InstrumentedRateExchange</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">RateExchange</span>(),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;instrument),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">InstrumentedUserContext</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">UserContext</span>(),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;instrument)),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;instrument)),
+&nbsp;&nbsp;&nbsp;&nbsp;instrument);</pre>
+	</p>
+	<p>
+		This code fragment is from a unit test, which explains why the object is called <code>sut</code>. In case you're wondering, this is also the reason for the existence of the curiously named class <code>TrueOrderValidator</code>. This is a test-specific <a href="http://xunitpatterns.com/Test%20Stub.html">Stub</a> of <code>IOrderValidator</code> that always returns <code>true</code>.
+	</p>
+	<p>
+		As you can see, each leaf implementation of an interface is contained within an <code>InstrumentedXyz</code> Decorator, which also takes a shared <code>instrument</code> object.
+	</p>
+	<p>
+		When I call the <code>sut</code>'s <code>Process</code> method with a proper <code>Order</code> object, I get output like this:
+	</p>
+	<p>
+		<pre>4ad34380-6826-440c-8d81-64bbd1f36d39  2017-08-25T17:49:18.43  Process begins (OrderProcessor)
+c85886a7-1ce8-4096-8a30-5f87bf0014e3  2017-08-25T17:49:18.52  Validate begins (TrueOrderValidator)
+c85886a7-1ce8-4096-8a30-5f87bf0014e3  2017-08-25T17:49:18.52  Validate ends   (TrueOrderValidator)
+8f7606b6-f3f7-4231-808d-d5e37f1f2201  2017-08-25T17:49:18.53  Collect begins (OrderCollector)
+28250a92-6024-439e-b010-f66c63903673  2017-08-25T17:49:18.55  GetCurrentUser begins (UserContext)
+28250a92-6024-439e-b010-f66c63903673  2017-08-25T17:49:18.56  GetCurrentUser ends   (UserContext)
+294ce552-201f-41d2-b7fc-291e2d3720d6  2017-08-25T17:49:18.56  GetCurrentUser begins (UserContext)
+294ce552-201f-41d2-b7fc-291e2d3720d6  2017-08-25T17:49:18.56  GetCurrentUser ends   (UserContext)
+96ee96f0-4b95-4b17-9993-33fa87972013  2017-08-25T17:49:18.57  GetSelectedCurrency begins (UserContext)
+96ee96f0-4b95-4b17-9993-33fa87972013  2017-08-25T17:49:18.58  GetSelectedCurrency ends   (UserContext)
+3af884e5-8e97-44ea-aa0d-2c9e0418110b  2017-08-25T17:49:18.59  Convert begins (RateExchange)
+3af884e5-8e97-44ea-aa0d-2c9e0418110b  2017-08-25T17:49:18.59  Convert ends   (RateExchange)
+b8bd0701-515b-44fe-949f-5f5fb5a4590d  2017-08-25T17:49:18.60  Collect begins (AccountsReceivable)
+b8bd0701-515b-44fe-949f-5f5fb5a4590d  2017-08-25T17:49:18.60  Collect ends   (AccountsReceivable)
+8f7606b6-f3f7-4231-808d-d5e37f1f2201  2017-08-25T17:49:18.60  Collect ends   (OrderCollector)
+beadabc4-df17-468f-8553-34ae4e3bdbfc  2017-08-25T17:49:18.60  Ship begins (OrderShipper)
+beadabc4-df17-468f-8553-34ae4e3bdbfc  2017-08-25T17:49:18.61  Ship ends   (OrderShipper)
+4ad34380-6826-440c-8d81-64bbd1f36d39  2017-08-25T17:49:18.61  Process ends   (OrderProcessor)</pre>
+	</p>
+	<p>
+		This is similar to the output from the previous article.
+	</p>
+	<p>
+		<strong>Summary</strong>
+	</p>
+	<p>
+		When writing object-oriented code, I still prefer Pure DI over using a DI Container, but if I absolutely needed to decorate many services, I'd seriously consider using a DI Container with run-time Interception capabilities. The need rarely materialises, though.
+	</p>
+	<p>
+		As an intermediate solution, you can use a delegation-based design like the one shown here. As always, it's all a matter of balancing the constraints and goals of the specific situation.
+	</p>
+</div>
