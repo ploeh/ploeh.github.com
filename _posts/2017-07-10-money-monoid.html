@@ -1,0 +1,342 @@
+---
+layout: post
+title: "Money monoid"
+date: 2017-07-10 5:53 UTC
+tags: [Software Design, Haskell, Unit Testing]
+---
+{% include JB/setup %}
+
+<div id="post">
+	<p>
+		<em>Kent Beck's money TDD example has some interesting properties.</em>
+	</p>
+	<p>
+		This article is part of a <a href="">series about monoids</a>. In short, a <em>monoid</em> is an associative binary operation with a neutral element (also known as <em>identity</em>).
+	</p>
+	<p>
+		In the first half of <a href="http://bit.ly/tddbe">Test-Driven Development By Example</a> Kent Beck explores how to develop a simple and flexible Money API using test-driven development. Towards the end, he arrives at a design that warrants further investigation.
+	</p>
+	<p>
+		<strong>Kent Beck's API</strong>
+	</p>
+	<p>
+		The following treatment of Kent Beck's code is based on <a href="http://yawar.blogspot.com">Yawar Amin</a>'s <a href="https://github.com/yawaramin/TDDMoney">C# reproduction</a> of Kent Beck's original Java code, further <a href="https://github.com/ploeh/TDDMoney">forked and manipulated</a> by me.
+	</p>
+	<p>
+		The goal of Kent Beck's exercise is to develop an object-oriented API able to handle money of multiple currencies, and for example be able to express operations such as <em>5 USD + 10 CHF</em>. Towards the end of the example, he arrives at an interface that, translated to C#, looks like this:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">interface</span>&nbsp;<span style="color:#2b91af;">IExpression</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Money</span>&nbsp;Reduce(<span style="color:#2b91af;">Bank</span>&nbsp;bank,&nbsp;<span style="color:blue;">string</span>&nbsp;to);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">IExpression</span>&nbsp;Plus(<span style="color:#2b91af;">IExpression</span>&nbsp;addend);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">IExpression</span>&nbsp;Times(<span style="color:blue;">int</span>&nbsp;multiplier);
+}</pre>
+	</p>
+	<p>
+		The <code>Reduce</code> method reduces an <code>IExpression</code> object to a single currency (<code>to</code>), represented as a <code>Money</code> object. This is useful if you have an <code>IExpression</code> object that contains several currencies.
+	</p>
+	<p>
+		The <code>Plus</code> method adds another <code>IExpression</code> object to the current object, and returns a new <code>IExpression</code>. This could be money in a single currency, but could also represent money held in more than one currency.
+	</p>
+	<p>
+		The <code>Times</code> method multiplies an <code>IExpression</code> with a multiplier. You'll notice that, throughout this example code base, both multiplier and amounts are modelled as integers. I think that Kent Beck did this as a simplification, but a more realistic example should use <code>decimal</code> values.
+	</p>
+	<p>
+		The metaphor is that you can model money as one or more <em>expressions</em>. A simple expression would be <em>5 USD</em>, but you could also have <em>5 USD + 10 CHF</em> or <em>5 USD + 10 CHF + 10 USD</em>. While you can reduce some expressions, such as <em>5 CHF + 7 CHF</em>, you can't reduce an expression like <em>5 USD + 10 CHF</em> unless you have an exchange rate. Instead of attempting to reduce monetary values, this particular design builds an expression tree until you decide to evaluate it. (<a href="">Sounds familiar?</a>)
+	</p>
+	<p>
+		Kent Beck implements <code>IExpression</code> twice:
+		<ul>
+			<li><code>Money</code> models an amount in a single currency. It contains an <code>Amount</code> and a <code>Currency</code> read-only property. It's the quintessential <a href="https://en.wikipedia.org/wiki/Value_object">Value Object</a>.</li>
+			<li><code>Sum</code> models the sum of two other <code>IExpression</code> objects. It contains two other <code>IExpression</code> objects, called <code>Augend</code> and <code>Addend</code>.</li>
+		</ul>
+		If you want to express <em>5 USD + 10 CHF</em>, you can write:
+	</p>
+	<p>
+		<pre><span style="color:#2b91af;">IExpression</span>&nbsp;sum&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Sum</span>(<span style="color:#2b91af;">Money</span>.Dollar(5),&nbsp;<span style="color:#2b91af;">Money</span>.Franc(10));
+</pre>
+	</p>
+	<p>
+		where <code>Money.Dollar</code> and <code>Money.Franc</code> are two static factory methods that return <code>Money</code> values.
+	</p>
+	<p>
+		<strong>Associativity</strong>
+	</p>
+	<p>
+		Did you notice that <code>Plus</code> <a href="">is a binary operation</a>? Could it be a monoid as well?
+	</p>
+	<p>
+		In order to be a monoid, it must obey the <em>monoid laws</em>, the first of which is that the operation must be associative. This means that for three <code>IExpression</code> objects, <code>x</code>, <code>y</code>, and <code>z</code>, <code>x.Plus(y).Plus(z)</code> must be equal to <code>x.Plus(y.Plus(z))</code>. How should you interpret equality here? The return value from <code>Plus</code> is another <code>IExpression</code> value, and interfaces don't have custom equality behaviour. Either, it's up to the individual implementations (<code>Money</code> and <code>Sum</code>) to override and implement equality, or you can use <a href="http://xunitpatterns.com/test-specific%20equality.html">test-specific equality</a>.
+	</p>
+	<p>
+		The <a href="https://xunit.github.io">xUnit.net</a> assertion library supports test-specific equality via custom comparers (for more details, see my <a href="http://www.shareasale.com/r.cfm?u=1017843&b=611266&m=53701&afftrack=&urllink=www%2Epluralsight%2Ecom%2Fcourses%2Fadvanced%2Dunit%2Dtesting">Advanced Unit Testing</a> Pluralsight course). The original Money API does, however, already include a way to compare expressions!
+	</p>
+	<p>
+		The <code>Reduce</code> method can reduce any <code>IExpression</code> to a single <code>Money</code> object (that is, to a single currency), and since <code>Money</code> is a Value Object, it has structural equality. You can use this to compare the values of <code>IExpression</code> objects. All you need is an exchange rate.
+	</p>
+	<p>
+		In the book, Kent Beck uses a 2:1 exchange rate between CHF and USD. As I'm writing this, the exchange rate is 0.96 Swiss Franc to a Dollar, but since the example code consistently models money as integers, that rounds to a 1:1 exchange rate. This is, however, a degenerate case, so instead, I'm going to stick to the book's original 2:1 exchange rate.
+	</p>
+	<p>
+		You can now add an <a href="https://en.wikipedia.org/wiki/Adapter_pattern">Adapter</a> between <code>Reduce</code> and xUnit.net in the form of an <code>IEqualityComparer&lt;IExpression&gt;</code>:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">ExpressionEqualityComparer</span>&nbsp;:&nbsp;<span style="color:#2b91af;">IEqualityComparer</span>&lt;<span style="color:#2b91af;">IExpression</span>&gt;
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;<span style="color:#2b91af;">Bank</span>&nbsp;bank;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;ExpressionEqualityComparer()
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;bank&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Bank</span>();
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;bank.AddRate(<span style="color:#a31515;">&quot;CHF&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;USD&quot;</span>,&nbsp;2);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">bool</span>&nbsp;Equals(<span style="color:#2b91af;">IExpression</span>&nbsp;x,&nbsp;<span style="color:#2b91af;">IExpression</span>&nbsp;y)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;xm&nbsp;=&nbsp;bank.Reduce(x,&nbsp;<span style="color:#a31515;">&quot;USD&quot;</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;ym&nbsp;=&nbsp;bank.Reduce(y,&nbsp;<span style="color:#a31515;">&quot;USD&quot;</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:blue;">object</span>.Equals(xm,&nbsp;ym);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">int</span>&nbsp;GetHashCode(<span style="color:#2b91af;">IExpression</span>&nbsp;obj)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;bank.Reduce(obj,&nbsp;<span style="color:#a31515;">&quot;USD&quot;</span>).GetHashCode();
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+	</p>
+	<p>
+		You'll notice that this custom equality comparer uses a <code>Bank</code> object with a 2:1 exchange rate. <code>Bank</code> is another object from the <em>Test-Driven Development</em> example. It doesn't implement any interface itself, but it does appear as an argument in the <code>Reduce</code> method.
+	</p>
+	<p>
+		In order to make your test code more readable, you can add a static helper class:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">Compare</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:#2b91af;">ExpressionEqualityComparer</span>&nbsp;UsingBank&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">ExpressionEqualityComparer</span>();
+}</pre>
+	</p>
+	<p>
+		This enables you to write an assertion for associativity like this:
+	</p>
+	<p>
+		<pre><span style="color:#2b91af;">Assert</span>.Equal(
+&nbsp;&nbsp;&nbsp;&nbsp;x.Plus(y).Plus(z),
+&nbsp;&nbsp;&nbsp;&nbsp;x.Plus(y.Plus(z)),
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Compare</span>.UsingBank);</pre>
+	</p>
+	<p>
+		In my fork of Yawar Amin's code base, I added this assertion to an <a href="https://fscheck.github.io/FsCheck">FsCheck</a>-based automated test, and it holds for all the <code>Sum</code> and <code>Money</code> objects that FsCheck generates.
+	</p>
+	<p>
+		In its present incarnation, <code>IExpression.Plus</code> is associative, but it's worth noting that this isn't guaranteed to last. An interface like <code>IExpression</code> is an extensibility point, so someone could easily add a third implementation that would violate associativity. We can tentatively conclude that <code>Plus</code> is currently associative, but that the situation is delicate.
+	</p>
+	<p>
+		<strong>Identity</strong>
+	</p>
+	<p>
+		If you accept that <code>IExpression.Plus</code> is associative, it's a monoid candidate. If an identity element exists, then it's a monoid.
+	</p>
+	<p>
+		Kent Beck never adds an identity element in his book, but you can add one yourself:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">Plus</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:#2b91af;">IExpression</span>&nbsp;Identity&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">PlusIdentity</span>();
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">PlusIdentity</span>&nbsp;:&nbsp;<span style="color:#2b91af;">IExpression</span>
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">IExpression</span>&nbsp;Plus(<span style="color:#2b91af;">IExpression</span>&nbsp;addend)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;addend;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">Money</span>&nbsp;Reduce(<span style="color:#2b91af;">Bank</span>&nbsp;bank,&nbsp;<span style="color:blue;">string</span>&nbsp;to)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Money</span>(0,&nbsp;to);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">IExpression</span>&nbsp;Times(<span style="color:blue;">int</span>&nbsp;multiplier)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:blue;">this</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+	</p>
+	<p>
+		There's only a single identity element, so it makes sense to make it a <a href="https://en.wikipedia.org/wiki/Singleton_pattern">Singleton</a>. The private <code>PlusIdentity</code> class is a new <code>IExpression</code> implementation that deliberately doesn't do anything.
+	</p>
+	<p>
+		In <code>Plus</code>, it simply returns the input expression. This is the same behaviour as zero has for integer addition. When adding numbers together, zero is the identity element, and the same is the case here. This is more explicitly visible in the <code>Reduce</code> method, where the identity expression simply reduces to zero in the requested currency. Finally, if you multiply the identity element, you still get the identity element. Here, interestingly, <code>PlusIdentity</code> behaves similar to the identity element for multiplication (<em>1</em>).
+	</p>
+	<p>
+		You can now write the following assertions for any <code>IExpression x</code>:
+	</p>
+	<p>
+		<pre><span style="color:#2b91af;">Assert</span>.Equal(x,&nbsp;x.Plus(<span style="color:#2b91af;">Plus</span>.Identity),&nbsp;<span style="color:#2b91af;">Compare</span>.UsingBank);
+<span style="color:#2b91af;">Assert</span>.Equal(x,&nbsp;<span style="color:#2b91af;">Plus</span>.Identity.Plus(x),&nbsp;<span style="color:#2b91af;">Compare</span>.UsingBank);</pre>
+	</p>
+	<p>
+		Running this as a property-based test, it holds for all <code>x</code> generated by FsCheck. The same caution that applies to associativity also applies here: <code>IExpression</code> is an extensibility point, so you can't be sure that <code>Plus.Identity</code> will be the the identity element for all <code>IExpression</code> implementations someone could create, but for the the three implementations that now exist, the monoid laws hold.
+	</p>
+	<p>
+		<code>IExpression.Plus</code> is a monoid.
+	</p>
+	<p>
+		<strong>Multiplication</strong>
+	</p>
+	<p>
+		In basic arithmetic, the multiplication operator is called <em>times</em>. When you write <em>3 * 5</em>, it literally means that you have 3 five times (or do you you have 5 three times?). In other words:
+	</p>
+	<p>
+		<pre>3 * 5 = 3 + 3 + 3 + 3 + 3</pre>
+	</p>
+	<p>
+		Does a similar relationship exist for <code>IExpression</code>?
+	</p>
+	<p>
+		Perhaps, we can take a hint from <a href="https://www.haskell.org">Haskell</a>, where monoids and semigroups are explicit parts of the core library. You're going to learn about semigroups later, but for now, it's interesting to observe that the <code>Semigroup</code> typeclass defines a function called <code>stimes</code>, which has the type <code>Integral b =&gt; b -&gt; a -&gt; a</code>. Basically, what this means that for any integer type (16-bit integer, 32-bit integer, etc.) <code>stimes</code> takes an integer and a value <code>a</code> and 'multiplies' the value. Here, <code>a</code> is a type for which a binary operation exists.
+	</p>
+	<p>
+		In C# syntax, <code>stimes</code> would look like this as an instance method on a <code>Foo</code> class:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">Foo</span>&nbsp;Times(<span style="color:blue;">int</span>&nbsp;multiplier)
+</pre>
+	</p>
+	<p>
+		I named the method <code>Times</code> instead of <code>STimes</code>, since I strongly suspect that the <em>s</em> in Haskell's <code>stimes</code> stands for <code>Semigroup</code>.
+	</p>
+	<p>
+		Notice how this is the same type of signature as <code>IExpression.Times</code>.
+	</p>
+	<p>
+		If it's possible to define a universal implementation of such a function in Haskell, could you do the same in C#? In <code>Money</code>, you can implement <code>Times</code> based on <code>Plus</code>:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">IExpression</span>&nbsp;Times(<span style="color:blue;">int</span>&nbsp;multiplier)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:#2b91af;">Enumerable</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.Repeat((<span style="color:#2b91af;">IExpression</span>)<span style="color:blue;">this</span>,&nbsp;multiplier)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.Aggregate((x,&nbsp;y)&nbsp;=&gt;&nbsp;x.Plus(y));
+}</pre>
+	</p>
+	<p>
+		The static <code>Repeat</code> LINQ method returns <code>this</code> as many times as requested by <code>multiplier</code>. The return value is an <code>IEnumerable&lt;IExpression&gt;</code>, but you according to the <code>IExpression</code> interface, <code>Times</code> must return a single <code>IExpression</code> value. You can use the <code>Aggregate</code> LINQ method to repeatedly combine two <code>IExpression</code> values (<code>x</code> and <code>y</code>) to one, using the <code>Plus</code> method.
+	</p>
+	<p>
+		This implementation is hardly as efficient as the previous, individual implementation, but the point here isn't about efficiency, but about a common, reusable abstraction. The exact same implementation can be used to implement <code>Sum.Times</code>:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">IExpression</span>&nbsp;Times(<span style="color:blue;">int</span>&nbsp;multiplier)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:#2b91af;">Enumerable</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.Repeat((<span style="color:#2b91af;">IExpression</span>)<span style="color:blue;">this</span>,&nbsp;multiplier)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.Aggregate((x,&nbsp;y)&nbsp;=&gt;&nbsp;x.Plus(y));
+}</pre>
+	</p>
+	<p>
+		This is literally the same code as for <code>Money.Times</code>. You can also copy and paste this code to <code>PlusIdentity.Times</code>, but I'm not going to repeat it here, because it's the same code as above.
+	</p>
+	<p>
+		This means that you can remove the <code>Times</code> method from <code>IExpression</code>:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">interface</span>&nbsp;<span style="color:#2b91af;">IExpression</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Money</span>&nbsp;Reduce(<span style="color:#2b91af;">Bank</span>&nbsp;bank,&nbsp;<span style="color:blue;">string</span>&nbsp;to);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">IExpression</span>&nbsp;Plus(<span style="color:#2b91af;">IExpression</span>&nbsp;addend);
+}</pre>
+	</p>
+	<p>
+		Instead, you can implement it as an extension method:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">Expression</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:#2b91af;">IExpression</span>&nbsp;Times(<span style="color:blue;">this</span>&nbsp;<span style="color:#2b91af;">IExpression</span>&nbsp;exp,&nbsp;<span style="color:blue;">int</span>&nbsp;multiplier)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:#2b91af;">Enumerable</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.Repeat(exp,&nbsp;multiplier)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.Aggregate((x,&nbsp;y)&nbsp;=&gt;&nbsp;x.Plus(y));
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+	</p>
+	<p>
+		This works because any <code>IExpression</code> object has a <code>Plus</code> method.
+	</p>
+	<p>
+		As I've already admitted, this is likely to be less efficient than specialised implementations of <code>Times</code>. In Haskell, this is addressed by making <code>stimes</code> part of the typeclass, so that implementers can implement a more efficient algorithm than the default implementation. In C#, the same effect could be achieved by refactoring <code>IExpression</code> to an abstract base class, with <code>Times</code> as a public virtual (overridable) method.
+	</p>
+	<p>
+		<strong>Haskell sanity check</strong>
+	</p>
+	<p>
+		Since Haskell has a more formal definition of a monoid, you may want to try to port Kent Beck's API to Haskell, as a proof of concept. In its final modification, my C# fork has three implementations of <code>IExpression</code>:
+		<ul>
+			<li><code>Money</code></li>
+			<li><code>Sum</code></li>
+			<li><code>PlusIdentity</code></li>
+		</ul>
+		While interfaces are extensible, we were rightfully uneasy about this, so in Haskell, it seems safer to model these three subtypes as a sum type:
+	</p>
+	<p>
+		<pre><span style="color:blue;">data</span>&nbsp;<span style="color:#dd0000;">Expression</span>&nbsp;<span style="color:#666666;">=</span>&nbsp;<span style="color:#dd0000;">Money</span>&nbsp;{&nbsp;amount&nbsp;<span style="color:#666666;">::</span>&nbsp;<span style="color:#dd0000;">Int</span>,&nbsp;currency&nbsp;<span style="color:#666666;">::</span>&nbsp;<span style="color:#dd0000;">String</span>&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#666666;">|</span>&nbsp;<span style="color:#dd0000;">Sum</span>&nbsp;{&nbsp;augend&nbsp;<span style="color:#666666;">::</span>&nbsp;<span style="color:#dd0000;">Expression</span>,&nbsp;addend&nbsp;<span style="color:#666666;">::</span>&nbsp;<span style="color:#dd0000;">Expression</span>&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#666666;">|</span>&nbsp;<span style="color:#dd0000;">MoneyIdentity</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">deriving</span>&nbsp;(<span style="color:#a31515;">Show</span>,&nbsp;<span style="color:#a31515;">Eq</span>)</pre>
+	</p>
+	<p>
+		You can formally make this a <code>Monoid</code>:
+	</p>
+	<p>
+		<pre><span style="color:blue;">instance</span>&nbsp;<span style="color:blue;">Monoid</span>&nbsp;<span style="color:blue;">Expression</span>&nbsp;<span style="color:blue;">where</span>
+&nbsp;&nbsp;mempty&nbsp;<span style="color:#666666;">=</span>&nbsp;<span style="color:#dd0000;">MoneyIdentity</span>
+&nbsp;&nbsp;mappend&nbsp;<span style="color:#dd0000;">MoneyIdentity</span>&nbsp;y&nbsp;<span style="color:#666666;">=</span>&nbsp;y
+&nbsp;&nbsp;mappend&nbsp;x&nbsp;<span style="color:#dd0000;">MoneyIdentity</span>&nbsp;<span style="color:#666666;">=</span>&nbsp;x
+&nbsp;&nbsp;mappend&nbsp;x&nbsp;y&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#666666;">=</span>&nbsp;<span style="color:#dd0000;">Sum</span>&nbsp;x&nbsp;y</pre>
+	</p>
+	<p>
+		The C# <code>Plus</code> method is here implemented by the <code>mappend</code> function. The only remaining member of <code>IExpression</code> is <code>Reduce</code>, which you can implement like this:
+	</p>
+	<p>
+		<pre><span style="color:#600277;">reduce</span>&nbsp;::&nbsp;<span style="color:blue;">Ord</span>&nbsp;a&nbsp;<span style="color:blue;">=&gt;</span>&nbsp;<span style="color:blue;">Map</span>&nbsp;(String,&nbsp;a)&nbsp;Int&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;a&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">Expression</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;Int
+reduce&nbsp;bank&nbsp;to&nbsp;(<span style="color:#dd0000;">Money</span>&nbsp;a&nbsp;c)&nbsp;<span style="color:#666666;">=</span>&nbsp;a&nbsp;<span style="color:#666666;">`div`</span>&nbsp;rate
+&nbsp;&nbsp;<span style="color:blue;">where</span>&nbsp;rate&nbsp;<span style="color:#666666;">=</span>&nbsp;bank&nbsp;<span style="color:#666666;">!</span>&nbsp;(c,&nbsp;to)
+reduce&nbsp;bank&nbsp;to&nbsp;(<span style="color:#dd0000;">Sum</span>&nbsp;x&nbsp;y)&nbsp;<span style="color:#666666;">=</span>&nbsp;reduce&nbsp;bank&nbsp;to&nbsp;x&nbsp;<span style="color:#666666;">+</span>&nbsp;reduce&nbsp;bank&nbsp;to&nbsp;y
+reduce&nbsp;_&nbsp;_&nbsp;<span style="color:#dd0000;">MoneyIdentity</span>&nbsp;<span style="color:#666666;">=</span>&nbsp;<span style="color:#09885a;">0</span></pre>
+	</p>
+	<p>
+		Haskell's typeclass mechanism takes care of the rest, so that, for example, you can reproduce one of Kent Beck's original tests like this:
+	</p>
+	<p>
+		<pre>λ&gt; let bank = fromList [(("CHF","USD"),2), (("USD", "USD"),1)]
+λ&gt; let sum = stimesMonoid 2 $ MoneyPort.Sum (Money 5 "USD") (Money 10 "CHF")
+λ&gt; reduce bank "USD" sum
+20</pre>
+	</p>
+	<p>
+		Just like <code>stimes</code> works for any <code>Semigroup</code>, <code>stimesMonoid</code> is defined for any <code>Monoid</code>, and therefore you can also use it with <code>Expression</code>.
+	</p>
+	<p>
+		With the historical 2:1 exchange rate, 5 Dollars + 10 Swiss Franc, times 2, is equivalent to 20 Dollars.
+	</p>
+	<p>
+		<strong>Summary</strong>
+	</p>
+	<p>
+		In chapter 17 of his book, Kent Beck describes that he'd been TDD'ing a Money API many times before trying out the expression-based API he ultimately used in the book. In other words, he had much experience, both with this particular problem, and with programming in general. Clearly this is a highly skilled programmer at work.
+	</p>
+	<p>
+		I find it interesting that he seems to intuitively arrive at a design involving a monoid and an interpreter. If he did this on purpose, he doesn't say so in the book, so I rather speculate that he arrived at the design simply because he recognised its superiority. This is the reason that I find it interesting to identify this, <em>an existing example</em>, as a monoid, because it indicates that there's something supremely comprehensible about monoid-based APIs. It's conceptually 'just like addition'.
+	</p>
+	<p>
+		In this article, we returned to a decade-old code example in order to identify it as a monoid. In the next article, I'm going to revisit an example code base of mine from 2015.
+	</p>
+	<p>
+		<strong>Next: </strong> Convex hull monoid.
+	</p>
+</div>
