@@ -1,0 +1,137 @@
+---
+layout: post
+title: "Convex hull monoid"
+date: 2017-07-11 5:39 UTC
+tags: [Software Design, F#, Unit Testing]
+---
+{% include JB/setup %}
+
+<div id="post">
+	<p>
+		<em>The union of convex hulls form a monoid. Yet another non-trivial monoid example, this time in F#.</em>
+	</p>
+	<p>
+		This article is part of a <a href="">series about monoids</a>. In short, a <em>monoid</em> is an associative binary operation with a neutral element (also known as <em>identity</em>).
+	</p>
+	<p>
+		<strong>Convex hull</strong>
+	</p>
+	<p>
+		In <a href="http://blog.ploeh.dk/2015/10/19/visual-value-verification">a past article</a> I've described my adventures with finding <a href="https://en.wikipedia.org/wiki/Convex_hull">convex hulls</a> in F#. The convex hulls I've been looking at form the external convex boundary of a set of two-dimensional points. While you can generalise the concept of convex hulls to <em>n</em> dimensions, we're going to stick to two-dimensional hulls here.
+	</p>
+	<p>
+		<img src="/content/binary/convex-hull-example-01.png" alt="A 2D convex hull example.">
+	</p>
+	<p>
+		If you have two convex hulls, you can find the convex hull of both:
+	</p>
+	<p>
+		<img src="/content/binary/convex-hull-union.png" alt="A union of two convex hulls.">
+	</p>
+	<p>
+		Here, the dark green outline is the convex hull of the two lighter-coloured hulls.
+	</p>
+	<p>
+		Finding the convex hull of two other hulls is a binary operation. Is it a monoid?
+	</p>
+	<p>
+		In order to examine that, I'm going to make some changes to my <a href="https://github.com/ploeh/Hull">existing code base</a>, the most important of which is that I'm going to introduce a <code>Hull</code> type. The intent is that if points are contained within this type, then only the convex hull remains. It'd be better if it was possible to make the
+    case constructor private, but if one does that, then the <code>hull</code> function can no longer be inlined and generic.
+	</p>
+	<p>
+		<pre><span style="color:blue;">type</span>&nbsp;<span style="color:teal;">Hull</span>&lt;&#39;a&gt;&nbsp;=&nbsp;<span style="color:navy;">Hull</span>&nbsp;<span style="color:blue;">of</span>&nbsp;(&#39;a&nbsp;*&nbsp;&#39;a)&nbsp;<span style="color:teal;">list</span>
+</pre>
+	</p>
+	<p>
+		With the addition of the <code>Hull</code> type, you can now add a binary operation:
+	</p>
+	<p>
+		<pre><span style="color:green;">//&nbsp;Hull&lt;&#39;a&gt;&nbsp;-&gt;&nbsp;Hull&lt;&#39;a&gt;&nbsp;-&gt;&nbsp;Hull&lt;&#39;a&gt;</span>
+<span style="color:blue;">let</span>&nbsp;<span style="color:blue;">inline</span>&nbsp;(+)&nbsp;(<span style="color:navy;">Hull</span>&nbsp;x)&nbsp;(<span style="color:navy;">Hull</span>&nbsp;y)&nbsp;=&nbsp;<span style="color:navy;">hull</span>&nbsp;(x&nbsp;@&nbsp;y)</pre>
+	</p>
+	<p>
+		This operation explicitly uses the <code>+</code> operator, so I'm clearly anticipating events here. Nothing much is going on, though. The function pattern-matches the points out of two <code>Hull</code> values. <code>x</code> and <code>y</code> are two lists of points. The <code>+</code> function concatenates the two lists with the <code>@</code> operator, and finds the convex hull of this new list of points.
+	</p>
+	<p>
+		<strong>Associativity</strong>
+	</p>
+	<p>
+		My choice of operator strongly suggests that the <code>+</code> operation is a monoid. If you have three hulls, the order in which you find the hulls doesn't matter. One way to demonstrate that property is with property-based testing. In this article, I'm using <a href="https://github.com/hedgehogqa/fsharp-hedgehog">Hedgehog</a>.
+	</p>
+	<p>
+		<pre>[&lt;<span style="color:teal;">Fact</span>&gt;]
+<span style="color:blue;">let</span>&nbsp;<span style="color:navy;">``Hull&nbsp;addition&nbsp;is&nbsp;associative``</span>&nbsp;()&nbsp;=&nbsp;<span style="color:teal;">Property</span>.<span style="color:navy;">check</span>&nbsp;&lt;|&nbsp;<span style="color:blue;">property</span>&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;(x,&nbsp;y,&nbsp;z)&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:teal;">Range</span>.<span style="color:navy;">linear</span>&nbsp;-10000&nbsp;10000
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:teal;">Gen</span>.<span style="color:navy;">int</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:teal;">Gen</span>.<span style="color:navy;">tuple</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:teal;">Gen</span>.<span style="color:navy;">list</span>&nbsp;(<span style="color:teal;">Range</span>.<span style="color:navy;">linear</span>&nbsp;0&nbsp;100)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:teal;">Gen</span>.<span style="color:navy;">tuple3</span>
+&nbsp;&nbsp;&nbsp;&nbsp;(<span style="color:navy;">hull</span>&nbsp;x&nbsp;+&nbsp;<span style="color:navy;">hull</span>&nbsp;y)&nbsp;+&nbsp;<span style="color:navy;">hull</span>&nbsp;z&nbsp;=!&nbsp;<span style="color:navy;">hull</span>&nbsp;x&nbsp;+&nbsp;(<span style="color:navy;">hull</span>&nbsp;y&nbsp;+&nbsp;<span style="color:navy;">hull</span>&nbsp;z)&nbsp;}</pre>		
+	</p>
+	<p>
+		This automated test generates three lists of points, <code>x</code>, <code>y</code>, and <code>z</code>. The <code>hull</code> function uses the <a href="https://en.wikipedia.org/wiki/Graham_scan">Graham Scan</a> algorithm to find the hull, and part of that algorithm includes calculating the cross product of three points. For large enough integers, the cross product will overflow, so the property constrains the point coordinates to stay within -10,000 and 10,000. The implication of that is that although <code>+</code> is associative, it's only associative for a subset of all 32-bit integers. I could probably change the internal implementation so that it calculates the cross product using <a href="https://msdn.microsoft.com/en-us/library/system.numerics.biginteger">bigint</a>, but I'll leave that as an exercise to you.
+	</p>
+	<p>
+		For performance reasons, I also arbitrarily decided to constrain the size of each set of points to between 0 and 100 elements. If I change the maximum count to 1,000, it takes my laptop 9 seconds to run the test.
+	</p>
+	<p>
+		In addition to Hedgehog, this test also uses <a href="https://xunit.github.io">xUnit.net</a>, and <a href="http://www.swensensoftware.com/unquote">Unquote</a> for assertions. The <code>=!</code> operator is the Unquote way of saying <em>must equal</em>. It's an assertion.
+	</p>
+	<p>
+		This property passes, which demonstrates that the <code>+</code> operator for convex hulls is associative.
+	</p>
+	<p>
+		<strong>Identity</strong>
+	</p>
+	<p>
+		Likewise, you can write a property-based test that demonstrates that an identity element exists for the <code>+</code> operator:
+	</p>
+	<p>
+		<pre>[&lt;<span style="color:teal;">Fact</span>&gt;]
+<span style="color:blue;">let</span>&nbsp;<span style="color:navy;">``&nbsp;Hull&nbsp;addition&nbsp;has&nbsp;identity``</span>&nbsp;()&nbsp;=&nbsp;<span style="color:teal;">Property</span>.<span style="color:navy;">check</span>&nbsp;&lt;|&nbsp;<span style="color:blue;">property</span>&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;x&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:teal;">Range</span>.<span style="color:navy;">linear</span>&nbsp;-10000&nbsp;10000
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:teal;">Gen</span>.<span style="color:navy;">int</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:teal;">Gen</span>.<span style="color:navy;">tuple</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:teal;">Gen</span>.<span style="color:navy;">list</span>&nbsp;(<span style="color:teal;">Range</span>.<span style="color:navy;">linear</span>&nbsp;0&nbsp;100)
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;hasIdentity&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:teal;">Hull</span>.identity&nbsp;+&nbsp;<span style="color:navy;">hull</span>&nbsp;x&nbsp;=&nbsp;<span style="color:navy;">hull</span>&nbsp;x&nbsp;+&nbsp;<span style="color:teal;">Hull</span>.identity&nbsp;&amp;&amp;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:navy;">hull</span>&nbsp;x&nbsp;+&nbsp;<span style="color:teal;">Hull</span>.identity&nbsp;=&nbsp;<span style="color:navy;">hull</span>&nbsp;x
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:navy;">test</span>&nbsp;<span style="background:yellow;">&lt;@&nbsp;</span><span style="background:yellow;">hasIdentity</span><span style="background:yellow;">&nbsp;@&gt;</span>&nbsp;}</pre>
+	</p>
+	<p>
+		This test generates a list of integer pairs (<code>x</code>) and applies the <code>+</code> operator to <code>x</code> and <code>Hull.identity</code>. The test passes for all <code>x</code> that Hedgehog generates.
+	</p>
+	<p>
+		What's <code>Hull.identity</code>?
+	</p>
+	<p>
+		It's simply the empty hull:
+	</p>
+	<p>
+		<pre><span style="color:blue;">module</span>&nbsp;<span style="color:teal;">Hull</span>&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;identity&nbsp;=&nbsp;<span style="color:navy;">Hull</span>&nbsp;[]</pre>
+	</p>
+	<p>
+		If you have a set of zero 2D points, then the convex hull is empty as well.
+	</p>
+	<p>
+		With the caveats about integer overflow, the <code>+</code> operator for convex hulls is a monoid.
+	</p>
+	<p>
+		<strong>Summary</strong>
+	</p>
+	<p>
+		If you consider that the <code>Hull</code> type is nothing but a container for a list, it should come as no surprise that a monoid exists. After all, <a href="">list concatenation is a monoid</a>, and the <code>+</code> operator shown here is a combination of list concatenation (<code>@</code>) and a Graham Scan.
+	</p>
+	<p>
+		The point of this article was mostly to demonstrate that monoids exist not only for primitive types, but also for (some) more complex types. The <code>+</code> operator shown here is really a <a href="https://en.wikipedia.org/wiki/Union_(set_theory)">set union</a> operation. What about <a href="https://en.wikipedia.org/wiki/Intersection_(set_theory)">intersections</a> of convex hulls? Is that a monoid as well? I'll leave that as an exercise.
+	</p>
+	<p>
+		This article concludes the article series about monoids. In the next series of articles, you'll learn about a related category of operations.
+	</p>
+	<p>
+		<strong>Next:</strong> Tuple monoids.
+	</p>
+</div>
