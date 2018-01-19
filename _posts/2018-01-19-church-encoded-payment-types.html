@@ -1,0 +1,299 @@
+---
+layout: post
+title: "Church-encoded payment types"
+date: 2018-01-19 7:41 UTC
+tags: [Software Design]
+---
+{% include JB/setup %}
+
+<div id="post">
+	<p>
+		<em>How to translate a domain-specific sum type into a Church-encoded C# API. An article for object-oriented developers.</em>
+	</p>
+	<p>
+		This article is part of <a href="">a series of articles about Church encoding</a>. In the previous articles, you've seen <a href="">how to implement Boolean logic without Boolean primitives</a>, as well as <a href="">how to model natural numbers</a> and <a href="">how to implement a Maybe container</a>. Common to all three examples is that they're based on <a href="https://en.wikipedia.org/wiki/Tagged_union">sum types</a> with exactly two mutually exclusive cases.
+	</p>
+	<p>
+		<img src="/content/binary/binary-sum-types-and-matching-methods.png" alt="Three binary sum types, and their corresponding match methods.">
+	</p>
+	<p>
+		You may already have noticed that all three translate to <code>Match</code> methods that take two arguments. The translation is so mechanical that you could automate it. Each case in a sum type becomes an argument in a <code>Match</code> method. In this article, you'll see an example of a domain-specific sum type with three cases, translated to Church-encoding.
+	</p>
+	<p>
+		<strong>A payment type model in F#</strong>
+	</p>
+	<p>
+		In <a href="http://blog.ploeh.dk/2016/11/28/easy-domain-modelling-with-types">a previous article</a> I described a particular business problem that was elegantly addressed with a discriminated union (sum type) in F#:
+	</p>
+	<p>
+		<pre><span style="color:blue;">type</span>&nbsp;<span style="color:teal;">PaymentService</span>&nbsp;=&nbsp;{&nbsp;Name&nbsp;:&nbsp;<span style="color:teal;">string</span>;&nbsp;Action&nbsp;:&nbsp;<span style="color:teal;">string</span>&nbsp;}
+ 
+<span style="color:blue;">type</span>&nbsp;<span style="color:teal;">PaymentType</span>&nbsp;=
+|&nbsp;<span style="color:navy;">Individual</span>&nbsp;<span style="color:blue;">of</span>&nbsp;<span style="color:teal;">PaymentService</span>
+|&nbsp;<span style="color:navy;">Parent</span>&nbsp;<span style="color:blue;">of</span>&nbsp;<span style="color:teal;">PaymentService</span>
+|&nbsp;<span style="color:navy;">Child</span>&nbsp;<span style="color:blue;">of</span>&nbsp;originalTransactionKey&nbsp;:&nbsp;<span style="color:teal;">string</span>&nbsp;*&nbsp;paymentService&nbsp;:&nbsp;<span style="color:teal;">PaymentService</span></pre>
+	</p>
+	<p>
+		In short, this model enables you to model various payments against a third-party payment service. An <em>individual</em> payment is, as the name implies, a single payment. A <em>parent</em> payment can be used to authorise a series of recurring, automated payments, for example to pay for a subscription. A <em>child</em> payment is one of those recurring payments; it must have a parent payment to authorise it, as automation means that no user interaction takes place.
+	</p>
+	<p>
+		One task that is easily addressed with the above <code>PaymentType</code> discriminated union is that you can translate the data to JSON in a type-safe manner. The compiler will tell you whether or not you've handled all three cases.
+	</p>
+	<p>
+		<strong>Auxiliary C# classes</strong>
+	</p>
+	<p>
+		You can Church-encode <code>PaymentType</code> just like Boolean values, natural numbers, and Maybe. Before you do that, however, you need to define the input types involved in each case. These are normal classes, although I prefer to make them immutable:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">PaymentService</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;PaymentService(<span style="color:blue;">string</span>&nbsp;name,&nbsp;<span style="color:blue;">string</span>&nbsp;action)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.Name&nbsp;=&nbsp;name;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.Action&nbsp;=&nbsp;action;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">string</span>&nbsp;Name&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">string</span>&nbsp;Action&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;}
+}
+
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">ChildPaymentService</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;ChildPaymentService(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">string</span>&nbsp;originalTransationKey,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">PaymentService</span>&nbsp;paymentService)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.OriginalTransactionKey&nbsp;=&nbsp;originalTransationKey;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.PaymentService&nbsp;=&nbsp;paymentService;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">string</span>&nbsp;OriginalTransactionKey&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">PaymentService</span>&nbsp;PaymentService&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;}
+}</pre>
+	</p>
+	<p>
+		These are straightforward translations of the F# <code>PaymentService</code> record type, and the tuple associated with the <code>Child</code> case. In a real code base, I'd override <code>Equals</code> for both classes in order to turn them into proper <a href="https://en.wikipedia.org/wiki/Value_object">Value Objects</a>, but in order to keep the size of the code down, I omitted doing that here.
+	</p>
+	<p>
+		<strong>Church-encoded payment type</strong>
+	</p>
+	<p>
+		You can now translate the <code>PaymentType</code> F# discriminated union to a Church-encoded API in C#, starting with the interface:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">interface</span>&nbsp;<span style="color:#2b91af;">IPaymentType</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">T</span>&nbsp;Match&lt;<span style="color:#2b91af;">T</span>&gt;(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:#2b91af;">PaymentService</span>,&nbsp;<span style="color:#2b91af;">T</span>&gt;&nbsp;individual,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:#2b91af;">PaymentService</span>,&nbsp;<span style="color:#2b91af;">T</span>&gt;&nbsp;parent,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:#2b91af;">ChildPaymentService</span>,&nbsp;<span style="color:#2b91af;">T</span>&gt;&nbsp;child);
+}</pre>
+	</p>
+	<p>
+		Since there's three cases in the sum type, that turns into a <code>Match</code> method with three arguments, each corresponding to one of the cases. As was also the case for the previous articles' <code>INaturalNumber</code> and <code>IMaybe&lt;T&gt;</code> interfaces, the data associated with each case is modelled as a function from the data to the generic return type <code>T</code>.
+	</p>
+	<p>
+		Again, following the recipe implied by the previous examples, you should now add a concrete implementation of the <code>IPaymentType</code> interface for each case. It's natural to start with the first argument to the <code>Match</code> method, <em>individual:</em>
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">Individual</span>&nbsp;:&nbsp;<span style="color:#2b91af;">IPaymentType</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;<span style="color:#2b91af;">PaymentService</span>&nbsp;paymentService;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;Individual(<span style="color:#2b91af;">PaymentService</span>&nbsp;paymentService)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.paymentService&nbsp;=&nbsp;paymentService;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">T</span>&nbsp;Match&lt;<span style="color:#2b91af;">T</span>&gt;(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:#2b91af;">PaymentService</span>,&nbsp;<span style="color:#2b91af;">T</span>&gt;&nbsp;individual,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:#2b91af;">PaymentService</span>,&nbsp;<span style="color:#2b91af;">T</span>&gt;&nbsp;parent,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:#2b91af;">ChildPaymentService</span>,&nbsp;<span style="color:#2b91af;">T</span>&gt;&nbsp;child)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;individual(<span style="color:blue;">this</span>.paymentService);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+	</p>
+	<p>
+		The <code>Individual</code> class composes a <code>PaymentService</code> value, which it passes as the argument to the <code>individual</code> function argument when <code>Match</code> is called. As you've seen in the previous articles, a particular implementation uses only one of the method arguments, so the two other arguments, <code>parent</code> and <code>child</code>, are simply ignored.
+	</p>
+	<p>
+		The <em>parent</em> implementation is almost identical:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">Parent</span>&nbsp;:&nbsp;<span style="color:#2b91af;">IPaymentType</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;<span style="color:#2b91af;">PaymentService</span>&nbsp;paymentService;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;Parent(<span style="color:#2b91af;">PaymentService</span>&nbsp;paymentService)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.paymentService&nbsp;=&nbsp;paymentService;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">T</span>&nbsp;Match&lt;<span style="color:#2b91af;">T</span>&gt;(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:#2b91af;">PaymentService</span>,&nbsp;<span style="color:#2b91af;">T</span>&gt;&nbsp;individual,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:#2b91af;">PaymentService</span>,&nbsp;<span style="color:#2b91af;">T</span>&gt;&nbsp;parent,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:#2b91af;">ChildPaymentService</span>,&nbsp;<span style="color:#2b91af;">T</span>&gt;&nbsp;child)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;parent(<span style="color:blue;">this</span>.paymentService);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+	</p>
+	<p>
+		The <code>Parent</code> class also composes a <code>PaymentService</code> value that it passes to a function when <code>Match</code> is called. The only difference is that it calls the <code>parent</code> function instead of the <code>individual</code> function argument.
+	</p>
+	<p>
+		The third case is handled by the following <code>Child</code> class:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">Child</span>&nbsp;:&nbsp;<span style="color:#2b91af;">IPaymentType</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;<span style="color:#2b91af;">ChildPaymentService</span>&nbsp;childPaymentService;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;Child(<span style="color:#2b91af;">ChildPaymentService</span>&nbsp;childPaymentService)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.childPaymentService&nbsp;=&nbsp;childPaymentService;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">T</span>&nbsp;Match&lt;<span style="color:#2b91af;">T</span>&gt;(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:#2b91af;">PaymentService</span>,&nbsp;<span style="color:#2b91af;">T</span>&gt;&nbsp;individual,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:#2b91af;">PaymentService</span>,&nbsp;<span style="color:#2b91af;">T</span>&gt;&nbsp;parent,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:#2b91af;">ChildPaymentService</span>,&nbsp;<span style="color:#2b91af;">T</span>&gt;&nbsp;child)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;child(<span style="color:blue;">this</span>.childPaymentService);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+	</p>
+	<p>
+		While the two other classes both compose a <code>PaymentService</code> value, a <code>Child</code> object instead composes a <code>ChildPaymentService</code> value. When <code>Match</code> is called, it calls the <code>child</code> function argument with the composed value.
+	</p>
+	<p>
+		<strong>Using the IPaymentType API</strong>
+	</p>
+	<p>
+		One important feature that I originally had to implement was to translate a <em>payment type</em> value into a JSON document. For the purposes of this example, imagine that you can model the desired JSON document using this <a href="https://en.wikipedia.org/wiki/Data_transfer_object">Data Transfer Object</a>:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">PaymentJsonModel</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">string</span>&nbsp;Name&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;<span style="color:blue;">set</span>;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">string</span>&nbsp;Action&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;<span style="color:blue;">set</span>;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">IChurchBoolean</span>&nbsp;StartRecurrent&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;<span style="color:blue;">set</span>;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">IMaybe</span>&lt;<span style="color:blue;">string</span>&gt;&nbsp;TransactionKey&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;<span style="color:blue;">set</span>;&nbsp;}
+}</pre>
+	</p>
+	<p>
+		This is a mutable object because most .NET serialisation APIs require that the class in question has a parameterless constructor and writeable properties. Notice, however, that in order to demonstrate that all this code still doesn't rely on any primitive Boolean operators and such, the class' properties are defined as <code>IChurchBoolean</code> and <code>IMaybe&lt;string&gt;</code> values, as well as regular <code>string</code> values.
+	</p>
+	<p>
+		Writing a method that translates any <code>IPaymentType</code> object into a <code>PaymentJsonModel</code> object is now straightforward:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:#2b91af;">PaymentJsonModel</span>&nbsp;ToJson(<span style="color:blue;">this</span>&nbsp;<span style="color:#2b91af;">IPaymentType</span>&nbsp;payment)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;payment.Match(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;individual&nbsp;:&nbsp;ps&nbsp;=&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">PaymentJsonModel</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Name&nbsp;=&nbsp;ps.Name,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Action&nbsp;=&nbsp;ps.Action,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;StartRecurrent&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">ChurchFalse</span>(),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;TransactionKey&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Nothing</span>&lt;<span style="color:blue;">string</span>&gt;()
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;},
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;parent&nbsp;:&nbsp;ps&nbsp;=&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">PaymentJsonModel</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Name&nbsp;=&nbsp;ps.Name,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Action&nbsp;=&nbsp;ps.Action,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;StartRecurrent&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">ChurchTrue</span>(),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;TransactionKey&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Nothing</span>&lt;<span style="color:blue;">string</span>&gt;()
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;},
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;child&nbsp;:&nbsp;cps&nbsp;=&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">PaymentJsonModel</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Name&nbsp;=&nbsp;cps.PaymentService.Name,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Action&nbsp;=&nbsp;cps.PaymentService.Action,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;StartRecurrent&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">ChurchFalse</span>(),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;TransactionKey&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Just</span>&lt;<span style="color:blue;">string</span>&gt;(cps.OriginalTransactionKey)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;});
+}</pre>
+	</p>
+	<p>
+		Because the <code>Match</code> method takes three arguments, you have to supply a 'handler' function for each of them, and they all have to have the same return type. In this case they all return a new <code>PaymentJsonModel</code> object, so that requirement is fulfilled. All three lambda expressions simply copy over <code>Name</code> and <code>Action</code>, but they differ in the values they assign to <code>StartRecurrent</code> and <code>TransactionKey</code>.
+	</p>
+	<p>
+		<strong>Tests</strong>
+	</p>
+	<p>
+		In order to show you that it all works, here are a few examples I wrote as <a href="https://xunit.github.io">xUnit.net</a> tests:
+	</p>
+	<p>
+		<pre>[<span style="color:#2b91af;">Fact</span>]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;IndividualToJsonReturnsCorrectResult()
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;sut&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Individual</span>(<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">PaymentService</span>(<span style="color:#a31515;">&quot;MasterCard&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;Pay&quot;</span>));
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;actual&nbsp;=&nbsp;sut.ToJson();
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Assert</span>.Equal(<span style="color:#a31515;">&quot;MasterCard&quot;</span>,&nbsp;actual.Name);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Assert</span>.Equal(<span style="color:#a31515;">&quot;Pay&quot;</span>,&nbsp;actual.Action);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Assert</span>.False(actual.StartRecurrent.ToBool());
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Assert</span>.True(actual.TransactionKey.IsNothing().ToBool());
+}
+ 
+[<span style="color:#2b91af;">Fact</span>]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;ParentToJsonReturnsCorrectResult()
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;sut&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Parent</span>(<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">PaymentService</span>(<span style="color:#a31515;">&quot;MasterCard&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;Pay&quot;</span>));
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;actual&nbsp;=&nbsp;sut.ToJson();
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Assert</span>.Equal(<span style="color:#a31515;">&quot;MasterCard&quot;</span>,&nbsp;actual.Name);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Assert</span>.Equal(<span style="color:#a31515;">&quot;Pay&quot;</span>,&nbsp;actual.Action);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Assert</span>.True(actual.StartRecurrent.ToBool());
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Assert</span>.True(actual.TransactionKey.IsNothing().ToBool());
+}
+ 
+[<span style="color:#2b91af;">Fact</span>]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;ChildToJsonReturnsCorrectResult()
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;sut&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Child</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">ChildPaymentService</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#a31515;">&quot;12345&quot;</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">PaymentService</span>(<span style="color:#a31515;">&quot;MasterCard&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;Pay&quot;</span>)));
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;actual&nbsp;=&nbsp;sut.ToJson();
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Assert</span>.Equal(<span style="color:#a31515;">&quot;MasterCard&quot;</span>,&nbsp;actual.Name);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Assert</span>.Equal(<span style="color:#a31515;">&quot;Pay&quot;</span>,&nbsp;actual.Action);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Assert</span>.False(actual.StartRecurrent.ToBool());
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Assert</span>.Equal(<span style="color:#a31515;">&quot;12345&quot;</span>,&nbsp;actual.TransactionKey.Match(<span style="color:#a31515;">&quot;&quot;</span>,&nbsp;x&nbsp;=&gt;&nbsp;x));
+}</pre>
+	</p>
+	<p>
+		All three tests pass.
+	</p>
+	<p>
+		<strong>Summary</strong>
+	</p>
+	<p>
+		The major advantage of sum types in statically typed languages is that you can <em>make illegal states unrepresentable</em> (a maxim attributed to <a href="https://twitter.com/yminsky">Yaron Minsky</a>). Specifically, in the business example of payment types shown here, I need to be able to express that only three out of four combinations of <em>start recurrent</em> and <em>original transaction key</em> is legal. Specifically, I needed to express that the combination of <em>start recurrent = true</em> and the presence of a <em>transaction key</em> is illegal. Making such an illegal state unrepresentable is easy with a sum type, but as this article has shown, you can achieve the same goal in C#.
+	</p>
+	<p>
+		With the API shown here, there are only three possible states (<code>Individual</code>, <code>Child</code>, and <code>Parent</code>). Notice that all three classes hide their data as <code>private</code> class fields, so the only way to extract that data is to call <code>Match</code>. The compiler will make sure that you handle all three cases, because you must supply a function for all three method arguments.
+	</p>
+	<p>
+		This article concludes the little series on how to use Church-encoding in C# to create sum types. You may, however, think that it doesn't really feel object-oriented, with its heavy reliance on function arguments (e.g. <code>Func&lt;PaymentService, T&gt;</code>). It turns out, though, that with only a few refactorings, you'll come to the realisation that what you've seen here is <a href="http://blog.ploeh.dk/2018/01/08/software-design-isomorphisms">isomorphic</a> to a classic design pattern. Read on!
+	</p>
+	<p>
+		<strong>Next: </strong> From behavioural patterns to category theory.
+	</p>
+</div>
