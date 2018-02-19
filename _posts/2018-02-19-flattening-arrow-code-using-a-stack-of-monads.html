@@ -1,0 +1,418 @@
+---
+layout: post
+title: "Flattening arrow code using a stack of monads"
+date: 2018-02-19 14:48 UTC
+tags: [Software Design, Functional Programming, F#]
+---
+{% include JB/setup %}
+
+<div id="post">
+	<p>
+		<em>Flatten arrow code with a stack of monads. A horrible example in C#.</em>
+	</p>
+	<p>
+		In the <a href="">previous article</a>, you saw how to refactor an injected dependency to a <a href="https://en.wikipedia.org/wiki/Visitor_pattern">Visitor</a> that implements a free monad. One remaining problem is that some of the code tends towards the <a href="http://wiki.c2.com/?ArrowAntiPattern">Arrow anti-pattern</a>. In this article, you'll see how elegantly you can deal with this in <a href="https://www.haskell.org">Haskell</a>, how it translates to slightly more verbose <a href="http://fsharp.org">F#</a> code, but how, even though it does translate all the way to C#, it stops being nice along the way.
+	</p>
+	<p>
+		All code for this article is <a href="">available on GitHub</a>.
+	</p>
+	<p>
+		<strong>Arrow code</strong>
+	</p>
+	<p>
+		This is the problematic code:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">IReservationsProgram</span>&lt;<span style="color:blue;">int</span>?&gt;&nbsp;TryAccept(<span style="color:#2b91af;">Reservation</span>&nbsp;reservation)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:#2b91af;">ReservationsProgram</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.IsReservationInFuture(reservation)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.SelectMany(isInFuture&nbsp;=&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;(!isInFuture)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Pure</span>&lt;<span style="color:blue;">int</span>?&gt;(<span style="color:blue;">null</span>);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:#2b91af;">ReservationsProgram</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.ReadReservations(reservation.Date)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.SelectMany(reservations&nbsp;=&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;reservedSeats&nbsp;=&nbsp;reservations.Sum(r&nbsp;=&gt;&nbsp;r.Quantity);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;(Capacity&nbsp;&lt;&nbsp;reservedSeats&nbsp;+&nbsp;reservation.Quantity)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Pure</span>&lt;<span style="color:blue;">int</span>?&gt;(<span style="color:blue;">null</span>);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;reservation.IsAccepted&nbsp;=&nbsp;<span style="color:blue;">true</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:#2b91af;">ReservationsProgram</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.Create(reservation)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.Select(x&nbsp;=&gt;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:blue;">int</span>?(x));
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;});
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;});
+}</pre>
+	</p>
+	<p>
+		Perhaps it doesn't look <em>that</em> bad, but I think that that's mostly a result of the original example being as simple as it is. After all, the original example code started out like this:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">int</span>?&nbsp;TryAccept(<span style="color:#2b91af;">Reservation</span>&nbsp;reservation)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;(!ReservationsRepository.IsReservationInFuture(reservation))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:blue;">null</span>;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;reservedSeats&nbsp;=&nbsp;ReservationsRepository
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.ReadReservations(reservation.Date)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.Sum(r&nbsp;=&gt;&nbsp;r.Quantity);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;(Capacity&nbsp;&lt;&nbsp;reservedSeats&nbsp;+&nbsp;reservation.Quantity)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:blue;">null</span>;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;reservation.IsAccepted&nbsp;=&nbsp;<span style="color:blue;">true</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;ReservationsRepository.Create(reservation);
+}</pre>
+	</p>
+	<p>
+		The <a href="https://en.wikipedia.org/wiki/Cyclomatic_complexity">cyclomatic complexity</a> of this method could be as low as <em>3</em>, so if this was real production code, there'd be no reason to refactor it. As with most of my articles, however, you have to think of this example problem as a stand-in for something more complicated.
+	</p>
+	<p>
+		If you take a second look at the top version (which is actually the later version), I hope you'll agree that the change has harmed the code. In general, it's more noisy, and it shows a clear tendency towards the dreaded Arrow anti-pattern. Again, it may not look that bad here, but if you imagine that we're looking at a stand-in for a much worse problem, I hope you can see how this could quickly become unsustainable.
+	</p>
+	<p>
+		Part of the problem is that while C# has <em>some</em> syntactic sugar for monads, you can't branch inside a query expression, so instead it seems as though you're stuck with such nested closures.
+	</p>
+	<p>
+		<strong>First F# attempt</strong>
+	</p>
+	<p>
+		F#, on the other hand, doesn't have that limitation. In F#, you <em>can</em> branch inside of <a href="https://docs.microsoft.com/en-us/dotnet/fsharp/language-reference/computation-expressions">computation expressions</a>, so would that address the problem? Unfortunately, that's not the whole story. Here's an attempt at writing equivalent code in F#, using a custom <code>reservations</code> computation expression:
+	</p>
+	<p>
+		<pre><span style="color:green;">//&nbsp;int&nbsp;-&gt;&nbsp;Reservation&nbsp;-&gt;&nbsp;ReservationsProgram&lt;int&nbsp;option&gt;</span>
+<span style="color:blue;">let</span>&nbsp;tryAccept&nbsp;capacity&nbsp;reservation&nbsp;=&nbsp;reservations&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;isInFuture&nbsp;=&nbsp;isReservationInFuture&nbsp;reservation
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;not&nbsp;isInFuture
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">then</span>&nbsp;<span style="color:blue;">return</span>&nbsp;None
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">else</span>&nbsp;&nbsp;&nbsp;&nbsp;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;reservations&nbsp;=&nbsp;readReservations&nbsp;reservation.Date
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;reservedSeats&nbsp;=&nbsp;List.sumBy&nbsp;(<span style="color:blue;">fun</span>&nbsp;r&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;r.Quantity)&nbsp;reservations
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;(capacity&nbsp;&lt;&nbsp;reservedSeats&nbsp;+&nbsp;reservation.Quantity)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">then</span>&nbsp;<span style="color:blue;">return</span>&nbsp;None
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">else</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;reservationId&nbsp;=&nbsp;create&nbsp;{&nbsp;reservation&nbsp;<span style="color:blue;">with</span>&nbsp;IsAccepted&nbsp;=&nbsp;<span style="color:blue;">true</span>&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;Some&nbsp;reservationId&nbsp;}</pre>
+	</p>
+	<p>
+		While this is, in my opinion, more readable than the C# code, it doesn't successfully address the Arrow anti-pattern. While it's perfectly possible to branch (that is: use <code>if</code>, <code>then</code>, and <code>else</code>) inside a computation expression, we run into another problem. In statement-based languages like C# and Java, you can use <a href="http://wiki.c2.com/?GuardClause">Guard Clauses</a> to return early, as the original, pretty C# example demonstrates. In expression-based languages like F# and Haskell, on the other hand, any <code>if</code> branch must have a corresponding <code>else</code> branch, and both branches must return a value of the same type. This restriction forces the above F# code into the same Arrow shape as the problematic C# code.
+	</p>
+	<p>
+		Languages like F# and Haskell would be poor languages, though, if they didn't have ways to address problems like this one.
+	</p>
+	<p>
+		<strong>Flatting with MaybeT</strong>
+	</p>
+	<p>
+		While it already feels unpleasant to write F# code like the above, writing similar code in Haskell would be figuratively painful. In Haskell, however, you essentially just change the return type of your function, pull in some standard library functions, and before you know it, you have nice flat code, with nary an Arrow in sight:
+	</p>
+	<p>
+		<pre><span style="color:#2b91af;">tryAccept</span>&nbsp;::&nbsp;<span style="color:#2b91af;">Int</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">Reservation</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">MaybeT</span>&nbsp;<span style="color:blue;">ReservationsProgram</span>&nbsp;<span style="color:#2b91af;">Int</span>
+tryAccept&nbsp;capacity&nbsp;reservation&nbsp;=&nbsp;<span style="color:blue;">do</span>
+&nbsp;&nbsp;guard&nbsp;=&lt;&lt;&nbsp;isReservationInFuture&nbsp;reservation
+ 
+&nbsp;&nbsp;reservations&nbsp;&lt;-&nbsp;readReservations&nbsp;$&nbsp;reservationDate&nbsp;reservation
+&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;reservedSeats&nbsp;=&nbsp;<span style="color:blue;">sum</span>&nbsp;$&nbsp;reservationQuantity&nbsp;&lt;$&gt;&nbsp;reservations
+&nbsp;&nbsp;guard&nbsp;$&nbsp;reservedSeats&nbsp;+&nbsp;reservationQuantity&nbsp;reservation&nbsp;&lt;=&nbsp;capacity
+ 
+&nbsp;&nbsp;create&nbsp;$&nbsp;reservation&nbsp;{&nbsp;reservationIsAccepted&nbsp;=&nbsp;True&nbsp;}
+</pre>
+	</p>
+	<p>
+		One of the notable traits of Haskell is that, because of its high-level abstractions, changing the type of an expression can change its behaviour. In this case, I decided to add a <code>MaybeT</code> to the <code>ReservationsProgram Int</code> return type. This means that not only does the following code take place inside the <code>ReservationsProgram</code> free monad, it takes place inside a stack of monads. In this case, the stack consists of <code>Maybe</code> and <code>ReservationsProgram</code>.
+	</p>
+	<p>
+		What this means is that you can use the built-in <code>guard</code> function to short-circuit the program if the guards fail. Yes, these are <em>literally</em> guard clauses!
+	</p>
+	<p>
+		Not only does this address the Arrow anti-pattern, it completely flattens the code so that the happy path is emphasised.
+	</p>
+	<p>
+		<strong>Stacking monads in F#</strong>
+	</p>
+	<p>
+		While Haskell comes with built-in monad transformers that enable you to declaratively stack monads, you'll have to do it manually in F#. It's still possible, though. All it takes to stack <code>ReservationsProgram</code> and <code>option</code> is something like this:
+	</p>
+	<p>
+		<pre><span style="color:green;">//&nbsp;(&#39;a&nbsp;-&gt;&nbsp;ReservationsProgram&lt;&#39;b&nbsp;option&gt;)&nbsp;-&gt;&nbsp;ReservationsProgram&lt;&#39;a&nbsp;option&gt;&nbsp;-&gt;</span>
+<span style="color:green;">//&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;ReservationsProgram&lt;&#39;b&nbsp;option&gt;</span>
+<span style="color:blue;">let</span>&nbsp;bind&nbsp;f&nbsp;x&nbsp;=&nbsp;reservations&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;x&#39;&nbsp;=&nbsp;x
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">match</span>&nbsp;x&#39;&nbsp;<span style="color:blue;">with</span>
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;Some&nbsp;x&#39;&#39;&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">return!</span>&nbsp;f&nbsp;x&#39;&#39;
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;None&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">return</span>&nbsp;None&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;
+<span style="color:blue;">type</span>&nbsp;ReservationsOptionBuilder&nbsp;()&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">member</span>&nbsp;this.Bind&nbsp;(x,&nbsp;f)&nbsp;=&nbsp;bind&nbsp;f&nbsp;x
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">member</span>&nbsp;this.Return&nbsp;x&nbsp;=&nbsp;Pure&nbsp;(Some&nbsp;x)
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">member</span>&nbsp;this.ReturnFrom&nbsp;x&nbsp;=&nbsp;x
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">member</span>&nbsp;this.Zero&nbsp;()&nbsp;=&nbsp;Pure&nbsp;(Some&nbsp;())
+ 
+<span style="color:blue;">let</span>&nbsp;reservationsOption&nbsp;=&nbsp;ReservationsOptionBuilder&nbsp;()</pre>
+	</p>
+	<p>
+		This stack of monads specifically handles the combination where a <code>ReservationsProgram</code> contains an <code>option</code> value. It considers the continuation value <code>x'</code> produced by the previous step in a <code>ReservationsProgram</code>, and only continues with <code>f</code> if the value is a <code>Some</code> value. Just like <code>option</code> normally works, it short-circuits further processing if the value is a <code>None</code> value.
+	</p>
+	<p>
+		While F# doesn't have a general-purpose <code>guard</code> function, you can easily write one for this particular stack of monads:
+	</p>
+	<p>
+		<pre><span style="color:green;">//&nbsp;bool&nbsp;-&gt;&nbsp;ReservationsProgram&lt;unit&nbsp;option&gt;</span>
+<span style="color:blue;">let</span>&nbsp;guard&nbsp;=&nbsp;<span style="color:blue;">function</span>
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:blue;">true</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;Pure&nbsp;(Some&nbsp;())
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:blue;">false</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;Pure&nbsp;None</pre>
+	</p>
+	<p>
+		This function takes a Boolean value as input, and returns <code>Pure (Some ())</code> when the value is <code>true</code>, and <code>Pure None</code> otherwise. While this seems weird at first glance, this is essentially what Haskell's <code>guard</code> does in the above code listing. The point is that <code>Pure None</code> short-circuits further processing, while <code>Pure (Some ())</code> allows the program to continue, as per the above <code>bind</code> function.
+	</p>
+	<p>
+		You can now write a flattened version of <code>tryAccept</code>
+	</p>
+	<p>
+		<pre><span style="color:green;">//&nbsp;int&nbsp;-&gt;&nbsp;Reservation&nbsp;-&gt;&nbsp;ReservationsProgram&lt;int&nbsp;option&gt;</span>
+<span style="color:blue;">let</span>&nbsp;tryAccept&nbsp;capacity&nbsp;reservation&nbsp;=&nbsp;reservationsOption&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">do!</span>&nbsp;ReservationsOption.bind&nbsp;guard&nbsp;&lt;|&nbsp;isReservationInFuture&nbsp;reservation
+&nbsp;&nbsp;&nbsp;&nbsp;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;reservations&nbsp;=&nbsp;readReservations&nbsp;reservation.Date
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;reservedSeats&nbsp;=&nbsp;List.sumBy&nbsp;(<span style="color:blue;">fun</span>&nbsp;r&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;r.Quantity)&nbsp;reservations
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">do!</span>&nbsp;guard&nbsp;(reservedSeats&nbsp;+&nbsp;reservation.Quantity&nbsp;&lt;=&nbsp;capacity)
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return!</span>&nbsp;create&nbsp;{&nbsp;reservation&nbsp;<span style="color:blue;">with</span>&nbsp;IsAccepted&nbsp;=&nbsp;<span style="color:blue;">true</span>&nbsp;}&nbsp;}</pre>
+	</p>
+	<p>
+		Notice that the type of the function doesn't change. It still returns a <code>ReservationsProgram&lt;int&nbsp;option&gt;</code>, but the implementation is different. Instead of explicitly dealing with branching in a <code>reservations</code> computation expression, it implicitly deals with it in the composed <code>reservationsOption</code> computation expression.
+	</p>
+	<p>
+		Using the specialised <code>guard</code> function doesn't look as pretty as in Haskell, but it gets the job done.
+	</p>
+	<p>
+		<strong>Maybe as a Visitor</strong>
+	</p>
+	<p>
+		Can you do the same in C#? Yes, sort of, but it'll be ugly.
+	</p>
+	<p>
+		As a first step, you'll need a Maybe monad, as this isn't a built-in type in C#. While I'd <a href="">typically prefer a simpler implementation</a>, since we're already looking at <a href="">Church-encoded sum types</a>, let's take <a href="">the Church-encoded Maybe implementation</a>, and refactor it to a Visitor. The <code>IMaybe&lt;T&gt;</code> interface is simply this:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">interface</span>&nbsp;<span style="color:#2b91af;">IMaybe</span>&lt;<span style="color:#2b91af;">T</span>&gt;
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">TResult</span>&nbsp;Accept&lt;<span style="color:#2b91af;">TResult</span>&gt;(<span style="color:#2b91af;">IMaybeVisitor</span>&lt;<span style="color:#2b91af;">T</span>,&nbsp;<span style="color:#2b91af;">TResult</span>&gt;&nbsp;visitor);
+}</pre>
+	</p>
+	<p>
+		The Visitor is defined like this:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">interface</span>&nbsp;<span style="color:#2b91af;">IMaybeVisitor</span>&lt;<span style="color:#2b91af;">T</span>,&nbsp;<span style="color:#2b91af;">TResult</span>&gt;
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">TResult</span>&nbsp;VisitNothing&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">TResult</span>&nbsp;VisitJust(<span style="color:#2b91af;">T</span>&nbsp;just);
+}</pre>
+	</p>
+	<p>
+		This is, hopefully, not terribly surprising. There's two cases: <em>just</em> and <em>nothing</em>, and only the <em>just</em> case has a value associated. While I'm not going to walk you through all the details, this version of <code>IMaybe&lt;T&gt;</code> is still a monad:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:#2b91af;">IMaybe</span>&lt;<span style="color:#2b91af;">TResult</span>&gt;&nbsp;SelectMany&lt;<span style="color:#2b91af;">T</span>,&nbsp;<span style="color:#2b91af;">TResult</span>&gt;(
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>&nbsp;<span style="color:#2b91af;">IMaybe</span>&lt;<span style="color:#2b91af;">T</span>&gt;&nbsp;source,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:#2b91af;">T</span>,&nbsp;<span style="color:#2b91af;">IMaybe</span>&lt;<span style="color:#2b91af;">TResult</span>&gt;&gt;&nbsp;selector)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;source.Accept(<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">SelectManyMaybeVisitor</span>&lt;<span style="color:#2b91af;">T</span>,&nbsp;<span style="color:#2b91af;">TResult</span>&gt;(selector));
+}</pre>
+	</p>
+	<p>
+		If you want to see how <code>SelectManyMaybeVisitor&lt;T, TResult&gt;</code> is implemented, you can see it in the code repository, but otherwise, it's also a good exercise to see if you can puzzle it out yourself.
+	</p>
+	<p>
+		<strong>Stacking Reservations and Maybe</strong>
+	</p>
+	<p>
+		You already have the <code>IReservationsProgram&lt;T&gt;</code> and <code>IMaybe&lt;T&gt;</code> monads. Now you just need to stack them, just like the above F# code:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:#2b91af;">IReservationsProgram</span>&lt;<span style="color:#2b91af;">IMaybe</span>&lt;<span style="color:#2b91af;">TResult</span>&gt;&gt;&nbsp;SelectMany&lt;<span style="color:#2b91af;">T</span>,&nbsp;<span style="color:#2b91af;">TResult</span>&gt;(
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>&nbsp;<span style="color:#2b91af;">IReservationsProgram</span>&lt;<span style="color:#2b91af;">IMaybe</span>&lt;<span style="color:#2b91af;">T</span>&gt;&gt;&nbsp;source,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:#2b91af;">T</span>,&nbsp;<span style="color:#2b91af;">IReservationsProgram</span>&lt;<span style="color:#2b91af;">IMaybe</span>&lt;<span style="color:#2b91af;">TResult</span>&gt;&gt;&gt;&nbsp;selector)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;source.SelectMany(x&nbsp;=&gt;&nbsp;x.Accept(<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">SelectManyMaybeVisitor</span>&lt;<span style="color:#2b91af;">T</span>,&nbsp;<span style="color:#2b91af;">TResult</span>&gt;(selector)));
+}
+ 
+<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">SelectManyMaybeVisitor</span>&lt;<span style="color:#2b91af;">T</span>,&nbsp;<span style="color:#2b91af;">TResult</span>&gt;&nbsp;:
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">IMaybeVisitor</span>&lt;<span style="color:#2b91af;">T</span>,&nbsp;<span style="color:#2b91af;">IReservationsProgram</span>&lt;<span style="color:#2b91af;">IMaybe</span>&lt;<span style="color:#2b91af;">TResult</span>&gt;&gt;&gt;
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:#2b91af;">T</span>,&nbsp;<span style="color:#2b91af;">IReservationsProgram</span>&lt;<span style="color:#2b91af;">IMaybe</span>&lt;<span style="color:#2b91af;">TResult</span>&gt;&gt;&gt;&nbsp;selector;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;SelectManyMaybeVisitor(<span style="color:#2b91af;">Func</span>&lt;<span style="color:#2b91af;">T</span>,&nbsp;<span style="color:#2b91af;">IReservationsProgram</span>&lt;<span style="color:#2b91af;">IMaybe</span>&lt;<span style="color:#2b91af;">TResult</span>&gt;&gt;&gt;&nbsp;selector)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.selector&nbsp;=&nbsp;selector;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">IReservationsProgram</span>&lt;<span style="color:#2b91af;">IMaybe</span>&lt;<span style="color:#2b91af;">TResult</span>&gt;&gt;&nbsp;VisitNothing
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">get</span>&nbsp;{&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Pure</span>&lt;<span style="color:#2b91af;">IMaybe</span>&lt;<span style="color:#2b91af;">TResult</span>&gt;&gt;(<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Nothing</span>&lt;<span style="color:#2b91af;">TResult</span>&gt;());&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">IReservationsProgram</span>&lt;<span style="color:#2b91af;">IMaybe</span>&lt;<span style="color:#2b91af;">TResult</span>&gt;&gt;&nbsp;VisitJust(<span style="color:#2b91af;">T</span>&nbsp;just)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:blue;">this</span>.selector(just);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+	</p>
+	<p>
+		Just like in the F# code, you can write the code inside of the <code>IReservationsProgram&lt;T&gt;</code> monad. To do that, you call <code>SelectMany</code> on <code>source</code>. The <code>x</code> in that lambda expression is a <code>IMaybe&lt;T&gt;</code> value, so in order to be able to proceed, you'll have to call its <code>Accept</code> method and pass it a Visitor.
+	</p>
+	<p>
+		The overall signature of the outer <code>SelectMany</code> method is fixed. This is, after all, the monadic <em>bind</em> function, so you know that the return type must be <code>IReservationsProgram&lt;IMaybe&lt;TResult&gt;&gt;</code>. Therefore, this must be the second type argument of the Visitor that you pass to <code>Accept</code>, so the Visitor must have the type <code>IMaybeVisitor&lt;T, IReservationsProgram&lt;IMaybe&lt;TResult&gt;&gt;&gt;</code>. From there, it's 'just' a matter of figuring out how to implement <code>VisitNothing</code> and <code>VisitJust</code>.
+	</p>
+	<p>
+		In the <code>VisitNothing</code> case, you simply return a <code>new Nothing&lt;TResult&gt;()</code>, but wrapped in a <code>Pure</code> value, so that it becomes an <code>IReservationsProgram&lt;IMaybe&lt;TResult&gt;&gt;</code>, rather than just an <code>IMaybe&lt;TResult&gt;</code>.
+	</p>
+	<p>
+		In the <code>VisitJust</code> case, you'll need the injected <code>selector</code>, which you can simply call with the input argument and return the result.
+	</p>
+	<p>
+		In order to support query expressions, you'll also need this special <code>SelectMany</code> overload:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:#2b91af;">IReservationsProgram</span>&lt;<span style="color:#2b91af;">IMaybe</span>&lt;<span style="color:#2b91af;">TResult</span>&gt;&gt;&nbsp;SelectMany&lt;<span style="color:#2b91af;">T</span>,&nbsp;<span style="color:#2b91af;">U</span>,&nbsp;<span style="color:#2b91af;">TResult</span>&gt;(
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>&nbsp;<span style="color:#2b91af;">IReservationsProgram</span>&lt;<span style="color:#2b91af;">IMaybe</span>&lt;<span style="color:#2b91af;">T</span>&gt;&gt;&nbsp;source,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:#2b91af;">T</span>,&nbsp;<span style="color:#2b91af;">IReservationsProgram</span>&lt;<span style="color:#2b91af;">IMaybe</span>&lt;<span style="color:#2b91af;">U</span>&gt;&gt;&gt;&nbsp;k,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:#2b91af;">T</span>,&nbsp;<span style="color:#2b91af;">U</span>,&nbsp;<span style="color:#2b91af;">TResult</span>&gt;&nbsp;s)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;source
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.SelectMany(x&nbsp;=&gt;&nbsp;k(x)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.SelectMany(y&nbsp;=&gt;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Pure</span>&lt;<span style="color:#2b91af;">IMaybe</span>&lt;<span style="color:#2b91af;">TResult</span>&gt;&gt;(<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Just</span>&lt;<span style="color:#2b91af;">TResult</span>&gt;(s(x,&nbsp;y)))));
+}</pre>
+	</p>
+	<p>
+		This is merely a weird C# technical detail, so I'm not going to tire you with this. It's not interesting.
+	</p>
+	<p>
+		<strong>Guard</strong>
+	</p>
+	<p>
+		Like the above F# code, you can define a specialised <code>Guard</code> method:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:#2b91af;">IReservationsProgram</span>&lt;<span style="color:#2b91af;">IMaybe</span>&lt;<span style="color:#2b91af;">Unit</span>&gt;&gt;&nbsp;Guard(<span style="color:blue;">bool</span>&nbsp;b)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;(b)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Pure</span>&lt;<span style="color:#2b91af;">IMaybe</span>&lt;<span style="color:#2b91af;">Unit</span>&gt;&gt;(<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Just</span>&lt;<span style="color:#2b91af;">Unit</span>&gt;(<span style="color:#2b91af;">Unit</span>.Instance));
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">else</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Pure</span>&lt;<span style="color:#2b91af;">IMaybe</span>&lt;<span style="color:#2b91af;">Unit</span>&gt;&gt;(<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Nothing</span>&lt;<span style="color:#2b91af;">Unit</span>&gt;());
+}</pre>
+	</p>
+	<p>
+		It does the same as its F# counterpart, only is it more verbose, and it required me to define a <em>unit</em> type, because C# doesn't have one:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">Unit</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:#2b91af;">Unit</span>&nbsp;Instance&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Unit</span>();
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;Unit()&nbsp;{&nbsp;}
+}</pre>
+	</p>
+	<p>
+		This is simply a <a href="https://en.wikipedia.org/wiki/Singleton_pattern">Singleton</a> that carries no data. It's like <code>void</code>, but can act as a generic return type, which is what we need here.
+	</p>
+	<p>
+		<strong>Do</strong>
+	</p>
+	<p>
+		Finally, in order to be able to set <code>IsAccepted</code> to <code>true</code> and make it look like a function, you can add a <code>Do</code> method:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:#2b91af;">IReservationsProgram</span>&lt;<span style="color:#2b91af;">IMaybe</span>&lt;<span style="color:#2b91af;">Unit</span>&gt;&gt;&nbsp;Do(<span style="color:#2b91af;">Action</span>&nbsp;action)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;action();
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Pure</span>&lt;<span style="color:#2b91af;">IMaybe</span>&lt;<span style="color:#2b91af;">Unit</span>&gt;&gt;(<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Just</span>&lt;<span style="color:#2b91af;">Unit</span>&gt;(<span style="color:#2b91af;">Unit</span>.Instance));
+}</pre>
+	</p>
+	<p>
+		This is a nasty piece of impure code, but it'll get the job done. It'd also be possible to refactor to a make the <code>Reservation</code> class immutable, but for this proof of concept code, that's not necessary. It'll be ugly regardless.
+	</p>
+	<p>
+		The point of the method is to enable method chaining in the <a href="https://martinfowler.com/bliki/FluentInterface.html">Fluent style</a>, even while you're mutating state. In general, I'd like to warn against doing something like this, because the entire point of functional programming is to avoid mutating state. It does allow us, however, to reproduce the original behaviour in the top of the article, which also mutates the <code>reservation</code> argument.
+	</p>
+	<p>
+		<strong>Method chaining</strong>
+	</p>
+	<p>
+		You can now write <code>TryAccept</code> as an <code>IReservationsProgram&lt;IMaybe&lt;int&gt;&gt;</code>, instead of <code>IReservationsProgram&lt;int?&gt;</code>. In other words, you replace the <code>int?</code> (<code>Nullable&lt;int&gt;</code>) with <code>IMaybe&lt;int&gt;</code>. This enables you write the entire program as a 'flat' composition, by chaining calls to <code>SelectMany</code> and <code>Select</code>:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">IReservationsProgram</span>&lt;<span style="color:#2b91af;">IMaybe</span>&lt;<span style="color:blue;">int</span>&gt;&gt;&nbsp;TryAccept(<span style="color:#2b91af;">Reservation</span>&nbsp;reservation)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:#2b91af;">ReservationsProgram</span>.IsReservationInFuture(reservation)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.SelectMany(isInFuture&nbsp;=&gt;&nbsp;<span style="color:#2b91af;">ReservationsProgram</span>.Guard(isInFuture))
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.SelectMany((<span style="color:#2b91af;">Unit</span>&nbsp;_)&nbsp;=&gt;&nbsp;<span style="color:#2b91af;">ReservationsProgram</span>.ReadReservations(reservation.Date))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.Select(reservations&nbsp;=&gt;&nbsp;reservations.Sum(r&nbsp;=&gt;&nbsp;r.Quantity))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.SelectMany(reservedSeats&nbsp;=&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">ReservationsProgram</span>.Guard(reservedSeats&nbsp;+&nbsp;reservation.Quantity&nbsp;&lt;=&nbsp;Capacity))
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.SelectMany((<span style="color:#2b91af;">Unit</span>&nbsp;_)&nbsp;=&gt;&nbsp;<span style="color:#2b91af;">ReservationsProgram</span>.Do(()&nbsp;=&gt;&nbsp;{&nbsp;reservation.IsAccepted&nbsp;=&nbsp;<span style="color:blue;">true</span>;&nbsp;}))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.SelectMany((<span style="color:#2b91af;">Unit</span>&nbsp;_)&nbsp;=&gt;&nbsp;<span style="color:#2b91af;">ReservationsProgram</span>.Create(reservation));
+}</pre>
+	</p>
+	<p>
+		You start with <code>ReservationsProgram.IsReservationInFuture</code> and continue with <code>SelectMany</code> off of its return value. Inside <code>SelectMany</code>, you then call <code>ReservationsProgram.Guard</code> in order to short-circuit if <code>isInFuture</code> is <code>false</code>. In fact, that step can be reduced to <code>SelectMany(ReservationsProgram.Guard)</code>, using <em>method group</em> syntax.
+	</p>
+	<p>
+		While <code>Guard</code> returns a program containing <code>Unit</code>, you can still continue with <code>SelectMany</code> to call <code>ReservationsProgram.ReadReservations</code>.
+	</p>
+	<p>
+		I'm not going to walk you through the rest of this code, but it works.
+	</p>
+	<p>
+		<strong>Query syntax</strong>
+	</p>
+	<p>
+		If you can write an entire program by chaining <code>SelectMany</code> and <code>Select</code>, chances are you can write it using C# query syntax as well. This turns out to be the case:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">IReservationsProgram</span>&lt;<span style="color:#2b91af;">IMaybe</span>&lt;<span style="color:blue;">int</span>&gt;&gt;&nbsp;TryAccept(<span style="color:#2b91af;">Reservation</span>&nbsp;reservation)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">from</span>&nbsp;isInFuture&nbsp;<span style="color:blue;">in</span>&nbsp;<span style="color:#2b91af;">ReservationsProgram</span>.IsReservationInFuture(reservation)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">from</span>&nbsp;&nbsp;&nbsp;_&nbsp;<span style="color:blue;">in</span>&nbsp;<span style="color:#2b91af;">ReservationsProgram</span>.Guard(isInFuture)
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">from</span>&nbsp;reservations&nbsp;<span style="color:blue;">in</span>&nbsp;<span style="color:#2b91af;">ReservationsProgram</span>.ReadReservations(reservation.Date)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;reservedSeats&nbsp;=&nbsp;reservations.Sum(r&nbsp;=&gt;&nbsp;r.Quantity)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">from</span>&nbsp;&nbsp;__&nbsp;<span style="color:blue;">in</span>&nbsp;<span style="color:#2b91af;">ReservationsProgram</span>.Guard(reservedSeats&nbsp;+&nbsp;reservation.Quantity&nbsp;&lt;=&nbsp;Capacity)
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">from</span>&nbsp;___&nbsp;<span style="color:blue;">in</span>&nbsp;<span style="color:#2b91af;">ReservationsProgram</span>.Do(()&nbsp;=&gt;&nbsp;{&nbsp;reservation.IsAccepted&nbsp;=&nbsp;<span style="color:blue;">true</span>;&nbsp;})
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">from</span>&nbsp;id&nbsp;<span style="color:blue;">in</span>&nbsp;<span style="color:#2b91af;">ReservationsProgram</span>.Create(reservation)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">select</span>&nbsp;id;
+}</pre>
+	</p>
+	<p>
+		This is simply the 'sugared' version of the previous code. It's a little more succinct, but whether it's better is subjective at best. I think you'd be challenged to find anyone who'd consider this <a href="http://blog.ploeh.dk/2015/08/03/idiomatic-or-idiosyncratic">idiomatic</a> C# code.
+	</p>
+	<p>
+		It gets the job done, though. It actually works!
+	</p>
+	<p>
+		To be clear, I'm not particularly impressed with the readability of this. I love the Haskell version, but the C# translation isn't my cup of tea.
+	</p>
+	<p>
+		<strong>Conclusion</strong>
+	</p>
+	<p>
+		When I go to meetups and conferences, I often get the chance to talk to people who have read my articles or seen my talks on functional programming. I often get the question whether it's possible to use some of the wonderful F# and Haskell concepts in C#. This article answers such questions. Yes, it's possible, but what's the point?
+	</p>
+	<p>
+		Such code is brittle, because you're dancing on the edge of what C# can do. I had to accept some compromises just to get this proof-of-concept code to work. To add spite to injury, the code is not as readable as idiomatic C#, and it taps into concepts that most C# developers wouldn't be familiar with.
+	</p>
+	<p>
+		I'd expect most C# programmers to consider a code base like this unreadable. In the amount of time it takes to understand and learn the underlying concepts of monads and their syntactic sugar, one can learn a proper functional programming language like F#. Don't try to make C# do something it wasn't designed to do; just use a functional programming language; you can learn that sooner than you'll be able to make sense of this Frankenstein's monster shown here.
+	</p>
+</div>
