@@ -1,0 +1,123 @@
+---
+layout: post
+title: "Project Arbitraries with view patterns"
+date: 2018-02-20 10:27 UTC
+tags: [Unit Testing, Haskell]
+---
+{% include JB/setup %}
+
+<div id="post">
+	<p>
+		<em>Write expressive property-based test with QuickCheck and view patterns.</em>
+	</p>
+	<p>
+		Recently, I was writing some <a href="https://hackage.haskell.org/package/QuickCheck/docs/Test-QuickCheck.html">QuickCheck</a>-based tests of some business logic, and since the business logic in question involved a custom domain type called <code>Reservation</code>, I had to write an <code>Arbitrary</code> instance for it. Being a dutiful <a href="https://www.haskell.org">Haskell</a> programmer, I wrapped it in a <code>newtype</code> in order to prevent warnings about orphaned instances:
+	</p>
+	<p>
+		<pre><span style="color:blue;">newtype</span>&nbsp;ArbReservation&nbsp;=&nbsp;ArbReservation&nbsp;{&nbsp;getReservation&nbsp;::&nbsp;Reservation&nbsp;}&nbsp;<span style="color:blue;">deriving</span>&nbsp;(<span style="color:#2b91af;">Show</span>,&nbsp;<span style="color:#2b91af;">Eq</span>)
+
+<span style="color:blue;">instance</span>&nbsp;<span style="color:blue;">Arbitrary</span>&nbsp;<span style="color:blue;">ArbReservation</span>&nbsp;<span style="color:blue;">where</span>
+&nbsp;&nbsp;arbitrary&nbsp;=&nbsp;<span style="color:blue;">do</span>
+&nbsp;&nbsp;&nbsp;&nbsp;(d,&nbsp;e,&nbsp;n,&nbsp;Positive&nbsp;q,&nbsp;b)&nbsp;&lt;-&nbsp;arbitrary
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;$&nbsp;ArbReservation&nbsp;$&nbsp;Reservation&nbsp;d&nbsp;e&nbsp;n&nbsp;q&nbsp;b
+</pre>
+	</p>
+	<p>
+		This is all fine as long as you just need one <code>Reservation</code> in a test, because in that case, you can simply pattern-match it out of <code>ArbReservation</code>:
+	</p>
+	<p>
+		<pre>testProperty&nbsp;<span style="color:#a31515;">&quot;tryAccept&nbsp;reservation&nbsp;in&nbsp;the&nbsp;past&quot;</span>&nbsp;$&nbsp;\
+&nbsp;&nbsp;(Positive&nbsp;capacity)&nbsp;(ArbReservation&nbsp;reservation)
+&nbsp;&nbsp;-&gt;
+&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;stub&nbsp;(IsReservationInFuture&nbsp;_&nbsp;next)&nbsp;=&nbsp;next&nbsp;False
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;stub&nbsp;(ReadReservations&nbsp;_&nbsp;next)&nbsp;=&nbsp;next&nbsp;<span style="color:blue;">[]</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;stub&nbsp;(Create&nbsp;_&nbsp;next)&nbsp;=&nbsp;next&nbsp;0
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;actual&nbsp;=&nbsp;iter&nbsp;stub&nbsp;$&nbsp;runMaybeT&nbsp;$&nbsp;tryAccept&nbsp;capacity&nbsp;reservation
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;
+&nbsp;&nbsp;<span style="color:blue;">in</span>&nbsp;&nbsp;isNothing&nbsp;actual
+</pre>
+	</p>
+	<p>
+		Here, <code>reservation</code> is a <code>Reservation</code> value because it was pattern-matched out of <code>ArbReservation reservation</code>. That's just like <code>capacity</code> is an <code>Int</code>, because it was pattern-matched out of <code>Positive capacity</code>.
+	</p>
+	<p>
+		Incidentally, in the spirit of <a href="">the previous article</a>, I'm here using in-lined properties implemented as lambda expressions. The lambda expressions use non-idiomatic formatting in order to make the tests more readable (and to prevent horizontal scrolling), but the gist of the matter is that the entire expression has the type <code>Positive Int -&gt; ArbReservation -&gt; Bool</code>. This is a <code>Testable</code> property because all the input types have <code>Arbitrary</code> instances.
+	</p>
+	<p>
+		<strong>Discommodity creeps in</strong>
+	</p>
+	<p>
+		That's fine for that test case, but for the next, I needed not only a single <code>Reservation</code> value, but also a list of <code>Reservation</code> values. Again, with QuickCheck, you can't write a property with a type like <code>Positive Int -&gt; [Reservation] -&gt; ArbReservation -&gt; Bool</code>, because there's no <code>Arbitrary</code> instance for <code>[Reservation]</code>. Instead, you'll need a property with the type <code>Positive Int -&gt; [ArbReservation] -&gt; ArbReservation -&gt; Bool</code>.
+	</p>
+	<p>
+		One way to do that is to write the property like this:
+	</p>
+	<p>
+		<pre>testProperty&nbsp;<span style="color:#a31515;">&quot;tryAccept&nbsp;reservation&nbsp;when&nbsp;capacity&nbsp;is&nbsp;insufficient&quot;</span>&nbsp;$&nbsp;\
+&nbsp;&nbsp;(Positive&nbsp;i)
+&nbsp;&nbsp;reservations
+&nbsp;&nbsp;(ArbReservation&nbsp;reservation)
+&nbsp;&nbsp;-&gt;
+&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;stub&nbsp;(IsReservationInFuture&nbsp;_&nbsp;next)&nbsp;=&nbsp;next&nbsp;True
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;stub&nbsp;(ReadReservations&nbsp;_&nbsp;next)&nbsp;=&nbsp;next&nbsp;$&nbsp;getReservation&nbsp;&lt;$&gt;&nbsp;reservations
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;stub&nbsp;(Create&nbsp;_&nbsp;next)&nbsp;=&nbsp;next&nbsp;0
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;reservedSeats&nbsp;=&nbsp;<span style="color:blue;">sum</span>&nbsp;$&nbsp;reservationQuantity&nbsp;&lt;$&gt;&nbsp;getReservation&nbsp;&lt;$&gt;&nbsp;reservations
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;capacity&nbsp;=&nbsp;reservedSeats&nbsp;+&nbsp;reservationQuantity&nbsp;reservation&nbsp;-&nbsp;i
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;actual&nbsp;=&nbsp;iter&nbsp;stub&nbsp;$&nbsp;runMaybeT&nbsp;$&nbsp;tryAccept&nbsp;capacity&nbsp;reservation
+
+&nbsp;&nbsp;<span style="color:blue;">in</span>&nbsp;&nbsp;isNothing&nbsp;actual
+</pre>
+	</p>
+	<p>
+		Here, <code>reservations</code> has type type <code>[ArbReservation]</code>, so every time the test needs to operate on the values, it first has to pull the <code>Reservation</code> values out of it using <code>getReservation &lt;$&gt; reservations</code>. That seems unnecessarily verbose and repetitive, so it'd be nice if a better option was available.
+	</p>
+	<p>
+		<strong>View pattern</strong>
+	</p>
+	<p>
+		Had I been writing <a href="http://fsharp.org">F#</a> code, I'd immediately be reaching for an <a href="https://docs.microsoft.com/en-us/dotnet/fsharp/language-reference/active-patterns">active pattern</a>, but this is Haskell. If there's one thing, though, I've learned about Haskell so far, it's that, if F# can do something, there's a very good chance Haskell can do it too - only, it may be called something else.
+	</p>
+	<p>
+		With a vague sense that I'd seen something similar in some Haskell code somewhere, I went looking, and about fifteen minutes later I'd found what I was looking for: a little language extension called <em>view patterns</em>. Just add the language extension to the top of the file where you want to use it:
+	</p>
+	<p>
+		<pre>{-#&nbsp;<span style="color:gray;">LANGUAGE</span>&nbsp;ViewPatterns&nbsp;#-}</pre>
+	</p>
+	<p>
+		You can now change the property to pattern-match <code>reservations</code> out of a function call, so to speak:
+	</p>
+	<p>
+		<pre>testProperty&nbsp;<span style="color:#a31515;">&quot;tryAccept&nbsp;reservation&nbsp;when&nbsp;capacity&nbsp;is&nbsp;insufficient&quot;</span>&nbsp;$&nbsp;\
+&nbsp;&nbsp;(Positive&nbsp;i)
+&nbsp;&nbsp;(<span style="color:blue;">fmap</span>&nbsp;getReservation&nbsp;-&gt;&nbsp;reservations)
+&nbsp;&nbsp;(ArbReservation&nbsp;reservation)
+&nbsp;&nbsp;-&gt;
+&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;stub&nbsp;(IsReservationInFuture&nbsp;_&nbsp;next)&nbsp;=&nbsp;next&nbsp;True
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;stub&nbsp;(ReadReservations&nbsp;_&nbsp;next)&nbsp;=&nbsp;next&nbsp;reservations
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;stub&nbsp;(Create&nbsp;_&nbsp;next)&nbsp;=&nbsp;next&nbsp;0
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;reservedSeats&nbsp;=&nbsp;<span style="color:blue;">sum</span>&nbsp;$&nbsp;reservationQuantity&nbsp;&lt;$&gt;&nbsp;reservations
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;capacity&nbsp;=&nbsp;reservedSeats&nbsp;+&nbsp;reservationQuantity&nbsp;reservation&nbsp;-&nbsp;i
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;actual&nbsp;=&nbsp;iter&nbsp;stub&nbsp;$&nbsp;runMaybeT&nbsp;$&nbsp;tryAccept&nbsp;capacity&nbsp;reservation
+
+&nbsp;&nbsp;<span style="color:blue;">in</span>&nbsp;&nbsp;isNothing&nbsp;actual
+</pre>
+	</p>
+	<p>
+		The function <code>getReservation</code> has the type <code>ArbReservation -&gt; Reservation</code>, so <code>fmap getReservation</code> is a partially applied function with the type <code>[ArbReservation] -&gt; [Reservation]</code>. In order to be able to call the overall lambda expression, the caller must supply an <code>[ArbReservation]</code> value to the view pattern, which means that the type of that argument must be <code>[ArbReservation]</code>. The view pattern then immediately unpacks the result of the function and gives you <code>reservations</code>, which is the return value of calling <code>fmap getReservation</code> with the input value(s). Thus, <code>reservations</code> has the type <code>[Reservation]</code>.
+	</p>
+	<p>
+		This removes some noise from the body of the property, so I find that this is a useful trick in this particular situation.
+	</p>
+	<p>
+		<strong>Summary</strong>
+	</p>
+	<p>
+		You can use the <em>view patterns</em> GHC language extension when you need to write a function that takes an argument of a particular type, but you never care about the original input, but instead immediately wish to project it to a different value.
+	</p>
+	<p>
+		I haven't had much use for it before, but it seems to be useful in the context of QuickCheck properties.
+	</p>
+</div>
