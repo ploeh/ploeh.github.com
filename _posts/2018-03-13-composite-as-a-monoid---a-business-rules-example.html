@@ -1,0 +1,362 @@
+---
+layout: post
+title: "Composite as a monoid - a business rules example"
+date: 2018-03-13 7:46 UTC
+tags: [Software Design, F#, Haskell]
+---
+{% include JB/setup %}
+
+<div id="post">
+	<p>
+		<em>Composites are monoids. An example in C#, F#, and Haskell.</em>
+	</p>
+	<p>
+		Towards the end of the first decade of the third millennium, I'd been writing object-oriented code for about ten years, and I'd started to notice some patterns in my code. I'd read <a href="http://amzn.to/XBYukB">Design Patterns</a> 6-7 years earlier, but I noticed that I tended to use only a small subset of the patterns from the book - particularly <a href="https://en.wikipedia.org/wiki/Composite_pattern">Composite</a>, <a href="https://en.wikipedia.org/wiki/Decorator_pattern">Decorator</a>, <a href="https://en.wikipedia.org/wiki/Chain-of-responsibility_pattern">Chain of Responsibility</a>, and a few others.
+	</p>
+	<p>
+		In particular, I noticed that modelling seemed to be easier, and the code better structured, when I could apply the Composite design pattern. It was also clear, however, that I couldn't always use the Composite pattern, so I started to speculate on what could be the distinguishing factors. In 2010, I made <a href="http://blog.ploeh.dk/2010/12/03/Towardsbetterabstractions">a first attempt at identifying when a Composite is possible</a>, and when it isn't. Unfortunately, while it was a fine attempt (which I'll return to later), it didn't lead anywhere. Ultimately, I gave up on the subject and moved on to other things.
+	</p>
+	<p>
+		<strong>A revelation</strong>
+	</p>
+	<p>
+		One of my interests in the next decade became functional programming. One day in late 2016 I came across <a href="https://codereview.stackexchange.com/q/149559/3878">this Code Review question</a> by <a href="https://bizmonger.wordpress.com">Scott Nimrod</a>. It was an solution to <a href="http://codekata.com/kata/kata16-business-rules">the Business Rules kata</a>, which, briefly told, is about implementing changing business rules in a sustainable manner.
+	</p>
+	<p>
+		In my answer to the question, I gave an outline (repeated below) of how I would address the problem in <a href="http://fsharp.org">F#</a>. As a comment to my answer, Scott wrote:
+	</p>
+	<p>
+		"Feels like the Decorator Pattern..."
+	</p>
+	<p>
+		I responded,
+	</p>
+	<p>
+		"Not really; it's the Composite pattern..."
+	</p>
+	<p>
+		A few days later, as I was doing something else, it suddenly dawned on me that not only was a few lines of F# code equivalent to the Composite design pattern, but those lines of code were also manifestations of fundamental abstractions from <a href="https://en.wikipedia.org/wiki/Category_theory">category theory</a>. Originally, I thought Composite was a combination of <a href="">applicative functors</a> and <a href="http://blog.ploeh.dk/2017/10/06/monoids">monoids</a>, but as I investigated, I discovered that <a href="http://blog.ploeh.dk/2018/03/12/composite-as-a-monoid">Composites are simply monoids</a>.
+	</p>
+	<p>
+		This article shows a concrete example of that discovery, starting with my original F# code, subsequently translating it to C# to demonstrate that it's a Composite, and concluding with a translation to <a href="https://www.haskell.org">Haskell</a> in order to demonstrate that it all fits with the formalisation of <code>Monoid</code> there.
+	</p>
+	<p>
+		<strong>Original F# solution outline</strong>
+	</p>
+	<p>
+		The kata is about modelling volatile business rules in a sustainable manner. Particularly, you must implement various business rules associated with payments for products and services. Making a rough outline of a model, I started by introducing some types in F#:
+	</p>
+	<p>
+		<pre><span style="color:blue;">type</span>&nbsp;Membership&nbsp;=&nbsp;Basic&nbsp;|&nbsp;Gold
+ 
+<span style="color:blue;">type</span>&nbsp;Good&nbsp;=
+|&nbsp;PhysicalProduct&nbsp;<span style="color:blue;">of</span>&nbsp;string
+|&nbsp;Book&nbsp;<span style="color:blue;">of</span>&nbsp;string
+|&nbsp;Video&nbsp;<span style="color:blue;">of</span>&nbsp;string
+|&nbsp;Membership&nbsp;<span style="color:blue;">of</span>&nbsp;Membership
+|&nbsp;Upgrade
+ 
+<span style="color:blue;">type</span>&nbsp;Command&nbsp;=
+|&nbsp;Slip&nbsp;<span style="color:blue;">of</span>&nbsp;string&nbsp;*&nbsp;(Good&nbsp;list)
+|&nbsp;Activate&nbsp;<span style="color:blue;">of</span>&nbsp;Membership
+|&nbsp;Upgrade
+|&nbsp;PayAgent</pre>
+	</p>
+	<p>
+		This basically states that there's a closed hierarchy of goods, and a closed hierarchy of business commands, as well as a <code>Membership</code> enumeration. A <em>good</em> can be a physical product with a name, a book with a name, a membership or upgrade, and so on. A <em>command</em> can be a packing slip, a membership activation, and so on.
+	</p>
+	<p>
+		Since I was only interested in a rough outline of a solution, I only sketched four business rules, all implemented as functions. The first creates a packing slip for certain goods:
+	</p>
+	<p>
+		<pre><span style="color:green;">//&nbsp;Good&nbsp;-&gt;&nbsp;Command&nbsp;list</span>
+<span style="color:blue;">let</span>&nbsp;slipForShipping&nbsp;=&nbsp;<span style="color:blue;">function</span>
+|&nbsp;PhysicalProduct&nbsp;name&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;[Slip&nbsp;(<span style="color:#a31515;">&quot;Shipping&quot;</span>,&nbsp;[PhysicalProduct&nbsp;name])]
+|&nbsp;Book&nbsp;name&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;[Slip&nbsp;(<span style="color:#a31515;">&quot;Shipping&quot;</span>,&nbsp;[Book&nbsp;name])]
+|&nbsp;Video&nbsp;name&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;[Slip&nbsp;(<span style="color:#a31515;">&quot;Shipping&quot;</span>,&nbsp;[Video&nbsp;name])]
+|&nbsp;_&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;[]</pre>
+	</p>
+	<p>
+		This function takes a <code>Good</code> value as input and returns a list of <code>Command</code> values as output. If the <code>Good</code> is a <code>PhysicalProduct</code>, <code>Book</code>, or <code>Video</code>, it returns a packing slip command; otherwise, it returns an empty list of commands.
+	</p>
+	<p>
+		The next business rule is a similar function:
+	</p>
+	<p>
+		<pre><span style="color:green;">//&nbsp;Good&nbsp;-&gt;&nbsp;Command&nbsp;list</span>
+<span style="color:blue;">let</span>&nbsp;slipForRoyalty&nbsp;=&nbsp;<span style="color:blue;">function</span>
+|&nbsp;Book&nbsp;name&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;[Slip&nbsp;(<span style="color:#a31515;">&quot;Royalty&quot;</span>,&nbsp;[Book&nbsp;name])]
+|&nbsp;_&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;[]</pre>
+	</p>
+	<p>
+		This business rule generates a royalty slip for any <code>Book</code>, but does nothing for any other <code>Good</code>.
+	</p>
+	<p>
+		The third business rule activates a membership:
+	</p>
+	<p>
+		<pre><span style="color:green;">//&nbsp;Good&nbsp;-&gt;&nbsp;Command&nbsp;list</span>
+<span style="color:blue;">let</span>&nbsp;activate&nbsp;=&nbsp;<span style="color:blue;">function</span>&nbsp;|&nbsp;Membership&nbsp;x&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;[Activate&nbsp;x]&nbsp;|&nbsp;_&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;[]</pre>
+	</p>
+	<p>
+		If the <code>Good</code> is a <code>Membership</code>, the <code>activate</code> function returns a list containing a single <code>Activate</code> command; otherwise, it returns an empty list.
+	</p>
+	<p>
+		Finally, the last rule upgrades a membership:
+	</p>
+	<p>
+		<pre><span style="color:green;">//&nbsp;Good&nbsp;-&gt;&nbsp;Command&nbsp;list</span>
+<span style="color:blue;">let</span>&nbsp;upgrade&nbsp;=&nbsp;<span style="color:blue;">function</span>&nbsp;|&nbsp;Good.Upgrade&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;[Upgrade]&nbsp;|&nbsp;_&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;[]</pre>
+	</p>
+	<p>
+		Similar to the previous functions, this one looks at the type of <code>Good</code>, and returns an <code>Upgrade</code> command when the input is an <code>Upgrade</code> good, and an empty list otherwise.
+	</p>
+	<p>
+		Notice that all four functions share the same type: <code>Good -&gt; Command list</code>. I designed them like that on purpose, because this enables you to compose a list of business rules to a function that looks like a single rule:
+	</p>
+	<p>
+		<pre><span style="color:green;">//&nbsp;(&#39;a&nbsp;-&gt;&nbsp;&#39;b&nbsp;list)&nbsp;list&nbsp;-&gt;&nbsp;&#39;a&nbsp;-&gt;&nbsp;&#39;b&nbsp;list</span>
+<span style="color:blue;">let</span>&nbsp;handle&nbsp;rules&nbsp;good&nbsp;=&nbsp;List.collect&nbsp;(<span style="color:blue;">fun</span>&nbsp;r&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;r&nbsp;good)&nbsp;rules</pre>
+	</p>
+	<p>
+		This <code>handle</code> function takes a list of business rules (<code>rules</code>) and returns a new function with the type <code>Good -&gt; Command list</code> (or, actually, a function with the type <code>'a -&gt; 'b list</code> - once again I've fallen into the trap of <a href="http://blog.ploeh.dk/2015/08/17/when-x-y-and-z-are-great-variable-names">using too descriptive names</a>). Notice that this is the same type as the individual rules.
+	</p>
+	<p>
+		You can now compose the four specific business rules:
+	</p>
+	<p>
+		<pre><span style="color:green;">//&nbsp;Good&nbsp;-&gt;&nbsp;Command&nbsp;list</span>
+<span style="color:blue;">let</span>&nbsp;handleAll&nbsp;=&nbsp;handle&nbsp;[slipForShipping;&nbsp;slipForRoyalty;&nbsp;activate;&nbsp;upgrade]</pre>
+	</p>
+	<p>
+		This function also has the type <code>Good -&gt; Command list</code> although it's a composition of four rules.
+	</p>
+	<p>
+		You can use it like this <em>F# Interactive</em> example:
+	</p>
+	<p>
+		<pre>&gt; handleAll (Book "The Annotated Turing");;
+val it : Command list =
+  [Slip ("Shipping",[Book "The Annotated Turing"]);
+   Slip ("Royalty",[Book "The Annotated Turing"])]</pre>
+	</p>
+	<p>
+		(Yes, I like <a href="http://amzn.to/2n9MFGh">The Annotated Turing</a> - read <a href="https://www.goodreads.com/review/show/1731926050">my review on Goodreads</a>.)
+	</p>
+	<p>
+		Notice that while each of the business rules produce only zero or one <code>Command</code> values, in this example <code>handleAll</code> returns two <code>Command</code> values.
+	</p>
+	<p>
+		This design, where a composition looks like the things it composes, sounds familiar.		
+	</p>
+	<p>
+		<strong>Business rules in C#</strong>
+	</p>
+	<p>
+		You can translate the above F# model to an object-oriented model in C#. Translating <a href="https://en.wikipedia.org/wiki/Tagged_union">discriminated unions</a> like <code>Good</code> and <code>Command</code> to C# always involves compromises. In order to keep the example as simple as possible, I decided to translate each of those to a <a href="https://en.wikipedia.org/wiki/Marker_interface_pattern">marker interface</a>, although I loathe that 'pattern':
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">interface</span>&nbsp;<span style="color:#2b91af;">IGood</span>&nbsp;{&nbsp;}</pre>
+	</p>
+	<p>
+		While the interface doesn't afford any behaviour, various classes can still implement it, like, for example, <code>Book</code>:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">Book</span>&nbsp;:&nbsp;<span style="color:#2b91af;">IGood</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;Book(<span style="color:blue;">string</span>&nbsp;name)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Name&nbsp;=&nbsp;name;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">string</span>&nbsp;Name&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;}
+}</pre>
+	</p>
+	<p>
+		Other <code>IGood</code> 'implementations' looks similar, and there's a comparable class hierarchy for <code>ICommand</code>, which is another marker interface.
+	</p>
+	<p>
+		The above F# code used a shared function type of <code>Good -&gt; Command list</code> as a polymorphic type for a business rule. You can <a href="http://blog.ploeh.dk/2018/01/08/software-design-isomorphisms">translate that to a C# interface</a>:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">interface</span>&nbsp;<span style="color:#2b91af;">IRule</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">IReadOnlyCollection</span>&lt;<span style="color:#2b91af;">ICommand</span>&gt;&nbsp;Handle(<span style="color:#2b91af;">IGood</span>&nbsp;good);
+}</pre>
+	</p>
+	<p>
+		The above <code>slipForShipping</code> function becomes a class that implements the <code>IRule</code> interface:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">SlipForShippingRule</span>&nbsp;:&nbsp;<span style="color:#2b91af;">IRule</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">IReadOnlyCollection</span>&lt;<span style="color:#2b91af;">ICommand</span>&gt;&nbsp;Handle(<span style="color:#2b91af;">IGood</span>&nbsp;good)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;(good&nbsp;<span style="color:blue;">is</span>&nbsp;<span style="color:#2b91af;">PhysicalProduct</span>&nbsp;||
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;good&nbsp;<span style="color:blue;">is</span>&nbsp;<span style="color:#2b91af;">Book</span>&nbsp;||
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;good&nbsp;<span style="color:blue;">is</span>&nbsp;<span style="color:#2b91af;">Video</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:blue;">new</span>[]&nbsp;{&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">SlipCommand</span>(<span style="color:#a31515;">&quot;Shipping&quot;</span>,&nbsp;good)&nbsp;};
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">ICommand</span>[0];
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+	</p>
+	<p>
+		Instead of pattern matching on a discriminated union, the <code>Handle</code> method examines the subtype of <code>good</code> and only returns a <code>SlipCommand</code> if the <code>good</code> is either a <code>PhysicalProduct</code>, a <code>Book</code>, or a <code>Video</code>.
+	</p>
+	<p>
+		The other implementations are similar, so I'm not going to show all of them, but here's one more:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">ActivateRule</span>&nbsp;:&nbsp;<span style="color:#2b91af;">IRule</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">IReadOnlyCollection</span>&lt;<span style="color:#2b91af;">ICommand</span>&gt;&nbsp;Handle(<span style="color:#2b91af;">IGood</span>&nbsp;good)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;m&nbsp;=&nbsp;good&nbsp;<span style="color:blue;">as</span>&nbsp;<span style="color:#2b91af;">MembershipGood</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;(m&nbsp;!=&nbsp;<span style="color:blue;">null</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:blue;">new</span>[]&nbsp;{&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">ActivateCommand</span>(m.Membership)&nbsp;};
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">ICommand</span>[0];
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+	</p>
+	<p>
+		Since 'all' members of <code>IRule</code> return <a href="http://blog.ploeh.dk/2017/10/10/strings-lists-and-sequences-as-a-monoid">collections, which form monoids over concatenation</a>, the interface itself gives rise to a monoid. This means that you can create a Composite:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">CompositeRule</span>&nbsp;:&nbsp;<span style="color:#2b91af;">IRule</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;<span style="color:#2b91af;">IRule</span>[]&nbsp;rules;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;CompositeRule(<span style="color:blue;">params</span>&nbsp;<span style="color:#2b91af;">IRule</span>[]&nbsp;rules)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.rules&nbsp;=&nbsp;rules;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">IReadOnlyCollection</span>&lt;<span style="color:#2b91af;">ICommand</span>&gt;&nbsp;Handle(<span style="color:#2b91af;">IGood</span>&nbsp;good)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;commands&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">List</span>&lt;<span style="color:#2b91af;">ICommand</span>&gt;();
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">foreach</span>&nbsp;(<span style="color:blue;">var</span>&nbsp;rule&nbsp;<span style="color:blue;">in</span>&nbsp;rules)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;commands.AddRange(rule.Handle(good));
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;commands;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+	</p>
+	<p>
+		Notice how the implementation of <code>Handle</code> follows the <a href="http://blog.ploeh.dk/2017/11/20/monoids-accumulate">template for monoid accumulation</a>. It starts with the <em>identity</em>, which, for the collection concatenation monoid is the empty collection. It then loops through all the composed <code>rules</code> and updates the accumulator <code>commands</code> in each iteration. Here, I used <code>AddRange</code>, which mutates <code>commands</code> instead of returning a new value, but the result is the same. Finally, the method returns the accumulator.
+	</p>
+	<p>
+		You can now compose all the business rules and use the composition as though it was a single object:
+	</p>
+	<p>
+		<pre><span style="color:blue;">var</span>&nbsp;rule&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">CompositeRule</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">SlipForShippingRule</span>(),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">SlipForRoyaltyRule</span>(),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">ActivateRule</span>(),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">UpgradeRule</span>());
+ 
+<span style="color:blue;">var</span>&nbsp;book&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Book</span>(<span style="color:#a31515;">&quot;The&nbsp;Annotated&nbsp;Turing&quot;</span>);
+<span style="color:blue;">var</span>&nbsp;commands&nbsp;=&nbsp;rule.Handle(book);</pre>
+	</p>
+	<p>
+		When the method returns, <code>commands</code> contains two <code>SlipCommand</code> objects - a packing slip, and a royalty slip.
+	</p>
+	<p>
+		<strong>Business rules in Haskell</strong>
+	</p>
+	<p>
+		You can also port the F# code to Haskell, which is usually easy as long as the F# is written in a 'functional style'. Since Haskell has an explicit notion of monoids, you'll be able to see how the two above solutions are monoidal.
+	</p>
+	<p>
+		The data types are easy to translate to Haskell - you only have to adjust the syntax a bit:
+	</p>
+	<p>
+		<pre><span style="color:blue;">data</span>&nbsp;Membership&nbsp;=&nbsp;Basic&nbsp;|&nbsp;Gold&nbsp;<span style="color:blue;">deriving</span>&nbsp;(<span style="color:#2b91af;">Show</span>,&nbsp;<span style="color:#2b91af;">Eq</span>,&nbsp;<span style="color:#2b91af;">Enum</span>,&nbsp;<span style="color:#2b91af;">Bounded</span>)
+ 
+<span style="color:blue;">data</span>&nbsp;Good&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;PhysicalProduct&nbsp;String
+&nbsp;&nbsp;|&nbsp;Book&nbsp;String
+&nbsp;&nbsp;|&nbsp;Video&nbsp;String
+&nbsp;&nbsp;|&nbsp;Membership&nbsp;Membership
+&nbsp;&nbsp;|&nbsp;UpgradeGood
+&nbsp;&nbsp;<span style="color:blue;">deriving</span>&nbsp;(<span style="color:#2b91af;">Show</span>,&nbsp;<span style="color:#2b91af;">Eq</span>)
+ 
+<span style="color:blue;">data</span>&nbsp;Command&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;Slip&nbsp;String&nbsp;[Good]
+&nbsp;&nbsp;|&nbsp;Activate&nbsp;Membership
+&nbsp;&nbsp;|&nbsp;Upgrade
+&nbsp;&nbsp;|&nbsp;PayAgent
+&nbsp;&nbsp;<span style="color:blue;">deriving</span>&nbsp;(<span style="color:#2b91af;">Show</span>,&nbsp;<span style="color:#2b91af;">Eq</span>)</pre>
+	</p>
+	<p>
+		The business rule functions are also easy to translate:
+	</p>
+	<p>
+		<pre><span style="color:#2b91af;">slipForShipping</span>&nbsp;::&nbsp;<span style="color:blue;">Good</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;[<span style="color:blue;">Command</span>]
+slipForShipping&nbsp;pp@(PhysicalProduct&nbsp;_)&nbsp;=&nbsp;[Slip&nbsp;<span style="color:#a31515;">&quot;Shipping&quot;</span>&nbsp;[pp]]
+slipForShipping&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;b@(Book&nbsp;_)&nbsp;=&nbsp;[Slip&nbsp;<span style="color:#a31515;">&quot;Shipping&quot;</span>&nbsp;&nbsp;[b]]
+slipForShipping&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;v@(Video&nbsp;_)&nbsp;=&nbsp;[Slip&nbsp;<span style="color:#a31515;">&quot;Shipping&quot;</span>&nbsp;&nbsp;[v]]
+slipForShipping&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;_&nbsp;&nbsp;=&nbsp;<span style="color:blue;">[]</span>
+ 
+<span style="color:#2b91af;">slipForRoyalty</span>&nbsp;::&nbsp;<span style="color:blue;">Good</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;[<span style="color:blue;">Command</span>]
+slipForRoyalty&nbsp;b@(Book&nbsp;_)&nbsp;=&nbsp;[Slip&nbsp;<span style="color:#a31515;">&quot;Royalty&quot;</span>&nbsp;[b]]
+slipForRoyalty&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;_&nbsp;&nbsp;=&nbsp;<span style="color:blue;">[]</span>
+ 
+<span style="color:#2b91af;">activate</span>&nbsp;::&nbsp;<span style="color:blue;">Good</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;[<span style="color:blue;">Command</span>]
+activate&nbsp;(Membership&nbsp;m)&nbsp;=&nbsp;[Activate&nbsp;m]
+activate&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;_&nbsp;&nbsp;=&nbsp;<span style="color:blue;">[]</span>
+ 
+<span style="color:#2b91af;">upgrade</span>&nbsp;::&nbsp;<span style="color:blue;">Good</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;[<span style="color:blue;">Command</span>]
+upgrade&nbsp;(UpgradeGood)&nbsp;=&nbsp;[Upgrade]
+upgrade&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;_&nbsp;&nbsp;=&nbsp;<span style="color:blue;">[]</span></pre>
+	</p>
+	<p>
+		Notice that all four business rules share the same type: <code>Good -&gt; [Command]</code>. This is conceptually the same type as in the F# code; instead of writing <code>Command list</code>, which is the F# syntax, the Haskell syntax for a list of <code>Command</code> values is <code>[Command]</code>.
+	</p>
+	<p>
+		All those functions <a href="http://blog.ploeh.dk/2017/11/06/function-monoids">are monoids because their return types form a monoid</a>, so in Haskell, you can compose them without further ado:
+	</p>
+	<p>
+		<pre><span style="color:#2b91af;">handleAll</span>&nbsp;::&nbsp;<span style="color:blue;">Good</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;[<span style="color:blue;">Command</span>]
+handleAll&nbsp;=&nbsp;mconcat&nbsp;[slipForShipping,&nbsp;slipForRoyalty,&nbsp;activate,&nbsp;upgrade]</pre>
+	</p>
+	<p>
+		<code>mconcat</code> is a built-in function that aggregates any list of monoidal values to a single value:
+	</p>
+	<p>
+		<pre>mconcat :: Monoid a =&gt; [a] -&gt; a</pre>
+	</p>
+	<p>
+		Since all four functions are monoids, this just works out of the box. A Composite is just a monoid. Here's an example of using <code>handleAll</code> from GHCi:
+	</p>
+	<p>
+		<pre>*BusinessRules&gt; handleAll $ Book "The Annotated Turing"
+[Slip "Shipping" [Book "The Annotated Turing"],Slip "Royalty" [Book "The Annotated Turing"]]</pre>
+	</p>
+	<p>
+		The result is as you'd come to expect.
+	</p>
+	<p>
+		Notice that not only don't you have to write a <code>CompositeRule</code> class, you don't even have to write a <code>handle</code> helper function. Haskell already understands monoids, so composition happens automatically.
+	</p>
+	<p>
+		If you prefer, you could even skip the <code>handle</code> function too:
+	</p>
+	<p>
+		<pre>*BusinessRules&gt; mconcat [slipForShipping, slipForRoyalty, activate, upgrade] $ Book "Blindsight"
+[Slip "Shipping" [Book "Blindsight"],Slip "Royalty" [Book "Blindsight"]]</pre>
+	</p>
+	<p>
+		(Yes, you should also read <a href="http://amzn.to/1OSKj6Z">Blindsight</a>.)
+	</p>
+	<p>
+		It's not that composition as such is built into Haskell, but rather that the language is designed around a powerful ability to model abstractions, and one of the built-in abstractions just happens to be monoids. You could argue, however, that many of Haskell's fundamental abstractions are built from category theory, and one of the fundamental characteristics of a category is how morphisms compose.
+	</p>
+	<p>
+		<strong>Summary</strong>
+	</p>
+	<p>
+		Composite are monoids. This article shows an example, starting with a solution in F#. You can translate the F# code to object-oriented C# and model the composition of business rules as a Composite. You can also translate the F# code 'the other way', to the strictly functional language Haskell, and thereby demonstrate that the solution is based on a monoid.
+	</p>
+</div>
