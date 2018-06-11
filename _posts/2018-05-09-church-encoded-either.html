@@ -1,0 +1,264 @@
+---
+layout: post
+title: "Church-encoded Either"
+date: 2018-05-09 19:28 UTC
+tags: [Software Design]
+---
+{% include JB/setup %}
+
+<div id="post">
+	<p>
+		<em>Programming languages don't have to have a built-in notion of error handling. You can implement sane error handling from first principles. An introduction for object-oriented programmers.</em>		
+	</p>
+	<p>
+		This article is part of <a href="http://blog.ploeh.dk/2018/05/22/church-encoding">a series of articles about Church encoding</a>. In this series, you'll learn how to re-create various programming language features from first principles. In previous articles, you learned <a href="">how to implement Boolean logic without Boolean primitives</a>, <a href="">how to model natural numbers</a>, as well as <a href="">how to implement Maybe</a> (a <a href="http://blog.ploeh.dk/2015/11/13/null-has-no-type-but-maybe-has">type-safe alternative to null</a>). Through these examples, you'll learn how to model <a href="https://en.wikipedia.org/wiki/Tagged_union">sum types</a> without explicit language support.
+	</p>
+	<p>
+		<h3 id="6fd3652e6b9d462781a7d5191e32f6f0">
+			Error handling without exceptions <a href="#6fd3652e6b9d462781a7d5191e32f6f0" title="permalink">#</a>
+		</h3>
+	</p>
+	<p>
+		In a previous article, I've discussed how <a href="http://blog.ploeh.dk/2015/04/13/less-is-more-language-features">a language doesn't need to have built-in exceptions</a> in order to support composable and type-safe error handling. In fact, exceptions are noting but <a href="http://wiki.c2.com/?DontUseExceptionsForFlowControl">glorified GOTO statements</a>. A better approach is to use the <em>Either</em> abstraction, which enables you to model values that are either one or another thing.
+	</p>
+	<p>
+		In <a href="https://fsharp.org">F#</a>, this type is known as <a href="https://docs.microsoft.com/en-us/dotnet/fsharp/language-reference/results">Result&lt;'T, 'TError&gt;</a>, while in <a href="https://www.haskell.org">Haskell</a> it's called <a href="https://hackage.haskell.org/package/base/docs/Data-Either.html">Either</a>. It enables you to model an outcome that is either something (like a success) or something else (such as an error).
+	</p>
+	<p>
+		<a href="https://fsharpforfunandprofit.com">Scott Wlaschin</a> has already brilliantly described <a href="https://fsharpforfunandprofit.com/posts/recipe-part2">how this works in F#</a>, but the <code>Either</code> type can be used for error handling in Haskell in exactly the same way. When we use the terminology related to <em>either</em>, we distinguish between <em>left</em> and <em>right</em>. Typically, <em>right</em> is used to indicate success, via the pun that 'right' is 'correct'.
+	</p>
+	<p>
+		<h3 id="72621c98299f4840b2ec880d254112a2">
+			Lambda calculus Either <a href="#72621c98299f4840b2ec880d254112a2" title="permalink">#</a>
+		</h3>
+	</p>
+	<p>
+		Church encoding is based on the <a href="https://en.wikipedia.org/wiki/Lambda_calculus">lambda calculus</a>, which defines a universal model of computation based entirely on functions (lambda expressions) and recursion. As far as I can tell, you can define <em>Either</em> in lambda calculus as an expression that takes two arguments, and where there's two fundamental 'implementations' of the contract:
+	</p>
+	<p>
+		<pre> left = λa.λl.λr.l a
+right = λb.λl.λr.r b</pre>
+	</p>
+	<p>
+		(I admit that I'm going out on a limb here, since I haven't found any source that puts either in the above form, so I'd appreciate feedback if I did it incorrectly.)
+	</p>
+	<p>
+		The contract is that, similar to <em>Maybe</em>, the <code>l</code> function argument represents the <em>left</em> case, whereas the <code>r</code> argument represents the <em>right</em> case. Contrary to <em>Maybe</em>, both <em>l</em> and <em>r</em> are used as functions. (Everything in lambda calculus is a function, but we don't always use the arguments as the function that they are.)
+	</p>
+	<p>
+		The <code>left</code> function is a function that takes three arguments (<code>a</code>, <code>l</code>, and <code>r</code>) and always returns <code>l a</code>. Recall that in lambda calculus, everything is a function, which includes <code>l</code> (and <code>r</code>). In other words, <code>left</code> unconditionally calls <code>l</code> with <code>a</code>, and that's the return value.
+	</p>
+	<p>
+		The <code>right</code> function works like the <code>left</code> function, with the only difference that it always returns <code>r b</code>.
+	</p>
+	<p>
+		The idea, as usual, is that you can partially apply <code>left</code> and <code>right</code>, by, for instance calling <code>left three</code> (where <code>three</code> is the lambda calculus representation of the number 3, as described in <a href="">the article on Church-encoded natural numbers</a>). Such a partially applied function is a function that still takes the two arguments <code>l</code> and <code>r</code>.
+	</p>
+	<p>
+		The same is true if you partially apply <code>right</code> with a value, like <code>right one</code>.
+	</p>
+	<p>
+		In both cases, you have a function of the form <code>λl.λr.[...]</code>. If you've been given such a function by an external source, you may not know if it's a <code>left</code> or a <code>right</code> expression, and that's the point. You must supply handlers (<code>l</code> and <code>r</code>) that cover all possible cases.
+	</p>
+	<p>
+		In the lambda calculus, expressions are always curried, so instead of viewing <code>left</code> and <code>right</code> as functions with three arguments, you can view them as functions that take a single element (<code>a</code> or <code>b</code>) and return functions that takes two arguments. This agrees with Haskell's <code>Left</code> and <code>Right</code> data constructors:
+	</p>
+	<p>
+		<pre>Prelude&gt; :t Left
+Left :: a -&gt; Either a b
+Prelude&gt; :t Right
+Right :: b -&gt; Either a b</pre>
+	</p>
+	<p>
+		Haskell tells us that <code>Left</code> is a function that takes an <code>a</code> value and returns an <code>Either a b</code> value. Similarly, <code>Right</code> is a function that takes a <code>b</code> value as input, and returns an <code>Either a b</code>
+	</p>
+	<p>
+		<h3 id="a680dfb8fbb1483391de0ac3fedcdcd6">
+			Church-encoded Either in C# <a href="#a680dfb8fbb1483391de0ac3fedcdcd6" title="permalink">#</a>
+		</h3>
+	</p>
+	<p>
+		Both lambda calculus and Haskell relies on currying and partial application to make the contract fit. In C#, as you've <a href="">previously</a> seen, you can instead define an interface and rely on class fields for the 'extra' function arguments. Since Church-encoded Either is represented by a function that takes two arguments, we'll once again define an interface with a single method that takes two arguments:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">interface</span>&nbsp;<span style="color:#2b91af;">IEither</span>&lt;<span style="color:#2b91af;">L</span>,&nbsp;<span style="color:#2b91af;">R</span>&gt;
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">T</span>&nbsp;Match&lt;<span style="color:#2b91af;">T</span>&gt;(<span style="color:#2b91af;">Func</span>&lt;<span style="color:#2b91af;">L</span>,&nbsp;<span style="color:#2b91af;">T</span>&gt;&nbsp;onLeft,&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:#2b91af;">R</span>,&nbsp;<span style="color:#2b91af;">T</span>&gt;&nbsp;onRight);
+}</pre>
+	</p>
+	<p>
+		The <code>Match</code> method takes two functions as arguments, one that handles the <em>left</em> case, and one that handles the <em>right</em> case. They correspond to the <code>l</code> and <code>r</code> variables in the above lambda expressions. The intent, as with other Church-encoded discriminated unions, is that when client code is given an <code>IEither&lt;L, R&gt;</code> object, it can only interact with that object by telling the <code>Match</code> method how to deal with both cases. Only one of the functions will be called, but at compile-time, you don't know which one. Both functions, however, must return a value of the generic type <code>T</code>, and that's how you can translate an <code>IEither&lt;L, R&gt;</code> object to a <code>T</code> value.
+	</p>
+	<p>
+		Following the normal procedure for Church encoding, you must also supply two implementations of the <code>IEither&lt;L, R&gt;</code> interface: one for each case.
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">Left</span>&lt;<span style="color:#2b91af;">L</span>,&nbsp;<span style="color:#2b91af;">R</span>&gt;&nbsp;:&nbsp;<span style="color:#2b91af;">IEither</span>&lt;<span style="color:#2b91af;">L</span>,&nbsp;<span style="color:#2b91af;">R</span>&gt;
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;<span style="color:#2b91af;">L</span>&nbsp;left;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;Left(<span style="color:#2b91af;">L</span>&nbsp;left)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.left&nbsp;=&nbsp;left;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">T</span>&nbsp;Match&lt;<span style="color:#2b91af;">T</span>&gt;(<span style="color:#2b91af;">Func</span>&lt;<span style="color:#2b91af;">L</span>,&nbsp;<span style="color:#2b91af;">T</span>&gt;&nbsp;onLeft,&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:#2b91af;">R</span>,&nbsp;<span style="color:#2b91af;">T</span>&gt;&nbsp;onRight)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;onLeft(left);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+	</p>
+	<p>
+		The <code>Left&lt;L, R&gt;</code> class is an <a href="https://en.wikipedia.org/wiki/Adapter_pattern">Adapter</a> of a value of the generic type <code>L</code> , making it appear as an <code>IEither&lt;L, R&gt;</code> object.
+	</p>
+	<p>
+		It always calls the <code>onLeft</code> method argument with the adapted value <code>left</code>, while it ignores the <code>onRight</code> method argument. Since <code>onLeft</code> returns a <code>T</code> value, you can return the value produced by the function call.
+	</p>
+	<p>
+		The <em>right</em> case is implemented in a similar fashion:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">Right</span>&lt;<span style="color:#2b91af;">L</span>,&nbsp;<span style="color:#2b91af;">R</span>&gt;&nbsp;:&nbsp;<span style="color:#2b91af;">IEither</span>&lt;<span style="color:#2b91af;">L</span>,&nbsp;<span style="color:#2b91af;">R</span>&gt;
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;<span style="color:#2b91af;">R</span>&nbsp;right;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;Right(<span style="color:#2b91af;">R</span>&nbsp;right)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.right&nbsp;=&nbsp;right;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">T</span>&nbsp;Match&lt;<span style="color:#2b91af;">T</span>&gt;(<span style="color:#2b91af;">Func</span>&lt;<span style="color:#2b91af;">L</span>,&nbsp;<span style="color:#2b91af;">T</span>&gt;&nbsp;onLeft,&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:#2b91af;">R</span>,&nbsp;<span style="color:#2b91af;">T</span>&gt;&nbsp;onRight)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;onRight(right);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+	</p>
+	<p>
+		The <code>Right&lt;L, R&gt;</code> class is the mirror image of <code>Left&lt;L, R&gt;</code>. Instead of adapting an <code>L</code> value, it adapts an <code>R</code> value. It implements <code>Match</code> by always calling <code>onRight</code> with the <code>right</code> value, which, again, produces a <code>T</code> value that can be immediately returned.
+	</p>
+	<p>
+		Notice that for both implementations, the adapted values <code>left</code> and <code>right</code> are <code>private</code> class fields not exposed as public members. The only way you, as a caller, can potentially extract these values is by calling <code>Match</code>, and that forces you to explicitly deal with both cases.
+	</p>
+	<p>
+		Here's an example of using the API:
+	</p>
+	<p>
+		<pre>&gt; <span style="color:#2b91af;">IEither</span>&lt;<span style="color:blue;">string</span>,&nbsp;<span style="color:blue;">int</span>&gt;&nbsp;e&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Right</span>&lt;<span style="color:blue;">string</span>,&nbsp;<span style="color:blue;">int</span>&gt;(42);
+&gt; e.Match(s =&gt; s.Length % 2 == 0, i =&gt; i % 2 == 0)
+true</pre>
+	</p>
+	<p>
+		I've deliberately declared <code>e</code> as a an <code>IEither&lt;string, int&gt;</code> in order to highlight the scenario where, as a client developer, you're often given a value of such a type, and you don't know if it's a <em>left</em> or a <em>right</em> value. Had I, instead, used the <code>var</code> keyword, the compiler would have detected that <code>e</code> is, really, a <code>Right&lt;string, int&gt;</code> variable. You may consider this choice artificial, but the point I'm trying to get across is that, when writing client code, you're often given a polymorphic value, and you don't know the concrete type of the value. According to the <a href="https://en.wikipedia.org/wiki/Liskov_substitution_principle">Liskov Substitution Principle</a>, your client code must be able to deal with any subtype without changing the correctness of the system. In the case of an Either value, the way you deal with all subtypes is by supplying handlers for both cases to the <code>Match</code> method.
+	</p>
+	<p>
+		In the above example, the return value is <code>true</code> because <code>42</code> is an even number. If, instead, the <code>e</code> object is a <em>left</em> case containing the string <code>"foo"</code>, the return value is <code>false</code> because the length of <code>"foo"</code> is <em>3</em> - an odd number:
+	</p>
+	<p>
+		<pre>&gt; <span style="color:#2b91af;">IEither</span>&lt;<span style="color:blue;">string</span>,&nbsp;<span style="color:blue;">int</span>&gt;&nbsp;e&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Left</span>&lt;<span style="color:blue;">string</span>,&nbsp;<span style="color:blue;">int</span>&gt;(<span style="color:#a31515;">&quot;foo&quot;</span>);
+&gt; e.Match(s =&gt; s.Length % 2 == 0, i =&gt; i % 2 == 0)
+false</pre>
+	</p>
+	<p>
+		Notice that the <code>e.Match</code> method call is the same in both examples; the <code>onLeft</code> and <code>onRight</code> functions are the same in both cases. The results differ because the input values represent different cases.
+	</p>
+	<p>
+		If you've been following the overall series on Church encoding, you may think that it's cheating to use C#'s built-in <code>string</code> and <code>int</code> data types, but nothing prevents us from sticking to the data types we've built from scratch:
+	</p>
+	<p>
+		<pre>&gt; <span style="color:#2b91af;">IEither</span>&lt;<span style="color:#2b91af;">IChurchBoolean</span>,&nbsp;<span style="color:#2b91af;">INaturalNumber</span>&gt;&nbsp;e;
+&gt; e&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Right</span>&lt;<span style="color:#2b91af;">IChurchBoolean</span>,&nbsp;<span style="color:#2b91af;">INaturalNumber</span>&gt;(<span style="color:#2b91af;">NaturalNumber</span>.Seven);
+&gt; e.Match(b&nbsp;=&gt;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">ChurchNot</span>(b),&nbsp;n&nbsp;=&gt;&nbsp;n.IsEven())
+ChurchFalse { }
+&gt; e&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Left</span>&lt;<span style="color:#2b91af;">IChurchBoolean</span>,&nbsp;<span style="color:#2b91af;">INaturalNumber</span>&gt;(<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">ChurchFalse</span>());
+&gt; e.Match(b&nbsp;=&gt;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">ChurchNot</span>(b),&nbsp;n&nbsp;=&gt;&nbsp;n.IsEven())
+ChurchNot(ChurchFalse)</pre>
+	</p>
+	<p>
+		For both the <em>left</em> and the <em>right</em> case, the <code>Match</code> inverts the Boolean expression if it's a <em>left</em> case, and evaluates if the number is even if it's a <em>right</em> case. In the first example, the return value is a <code>ChurchFalse</code> object because <em>7</em> is odd. In the second example, the return value is a <code>ChurchNot</code> object containing a <code>ChurchFalse</code> object (in other words, <em>true</em>), because the negation of <em>false</em> is <em>true</em>.
+	</p>
+	<p>
+		<h3 id="f09ad4ad69ba47b6b9f13b0fcd99d6fe">
+			Either instead of exceptions <a href="#f09ad4ad69ba47b6b9f13b0fcd99d6fe" title="permalink">#</a>
+		</h3>
+	</p>
+	<p>
+		You can use Either to signal the success or failure of an operation. By convention, the <em>right</em> case is used to signal success, so, by elimination, <em>left</em> means failure. You can signal errors in numerous ways, e.g. by using <code>enum</code> values, but another common strategy is to simply use string values.
+	</p>
+	<p>
+		Consider the following example. You receive a collection of values, where each element represents a vote for that element. For example, the list <em>Sandra, Zoey, Sandra</em> indicates two votes for <em>Sandra</em>, and one for <em>Zoey</em>. You need to write a method that returns the winner of a vote, but at least two distinct errors are possible: the input collection is empty, or there's a tie.
+	</p>
+	<p>
+		You can model the error cases with an <code>enum</code>:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">enum</span>&nbsp;<span style="color:#2b91af;">VoteError</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;Empty&nbsp;=&nbsp;0,
+&nbsp;&nbsp;&nbsp;&nbsp;Tie
+}</pre>
+	</p>
+	<p>
+		This enables you to write a method to find the winners, with an explicit Either return type:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:#2b91af;">IEither</span>&lt;<span style="color:#2b91af;">VoteError</span>,&nbsp;<span style="color:#2b91af;">T</span>&gt;&nbsp;FindWinner&lt;<span style="color:#2b91af;">T</span>&gt;(<span style="color:#2b91af;">IReadOnlyCollection</span>&lt;<span style="color:#2b91af;">T</span>&gt;&nbsp;votes)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;countedVotes&nbsp;=&nbsp;<span style="color:blue;">from</span>&nbsp;v&nbsp;<span style="color:blue;">in</span>&nbsp;votes
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">group</span>&nbsp;v&nbsp;<span style="color:blue;">by</span>&nbsp;v&nbsp;<span style="color:blue;">into</span>&nbsp;g
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;count&nbsp;=&nbsp;g.Count()
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">orderby</span>&nbsp;count&nbsp;<span style="color:blue;">descending</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">select</span>&nbsp;<span style="color:blue;">new</span>&nbsp;{&nbsp;Vote&nbsp;=&nbsp;g.Key,&nbsp;Count&nbsp;=&nbsp;count&nbsp;};
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;c&nbsp;=&nbsp;countedVotes.Take(2).Count();
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;(c&nbsp;==&nbsp;0)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Left</span>&lt;<span style="color:#2b91af;">VoteError</span>,&nbsp;<span style="color:#2b91af;">T</span>&gt;(<span style="color:#2b91af;">VoteError</span>.Empty);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;x0&nbsp;=&nbsp;countedVotes.ElementAt(0);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;(c&nbsp;==&nbsp;1)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Right</span>&lt;<span style="color:#2b91af;">VoteError</span>,&nbsp;<span style="color:#2b91af;">T</span>&gt;(x0.Vote);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;x1&nbsp;=&nbsp;countedVotes.ElementAt(1);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;(Equals(x0.Count,&nbsp;x1.Count))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Left</span>&lt;<span style="color:#2b91af;">VoteError</span>,&nbsp;<span style="color:#2b91af;">T</span>&gt;(<span style="color:#2b91af;">VoteError</span>.Tie);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Right</span>&lt;<span style="color:#2b91af;">VoteError</span>,&nbsp;<span style="color:#2b91af;">T</span>&gt;(x0.Vote);
+}</pre>
+	</p>
+	<p>
+		Notice that the return type of the <code>FindWinner</code> method is <code>IEither&lt;VoteError, T&gt;</code>; either you get a <code>VoteError</code> value, or you get a <code>T</code> value, but any client code doesn't know which it'll be, so it must handle both cases.
+	</p>
+	<p>
+		The method uses a C# query expression to group, count, and order the votes. If there's no elements, the return value is a <em>left</em> value containing <code>VoteError.Empty</code>. If there's only a single vote group (e.g. if the votes where all for <em>Sandra</em>), that value is returned in a <em>right</em> case. Otherwise, if the two highest ranked votes have the same count, a <em>left</em> value is returned containing <code>VoteError.Tie</code>. Finally, in all other cases, the highest voted element is returned in a <em>right</em> case.
+	</p>
+	<p>
+		Here's some examples in <em>C# Interactive:</em>
+	</p>
+	<p>
+		<pre>&gt; FindWinner&lt;<span style="color:blue;">int</span>&gt;()
+Left&lt;VoteError, int&gt;(Empty)
+&gt; FindWinner(1, 2, 3, 1, 4, 2)
+Left&lt;VoteError, int&gt;(Tie)
+&gt; FindWinner(<span style="color:#a31515;">&quot;Sandra&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;Zoey&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;Sandra&quot;</span>)
+Right&lt;VoteError, string&gt;("Sandra")</pre>
+	</p>
+	<p>
+		Instead of throwing two different types of exceptions on invalid input, the <code>FindWinner</code> method handles invalid input as <em>left</em> cases, and valid input as the <em>right</em> case. You can do that consistently, and thereby eliminate the need for exceptions. Errors are, instead, reported as <em>left</em> values.
+	</p>
+	<p>
+		<h3 id="fb2ac51484e14b738c2e4af5278912e3">
+			Summary <a href="#fb2ac51484e14b738c2e4af5278912e3" title="permalink">#</a>
+		</h3>
+	</p>
+	<p>
+		In this article, you saw how it's possible to define the <em>Either</em> container from first principles, using nothing nothing but functions (and, for the C# examples, interfaces and classes in order to make the code easier to understand for object-oriented developers).
+	</p>
+	<p>
+		<a href="http://blog.ploeh.dk/2018/03/26/the-maybe-functor">Like Maybe</a>, you can also <a href="">make Either a functor</a>. This'll enable you to compose various error-producing functions in a sane manner.
+	</p>
+	<p>
+		Church-encoding enables you to model sum types as functions. So far in this article series, you've seen how to model Boolean values, natural numbers, Maybe, and Either. Common to all four examples is that the data type in question consists of two mutually exclusive cases. This is the reason they're all modelled as methods that take two arguments. What happens if, instead of two, you have <em>three</em> mutually exclusive cases? Read on.
+	</p>
+	<p>
+		<strong>Next:</strong> Church-encoded payment types.
+	</p>
+</div>
