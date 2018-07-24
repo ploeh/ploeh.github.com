@@ -1,0 +1,1152 @@
+---
+layout: post
+title: "Dependency Injection revisited"
+date: 2018-02-15 12:21 UTC
+tags: [Software Design, Dependency Injection]
+---
+{% include JB/setup %}
+
+<div id="post">
+	<p>
+		<em>Replace Dependency Injection with a Visitor</em>
+	</p>
+	<p>
+		In a previous article, you saw how you can <a href="">model any sum type as a Visitor</a>. Does that mean, then, that you can model a free monad as a <a href="https://en.wikipedia.org/wiki/Visitor_pattern">Visitor</a>?
+	</p>
+	<p>
+		Yes, it does.
+	</p>
+	<p>
+		In the <a href="http://blog.ploeh.dk/2017/08/07/f-free-monad-recipe">F# free monad recipe</a>, you saw how to refactor any injected, interface-based dependency to a free monad. Since a free monad is nothing but a recursive <a href="https://en.wikipedia.org/wiki/Tagged_union">sum type</a>, this means that you now have the tools at your disposal to refactor your injected dependencies to a Visitor.
+	</p>
+	<p>
+		To be clear, this is an article exploring the boundaries of what's possible with a language like C#. It's not intended to be an endorsement of a particular way to organise code.
+	</p>
+	<p>
+		<strong>Dependency Injection example</strong>
+	</p>
+	<p>
+		I'll walk you through how to do this. We'll start with an example, which, as usual, is about developing an online restaurant reservations system. The code base you'll see here implements the business logic that decides whether or not to accept a reservation request. All code from this article is <a href="">available on GitHub</a>.
+	</p>
+	<p>
+		In order to make the example illustrative, but still manageable, we'll look at a single dependency, defined like this:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">interface</span>&nbsp;<span style="color:#2b91af;">IReservationsRepository</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;This&nbsp;method&nbsp;doesn&#39;t&nbsp;belong&nbsp;on&nbsp;a&nbsp;Repository&nbsp;interface.&nbsp;It&nbsp;ought&nbsp;to&nbsp;be</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;on&nbsp;some&nbsp;sort&nbsp;of&nbsp;ITimeProvider&nbsp;interface,&nbsp;or&nbsp;an&nbsp;extension&nbsp;method</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;thereof,&nbsp;but&nbsp;in&nbsp;order&nbsp;to&nbsp;keep&nbsp;the&nbsp;example&nbsp;refactorings&nbsp;as&nbsp;simple&nbsp;as</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;possible,&nbsp;it&#39;ll&nbsp;go&nbsp;here&nbsp;for&nbsp;demo&nbsp;purposes.</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">bool</span>&nbsp;IsReservationInFuture(<span style="color:#2b91af;">Reservation</span>&nbsp;reservation);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">IReadOnlyCollection</span>&lt;<span style="color:#2b91af;">Reservation</span>&gt;&nbsp;ReadReservations(<span style="color:#2b91af;">DateTimeOffset</span>&nbsp;date);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">int</span>&nbsp;Create(<span style="color:#2b91af;">Reservation</span>&nbsp;reservation);
+}</pre>
+	</p>
+	<p>
+		As the code comment explains, the <code>IsReservationInFuture</code> method doesn't belong on this <code>IReservationsRepository</code> interface. A dedicated 'time provider' dependency would be more appropriate, but as you'll see when you read on, refactoring just one interface to a free monad Visitor is already complicated. Doing it twice would just repeat the process while adding little additional clarity.
+	</p>
+	<p>
+		Apart from <code>IsReservationInFuture</code>, the <code>IReservationsRepository</code> declares <code>ReadReservations</code> for querying the Repository for existing reservations, and <code>Create</code> for adding a new reservation to the Repository. Notice that the <code>Create</code> method violates the <a href="https://en.wikipedia.org/wiki/Command%E2%80%93query_separation">Command Query Separation</a> principle. While <a href="http://blog.ploeh.dk/2014/08/11/cqs-versus-server-generated-ids">better alternatives exist</a>, I decided to design the present example like this because it better illustrates how data could flow through a system.
+	</p>
+	<p>
+		The only consumer of the interface that we're going to consider is this <code>MaîtreD</code> class:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">MaîtreD</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;MaîtreD(<span style="color:blue;">int</span>&nbsp;capacity,&nbsp;<span style="color:#2b91af;">IReservationsRepository</span>&nbsp;reservationsRepository)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Capacity&nbsp;=&nbsp;capacity;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;ReservationsRepository&nbsp;=&nbsp;reservationsRepository;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">int</span>?&nbsp;TryAccept(<span style="color:#2b91af;">Reservation</span>&nbsp;reservation)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;(!ReservationsRepository.IsReservationInFuture(reservation))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:blue;">null</span>;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;reservedSeats&nbsp;=&nbsp;ReservationsRepository
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.ReadReservations(reservation.Date)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.Sum(r&nbsp;=&gt;&nbsp;r.Quantity);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;(Capacity&nbsp;&lt;&nbsp;reservedSeats&nbsp;+&nbsp;reservation.Quantity)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:blue;">null</span>;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;reservation.IsAccepted&nbsp;=&nbsp;<span style="color:blue;">true</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;ReservationsRepository.Create(reservation);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">int</span>&nbsp;Capacity&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">IReservationsRepository</span>&nbsp;ReservationsRepository&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;}
+}</pre>
+	</p>
+	<p>
+		This is straightforward example code. First, it queries whether the reservation is in the past, because it makes no sense accepting a reservation in the past.
+	</p>
+	<p>
+		If it gets past that hurdle, the <code>TryAccept</code> method then queries the injected <code>ReservationsRepository</code> for the reservations already recorded on that date, and calculates the sum of the quantities. This produces <code>reservedSeats</code> - the number of already reserved seats. If the restaurant's <code>Capacity</code> (a <a href="http://blog.ploeh.dk/2012/07/02/PrimitiveDependencies">Primitive Dependency</a>) is less than the already reserved seats, plus the requested quantity, the method again rejects the reservation. This time, the reason is that there's insufficient remaining capacity to accept it.
+	</p>
+	<p>
+		Finally, if the <code>reservation</code> makes it past all the guards, <code>IsAccepted</code> is set to <code>true</code>, and the reservation is added to the Repository. Recall that <code>Create</code> returns the ID of the new reservation (presumably a database ID), so that ID is returned from the method. In all other cases, the method returns <code>null</code>. The return type of <code>TryAccept</code> is <code>int?</code> (<code>Nullable&lt;int&gt;</code>), so the <code>int</code> value returned from <code>Create</code> is implicitly converted to <code>int?</code>; the compiler does that.
+	</p>
+	<p>
+		<strong>Testability</strong>
+	</p>
+	<p>
+		My original motivation for learning about Dependency Injection was that I did Test-Driven Development. Dependency Injection enables you to <a href="https://martinfowler.com/articles/nonDeterminism.html">make automated tests deterministic</a> by replacing common sources of non-determinism with <a href="https://martinfowler.com/bliki/TestDouble.html">Test Doubles</a>. This is, predictably, also the case here:
+	</p>
+	<p>
+		<pre>[<span style="color:#2b91af;">Theory</span>,&nbsp;<span style="color:#2b91af;">BookingApiTestConventions</span>]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;TryAcceptReturnsReservationIdInHappyPathScenario(
+&nbsp;&nbsp;&nbsp;&nbsp;[<span style="color:#2b91af;">Frozen</span>]<span style="color:#2b91af;">Mock</span>&lt;<span style="color:#2b91af;">IReservationsRepository</span>&gt;&nbsp;td,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Reservation</span>&nbsp;reservation,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">IReadOnlyCollection</span>&lt;<span style="color:#2b91af;">Reservation</span>&gt;&nbsp;reservations,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">MaîtreD</span>&nbsp;sut,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">int</span>&nbsp;excessCapacity,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">int</span>&nbsp;expected)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;td.Setup(r&nbsp;=&gt;&nbsp;r.IsReservationInFuture(reservation)).Returns(<span style="color:blue;">true</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;td
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.Setup(r&nbsp;=&gt;&nbsp;r.ReadReservations(reservation.Date))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.Returns(reservations);
+&nbsp;&nbsp;&nbsp;&nbsp;td.Setup(r&nbsp;=&gt;&nbsp;r.Create(reservation)).Returns(expected);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;reservedSeats&nbsp;=&nbsp;reservations.Sum(r&nbsp;=&gt;&nbsp;r.Quantity);
+&nbsp;&nbsp;&nbsp;&nbsp;reservation.IsAccepted&nbsp;=&nbsp;<span style="color:blue;">false</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;sut&nbsp;=&nbsp;sut.WithCapacity(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;reservedSeats&nbsp;+&nbsp;reservation.Quantity&nbsp;+&nbsp;excessCapacity);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;actual&nbsp;=&nbsp;sut.TryAccept(reservation);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Assert</span>.Equal(expected,&nbsp;actual);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Assert</span>.True(reservation.IsAccepted);
+}</pre>
+	</p>
+	<p>
+		This tests exercises the happy path scenario where the reservation <em>is</em> in the future, and there <em>is</em> enough remaining capacity to accept the request. It uses <a href="https://xunit.github.io">xUnit.net</a> and <a href="https://github.com/moq/moq4">Moq</a> with <a href="https://github.com/AutoFixture/AutoFixture">AutoFixture</a> gluing it all together.
+	</p>
+	<p>
+		<strong>Database implementation</strong>
+	</p>
+	<p>
+		It's nice to be able to test the business logic, but ultimately, you'll need your application to be able to store reservations in some sort of persistent storage like a relational database. That's easy, too. Just implement <code>IReservationsRepository</code>:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">SqlReservationsRepository</span>&nbsp;:&nbsp;<span style="color:#2b91af;">IReservationsRepository</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;SqlReservationsRepository(<span style="color:blue;">string</span>&nbsp;connectionString)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.ConnectionString&nbsp;=&nbsp;connectionString;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">string</span>&nbsp;ConnectionString&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">bool</span>&nbsp;IsReservationInFuture(<span style="color:#2b91af;">Reservation</span>&nbsp;reservation)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:#2b91af;">DateTimeOffset</span>.Now&nbsp;&lt;&nbsp;reservation.Date;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">IReadOnlyCollection</span>&lt;<span style="color:#2b91af;">Reservation</span>&gt;&nbsp;ReadReservations(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">DateTimeOffset</span>&nbsp;date)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:blue;">this</span>.ReadReservations(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;date.Date,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;date.Date.AddDays(1).AddTicks(-1));
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:#2b91af;">IReadOnlyCollection</span>&lt;<span style="color:#2b91af;">Reservation</span>&gt;&nbsp;ReadReservations(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">DateTimeOffset</span>&nbsp;min,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">DateTimeOffset</span>&nbsp;max)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;result&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">List</span>&lt;<span style="color:#2b91af;">Reservation</span>&gt;();
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">using</span>&nbsp;(<span style="color:blue;">var</span>&nbsp;conn&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">SqlConnection</span>(<span style="color:blue;">this</span>.ConnectionString))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">using</span>&nbsp;(<span style="color:blue;">var</span>&nbsp;cmd&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">SqlCommand</span>(readByRangeSql,&nbsp;conn))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;cmd.Parameters.Add(<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">SqlParameter</span>(<span style="color:#a31515;">&quot;@MinDate&quot;</span>,&nbsp;min));
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;cmd.Parameters.Add(<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">SqlParameter</span>(<span style="color:#a31515;">&quot;@MaxDate&quot;</span>,&nbsp;max));
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;conn.Open();
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">using</span>&nbsp;(<span style="color:blue;">var</span>&nbsp;rdr&nbsp;=&nbsp;cmd.ExecuteReader())
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">while</span>&nbsp;(rdr.Read())
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;result.Add(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Reservation</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Date&nbsp;=&nbsp;(<span style="color:#2b91af;">DateTimeOffset</span>)rdr[<span style="color:#a31515;">&quot;Date&quot;</span>],
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Name&nbsp;=&nbsp;(<span style="color:blue;">string</span>)rdr[<span style="color:#a31515;">&quot;Name&quot;</span>],
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Email&nbsp;=&nbsp;(<span style="color:blue;">string</span>)rdr[<span style="color:#a31515;">&quot;Email&quot;</span>],
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Quantity&nbsp;=&nbsp;(<span style="color:blue;">int</span>)rdr[<span style="color:#a31515;">&quot;Quantity&quot;</span>]
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;});
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;result;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">const</span>&nbsp;<span style="color:blue;">string</span>&nbsp;readByRangeSql&nbsp;=&nbsp;<span style="color:maroon;">@&quot;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;SELECT&nbsp;[Date],&nbsp;[Name],&nbsp;[Email],&nbsp;[Quantity]
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;FROM&nbsp;[dbo].[Reservations]
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;WHERE&nbsp;YEAR(@MinDate)&nbsp;&lt;=&nbsp;YEAR([Date])
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;AND&nbsp;MONTH(@MinDate)&nbsp;&lt;=&nbsp;MONTH([Date])
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;AND&nbsp;DAY(@MinDate)&nbsp;&lt;=&nbsp;DAY([Date])
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;AND&nbsp;YEAR([Date])&nbsp;&lt;=&nbsp;YEAR(@MaxDate)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;AND&nbsp;MONTH([Date])&nbsp;&lt;=&nbsp;MONTH(@MaxDate)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;AND&nbsp;DAY([Date])&nbsp;&lt;=&nbsp;DAY(@MaxDate)&quot;</span>;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">int</span>&nbsp;Create(<span style="color:#2b91af;">Reservation</span>&nbsp;reservation)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">using</span>&nbsp;(<span style="color:blue;">var</span>&nbsp;conn&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">SqlConnection</span>(ConnectionString))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">using</span>&nbsp;(<span style="color:blue;">var</span>&nbsp;cmd&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">SqlCommand</span>(createReservationSql,&nbsp;conn))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;cmd.Parameters.Add(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">SqlParameter</span>(<span style="color:#a31515;">&quot;@Date&quot;</span>,&nbsp;reservation.Date));
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;cmd.Parameters.Add(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">SqlParameter</span>(<span style="color:#a31515;">&quot;@Name&quot;</span>,&nbsp;reservation.Name));
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;cmd.Parameters.Add(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">SqlParameter</span>(<span style="color:#a31515;">&quot;@Email&quot;</span>,&nbsp;reservation.Email));
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;cmd.Parameters.Add(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">SqlParameter</span>(<span style="color:#a31515;">&quot;@Quantity&quot;</span>,&nbsp;reservation.Quantity));
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;conn.Open();
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;cmd.ExecuteNonQuery();
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">const</span>&nbsp;<span style="color:blue;">string</span>&nbsp;createReservationSql&nbsp;=&nbsp;<span style="color:maroon;">@&quot;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;INSERT&nbsp;INTO&nbsp;[dbo].[Reservations]&nbsp;([Date],&nbsp;[Name],&nbsp;[Email],&nbsp;[Quantity])
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;VALUES&nbsp;(@Date,&nbsp;@Name,&nbsp;@Email,&nbsp;@Quantity)&quot;</span>;
+}</pre>
+	</p>
+	<p>
+		As has been my position for years, I find it easier to write database implementations using .NET's original ADO.NET API than <a href="http://blogs.tedneward.com/post/the-vietnam-of-computer-science">fighting</a> with an <a href="https://en.wikipedia.org/wiki/Object-relational_mapping">ORM</a>.
+	</p>
+	<p>
+		<strong>Free monad in F#</strong>
+	</p>
+	<p>
+		In order to refactor <code>IReservationsRepository</code> to a free monad, it's illustrative to first see how it would look in <a href="http://fsharp.org">F#</a>. This step is by no means required, but it offers another perspective of the translation that you have to perform. According to the <a href="http://blog.ploeh.dk/2017/08/07/f-free-monad-recipe">F# free monad recipe</a>, you can represent the <code>IReservationsRepository</code> interface with a sum type that describes the instruction set of the API:
+	</p>
+	<p>
+		<pre><span style="color:blue;">type</span>&nbsp;ReservationsInstruction&lt;&#39;a&gt;&nbsp;=
+|&nbsp;IsReservationInFuture&nbsp;<span style="color:blue;">of</span>&nbsp;(Reservation&nbsp;*&nbsp;(bool&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;&#39;a))
+|&nbsp;ReadReservations&nbsp;<span style="color:blue;">of</span>&nbsp;(DateTimeOffset&nbsp;*&nbsp;(Reservation&nbsp;list&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;&#39;a))
+|&nbsp;Create&nbsp;<span style="color:blue;">of</span>&nbsp;(Reservation&nbsp;*&nbsp;(int&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;&#39;a))</pre>
+	</p>
+	<p>
+		Each case corresponds to a method from the original interface, and each contains a tuple. The first element of the tuple should contain the input to the method, so the first element of <code>IsReservationInFuture</code> is a <code>Reservation</code> value, the first element of <code>ReadReservations</code> is a <code>DateTimeOffset</code>, and the first element of <code>Create</code> is a <code>Reservation</code>, just like <code>IsReservationInFuture</code>.
+	</p>
+	<p>
+		The second tuple element is a <em>continuation</em>. This is a function an interpreter must call once it's produced the value required to continue. This corresponds to the output value from the interface methods, so the input to the continuation associated with <code>IsReservationInFuture</code> is a Boolean value, and so on.
+	</p>
+	<p>
+		The rest of the F# code example follows the recipe to the letter, so it's not important to list it here. You're welcome to look in the Git repository, if you'd like to see the details.
+	</p>
+	<p>
+		<strong>Church-encoded instruction set</strong>
+	</p>
+	<p>
+		From <a href="">Church encodings</a> we know that we can represent a sum type as an interface with a single <code>Match</code> method. The instruction set is a <a href="http://blog.ploeh.dk/2018/03/22/functors">functor</a>, so it has a generic type argument:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">interface</span>&nbsp;<span style="color:#2b91af;">IReservationsInstruction</span>&lt;<span style="color:#2b91af;">T</span>&gt;</pre>
+	</p>
+	<p>
+		The <code>Match</code> method must take an argument for each case in the sum type. In the above F# code, you can see that there's three cases, corresponding to the three methods in the original <code>IReservationsRepository</code> interface.
+	</p>
+	<p>
+		Furthermore, we know from the previous articles on Church encodings that the <code>Match</code> method must be generic, and return a value of its generic type argument:
+	</p>
+	<p>
+		<pre><span style="color:#2b91af;">TResult</span>&nbsp;Match&lt;<span style="color:#2b91af;">TResult</span>&gt;(</pre>
+	</p>
+	<p>
+		Third, each argument (i.e. each case from the sum type you're encoding) must have this form:
+	</p>
+	<p>
+		<pre><span style="color:#2b91af;">Func</span>&lt;<em>something</em>,&nbsp;<span style="color:#2b91af;">TResult</span>&gt;&nbsp;<em>name</em>,</pre>
+	</p>
+	<p>
+		where <em>something</em> is the type of the data associated with the case, and <em>name</em> is the name of the case.
+	</p>
+	<p>
+		The names are easy: they're <code>isReservationInFuture</code>, <code>readReservations</code>, and <code>create</code>, but what are the types associated with each case?
+	</p>
+	<p>
+		The F# free monad recipe gives the answer, which is why I chose to include the above F# code. For instance, the type associated with the <code>IsReservationInFuture</code> case is <code>Reservation * (bool -&gt; 'a)</code>. That's a tuple, where the first element is a <code>Reservation</code> 'object', and the second element is a function.
+	</p>
+	<p>
+		Take it slow for the first case, then. A tuple where the first element is a <code>Reservation</code> has the type:
+	</p>
+	<p>
+		<pre><span style="color:#2b91af;">Tuple</span>&lt;<span style="color:#2b91af;">Reservation</span>,&nbsp;<em>function-type</em>&gt;</pre>
+	</p>
+	<p>
+		where <em>function-type</em> is the type of the continuation function. In F#, that type was <code>bool -&gt; 'a</code>, which means a function that takes a <code>bool</code> as input, and returns a value of the generic type <code>'a</code> as output. In our Church-encoded C# code, we call that type <code>T</code>, so you need a function from <code>bool</code> to <code>T</code>; that is: <code>Func&lt;bool, T&gt;</code>. If you plug that into the above tuple type, you get:
+	</p>
+	<p>
+		<pre><span style="color:#2b91af;">Tuple</span>&lt;<span style="color:#2b91af;">Reservation</span>,&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:blue;">bool</span>,&nbsp;<span style="color:#2b91af;">T</span>&gt;&gt;</pre>
+	</p>
+	<p>
+		Again, you can plug that type into the <em>something</em> place-holder further up, to find the type of the input argument that corresponds to the <code>isReservationInFuture</code> case:
+	</p>
+	<p>
+		<pre><span style="color:#2b91af;">Func</span>&lt;<span style="color:#2b91af;">Tuple</span>&lt;<span style="color:#2b91af;">Reservation</span>,&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:blue;">bool</span>,&nbsp;<span style="color:#2b91af;">T</span>&gt;&gt;,&nbsp;<span style="color:#2b91af;">TResult</span>&gt;&nbsp;isReservationInFuture</pre>
+	</p>
+	<p>
+		Doing this for the two other cases finally reveals the entire <code>Match</code> method:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">interface</span>&nbsp;<span style="color:#2b91af;">IReservationsInstruction</span>&lt;<span style="color:#2b91af;">T</span>&gt;
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">TResult</span>&nbsp;Match&lt;<span style="color:#2b91af;">TResult</span>&gt;(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:#2b91af;">Tuple</span>&lt;<span style="color:#2b91af;">Reservation</span>,&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:blue;">bool</span>,&nbsp;<span style="color:#2b91af;">T</span>&gt;&gt;,&nbsp;<span style="color:#2b91af;">TResult</span>&gt;&nbsp;isReservationInFuture,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:#2b91af;">Tuple</span>&lt;<span style="color:#2b91af;">DateTimeOffset</span>,&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:#2b91af;">IReadOnlyCollection</span>&lt;<span style="color:#2b91af;">Reservation</span>&gt;,&nbsp;<span style="color:#2b91af;">T</span>&gt;&gt;,&nbsp;<span style="color:#2b91af;">TResult</span>&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;readReservations,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:#2b91af;">Tuple</span>&lt;<span style="color:#2b91af;">Reservation</span>,&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:blue;">int</span>,&nbsp;<span style="color:#2b91af;">T</span>&gt;&gt;,&nbsp;<span style="color:#2b91af;">TResult</span>&gt;&nbsp;create);
+}</pre>
+	</p>
+	<p>
+		That's a worthy candidate for the <em>Ugliest C# method signature of 2018</em> award, I admit, but it's just an intermediate step. This is how the sausage is made.
+	</p>
+	<p>
+		<strong>Implementations of the instruction set</strong>
+	</p>
+	<p>
+		The <code>IReservationsInstruction&lt;T&gt;</code> interface defines an API. You'll need classes that implement the interface in order to do something useful. As you've seen multiple times in the articles series about Church encodings, you must add an implementation per case. Starting from the top:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">IsReservationInFuture</span>&lt;<span style="color:#2b91af;">T</span>&gt;&nbsp;:&nbsp;<span style="color:#2b91af;">IReservationsInstruction</span>&lt;<span style="color:#2b91af;">T</span>&gt;
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;<span style="color:#2b91af;">Tuple</span>&lt;<span style="color:#2b91af;">Reservation</span>,&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:blue;">bool</span>,&nbsp;<span style="color:#2b91af;">T</span>&gt;&gt;&nbsp;t;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;IsReservationInFuture(<span style="color:#2b91af;">Tuple</span>&lt;<span style="color:#2b91af;">Reservation</span>,&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:blue;">bool</span>,&nbsp;<span style="color:#2b91af;">T</span>&gt;&gt;&nbsp;t)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.t&nbsp;=&nbsp;t;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">TResult</span>&nbsp;Match&lt;<span style="color:#2b91af;">TResult</span>&gt;(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:#2b91af;">Tuple</span>&lt;<span style="color:#2b91af;">Reservation</span>,&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:blue;">bool</span>,&nbsp;<span style="color:#2b91af;">T</span>&gt;&gt;,&nbsp;<span style="color:#2b91af;">TResult</span>&gt;&nbsp;isReservationInFuture,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:#2b91af;">Tuple</span>&lt;<span style="color:#2b91af;">DateTimeOffset</span>,&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:#2b91af;">IReadOnlyCollection</span>&lt;<span style="color:#2b91af;">Reservation</span>&gt;,&nbsp;<span style="color:#2b91af;">T</span>&gt;&gt;,&nbsp;<span style="color:#2b91af;">TResult</span>&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;readReservations,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:#2b91af;">Tuple</span>&lt;<span style="color:#2b91af;">Reservation</span>,&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:blue;">int</span>,&nbsp;<span style="color:#2b91af;">T</span>&gt;&gt;,&nbsp;<span style="color:#2b91af;">TResult</span>&gt;&nbsp;create)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;isReservationInFuture(<span style="color:blue;">this</span>.t);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+	</p>
+	<p>
+		This class simply <a href="https://en.wikipedia.org/wiki/Adapter_pattern">adapts</a> an 'object' of the type <code>Tuple&lt;Reservation, Func&lt;bool, T&gt;&gt;</code> to the <code>IReservationsInstruction&lt;T&gt;</code> interface. Importantly, it unconditionally calls the <code>Match</code> method's <code>isReservationInFuture</code> argument, while ignoring <code>readReservations</code> and <code>create</code>. This is consistent with the previous incarnations of Church-encodings you've seen. It's an automatable process. You implement the two other cases in the same way:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">ReadReservations</span>&lt;<span style="color:#2b91af;">T</span>&gt;&nbsp;:&nbsp;<span style="color:#2b91af;">IReservationsInstruction</span>&lt;<span style="color:#2b91af;">T</span>&gt;
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;<span style="color:#2b91af;">Tuple</span>&lt;<span style="color:#2b91af;">DateTimeOffset</span>,&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:#2b91af;">IReadOnlyCollection</span>&lt;<span style="color:#2b91af;">Reservation</span>&gt;,&nbsp;<span style="color:#2b91af;">T</span>&gt;&gt;&nbsp;t;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;ReadReservations(<span style="color:#2b91af;">Tuple</span>&lt;<span style="color:#2b91af;">DateTimeOffset</span>,&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:#2b91af;">IReadOnlyCollection</span>&lt;<span style="color:#2b91af;">Reservation</span>&gt;,&nbsp;<span style="color:#2b91af;">T</span>&gt;&gt;&nbsp;t)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.t&nbsp;=&nbsp;t;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">TResult</span>&nbsp;Match&lt;<span style="color:#2b91af;">TResult</span>&gt;(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:#2b91af;">Tuple</span>&lt;<span style="color:#2b91af;">Reservation</span>,&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:blue;">bool</span>,&nbsp;<span style="color:#2b91af;">T</span>&gt;&gt;,&nbsp;<span style="color:#2b91af;">TResult</span>&gt;&nbsp;isReservationInFuture,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:#2b91af;">Tuple</span>&lt;<span style="color:#2b91af;">DateTimeOffset</span>,&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:#2b91af;">IReadOnlyCollection</span>&lt;<span style="color:#2b91af;">Reservation</span>&gt;,&nbsp;<span style="color:#2b91af;">T</span>&gt;&gt;,&nbsp;<span style="color:#2b91af;">TResult</span>&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;readReservations,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:#2b91af;">Tuple</span>&lt;<span style="color:#2b91af;">Reservation</span>,&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:blue;">int</span>,&nbsp;<span style="color:#2b91af;">T</span>&gt;&gt;,&nbsp;<span style="color:#2b91af;">TResult</span>&gt;&nbsp;create)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;readReservations(<span style="color:blue;">this</span>.t);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+	</p>
+	<p>
+		and
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">Create</span>&lt;<span style="color:#2b91af;">T</span>&gt;&nbsp;:&nbsp;<span style="color:#2b91af;">IReservationsInstruction</span>&lt;<span style="color:#2b91af;">T</span>&gt;
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;<span style="color:#2b91af;">Tuple</span>&lt;<span style="color:#2b91af;">Reservation</span>,&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:blue;">int</span>,&nbsp;<span style="color:#2b91af;">T</span>&gt;&gt;&nbsp;t;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;Create(<span style="color:#2b91af;">Tuple</span>&lt;<span style="color:#2b91af;">Reservation</span>,&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:blue;">int</span>,&nbsp;<span style="color:#2b91af;">T</span>&gt;&gt;&nbsp;t)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.t&nbsp;=&nbsp;t;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">TResult</span>&nbsp;Match&lt;<span style="color:#2b91af;">TResult</span>&gt;(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:#2b91af;">Tuple</span>&lt;<span style="color:#2b91af;">Reservation</span>,&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:blue;">bool</span>,&nbsp;<span style="color:#2b91af;">T</span>&gt;&gt;,&nbsp;<span style="color:#2b91af;">TResult</span>&gt;&nbsp;isReservationInFuture,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:#2b91af;">Tuple</span>&lt;<span style="color:#2b91af;">DateTimeOffset</span>,&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:#2b91af;">IReadOnlyCollection</span>&lt;<span style="color:#2b91af;">Reservation</span>&gt;,&nbsp;<span style="color:#2b91af;">T</span>&gt;&gt;,&nbsp;<span style="color:#2b91af;">TResult</span>&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;readReservations,&nbsp;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:#2b91af;">Tuple</span>&lt;<span style="color:#2b91af;">Reservation</span>,&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:blue;">int</span>,&nbsp;<span style="color:#2b91af;">T</span>&gt;&gt;,&nbsp;<span style="color:#2b91af;">TResult</span>&gt;&nbsp;create)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;create(<span style="color:blue;">this</span>.t);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+	</p>
+	<p>
+		If you find the class names odd, then that's a fair criticism. I agree that <code>Create</code> isn't the most object-oriented class name. At this point, though, the design is hardly object-oriented, even though the code in use is C#. You can deal with the names later.
+	</p>
+	<p>
+		<strong>Functor</strong>
+	</p>
+	<p>
+		The <code>IReservationsInstruction&lt;T&gt;</code> interface is generic, and as expected, it's a functor:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:#2b91af;">IReservationsInstruction</span>&lt;<span style="color:#2b91af;">TResult</span>&gt;&nbsp;Select&lt;<span style="color:#2b91af;">T</span>,&nbsp;<span style="color:#2b91af;">TResult</span>&gt;(
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>&nbsp;<span style="color:#2b91af;">IReservationsInstruction</span>&lt;<span style="color:#2b91af;">T</span>&gt;&nbsp;source,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:#2b91af;">T</span>,&nbsp;<span style="color:#2b91af;">TResult</span>&gt;&nbsp;selector)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;source.Match&lt;<span style="color:#2b91af;">IReservationsInstruction</span>&lt;<span style="color:#2b91af;">TResult</span>&gt;&gt;(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;isReservationInFuture:&nbsp;t&nbsp;=&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">IsReservationInFuture</span>&lt;<span style="color:#2b91af;">TResult</span>&gt;(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Tuple</span>&lt;<span style="color:#2b91af;">Reservation</span>,&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:blue;">bool</span>,&nbsp;<span style="color:#2b91af;">TResult</span>&gt;&gt;(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;t.Item1,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;b&nbsp;=&gt;&nbsp;selector(t.Item2(b)))),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;readReservations:&nbsp;t&nbsp;=&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">ReadReservations</span>&lt;<span style="color:#2b91af;">TResult</span>&gt;(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Tuple</span>&lt;<span style="color:#2b91af;">DateTimeOffset</span>,&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:#2b91af;">IReadOnlyCollection</span>&lt;<span style="color:#2b91af;">Reservation</span>&gt;,&nbsp;<span style="color:#2b91af;">TResult</span>&gt;&gt;(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;t.Item1,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;d&nbsp;=&gt;&nbsp;selector(t.Item2(d)))),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;create:&nbsp;t&nbsp;=&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Create</span>&lt;<span style="color:#2b91af;">TResult</span>&gt;(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Tuple</span>&lt;<span style="color:#2b91af;">Reservation</span>,&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:blue;">int</span>,&nbsp;<span style="color:#2b91af;">TResult</span>&gt;&gt;(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;t.Item1,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;r&nbsp;=&gt;&nbsp;selector(t.Item2(r)))));
+}</pre>
+	</p>
+	<p>
+		Yes, this is horrendous. The F# code is neater:
+	</p>
+	<p>
+		<pre><span style="color:blue;">let</span>&nbsp;<span style="color:blue;">private</span>&nbsp;mapI&nbsp;f&nbsp;=&nbsp;<span style="color:blue;">function</span>
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;IsReservationInFuture&nbsp;(x,&nbsp;next)&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;IsReservationInFuture&nbsp;(x,&nbsp;next&nbsp;&gt;&gt;&nbsp;f)
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;ReadReservations&nbsp;(x,&nbsp;next)&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;ReadReservations&nbsp;(x,&nbsp;next&nbsp;&gt;&gt;&nbsp;f)
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;Create&nbsp;(x,&nbsp;next)&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;Create&nbsp;(x,&nbsp;next&nbsp;&gt;&gt;&nbsp;f)</pre>
+	</p>
+	<p>
+		Again, this is an intermediary step. Things will get better.
+	</p>
+	<p>
+		<strong>Church-encoded free monad</strong>
+	</p>
+	<p>
+		Since <code>IReservationsInstruction&lt;T&gt;</code> is a functor, you can package it as a free monad. This entails creating a wrapper 'program' type for it. This is another sum type, in F# written like this:
+	</p>
+	<p>
+		<pre><span style="color:blue;">type</span>&nbsp;ReservationsProgram&lt;&#39;a&gt;&nbsp;=
+|&nbsp;Free&nbsp;<span style="color:blue;">of</span>&nbsp;ReservationsInstruction&lt;ReservationsProgram&lt;&#39;a&gt;&gt;
+|&nbsp;Pure&nbsp;<span style="color:blue;">of</span>&nbsp;&#39;a</pre>
+	</p>
+	<p>
+		The direct translation to Church-encoded C#, then, is to a <code>Match</code> method with two arguments:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">interface</span>&nbsp;<span style="color:#2b91af;">IReservationsProgram</span>&lt;<span style="color:#2b91af;">T</span>&gt;
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">TResult</span>&nbsp;Match&lt;<span style="color:#2b91af;">TResult</span>&gt;(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:#2b91af;">IReservationsInstruction</span>&lt;<span style="color:#2b91af;">IReservationsProgram</span>&lt;<span style="color:#2b91af;">T</span>&gt;&gt;&nbsp;,<span style="color:#2b91af;">TResult</span>&gt;&nbsp;free,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:#2b91af;">T</span>,&nbsp;<span style="color:#2b91af;">TResult</span>&gt;&nbsp;pure);
+}</pre>
+	</p>
+	<p>
+		While the <code>free</code> case looks intimidating, you arrive at it through the same automatic process as already described.
+	</p>
+	<p>
+		The <code>pure</code> case is implemented by this trivial class:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">Pure</span>&lt;<span style="color:#2b91af;">T</span>&gt;&nbsp;:&nbsp;<span style="color:#2b91af;">IReservationsProgram</span>&lt;<span style="color:#2b91af;">T</span>&gt;
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;<span style="color:#2b91af;">T</span>&nbsp;x;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;Pure(<span style="color:#2b91af;">T</span>&nbsp;x)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.x&nbsp;=&nbsp;x;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">TResult</span>&nbsp;Match&lt;<span style="color:#2b91af;">TResult</span>&gt;(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:#2b91af;">IReservationsInstruction</span>&lt;<span style="color:#2b91af;">IReservationsProgram</span>&lt;<span style="color:#2b91af;">T</span>&gt;&gt;,&nbsp;<span style="color:#2b91af;">TResult</span>&gt;&nbsp;free,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:#2b91af;">T</span>,&nbsp;<span style="color:#2b91af;">TResult</span>&gt;&nbsp;pure)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;pure(<span style="color:blue;">this</span>.x);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+	</p>
+	<p>
+		The <code>free</code> case is slightly, but not much, more complex:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">Free</span>&lt;<span style="color:#2b91af;">T</span>&gt;&nbsp;:&nbsp;<span style="color:#2b91af;">IReservationsProgram</span>&lt;<span style="color:#2b91af;">T</span>&gt;
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;<span style="color:#2b91af;">IReservationsInstruction</span>&lt;<span style="color:#2b91af;">IReservationsProgram</span>&lt;<span style="color:#2b91af;">T</span>&gt;&gt;&nbsp;i;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;Free(<span style="color:#2b91af;">IReservationsInstruction</span>&lt;<span style="color:#2b91af;">IReservationsProgram</span>&lt;<span style="color:#2b91af;">T</span>&gt;&gt;&nbsp;i)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.i&nbsp;=&nbsp;i;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">TResult</span>&nbsp;Match&lt;<span style="color:#2b91af;">TResult</span>&gt;(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:#2b91af;">IReservationsInstruction</span>&lt;<span style="color:#2b91af;">IReservationsProgram</span>&lt;<span style="color:#2b91af;">T</span>&gt;&gt;,&nbsp;<span style="color:#2b91af;">TResult</span>&gt;&nbsp;free,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:#2b91af;">T</span>,&nbsp;<span style="color:#2b91af;">TResult</span>&gt;&nbsp;pure)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;free(<span style="color:blue;">this</span>.i);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+	</p>
+	<p>
+		Both of them, true to the plan we're following, call their respective method arguments with the objects that they adapt.
+	</p>
+	<p>
+		<strong>Monad</strong>
+	</p>
+	<p>
+		In C#, the typical monadic <em>bind</em> function is idiomatically called <code>SelectMany</code>, and for various reasons, you need two overloads:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:#2b91af;">IReservationsProgram</span>&lt;<span style="color:#2b91af;">TResult</span>&gt;&nbsp;SelectMany&lt;<span style="color:#2b91af;">T</span>,&nbsp;<span style="color:#2b91af;">TResult</span>&gt;(
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>&nbsp;<span style="color:#2b91af;">IReservationsProgram</span>&lt;<span style="color:#2b91af;">T</span>&gt;&nbsp;source,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:#2b91af;">T</span>,&nbsp;<span style="color:#2b91af;">IReservationsProgram</span>&lt;<span style="color:#2b91af;">TResult</span>&gt;&gt;&nbsp;selector)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;source.Match(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;free:&nbsp;i&nbsp;=&gt;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Free</span>&lt;<span style="color:#2b91af;">TResult</span>&gt;(i.Select(p&nbsp;=&gt;&nbsp;p.SelectMany(selector))),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;pure:&nbsp;x&nbsp;=&gt;&nbsp;selector(x));
+}
+ 
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:#2b91af;">IReservationsProgram</span>&lt;<span style="color:#2b91af;">TResult</span>&gt;&nbsp;SelectMany&lt;<span style="color:#2b91af;">T</span>,&nbsp;<span style="color:#2b91af;">U</span>,&nbsp;<span style="color:#2b91af;">TResult</span>&gt;(
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>&nbsp;<span style="color:#2b91af;">IReservationsProgram</span>&lt;<span style="color:#2b91af;">T</span>&gt;&nbsp;source,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:#2b91af;">T</span>,&nbsp;<span style="color:#2b91af;">IReservationsProgram</span>&lt;<span style="color:#2b91af;">U</span>&gt;&gt;&nbsp;k,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:#2b91af;">T</span>,&nbsp;<span style="color:#2b91af;">U</span>,&nbsp;<span style="color:#2b91af;">TResult</span>&gt;&nbsp;s)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;source
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.SelectMany(x&nbsp;=&gt;&nbsp;k(x)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.SelectMany(y&nbsp;=&gt;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Pure</span>&lt;<span style="color:#2b91af;">TResult</span>&gt;(s(x,&nbsp;y))));
+}</pre>
+	</p>
+	<p>
+		The bottom of the two overloads is required by C# if you want to be able to support various query syntax language constructs. The top overload utilises <code>Match</code> to dispatch between <code>pure</code> and <code>free</code>. Again, the <code>pure</code> case is easy, because you simply call <code>selector</code> with <code>x</code>, and return its result.
+	</p>
+	<p>
+		The <code>free</code> case is more complicated. While <code>i.Select</code> is the <code>Select</code> method defined for <code>IReservationsInstruction&lt;T&gt;</code>, <code>p.SelectMany</code> is a recursive call to the method itself.
+	</p>
+	<p>
+		That's a fly in the ointment, as C# doesn't handle recursion as well as F# or <a href="https://www.haskell.org">Haskell</a>. It'll work fine as long as you don't blow the stack by producing huge programs that have to be interpreted.
+	</p>
+	<p>
+		<strong>Lifts</strong>
+	</p>
+	<p>
+		Following the free monad recipe, you'll need to lift each of the instruction set cases to the 'program' type. The following are plain helper methods:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:#2b91af;">IReservationsProgram</span>&lt;<span style="color:blue;">bool</span>&gt;&nbsp;IsReservationInFuture(<span style="color:#2b91af;">Reservation</span>&nbsp;reservation)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Free</span>&lt;<span style="color:blue;">bool</span>&gt;(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">IsReservationInFuture</span>&lt;<span style="color:#2b91af;">IReservationsProgram</span>&lt;<span style="color:blue;">bool</span>&gt;&gt;(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Tuple</span>&lt;<span style="color:#2b91af;">Reservation</span>,&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:blue;">bool</span>,&nbsp;<span style="color:#2b91af;">IReservationsProgram</span>&lt;<span style="color:blue;">bool</span>&gt;&gt;&gt;(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;reservation,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;x&nbsp;=&gt;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Pure</span>&lt;<span style="color:blue;">bool</span>&gt;(x))));
+}
+ 
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:#2b91af;">IReservationsProgram</span>&lt;<span style="color:#2b91af;">IReadOnlyCollection</span>&lt;<span style="color:#2b91af;">Reservation</span>&gt;&gt;&nbsp;ReadReservations(
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">DateTimeOffset</span>&nbsp;date)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Free</span>&lt;<span style="color:#2b91af;">IReadOnlyCollection</span>&lt;<span style="color:#2b91af;">Reservation</span>&gt;&gt;(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">ReadReservations</span>&lt;<span style="color:#2b91af;">IReservationsProgram</span>&lt;<span style="color:#2b91af;">IReadOnlyCollection</span>&lt;<span style="color:#2b91af;">Reservation</span>&gt;&gt;&gt;(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Tuple</span>&lt;<span style="color:#2b91af;">DateTimeOffset</span>,&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:#2b91af;">IReadOnlyCollection</span>&lt;<span style="color:#2b91af;">Reservation</span>&gt;,&nbsp;<span style="color:#2b91af;">IReservationsProgram</span>&lt;<span style="color:#2b91af;">IReadOnlyCollection</span>&lt;<span style="color:#2b91af;">Reservation</span>&gt;&gt;&gt;&gt;(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;date,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;x&nbsp;=&gt;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Pure</span>&lt;<span style="color:#2b91af;">IReadOnlyCollection</span>&lt;<span style="color:#2b91af;">Reservation</span>&gt;&gt;(x))));
+}
+ 
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:#2b91af;">IReservationsProgram</span>&lt;<span style="color:blue;">int</span>&gt;&nbsp;Create(<span style="color:#2b91af;">Reservation</span>&nbsp;reservation)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Free</span>&lt;<span style="color:blue;">int</span>&gt;(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Create</span>&lt;<span style="color:#2b91af;">IReservationsProgram</span>&lt;<span style="color:blue;">int</span>&gt;&gt;(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Tuple</span>&lt;<span style="color:#2b91af;">Reservation</span>,&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:blue;">int</span>,&nbsp;<span style="color:#2b91af;">IReservationsProgram</span>&lt;<span style="color:blue;">int</span>&gt;&gt;&gt;(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;reservation,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;x&nbsp;=&gt;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Pure</span>&lt;<span style="color:blue;">int</span>&gt;(x))));
+}</pre>
+	</p>
+	<p>
+		Again, the (unfortunately required) type information makes this unreadable, but in fact, not much happens. In F#, the same lift functions are three one-liners:
+	</p>
+	<p>
+		<pre><span style="color:blue;">let</span>&nbsp;isReservationInFuture&nbsp;r&nbsp;=&nbsp;Free&nbsp;(IsReservationInFuture&nbsp;(r,&nbsp;Pure))
+ 
+<span style="color:blue;">let</span>&nbsp;readReservations&nbsp;d&nbsp;=&nbsp;Free&nbsp;(ReadReservations&nbsp;(d,&nbsp;Pure))
+ 
+<span style="color:blue;">let</span>&nbsp;create&nbsp;r&nbsp;=&nbsp;Free&nbsp;(Create&nbsp;(r,&nbsp;Pure))</pre>
+	</p>
+	<p>
+		These helper methods serve the sole purpose of making it easier to write client code that produces <code>IReservationsProgram&lt;T&gt;</code> 'objects' (they're actually abstract syntax trees).
+	</p>
+	<p>
+		<strong>MaîtreD</strong>
+	</p>
+	<p>
+		You now have all the building blocks that enable you to refactor <code>MaîtreD.TryAccept</code> to return an <code>IReservationsProgram&lt;int?&gt;</code>:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">MaîtreD</span>&nbsp;:&nbsp;<span style="color:#2b91af;">IMaîtreD</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;MaîtreD(<span style="color:blue;">int</span>&nbsp;capacity)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Capacity&nbsp;=&nbsp;capacity;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">IReservationsProgram</span>&lt;<span style="color:blue;">int</span>?&gt;&nbsp;TryAccept(<span style="color:#2b91af;">Reservation</span>&nbsp;reservation)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:#2b91af;">ReservationsProgram</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.IsReservationInFuture(reservation)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.SelectMany(isInFuture&nbsp;=&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;(!isInFuture)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Pure</span>&lt;<span style="color:blue;">int</span>?&gt;(<span style="color:blue;">null</span>);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:#2b91af;">ReservationsProgram</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.ReadReservations(reservation.Date)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.SelectMany(reservations&nbsp;=&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;reservedSeats&nbsp;=&nbsp;reservations.Sum(r&nbsp;=&gt;&nbsp;r.Quantity);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;(Capacity&nbsp;&lt;&nbsp;reservedSeats&nbsp;+&nbsp;reservation.Quantity)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Pure</span>&lt;<span style="color:blue;">int</span>?&gt;(<span style="color:blue;">null</span>);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;reservation.IsAccepted&nbsp;=&nbsp;<span style="color:blue;">true</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:#2b91af;">ReservationsProgram</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.Create(reservation)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.Select(x&nbsp;=&gt;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:blue;">int</span>?(x));
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;});
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;});
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">int</span>&nbsp;Capacity&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;}
+}</pre>
+	</p>
+	<p>
+		This is hardly as pretty as the original version that used Dependency Injection, but you should notice an interesting effect: by returning a free monad, you get rid of the injected dependency. While the code still depends on <code>Capacity</code>, that's just a read-only number.
+	</p>
+	<p>
+		Through the so-called <em>query syntax</em>, C# offers some syntactic sugar for monadic composition, similar to F#'s <a href="https://docs.microsoft.com/en-us/dotnet/fsharp/language-reference/computation-expressions">computation expressions</a> or Haskell's <code>do</code> notation. Where its utility ends, though, is exactly where you need it. Unfortunately, it doesn't support branching (the use of <code>if</code> statements and such) inside of <code>from x in xs</code> expressions, so while we've supplied the requisite <code>SelectMany</code> methods for <code>IReservationsProgram&lt;T&gt;</code>, you can't use them.
+	</p>
+	<p>
+		Instead, you have to resort to branching inside of each continuation, which, unfortunately, pulls you towards <a href="http://wiki.c2.com/?ArrowAntiPattern">arrow code</a>.
+	</p>
+	<p>
+		The <code>TryAccept</code> method starts by calling the <code>IsReservationInFuture</code> helper method (defined above), which returns an <code>IReservationsProgram&lt;bool&gt;</code> object. You can't easily pull the <code>bool</code> value out of the container, but you can use <code>SelectMany</code> to define what happens next.
+	</p>
+	<p>
+		If the reservations is in the future, an interpreter should call the continuation with <code>true</code>, and otherwise, with <code>false</code>. Thus, you can branch on that Boolean value for the next step. If the reservations turned out to be in the past, the return value ought to be <code>null</code>, but you have to package that in an <code>IReservationsProgram&lt;int?&gt;</code>. The correct way to do that is to wrap it in a <code>Pure</code> object.
+	</p>
+	<p>
+		If the reservation, on the other hand, turned out to be in the future, the program can continue. It proceeds to call the <code>ReadReservations</code> helper method, and again uses <code>SelectMany</code> to define what happens next. An interpreter will supply <code>reservations</code> (presumably read from an actual database), and the code inside the continuation decides what to do next. In the case of insufficient remaining capacity, you return another <code>null</code> wrapped in <code>Pure</code>, but if you decide to accept the reservation, you can finally call the <code>Create</code> helper method and return its return value. Here, however, C#'s implicit conversion no longer works, so you have to explicitly use <code>Select</code> to turn the <code>int</code> into an <code>int?</code>.
+	</p>
+	<p>
+		<strong>Interpreters</strong>
+	</p>
+	<p>
+		You can still unit test the code by supplying a test-specific interpreter, but in the interest of keeping this article to essentials, I'll refer you to the code repository if you want to see how the tests look at this point.
+	</p>
+	<p>
+		You're probably more interested in seeing how an interpreter actually interacts with a real database, like the above <code>SqlReservationsRepository</code> class did. The scenario is still the same, only the specifics have changed. Instead of implementing an interface, you'll now have to interpret an <code>IReservationsProgram&lt;int?&gt;</code>. How do you do that?
+	</p>
+	<p>
+		You do it like you'd traverse any other Church-encoded sum type: use the <code>Match</code> method and supply a handler for each of the cases:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:#2b91af;">T</span>&nbsp;Interpret&lt;<span style="color:#2b91af;">T</span>&gt;(
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>&nbsp;<span style="color:#2b91af;">IReservationsProgram</span>&lt;<span style="color:#2b91af;">T</span>&gt;&nbsp;program,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">string</span>&nbsp;connectionString)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;program.Match(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;pure:&nbsp;x&nbsp;=&gt;&nbsp;x,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;free:&nbsp;i&nbsp;=&gt;&nbsp;i.Match(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;isReservationInFuture:&nbsp;t&nbsp;=&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;t.Item2(IsReservationInFuture(t.Item1))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.Interpret(connectionString),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;readReservations:&nbsp;t&nbsp;=&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;t.Item2(ReadReservations(t.Item1,&nbsp;connectionString))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.Interpret(connectionString),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;create:&nbsp;t&nbsp;=&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;t.Item2(Create(t.Item1,&nbsp;connectionString))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.Interpret(connectionString)));
+}</pre>
+	</p>
+	<p>
+		Since a free monad is a nested, recursive sum type, you'll first have to supply handlers for the <code>pure</code> and <code>free</code> cases. The <code>pure</code> case is, as always, trivial. This is where you finally encounter a leaf node in the abstract syntax tree you're traversing. This is where you get to return the final value of the program.
+	</p>
+	<p>
+		In the <code>free</code> case, on the other hand, you'll need to handle an <code>IReservationsInstruction&lt;IReservationsProgram&lt;T&gt;&gt;</code> value, which is another Church-encoded sum type. It looks daunting, but is an entirely automatic refactoring: just call <code>Match</code> on that object as well, and supply a handler for each of the cases.
+	</p>
+	<p>
+		Recall that each of the cases of <code>IReservationsInstruction&lt;T&gt;</code> contains a tuple. The first element (<code>t.Item1</code>) is a value to be used as an input argument for the interpreter. The second element (<code>t.Item2</code>) is a function. Notice that in all three cases, this interpreter calls a helper method with <code>t.Item1</code> and then calls the continuation <code>t.Item2</code> with the return value from the helper method; e.g. <code>t.Item2(IsReservationInFuture(t.Item1))</code>. All three continuation functions return a new <code>IReservationsProgram&lt;T&gt;</code>, representing the next step in the program, so you'll have to recursively call <code>Interpret</code> again.
+	</p>
+	<p>
+		The <code>IsReservationInFuture</code> helper method is simple:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:blue;">bool</span>&nbsp;IsReservationInFuture(<span style="color:#2b91af;">Reservation</span>&nbsp;reservation)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:#2b91af;">DateTimeOffset</span>.Now&nbsp;&lt;&nbsp;reservation.Date;
+}</pre>
+	</p>
+	<p>
+		Notice that this is an entirely normal static helper method that every C# programmer should know how to write. You're now back on familiar territory. The same goes for the two other helper methods <code>ReadReservations</code> and <code>Create</code>. They're slightly refactored versions of the above <code>SqlReservationsRepository</code> methods, so I'm not going to repeat them here. Again, you're welcome to look at the details in the code repository.
+	</p>
+	<p>
+		<strong>Refactor instruction arguments to Parameter Object</strong>
+	</p>
+	<p>
+		As you know from another article, <a href="">you can refactor any Church-encoded sum type to a Visitor</a>. If you want to do it step-wise, you start by introducing a Parameter Object, as suggested by <a href="http://amzn.to/YPdQDf">Refactoring</a>. There's two sum types in play in this code base, but you can arbitrarily choose to start with the instruction set. Instead of taking three method arguments, change the <code>Match</code> method so that it takes only a single argument:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">interface</span>&nbsp;<span style="color:#2b91af;">IReservationsInstruction</span>&lt;<span style="color:#2b91af;">T</span>&gt;
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">TResult</span>&nbsp;Match&lt;<span style="color:#2b91af;">TResult</span>&gt;(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">ReservationsInstructionParameters</span>&lt;<span style="color:#2b91af;">T</span>,&nbsp;<span style="color:#2b91af;">TResult</span>&gt;&nbsp;parameters);
+}</pre>
+	</p>
+	<p>
+		The new Parameter Object looks like this:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">ReservationsInstructionParameters</span>&lt;<span style="color:#2b91af;">T</span>,&nbsp;<span style="color:#2b91af;">TResult</span>&gt;
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;ReservationsInstructionParameters(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:#2b91af;">Tuple</span>&lt;<span style="color:#2b91af;">Reservation</span>,&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:blue;">bool</span>,&nbsp;<span style="color:#2b91af;">T</span>&gt;&gt;,&nbsp;<span style="color:#2b91af;">TResult</span>&gt;&nbsp;isReservationInFuture,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:#2b91af;">Tuple</span>&lt;<span style="color:#2b91af;">DateTimeOffset</span>,&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:#2b91af;">IReadOnlyCollection</span>&lt;<span style="color:#2b91af;">Reservation</span>&gt;,&nbsp;<span style="color:#2b91af;">T</span>&gt;&gt;,&nbsp;<span style="color:#2b91af;">TResult</span>&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;readReservations,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:#2b91af;">Tuple</span>&lt;<span style="color:#2b91af;">Reservation</span>,&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:blue;">int</span>,&nbsp;<span style="color:#2b91af;">T</span>&gt;&gt;,&nbsp;<span style="color:#2b91af;">TResult</span>&gt;&nbsp;create)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.IsReservationInFuture&nbsp;=&nbsp;isReservationInFuture;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.ReadReservations&nbsp;=&nbsp;readReservations;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.Create&nbsp;=&nbsp;create;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:#2b91af;">Tuple</span>&lt;<span style="color:#2b91af;">Reservation</span>,&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:blue;">bool</span>,&nbsp;<span style="color:#2b91af;">T</span>&gt;&gt;,&nbsp;<span style="color:#2b91af;">TResult</span>&gt;&nbsp;IsReservationInFuture&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:#2b91af;">Tuple</span>&lt;<span style="color:#2b91af;">DateTimeOffset</span>,&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:#2b91af;">IReadOnlyCollection</span>&lt;<span style="color:#2b91af;">Reservation</span>&gt;,&nbsp;<span style="color:#2b91af;">T</span>&gt;&gt;,&nbsp;<span style="color:#2b91af;">TResult</span>&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;ReadReservations&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:#2b91af;">Tuple</span>&lt;<span style="color:#2b91af;">Reservation</span>,&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:blue;">int</span>,&nbsp;<span style="color:#2b91af;">T</span>&gt;&gt;,&nbsp;<span style="color:#2b91af;">TResult</span>&gt;&nbsp;Create&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;}
+}</pre>
+	</p>
+	<p>
+		This change clearly just moves things around, so nothing much is yet gained. You'll need to adjust other parts of the code in order to pass an instance of this Parameter Object to the <code>Match</code> method, but that's trivial and automatable work, so I'll skip showing it.
+	</p>
+	<p>
+		If you've noticed that the <code>ReservationsInstructionParameters&lt;T, TResult&gt;</code> Parameter Object is nothing but a container of three functions, you may not be impressed, but from <a href="http://blog.ploeh.dk/2018/02/12/object-isomorphisms">Object isomorphisms</a> we know that a tuple (or record) of functions is isomorphic to an object, thereby nicely putting everything in place for the next change.
+	</p>
+	<p>
+		<strong>Refactor instruction set Parameter Object to an interface</strong>		
+	</p>
+	<p>
+		Instead of a record of three functions, refactor the Parameter Object to an interface with three members:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">interface</span>&nbsp;<span style="color:#2b91af;">IReservationsInstructionParameters</span>&lt;<span style="color:#2b91af;">T</span>,&nbsp;<span style="color:#2b91af;">TResult</span>&gt;
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">TResult</span>&nbsp;IsReservationInFuture(<span style="color:#2b91af;">Tuple</span>&lt;<span style="color:#2b91af;">Reservation</span>,&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:blue;">bool</span>,&nbsp;<span style="color:#2b91af;">T</span>&gt;&gt;&nbsp;t);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">TResult</span>&nbsp;ReadReservations(<span style="color:#2b91af;">Tuple</span>&lt;<span style="color:#2b91af;">DateTimeOffset</span>,&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:#2b91af;">IReadOnlyCollection</span>&lt;<span style="color:#2b91af;">Reservation</span>&gt;,&nbsp;<span style="color:#2b91af;">T</span>&gt;&gt;&nbsp;t);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">TResult</span>&nbsp;Create(<span style="color:#2b91af;">Tuple</span>&lt;<span style="color:#2b91af;">Reservation</span>,&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:blue;">int</span>,&nbsp;<span style="color:#2b91af;">T</span>&gt;&gt;&nbsp;t);
+}</pre>
+	</p>
+	<p>
+		Each function is now a method on the interface. Still not perfect, but better. Again, you have to make all sort of adjustments to code that interacts with the <code>Match</code> method. This is the most laborious refactoring, because in every place where before you could simply pass lambda expressions, you now have to introduce explicit classes that implement the interface.
+	</p>
+	<p>
+		For example, the database interpreter now has to look like this:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:#2b91af;">T</span>&nbsp;Interpret&lt;<span style="color:#2b91af;">T</span>&gt;(
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>&nbsp;<span style="color:#2b91af;">IReservationsProgram</span>&lt;<span style="color:#2b91af;">T</span>&gt;&nbsp;program,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">string</span>&nbsp;connectionString)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;program.Match(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;pure:&nbsp;x&nbsp;=&gt;&nbsp;x,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;free:&nbsp;i&nbsp;=&gt;&nbsp;i.Match(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">InterpretReservationsInstructionParameters</span>&lt;<span style="color:#2b91af;">T</span>&gt;(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;connectionString)));
+}</pre>
+	</p>
+	<p>
+		So far, we've only started refactoring the instruction set, so you still need to handle <code>IReservationsProgram&lt;T&gt;</code> values by supplying two lambda expressions to its <code>Match</code> method. When handling the instruction <code>i</code>, however, you must now supply an implementation of the new <code>IReservationsInstructionParameters&lt;T, TResult&gt;</code> interface.
+	</p>
+	<p>
+		You can do that by creating a new private, nested class:
+	</p>
+	<p>
+		<pre><span style="color:blue;">private</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">InterpretReservationsInstructionParameters</span>&lt;<span style="color:#2b91af;">T</span>&gt;&nbsp;:
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">IReservationsInstructionParameters</span>&lt;<span style="color:#2b91af;">IReservationsProgram</span>&lt;<span style="color:#2b91af;">T</span>&gt;,&nbsp;<span style="color:#2b91af;">T</span>&gt;</pre>
+	</p>
+	<p>
+		As an example, this class implements the <code>ReadReservations</code> method like this:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">T</span>&nbsp;ReadReservations(
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Tuple</span>&lt;<span style="color:#2b91af;">DateTimeOffset</span>,&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:#2b91af;">IReadOnlyCollection</span>&lt;<span style="color:#2b91af;">Reservation</span>&gt;,&nbsp;<span style="color:#2b91af;">IReservationsProgram</span>&lt;<span style="color:#2b91af;">T</span>&gt;&gt;&gt;&nbsp;t)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;reservations&nbsp;=&nbsp;ReadReservations(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;t.Item1.Date,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;t.Item1.Date.AddDays(1).AddTicks(-1));
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;t.Item2(reservations).Interpret(connectionString);
+}
+ 
+<span style="color:blue;">private</span>&nbsp;<span style="color:#2b91af;">IReadOnlyCollection</span>&lt;<span style="color:#2b91af;">Reservation</span>&gt;&nbsp;ReadReservations(
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">DateTimeOffset</span>&nbsp;min,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">DateTimeOffset</span>&nbsp;max)</pre>
+	</p>
+	<p>
+		The method first calls a helper method also called <code>ReadReservations</code> to read the reservations from the database. That helper method is a perfectly normal C# method that queries a database. Its implementation is equivalent to the above <code>SqlReservationsRepository.ReadReservations</code> implementation, so while I've included its signature in the above code listing, there's no need to repeat the method body here.
+	</p>
+	<p>
+		Keep in mind that <code>t</code> is the horribly typed tuple declared as the method argument, so <code>t.Item1</code> is just a <code>DateTimeOffset</code> value that you can pass as argument(s) to the <code>ReadReservations</code> helper method.
+	</p>
+	<p>
+		The helper method returns <code>reservations</code>, which is an <code>IReadOnlyCollection&lt;Reservation&gt;</code>. You can now (as before) call the continuation function <code>t.Item2</code> with that object. The continuation returns a new <code>IReservationsProgram&lt;T&gt;</code> that you'll then have to recursively handle by calling <code>Interpret</code> again. This is just like before the refactoring.
+	</p>
+	<p>
+		<strong>Rename instruction set API</strong>
+	</p>
+	<p>
+		You're simply following the refactoring steps outlined in <a href="">Visitor as a sum type</a>, so now you can rename the types involved with the instruction set to follow the naming conventions of the Visitor design pattern:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">interface</span>&nbsp;<span style="color:#2b91af;">IReservationsInstructionVisitor</span>&lt;<span style="color:#2b91af;">T</span>,&nbsp;<span style="color:#2b91af;">TResult</span>&gt;
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">TResult</span>&nbsp;VisitIsReservationInFuture(<span style="color:#2b91af;">Tuple</span>&lt;<span style="color:#2b91af;">Reservation</span>,&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:blue;">bool</span>,&nbsp;<span style="color:#2b91af;">T</span>&gt;&gt;&nbsp;t);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">TResult</span>&nbsp;VisitReadReservations(<span style="color:#2b91af;">Tuple</span>&lt;<span style="color:#2b91af;">DateTimeOffset</span>,&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:#2b91af;">IReadOnlyCollection</span>&lt;<span style="color:#2b91af;">Reservation</span>&gt;,&nbsp;<span style="color:#2b91af;">T</span>&gt;&gt;&nbsp;t);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">TResult</span>&nbsp;VisitCreate(<span style="color:#2b91af;">Tuple</span>&lt;<span style="color:#2b91af;">Reservation</span>,&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:blue;">int</span>,&nbsp;<span style="color:#2b91af;">T</span>&gt;&gt;&nbsp;t);
+}</pre>
+	</p>
+	<p>
+		This is the interface previously named <code>IReservationsInstructionParameters&lt;T, TResult&gt;</code> renamed, and with the word <code>Visit</code> affixed. Likewise, you can also make similar changes to the <code>IReservationsInstruction&lt;T&gt;</code> interface:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">interface</span>&nbsp;<span style="color:#2b91af;">IReservationsInstruction</span>&lt;<span style="color:#2b91af;">T</span>&gt;
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">TResult</span>&nbsp;Accept&lt;<span style="color:#2b91af;">TResult</span>&gt;(<span style="color:#2b91af;">IReservationsInstructionVisitor</span>&lt;<span style="color:#2b91af;">T</span>,&nbsp;<span style="color:#2b91af;">TResult</span>&gt;&nbsp;visitor);
+}</pre>
+	</p>
+	<p>
+		These changes are simple rename refactorings, so while they affect much other code, I'm not going to list it all.
+	</p>
+	<p>
+		<strong>Make program API a Visitor</strong>
+	</p>
+	<p>
+		Following the same refactoring steps, you can also turn <code>IReservationsProgram&lt;T&gt;</code> into an application of the Visitor design pattern:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">interface</span>&nbsp;<span style="color:#2b91af;">IReservationsProgram</span>&lt;<span style="color:#2b91af;">T</span>&gt;
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">TResult</span>&nbsp;Accept&lt;<span style="color:#2b91af;">TResult</span>&gt;(<span style="color:#2b91af;">IReservationsProgramVisitor</span>&lt;<span style="color:#2b91af;">T</span>,&nbsp;<span style="color:#2b91af;">TResult</span>&gt;&nbsp;visitor);
+}</pre>
+	</p>
+	<p>
+		You simply rename the <code>Match</code> method to <code>Accept</code>, and call the object passed to it <code>visitor</code>. The Visitor itself is defined like this:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">interface</span>&nbsp;<span style="color:#2b91af;">IReservationsProgramVisitor</span>&lt;<span style="color:#2b91af;">T</span>,&nbsp;<span style="color:#2b91af;">TResult</span>&gt;
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">TResult</span>&nbsp;VisitFree(<span style="color:#2b91af;">IReservationsInstruction</span>&lt;<span style="color:#2b91af;">IReservationsProgram</span>&lt;<span style="color:#2b91af;">T</span>&gt;&gt;&nbsp;i);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">TResult</span>&nbsp;VisitPure(<span style="color:#2b91af;">T</span>&nbsp;x);
+}</pre>
+	</p>
+	<p>
+		While these steps conclude the refactoring steps outlined in the previously mentioned article on how to turn a Church-encoded sum type into a Visitor, the resulting code can still benefit from further clean-up.
+	</p>
+	<p>
+		<strong>Refactor tuple argument to argument list</strong>
+	</p>
+	<p>
+		If you consider the current definition of <code>IReservationsInstructionVisitor&gt;T, TResult&lt;</code> (see above), you'll notice that each method takes a single argument in the shape of a tuple. From <a href="http://blog.ploeh.dk/2018/01/29/argument-list-isomorphisms">Argument list isomorphisms</a> you know that you can refactor such a method into a method that takes a normal argument list:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">interface</span>&nbsp;<span style="color:#2b91af;">IReservationsInstructionVisitor</span>&lt;<span style="color:#2b91af;">T</span>,&nbsp;<span style="color:#2b91af;">TResult</span>&gt;
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">TResult</span>&nbsp;VisitIsReservationInFuture(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Reservation</span>&nbsp;reservation,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:blue;">bool</span>,&nbsp;<span style="color:#2b91af;">T</span>&gt;&nbsp;continuation);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">TResult</span>&nbsp;VisitReadReservations(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">DateTimeOffset</span>&nbsp;date,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:#2b91af;">IReadOnlyCollection</span>&lt;<span style="color:#2b91af;">Reservation</span>&gt;,&nbsp;<span style="color:#2b91af;">T</span>&gt;&nbsp;continuation);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">TResult</span>&nbsp;VisitCreate(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Reservation</span>&nbsp;reservation,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:blue;">int</span>,&nbsp;<span style="color:#2b91af;">T</span>&gt;&nbsp;continuation);
+}</pre>
+	</p>
+	<p>
+		Each of these methods now take an input argument (e.g. a <code>Reservation</code> or a <code>DateTimeOffset</code>) and a continuation function. This already improves the API.
+	</p>
+	<p>
+		<strong>SQL Visitor</strong>
+	</p>
+	<p>
+		In an attempt to make things look proper object-oriented, then, the journey is complete. Instead of a <code>SqlReservationsRepository</code>, you instead need a <code>SqlReservationsProgramVisitor&lt;T&gt;</code>:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">SqlReservationsProgramVisitor</span>&lt;<span style="color:#2b91af;">T</span>&gt;&nbsp;:
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">IReservationsProgramVisitor</span>&lt;<span style="color:#2b91af;">T</span>,&nbsp;<span style="color:#2b91af;">T</span>&gt;,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">IReservationsInstructionVisitor</span>&lt;<span style="color:#2b91af;">IReservationsProgram</span>&lt;<span style="color:#2b91af;">T</span>&gt;,&nbsp;<span style="color:#2b91af;">T</span>&gt;
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;<span style="color:blue;">string</span>&nbsp;connectionString;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;SqlReservationsProgramVisitor(<span style="color:blue;">string</span>&nbsp;connectionString)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.connectionString&nbsp;=&nbsp;connectionString;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">T</span>&nbsp;VisitPure(<span style="color:#2b91af;">T</span>&nbsp;x)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;x;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">T</span>&nbsp;VisitFree(<span style="color:#2b91af;">IReservationsInstruction</span>&lt;<span style="color:#2b91af;">IReservationsProgram</span>&lt;<span style="color:#2b91af;">T</span>&gt;&gt;&nbsp;i)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;i.Accept(<span style="color:blue;">this</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">T</span>&nbsp;VisitIsReservationInFuture(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Reservation</span>&nbsp;reservation,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:blue;">bool</span>,&nbsp;<span style="color:#2b91af;">IReservationsProgram</span>&lt;<span style="color:#2b91af;">T</span>&gt;&gt;&nbsp;continuation)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;isInFuture&nbsp;=&nbsp;<span style="color:#2b91af;">DateTimeOffset</span>.Now&nbsp;&lt;&nbsp;reservation.Date;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;continuation(isInFuture).Accept(<span style="color:blue;">this</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">T</span>&nbsp;VisitReadReservations(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">DateTimeOffset</span>&nbsp;date,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:#2b91af;">IReadOnlyCollection</span>&lt;<span style="color:#2b91af;">Reservation</span>&gt;,&nbsp;<span style="color:#2b91af;">IReservationsProgram</span>&lt;<span style="color:#2b91af;">T</span>&gt;&gt;&nbsp;continuation)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;reservations&nbsp;=&nbsp;ReadReservations(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;date.Date,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;date.Date.AddDays(1).AddTicks(-1));
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;continuation(reservations).Accept(<span style="color:blue;">this</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:#2b91af;">IReadOnlyCollection</span>&lt;<span style="color:#2b91af;">Reservation</span>&gt;&nbsp;ReadReservations(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">DateTimeOffset</span>&nbsp;min,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">DateTimeOffset</span>&nbsp;max)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;result&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">List</span>&lt;<span style="color:#2b91af;">Reservation</span>&gt;();
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">using</span>&nbsp;(<span style="color:blue;">var</span>&nbsp;conn&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">SqlConnection</span>(connectionString))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">using</span>&nbsp;(<span style="color:blue;">var</span>&nbsp;cmd&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">SqlCommand</span>(readByRangeSql,&nbsp;conn))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;cmd.Parameters.Add(<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">SqlParameter</span>(<span style="color:#a31515;">&quot;@MinDate&quot;</span>,&nbsp;min));
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;cmd.Parameters.Add(<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">SqlParameter</span>(<span style="color:#a31515;">&quot;@MaxDate&quot;</span>,&nbsp;max));
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;conn.Open();
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">using</span>&nbsp;(<span style="color:blue;">var</span>&nbsp;rdr&nbsp;=&nbsp;cmd.ExecuteReader())
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">while</span>&nbsp;(rdr.Read())
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;result.Add(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Reservation</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Date&nbsp;=&nbsp;(<span style="color:#2b91af;">DateTimeOffset</span>)rdr[<span style="color:#a31515;">&quot;Date&quot;</span>],
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Name&nbsp;=&nbsp;(<span style="color:blue;">string</span>)rdr[<span style="color:#a31515;">&quot;Name&quot;</span>],
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Email&nbsp;=&nbsp;(<span style="color:blue;">string</span>)rdr[<span style="color:#a31515;">&quot;Email&quot;</span>],
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Quantity&nbsp;=&nbsp;(<span style="color:blue;">int</span>)rdr[<span style="color:#a31515;">&quot;Quantity&quot;</span>]
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;});
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;result;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">const</span>&nbsp;<span style="color:blue;">string</span>&nbsp;readByRangeSql&nbsp;=&nbsp;<span style="color:maroon;">@&quot;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;SELECT&nbsp;[Date],&nbsp;[Name],&nbsp;[Email],&nbsp;[Quantity]
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;FROM&nbsp;[dbo].[Reservations]
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;WHERE&nbsp;YEAR(@MinDate)&nbsp;&lt;=&nbsp;YEAR([Date])
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;AND&nbsp;MONTH(@MinDate)&nbsp;&lt;=&nbsp;MONTH([Date])
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;AND&nbsp;DAY(@MinDate)&nbsp;&lt;=&nbsp;DAY([Date])
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;AND&nbsp;YEAR([Date])&nbsp;&lt;=&nbsp;YEAR(@MaxDate)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;AND&nbsp;MONTH([Date])&nbsp;&lt;=&nbsp;MONTH(@MaxDate)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;AND&nbsp;DAY([Date])&nbsp;&lt;=&nbsp;DAY(@MaxDate)&quot;</span>;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">T</span>&nbsp;VisitCreate(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Reservation</span>&nbsp;reservation,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:blue;">int</span>,&nbsp;<span style="color:#2b91af;">IReservationsProgram</span>&lt;<span style="color:#2b91af;">T</span>&gt;&gt;&nbsp;continuation)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;continuation(Create(reservation)).Accept(<span style="color:blue;">this</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">int</span>&nbsp;Create(<span style="color:#2b91af;">Reservation</span>&nbsp;reservation)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">using</span>&nbsp;(<span style="color:blue;">var</span>&nbsp;conn&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">SqlConnection</span>(connectionString))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">using</span>&nbsp;(<span style="color:blue;">var</span>&nbsp;cmd&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">SqlCommand</span>(createReservationSql,&nbsp;conn))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;cmd.Parameters.Add(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">SqlParameter</span>(<span style="color:#a31515;">&quot;@Date&quot;</span>,&nbsp;reservation.Date));
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;cmd.Parameters.Add(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">SqlParameter</span>(<span style="color:#a31515;">&quot;@Name&quot;</span>,&nbsp;reservation.Name));
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;cmd.Parameters.Add(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">SqlParameter</span>(<span style="color:#a31515;">&quot;@Email&quot;</span>,&nbsp;reservation.Email));
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;cmd.Parameters.Add(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">SqlParameter</span>(<span style="color:#a31515;">&quot;@Quantity&quot;</span>,&nbsp;reservation.Quantity));
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;conn.Open();
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;cmd.ExecuteNonQuery();
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">const</span>&nbsp;<span style="color:blue;">string</span>&nbsp;createReservationSql&nbsp;=&nbsp;<span style="color:maroon;">@&quot;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;INSERT&nbsp;INTO&nbsp;[dbo].[Reservations]&nbsp;([Date],&nbsp;[Name],&nbsp;[Email],&nbsp;[Quantity])
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;VALUES&nbsp;(@Date,&nbsp;@Name,&nbsp;@Email,&nbsp;@Quantity)&quot;</span>;
+}</pre>
+	</p>
+	<p>
+		Most of this code is similar to the <code>SqlReservationsRepository</code> from the beginning of the article. The <code>IReservationsRepository</code> interface no longer exists; instead this Visitor implements two interfaces: <code>IReservationsProgramVisitor&lt;T, T&gt;</code> and <code>IReservationsInstructionVisitor&lt;IReservationsProgram&lt;T&gt;, T&gt;</code>. A free monad recursively interacts with itself by going back and forth between an 'instruction' and the overall 'program'. Implementing both interfaces in a single class makes it much easier to transition between these two views, as you no longer have to pass e.g. the <code>connectionString</code> around between various objects.
+	</p>
+	<p>
+		This also means that instead of having to rely on an extension method in order to be able to continue, notice that each method can now continue by calling <code>Accept(this)</code>.
+	</p>
+	<p>
+		Instead of injecting <code>IReservationsRepository</code> into objects, you can call methods that return <code>IReservationsProgram&lt;T&gt;</code> objects and then interpret them using the above <code>SqlReservationsProgramVisitor&lt;T&gt;</code>. For example, you could call <code>TryAccept</code> with a <code>Reservation</code> object:
+	</p>
+	<p>
+		<pre><span style="color:blue;">var</span>&nbsp;p&nbsp;=&nbsp;maîtreD.TryAccept(reservation);</pre>
+	</p>
+	<p>
+		The <code>p</code> variable is an <code>IReservationsProgram&lt;int?&gt;</code> object, where the <code>int?</code> represents a potential reservation ID. At this point, <code>p</code> is a 'program', and you can 'run' it by asking it to accept a Visitor:
+	</p>
+	<p>
+		<pre><span style="color:blue;">var</span>&nbsp;id&nbsp;=&nbsp;p.Accept(<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">SqlReservationsProgramVisitor</span>&lt;<span style="color:blue;">int</span>?&gt;(connectionString));
+</pre>
+	</p>
+	<p>
+		When <code>Accept</code> returns, <code>id</code> (an <code>int?</code>) has a value, or is <code>null</code>, according to the exact details of <code>reservation</code> and the state of the database.
+	</p>
+	<p>
+		<strong>Testability</strong>
+	</p>
+	<p>
+		Is this design still testable? Yes, indeed, the overall free monad design is <a href="https://en.wikipedia.org/wiki/Pure_function">pure</a>, and thereby <a href="http://blog.ploeh.dk/2015/05/07/functional-design-is-intrinsically-testable">inherently testable</a>. Instead of using a dynamic mock library like Moq, you can add a test-specific implementation of the free monad Visitor to your unit testing code base:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">StubReservationsVisitor</span>&lt;<span style="color:#2b91af;">T</span>&gt;&nbsp;:
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">IReservationsProgramVisitor</span>&lt;<span style="color:#2b91af;">T</span>,&nbsp;<span style="color:#2b91af;">T</span>&gt;,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">IReservationsInstructionVisitor</span>&lt;<span style="color:#2b91af;">IReservationsProgram</span>&lt;<span style="color:#2b91af;">T</span>&gt;,&nbsp;<span style="color:#2b91af;">T</span>&gt;
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;<span style="color:blue;">bool</span>&nbsp;isInFuture;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;<span style="color:#2b91af;">IReadOnlyCollection</span>&lt;<span style="color:#2b91af;">Reservation</span>&gt;&nbsp;reservations;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;<span style="color:blue;">int</span>&nbsp;id;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;StubReservationsVisitor(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">bool</span>&nbsp;isInFuture,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">IReadOnlyCollection</span>&lt;<span style="color:#2b91af;">Reservation</span>&gt;&nbsp;reservations,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">int</span>&nbsp;id)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.isInFuture&nbsp;=&nbsp;isInFuture;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.reservations&nbsp;=&nbsp;reservations;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.id&nbsp;=&nbsp;id;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">T</span>&nbsp;VisitPure(<span style="color:#2b91af;">T</span>&nbsp;x)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;x;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">T</span>&nbsp;VisitFree(<span style="color:#2b91af;">IReservationsInstruction</span>&lt;<span style="color:#2b91af;">IReservationsProgram</span>&lt;<span style="color:#2b91af;">T</span>&gt;&gt;&nbsp;i)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;i.Accept(<span style="color:blue;">this</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">T</span>&nbsp;VisitIsReservationInFuture(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Reservation</span>&nbsp;reservation,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:blue;">bool</span>,&nbsp;<span style="color:#2b91af;">IReservationsProgram</span>&lt;<span style="color:#2b91af;">T</span>&gt;&gt;&nbsp;continuation)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;continuation(isInFuture).Accept(<span style="color:blue;">this</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">T</span>&nbsp;VisitReadReservations(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">DateTimeOffset</span>&nbsp;date,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:#2b91af;">IReadOnlyCollection</span>&lt;<span style="color:#2b91af;">Reservation</span>&gt;,&nbsp;<span style="color:#2b91af;">IReservationsProgram</span>&lt;<span style="color:#2b91af;">T</span>&gt;&gt;&nbsp;continuation)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;continuation(reservations).Accept(<span style="color:blue;">this</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">T</span>&nbsp;VisitCreate(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Reservation</span>&nbsp;reservation,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:blue;">int</span>,&nbsp;<span style="color:#2b91af;">IReservationsProgram</span>&lt;<span style="color:#2b91af;">T</span>&gt;&gt;&nbsp;continuation)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;continuation(id).Accept(<span style="color:blue;">this</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+	</p>
+	<p>
+		As a true <a href="http://xunitpatterns.com/Test%20Stub.html">Stub</a>, this implementation ignores the input values and returns pre-configured values. When <code>VisitIsReservationInFuture</code> is called, for example, the implementation ignores the <code>reservation</code> argument and instead 'returns' the <code>isInFuture</code> class field by calling <code>continuation(isInFuture)</code>.
+	</p>
+	<p>
+		You can exercise the happy-path test case from the beginning of this article as a unit test using this Stub Visitor:
+	</p>
+	<p>
+		<pre>[<span style="color:#2b91af;">Theory</span>,&nbsp;<span style="color:#2b91af;">BookingApiTestConventions</span>]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;TryAcceptReturnsReservationIdInHappyPathScenario(
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Reservation</span>&nbsp;reservation,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">IReadOnlyCollection</span>&lt;<span style="color:#2b91af;">Reservation</span>&gt;&nbsp;reservations,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">MaîtreD</span>&nbsp;sut,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">int</span>&nbsp;excessCapacity,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">int</span>&nbsp;expected)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;reservedSeats&nbsp;=&nbsp;reservations.Sum(r&nbsp;=&gt;&nbsp;r.Quantity);
+&nbsp;&nbsp;&nbsp;&nbsp;reservation.IsAccepted&nbsp;=&nbsp;<span style="color:blue;">false</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;sut&nbsp;=&nbsp;sut.WithCapacity(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;reservedSeats&nbsp;+&nbsp;reservation.Quantity&nbsp;+&nbsp;excessCapacity);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;actual&nbsp;=&nbsp;sut.TryAccept(reservation);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Assert</span>.Equal(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;expected,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;actual.Accept(<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">StubReservationsVisitor</span>&lt;<span style="color:blue;">int</span>?&gt;(<span style="color:blue;">true</span>,&nbsp;reservations,&nbsp;expected)));
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Assert</span>.True(reservation.IsAccepted);
+}</pre>
+	</p>
+	<p>
+		This test still uses AutoFixture to create objects such as <code>reservation</code>, <code>reservations</code>, and so on, but instead of relying on dynamic mocks injected into the <code>sut</code>, it uses the <code>StubReservationsVisitor&lt;T&gt;</code> class to interpret the return value from <code>TryAccept</code>.
+	</p>
+	<p>
+		<strong>Arrow code</strong>
+	</p>
+	<p>
+		From an external perspective, as a user of <code>MaîtreD.TryAccept</code>, the API looks exotic, but to a degree, fairly object-oriented, with its implementation of the Visitor design pattern. Looking at the above internal implementation of the method, however, reveals the most problematic part of this entire exercise. The code doesn't look nice.
+	</p>
+	<p>
+		Not only do we have nested closures, but it also looks like the dreaded Arrow Code anti-pattern. Partially, the problem is that while C# has some support for monadic syntactic sugar, in the form of query expressions, you can't branch inside a query expression. That's not the whole problem, though. Even in F#, with a computation expression, the equivalent code would look like this:
+	</p>
+	<p>
+		<pre><span style="color:blue;">let</span>&nbsp;tryAccept&nbsp;capacity&nbsp;reservation&nbsp;=&nbsp;reservations&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;isInFuture&nbsp;=&nbsp;isReservationInFuture&nbsp;reservation
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;not&nbsp;isInFuture
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">then</span>&nbsp;<span style="color:blue;">return</span>&nbsp;None
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">else</span>&nbsp;&nbsp;&nbsp;&nbsp;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;reservations&nbsp;=&nbsp;readReservations&nbsp;reservation.Date
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;reservedSeats&nbsp;=&nbsp;List.sumBy&nbsp;(<span style="color:blue;">fun</span>&nbsp;r&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;r.Quantity)&nbsp;reservations
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;(capacity&nbsp;&lt;&nbsp;reservedSeats&nbsp;+&nbsp;reservation.Quantity)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">then</span>&nbsp;<span style="color:blue;">return</span>&nbsp;None
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">else</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;reservationId&nbsp;=&nbsp;create&nbsp;{&nbsp;reservation&nbsp;<span style="color:blue;">with</span>&nbsp;IsAccepted&nbsp;=&nbsp;<span style="color:blue;">true</span>&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;Some&nbsp;reservationId&nbsp;}</pre>
+	</p>
+	<p>
+		While this looks smoother, the code still exhibits the arrow shape. There are ways to address that problem, but that's a topic for the next article.
+	</p>
+	<p>
+		<strong>Conclusion</strong>
+	</p>
+	<p>
+		Even in C#, you can refactor from Dependency Injection to a free monad, implemented as a Visitor. Should you, though?
+	</p>
+	<p>
+		As a rule of thumb, no, I don't think it's a good idea. Free monads are worth considering in Haskell where they are much closer to being 'free', in the sense that there's little programming overhead involved with defining and using them. Already when you translate a free monad to F# do you discover how much boilerplate programming is involved. Still, due to F#'s computation expressions, a free monad may occasionally be worth considering. Both in implementation and at call sites, you can make the API easy to use.
+	</p>
+	<p>
+		In C#, you run into its lack of support for branching inside monadic composition. Not only does a free monad look <a href="http://blog.ploeh.dk/2015/08/03/idiomatic-or-idiosyncratic">non-idiomatic</a> in C#, but writing the 'programs' without good syntactic sugar for monads make this alternative even less compelling. To make matters worse, the boilerplate code you have to write in C# is positively ugly. As this article is a result of an experiment, I admit that I have no production experience with free monads as Visitors in C#. Still, due to the lack of type inference in crucial parts, I'd venture the guess that the implementation would also prove to be frustratingly refactor-resistant.
+	</p>
+	<p>
+		Perhaps, one day, you'll run into an edge case where you have a dependency that could benefit from being refactored to a Visitor, but in general, I'd presume that Dependency Injection in C# is the lesser of two evils. Still, I think it's interesting, and illustrative, that it's possible to refactor an injected dependency to a free monad - even in C#!
+	</p>
+	<p>
+		<strong>Next:</strong> Flattening arrow code using a stack of monads.
+	</p>
+</div>
