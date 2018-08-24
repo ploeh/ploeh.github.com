@@ -1,0 +1,522 @@
+---
+layout: post
+title: "Asynchronous Injection"
+description: "How to combine asynchronous programming with Dependency Injection without leaky abstractions."
+date: 2018-08-24 6:17 UTC
+tags: [Software Design, Dependency Injection]
+---
+{% include JB/setup %}
+
+<div id="post">
+	<p>
+		<em>{{ page.description }}</em>
+	</p>
+	<p>
+		C# has decent support for asynchronous programming, but it ultimately leads to leaky abstractions. This is often conspicuous when combined with Dependency Injection (DI). The leads to frequently asked questions around the combination of DI and asynchronous programming. This article outlines the problem and suggests an alternative.
+	</p>
+	<p>
+		The code base supporting this article is <a href="">available on GitHub</a>.
+	</p>
+	<h3 id="0463aa2fd41b46bbbb837709ed9bc58b">
+		A synchronous example <a href="#0463aa2fd41b46bbbb837709ed9bc58b" title="permalink">#</a>
+	</h3>
+	<p>
+		In this article, you'll see various stages of a small sample code base that pretends to implement the server-side behaviour of an on-line restaurant reservation system (my favourite example scenario). In the first stage, the code uses DI, but no asynchronous I/O.
+	</p>
+	<p>
+		At the boundary of the application, a <code>Post</code> method receives a <code>Reservation</code> object:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">ReservationsController</span>&nbsp;:&nbsp;<span style="color:#2b91af;">ControllerBase</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;ReservationsController(<span style="color:#2b91af;">IMaîtreD</span>&nbsp;maîtreD)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;MaîtreD&nbsp;=&nbsp;maîtreD;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">IMaîtreD</span>&nbsp;MaîtreD&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">IActionResult</span>&nbsp;Post(<span style="color:#2b91af;">Reservation</span>&nbsp;reservation)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">int</span>?&nbsp;id&nbsp;=&nbsp;MaîtreD.TryAccept(reservation);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;(id&nbsp;==&nbsp;<span style="color:blue;">null</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;InternalServerError(<span style="color:#a31515;">&quot;Table&nbsp;unavailable&quot;</span>);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;Ok(id.Value);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+	</p>
+	<p>
+		The <code>Reservation</code> object is just a simple bundle of properties:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">Reservation</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">DateTimeOffset</span>&nbsp;Date&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;<span style="color:blue;">set</span>;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">string</span>&nbsp;Email&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;<span style="color:blue;">set</span>;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">string</span>&nbsp;Name&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;<span style="color:blue;">set</span>;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">int</span>&nbsp;Quantity&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;<span style="color:blue;">set</span>;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">bool</span>&nbsp;IsAccepted&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;<span style="color:blue;">set</span>;&nbsp;}
+}</pre>
+	</p>
+	<p>
+		In a production code base, I'd favour a separation of <a href="https://en.wikipedia.org/wiki/Data_transfer_object">DTOs</a> and domain objects with proper encapsulation, but in order to keep the code example simple, here the two roles are combined.
+	</p>
+	<p>
+		The <code>Post</code> method simply delegates most work to an injected <code>IMaîtreD</code> object, and translates the return value to an HTTP response.
+	</p>
+	<p>
+		The code example is overly simplistic, to the point where you may wonder what is the point of DI, since it seems that the <code>Post</code> method doesn't perform any work itself. A slightly <a href="http://blog.ploeh.dk/2017/01/27/dependency-injection-is-passing-an-argument">more realistic example includes some input validation and mapping between layers</a>.
+	</p>
+	<p>
+		The <code>IMaîtreD</code> implementation is this:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">MaîtreD</span>&nbsp;:&nbsp;<span style="color:#2b91af;">IMaîtreD</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;MaîtreD(<span style="color:blue;">int</span>&nbsp;capacity,&nbsp;<span style="color:#2b91af;">IReservationsRepository</span>&nbsp;repository)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Capacity&nbsp;=&nbsp;capacity;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Repository&nbsp;=&nbsp;repository;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">int</span>&nbsp;Capacity&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">IReservationsRepository</span>&nbsp;Repository&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">int</span>?&nbsp;TryAccept(<span style="color:#2b91af;">Reservation</span>&nbsp;reservation)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;reservations&nbsp;=&nbsp;Repository.ReadReservations(reservation.Date);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">int</span>&nbsp;reservedSeats&nbsp;=&nbsp;reservations.Sum(r&nbsp;=&gt;&nbsp;r.Quantity);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;(Capacity&nbsp;&lt;&nbsp;reservedSeats&nbsp;+&nbsp;reservation.Quantity)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:blue;">null</span>;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;reservation.IsAccepted&nbsp;=&nbsp;<span style="color:blue;">true</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;Repository.Create(reservation);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+	</p>
+	<p>
+		The protocol for the <code>TryAccept</code> method is that it returns the reservation ID if it accepts the reservation. If the restaurant has too little remaining <code>Capacity</code> for the requested date, it instead returns <code>null</code>. Regular readers of this blog will know that I'm <a href="http://blog.ploeh.dk/2015/11/13/null-has-no-type-but-maybe-has">no fan of null</a>, but this keeps the example realistic. I'm also no fan of state mutation, but the example does that as well, by setting <code>IsAccepted</code> to <code>true</code>.
+	</p>
+	<h3 id="fa919e35f82a4387822c9888dd5d7537">
+		Introducing asynchrony <a href="#fa919e35f82a4387822c9888dd5d7537" title="permalink">#</a>
+	</h3>
+	<p>
+		The above example is entirely synchronous, but perhaps you wish to introduce some asynchrony. For example, the <code>IReservationsRepository</code> implies synchrony:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">interface</span>&nbsp;<span style="color:#2b91af;">IReservationsRepository</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Reservation</span>[]&nbsp;ReadReservations(<span style="color:#2b91af;">DateTimeOffset</span>&nbsp;date);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">int</span>&nbsp;Create(<span style="color:#2b91af;">Reservation</span>&nbsp;reservation);
+}</pre>
+	</p>
+	<p>
+		In reality, though, you know that the implementation of this interface queries and writes to a relational database. Perhaps making this communication asynchronous could improve application performance. It's worth a try, at least.
+	</p>
+	<p>
+		How do you make something asynchronous in C#? You change the return type of the methods in question. Therefore, you have to change the <code>IReservationsRepository</code> interface:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">interface</span>&nbsp;<span style="color:#2b91af;">IReservationsRepository</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Task</span>&lt;<span style="color:#2b91af;">Reservation</span>[]&gt;&nbsp;ReadReservations(<span style="color:#2b91af;">DateTimeOffset</span>&nbsp;date);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Task</span>&lt;<span style="color:blue;">int</span>&gt;&nbsp;Create(<span style="color:#2b91af;">Reservation</span>&nbsp;reservation);
+}</pre>
+	</p>
+	<p>
+		The Repository methods now return Tasks. This is the first leaky abstraction. From the <a href="http://en.wikipedia.org/wiki/Dependency_inversion_principle">Dependency Inversion Principle</a> it follows that
+		<blockquote>
+			<p>"clients [...] own the abstract interfaces"</p>
+			<footer><cite>Robert C. Martin, <a href="http://amzn.to/19W4JHk">APPP</a>, chapter 11</cite></footer>
+		</blockquote>
+		The <code>MaîtreD</code> class is the client of the <code>IReservationsRepository</code> interface, which should be designed to support the needs of that class. <code>MaîtreD</code> doesn't need <code>IReservationsRepository</code> to be asynchronous.
+	</p>
+	<p>
+		The change of the interface has nothing to with what <code>MaîtreD</code> needs, but rather with a particular implementation of the <code>IReservationsRepository</code> interface. Because this implementation queries and writes to a relational database, this implementation detail leaks into the interface definition. It is, therefore, a leaky abstraction.
+	</p>
+	<p>
+		On a more practical level, accommodating the change is easily done. Just add <code>async</code> and <code>await</code> keywords in appropriate places:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">async</span>&nbsp;<span style="color:#2b91af;">Task</span>&lt;<span style="color:blue;">int</span>?&gt;&nbsp;TryAccept(<span style="color:#2b91af;">Reservation</span>&nbsp;reservation)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;reservations&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">await</span>&nbsp;Repository.ReadReservations(reservation.Date);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">int</span>&nbsp;reservedSeats&nbsp;=&nbsp;reservations.Sum(r&nbsp;=&gt;&nbsp;r.Quantity);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;(Capacity&nbsp;&lt;&nbsp;reservedSeats&nbsp;+&nbsp;reservation.Quantity)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:blue;">null</span>;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;reservation.IsAccepted&nbsp;=&nbsp;<span style="color:blue;">true</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:blue;">await</span>&nbsp;Repository.Create(reservation);
+}</pre>
+	</p>
+	<p>
+		In order to compile, however, you also have to fix the <code>IMaîtreD</code> interface:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">interface</span>&nbsp;<span style="color:#2b91af;">IMaîtreD</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Task</span>&lt;<span style="color:blue;">int</span>?&gt;&nbsp;TryAccept(<span style="color:#2b91af;">Reservation</span>&nbsp;reservation);
+}</pre>
+	</p>
+	<p>
+		This is the second leaky abstraction, and it's worse than the first. Perhaps you could successfully argue that it was conceptually acceptable to model <code>IReservationsRepository</code> as asynchronous. After all, a Repository conceptually represents a data store, and these are generally out-of-process resources that require I/O.
+	</p>
+	<p>
+		The <code>IMaîtreD</code> interface, on the other hand, is a domain object. It models how business is done, not how data should be accessed. Why should business logic be asynchronous?
+	</p>
+	<p>
+		It's hardly news that <a href="http://journal.stuffwithstuff.com/2015/02/01/what-color-is-your-function/">async and await is infectious</a>. Once you introduce Tasks, it's <em>async all the way!</em>
+	</p>
+	<p>
+		That doesn't mean that asynchrony isn't one big leaky abstraction. It is.
+	</p>
+	<p>
+		You've probably already realised what this means in the context of the little example. You must also patch the <code>Post</code> method:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">async</span>&nbsp;<span style="color:#2b91af;">Task</span>&lt;<span style="color:#2b91af;">IActionResult</span>&gt;&nbsp;Post(<span style="color:#2b91af;">Reservation</span>&nbsp;reservation)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">int</span>?&nbsp;id&nbsp;=&nbsp;<span style="color:blue;">await</span>&nbsp;MaîtreD.TryAccept(reservation);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;(id&nbsp;==&nbsp;<span style="color:blue;">null</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;InternalServerError(<span style="color:#a31515;">&quot;Table&nbsp;unavailable&quot;</span>);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;Ok(id.Value);
+}</pre>
+	</p>
+	<p>
+		Pragmatically, I'd be ready to accept the argument that this isn't a big deal. After all, you just replace all return values with Tasks, and add <code>async</code> and <code>await</code> keywords where they need to go. This hardly impacts the maintainability of a code base.
+	</p>
+	<p>
+		In C#, I'd be inclined to just acknowledge that, <em>hey, there's a leaky abstraction. Moving on...</em>
+	</p>
+	<p>
+		On the other hand, sometimes people imply that it has to be like this. That there is no other way.
+	</p>
+	<p>
+		<a href="https://en.wikipedia.org/wiki/Falsifiability">Falsifiable claims</a> like that often get my attention. <em>Oh, really?!</em>
+	</p>
+	<h3 id="46df3267f63a4c908ed710c2b4f9d3f9">
+		Move impure interactions to the boundary of the system <a href="#46df3267f63a4c908ed710c2b4f9d3f9" title="permalink">#</a>
+	</h3>
+	<p>
+		We can <a href="">pretend that <code>Task&lt;T&gt;</code> forms a functor</a>. It's also a monad. Monads are those incredibly useful programming abstractions that has been propagating from their origin in statically typed functional programming languages to more mainstream languages like C#.
+	</p>
+	<p>
+		In functional programming, <a href="http://blog.ploeh.dk/2016/03/18/functional-architecture-is-ports-and-adapters">impure interactions happen at the boundary of the system</a>. Taking inspiration from functional programming, you can <a href="http://blog.ploeh.dk/2017/01/27/from-dependency-injection-to-dependency-rejection">move the impure interactions to the boundary of the system</a>.
+	</p>
+	<p>
+		In the interest of keeping the example simple, I'll only move the impure operations one level out: from <code>MaîtreD</code> to <code>ReservationsController</code>. The approach can be generalised, although you may have to look into how to handle <a href="http://blog.ploeh.dk/2017/07/10/pure-interactions">pure interactions</a>.
+	</p>
+	<p>
+		Where are the impure interactions in <code>MaîtreD</code>? They are in the two interactions with <code>IReservationsRepository</code>. The <code>ReadReservations</code> method is non-deterministic, because the same input value can return different results, depending on the state of the database when you call it. The <code>Create</code> method causes a side effect to happen, because it creates a row in the database. This is one way in which the state of the database could change, which makes <code>ReadReservations</code> non-deterministic. Additionally, <code>Create</code> also violates <a href="https://en.wikipedia.org/wiki/Command%E2%80%93query_separation">Command Query Separation</a> (CQS) by returning the ID of the row it creates. This, again, is non-deterministic, because the same input value will produce a new return value every time the method is called. (Incidentally, you should <a href="http://blog.ploeh.dk/2014/08/11/cqs-versus-server-generated-ids">design <code>Create</code> methods so that they don't violate CQS</a>.)
+	</p>
+	<h3 id="dea3b9778dd54d6c9b18e9b3e9c95153">
+		Move reservations to a method argument <a href="#dea3b9778dd54d6c9b18e9b3e9c95153" title="permalink">#</a>
+	</h3>
+	<p>
+		The first refactoring is the easiest. Move the <code>ReadReservations</code> method call to the application boundary. In the above state of the code, the <code>TryAccept</code> method unconditionally calls <code>Repository.ReadReservations</code> to populate the <code>reservations</code> variable. Instead of doing this from within <code>TryAccept</code>, just pass <code>reservations</code> as a method argument:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">async</span>&nbsp;<span style="color:#2b91af;">Task</span>&lt;<span style="color:blue;">int</span>?&gt;&nbsp;TryAccept(
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Reservation</span>[]&nbsp;reservations,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Reservation</span>&nbsp;reservation)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">int</span>&nbsp;reservedSeats&nbsp;=&nbsp;reservations.Sum(r&nbsp;=&gt;&nbsp;r.Quantity);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;(Capacity&nbsp;&lt;&nbsp;reservedSeats&nbsp;+&nbsp;reservation.Quantity)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:blue;">null</span>;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;reservation.IsAccepted&nbsp;=&nbsp;<span style="color:blue;">true</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:blue;">await</span>&nbsp;Repository.Create(reservation);
+}</pre>
+	</p>
+	<p>
+		This no longer compiles until you also change the <code>IMaîtreD</code> interface:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">interface</span>&nbsp;<span style="color:#2b91af;">IMaîtreD</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Task</span>&lt;<span style="color:blue;">int</span>?&gt;&nbsp;TryAccept(<span style="color:#2b91af;">Reservation</span>[]&nbsp;reservations,&nbsp;<span style="color:#2b91af;">Reservation</span>&nbsp;reservation);
+}</pre>
+	</p>
+	<p>
+		You probably think that this is a much worse leaky abstraction than returning a Task. I'd be inclined to agree, but trust me: ultimately, this will matter not at all.
+	</p>
+	<p>
+		When you move an impure operation outwards, it means that when you remove it from one place, you must add it to another. In this case, you'll have to query the Repository from the <code>ReservationsController</code>, which also means that you need to add the Repository as a dependency there:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">ReservationsController</span>&nbsp;:&nbsp;<span style="color:#2b91af;">ControllerBase</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;ReservationsController(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">IMaîtreD</span>&nbsp;maîtreD,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">IReservationsRepository</span>&nbsp;repository)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;MaîtreD&nbsp;=&nbsp;maîtreD;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Repository&nbsp;=&nbsp;repository;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">IMaîtreD</span>&nbsp;MaîtreD&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">IReservationsRepository</span>&nbsp;Repository&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">async</span>&nbsp;<span style="color:#2b91af;">Task</span>&lt;<span style="color:#2b91af;">IActionResult</span>&gt;&nbsp;Post(<span style="color:#2b91af;">Reservation</span>&nbsp;reservation)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;reservations&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">await</span>&nbsp;Repository.ReadReservations(reservation.Date);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">int</span>?&nbsp;id&nbsp;=&nbsp;<span style="color:blue;">await</span>&nbsp;MaîtreD.TryAccept(reservations,&nbsp;reservation);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;(id&nbsp;==&nbsp;<span style="color:blue;">null</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;InternalServerError(<span style="color:#a31515;">&quot;Table&nbsp;unavailable&quot;</span>);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;Ok(id.Value);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+	</p>
+	<p>
+		This is a refactoring in the true sense of the word. It just reorganises the code without changing the overall behaviour of the system. Now the <code>Post</code> method has to query the Repository before it can delegate the business decision to <code>MaîtreD</code>.
+	</p>
+	<h3 id="6a492b66a0d14edda105eb3fb3b4ebb4">
+		Separate decision from effect <a href="#6a492b66a0d14edda105eb3fb3b4ebb4" title="permalink">#</a>
+	</h3>
+	<p>
+		As far as I can tell, the main reason to use DI is because some impure interactions are conditional. This is also the case for the <code>TryAccept</code> method. Only if there's sufficient remaining capacity does it call <code>Repository.Create</code>. If it detects that there's too little remaining capacity, it immediately returns <code>null</code> and doesn't call <code>Repository.Create</code>.
+	</p>
+	<p>
+		In object-oriented code, DI is the most common way to decouple decisions from effects. Imperative code reaches a decision and calls a method on an object based on that decision. The effect of calling the method can vary because of polymorphism.
+	</p>
+	<p>
+		In functional programming, you typically use a <a href="http://blog.ploeh.dk/2018/03/22/functors">functor</a> like <a href="http://blog.ploeh.dk/2018/03/26/the-maybe-functor">Maybe</a> or <a href="http://blog.ploeh.dk/2018/06/11/church-encoded-either">Either</a> to <a href="http://blog.ploeh.dk/2016/09/26/decoupling-decisions-from-effects">separate decisions from effects</a>. You can do the same here.
+	</p>
+	<p>
+		The protocol of the <code>TryAccept</code> method already communicates the decision reached by the method. An <code>int</code> value is the reservation ID; this implies that the reservation was accepted. On the other hand, <code>null</code> indicates that the reservation was declined.
+	</p>
+	<p>
+		You can use the same sort of protocol, but instead of returning a <code>Nullable&lt;int&gt;</code>, you can return a <code>Maybe&lt;Reservation&gt;</code>:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">async</span>&nbsp;<span style="color:#2b91af;">Task</span>&lt;<span style="color:#2b91af;">Maybe</span>&lt;<span style="color:#2b91af;">Reservation</span>&gt;&gt;&nbsp;TryAccept(
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Reservation</span>[]&nbsp;reservations,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Reservation</span>&nbsp;reservation)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">int</span>&nbsp;reservedSeats&nbsp;=&nbsp;reservations.Sum(r&nbsp;=&gt;&nbsp;r.Quantity);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;(Capacity&nbsp;&lt;&nbsp;reservedSeats&nbsp;+&nbsp;reservation.Quantity)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:#2b91af;">Maybe</span>.Empty&lt;<span style="color:#2b91af;">Reservation</span>&gt;();
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;reservation.IsAccepted&nbsp;=&nbsp;<span style="color:blue;">true</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;reservation.ToMaybe();
+}</pre>
+	</p>
+	<p>
+		This completely decouples the decision from the effect. By returning <code>Maybe&lt;Reservation&gt;</code>, the <code>TryAccept</code> method communicates the decision it made, while leaving further processing entirely up to the caller.
+	</p>
+	<p>
+		In this case, the caller is the <code>Post</code> method, which can now compose the result of invoking <code>TryAccept</code> with <code>Repository.Create</code>:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">async</span>&nbsp;<span style="color:#2b91af;">Task</span>&lt;<span style="color:#2b91af;">IActionResult</span>&gt;&nbsp;Post(<span style="color:#2b91af;">Reservation</span>&nbsp;reservation)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;reservations&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">await</span>&nbsp;Repository.ReadReservations(reservation.Date);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Maybe</span>&lt;<span style="color:#2b91af;">Reservation</span>&gt;&nbsp;m&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">await</span>&nbsp;MaîtreD.TryAccept(reservations,&nbsp;reservation);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:blue;">await</span>&nbsp;m
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.Select(<span style="color:blue;">async</span>&nbsp;r&nbsp;=&gt;&nbsp;<span style="color:blue;">await</span>&nbsp;Repository.Create(r))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.Match(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;nothing:&nbsp;<span style="color:#2b91af;">Task</span>.FromResult(InternalServerError(<span style="color:#a31515;">&quot;Table&nbsp;unavailable&quot;</span>)),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;just:&nbsp;<span style="color:blue;">async</span>&nbsp;id&nbsp;=&gt;&nbsp;Ok(<span style="color:blue;">await</span>&nbsp;id));
+}</pre>
+	</p>
+	<p>
+		Notice that the <code>Post</code> method never attempts to <a href="">extract 'the value' from <code>m</code></a>. Instead, it injects the desired behaviour (<code>Repository.Create</code>) into the monad. The result of calling <code>Select</code> with an asynchronous lambda expression like that is a <code>Maybe&lt;Task&lt;int&gt;&gt;</code>, which is a awkward combination. You can fix that later.
+	</p>
+	<p>
+		The <code>Match</code> method is the catamorphism for Maybe. It looks exactly like the <code>Match</code> method on the <a href="http://blog.ploeh.dk/2018/06/04/church-encoded-maybe">Church-encoded Maybe</a>. It handles both the case when <code>m</code> is empty, and the case when <code>m</code> is populated. In both cases, it returns a <code>Task&lt;IActionResult&gt;</code>.
+	</p>
+	<h3 id="cfd87db1b9304255bda17d1da93c32ee">
+		Synchronous domain logic <a href="#cfd87db1b9304255bda17d1da93c32ee" title="permalink">#</a>
+	</h3>
+	<p>
+		At this point, you have a compiler warning in your code:		
+		<blockquote>
+			Warning CS1998 This async method lacks 'await' operators and will run synchronously. Consider using the 'await' operator to await non-blocking API calls, or 'await Task.Run(...)' to do CPU-bound work on a background thread.
+		</blockquote>
+		Indeed, the current incarnation of <code>TryAccept</code> is synchronous, so remove the <code>async</code> keyword and change the return type:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">Maybe</span>&lt;<span style="color:#2b91af;">Reservation</span>&gt;&nbsp;TryAccept(
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Reservation</span>[]&nbsp;reservations,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Reservation</span>&nbsp;reservation)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">int</span>&nbsp;reservedSeats&nbsp;=&nbsp;reservations.Sum(r&nbsp;=&gt;&nbsp;r.Quantity);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;(Capacity&nbsp;&lt;&nbsp;reservedSeats&nbsp;+&nbsp;reservation.Quantity)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:#2b91af;">Maybe</span>.Empty&lt;<span style="color:#2b91af;">Reservation</span>&gt;();
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;reservation.IsAccepted&nbsp;=&nbsp;<span style="color:blue;">true</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;reservation.ToMaybe();
+}</pre>
+	</p>
+	<p>
+		This requires a minimal change to the <code>Post</code> method: it no longer has to <code>await</code> <code>TryAccept</code>:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">async</span>&nbsp;<span style="color:#2b91af;">Task</span>&lt;<span style="color:#2b91af;">IActionResult</span>&gt;&nbsp;Post(<span style="color:#2b91af;">Reservation</span>&nbsp;reservation)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;reservations&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">await</span>&nbsp;Repository.ReadReservations(reservation.Date);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Maybe</span>&lt;<span style="color:#2b91af;">Reservation</span>&gt;&nbsp;m&nbsp;=&nbsp;MaîtreD.TryAccept(reservations,&nbsp;reservation);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:blue;">await</span>&nbsp;m
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.Select(<span style="color:blue;">async</span>&nbsp;r&nbsp;=&gt;&nbsp;<span style="color:blue;">await</span>&nbsp;Repository.Create(r))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.Match(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;nothing:&nbsp;<span style="color:#2b91af;">Task</span>.FromResult(InternalServerError(<span style="color:#a31515;">&quot;Table&nbsp;unavailable&quot;</span>)),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;just:&nbsp;<span style="color:blue;">async</span>&nbsp;id&nbsp;=&gt;&nbsp;Ok(<span style="color:blue;">await</span>&nbsp;id));
+}</pre>
+	</p>
+	<p>
+		Apart from that, this version of <code>Post</code> is the same as the one above.
+	</p>
+	<p>
+		Notice that at this point, the domain logic (<code>TryAccept</code>) is no longer asynchronous. The leaky abstraction is gone.
+	</p>
+	<h3 id="da9febf381b1483883423b96c5ceb9a3">
+		Redundant abstraction <a href="#da9febf381b1483883423b96c5ceb9a3" title="permalink">#</a>
+	</h3>
+	<p>
+		The overall work is done, but there's some tidying up remaining. If you review the <code>TryAccept</code> method, you'll notice that it no longer uses the injected <code>Repository</code>. You might as well simplify the class by removing the dependency:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">MaîtreD</span>&nbsp;:&nbsp;<span style="color:#2b91af;">IMaîtreD</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;MaîtreD(<span style="color:blue;">int</span>&nbsp;capacity)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Capacity&nbsp;=&nbsp;capacity;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">int</span>&nbsp;Capacity&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">Maybe</span>&lt;<span style="color:#2b91af;">Reservation</span>&gt;&nbsp;TryAccept(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Reservation</span>[]&nbsp;reservations,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Reservation</span>&nbsp;reservation)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">int</span>&nbsp;reservedSeats&nbsp;=&nbsp;reservations.Sum(r&nbsp;=&gt;&nbsp;r.Quantity);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;(Capacity&nbsp;&lt;&nbsp;reservedSeats&nbsp;+&nbsp;reservation.Quantity)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:#2b91af;">Maybe</span>.Empty&lt;<span style="color:#2b91af;">Reservation</span>&gt;();
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;reservation.IsAccepted&nbsp;=&nbsp;<span style="color:blue;">true</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;reservation.ToMaybe();
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+	</p>
+	<p>
+		The <code>TryAccept</code> method is now deterministic. The same input will always return the same input. This is not yet a <a href="https://en.wikipedia.org/wiki/Pure_function">pure function</a>, because it still has a single side effect: it mutates the state of <code>reservation</code> by setting <code>IsAccepted</code> to <code>true</code>. You could, however, without too much trouble refactor <code>Reservation</code> to an immutable <a href="https://en.wikipedia.org/wiki/Value_object">Value Object</a>.
+	</p>
+	<p>
+		This would enable you to write the last part of the <code>TryAccept</code> method like this:
+	</p>
+	<p>
+		<pre><span style="color:blue;">return</span>&nbsp;reservation.Accept().ToMaybe();</pre>
+	</p>
+	<p>
+		In any case, the method is close enough to be <a href="http://blog.ploeh.dk/2015/05/07/functional-design-is-intrinsically-testable">pure that it's testable</a>. The interactions of <code>TryAccept</code> and any client code (including unit tests) is completely controllable and observable by the client.
+	</p>
+	<p>
+		This means that there's no reason to <a href="http://blog.ploeh.dk/2013/10/23/mocks-for-commands-stubs-for-queries">Stub it out</a>. You might as well just use the function directly in the <code>Post</code> method:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">ReservationsController</span>&nbsp;:&nbsp;<span style="color:#2b91af;">ControllerBase</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;ReservationsController(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">int</span>&nbsp;capacity,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">IReservationsRepository</span>&nbsp;repository)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Capacity&nbsp;=&nbsp;capacity;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Repository&nbsp;=&nbsp;repository;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">int</span>&nbsp;Capacity&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">IReservationsRepository</span>&nbsp;Repository&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">async</span>&nbsp;<span style="color:#2b91af;">Task</span>&lt;<span style="color:#2b91af;">IActionResult</span>&gt;&nbsp;Post(<span style="color:#2b91af;">Reservation</span>&nbsp;reservation)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;reservations&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">await</span>&nbsp;Repository.ReadReservations(reservation.Date);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Maybe</span>&lt;<span style="color:#2b91af;">Reservation</span>&gt;&nbsp;m&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">MaîtreD</span>(Capacity).TryAccept(reservations,&nbsp;reservation);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:blue;">await</span>&nbsp;m
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.Select(<span style="color:blue;">async</span>&nbsp;r&nbsp;=&gt;&nbsp;<span style="color:blue;">await</span>&nbsp;Repository.Create(r))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.Match(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;nothing:&nbsp;<span style="color:#2b91af;">Task</span>.FromResult(InternalServerError(<span style="color:#a31515;">&quot;Table&nbsp;unavailable&quot;</span>)),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;just:&nbsp;<span style="color:blue;">async</span>&nbsp;id&nbsp;=&gt;&nbsp;Ok(<span style="color:blue;">await</span>&nbsp;id));
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+	</p>
+	<p>
+		Notice that <code>ReservationsController</code> no longer has an <code>IMaîtreD</code> dependency.
+	</p>
+	<p>
+		All this time, whenever you make a change to the <code>TryAccept</code> method signature, you'd also have to fix the <code>IMaîtreD</code> interface to make the code compile. If you worried that all of these changes were leaky abstractions, you'll be happy to learn that <a href="https://amzn.to/2PzDpJu">in the end, it doesn't even matter</a>. No code uses that interface, so you can delete it.
+	</p>
+	<h3 id="843e56ff0b74406eb236bebd2fad4828">
+		Grooming <a href="#843e56ff0b74406eb236bebd2fad4828" title="permalink">#</a>
+	</h3>
+	<p>
+		The <code>MaîtreD</code> class looks fine, but the <code>Post</code> method could use some grooming. I'm not going to tire you with all the small refactoring steps. You can follow them in the GitHub repository if you're interested. Eventually, you could arrive at an implementation like this:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">ReservationsController</span>&nbsp;:&nbsp;<span style="color:#2b91af;">ControllerBase</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;ReservationsController(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">int</span>&nbsp;capacity,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">IReservationsRepository</span>&nbsp;repository)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Capacity&nbsp;=&nbsp;capacity;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Repository&nbsp;=&nbsp;repository;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;maîtreD&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">MaîtreD</span>(capacity);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">int</span>&nbsp;Capacity&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">IReservationsRepository</span>&nbsp;Repository&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;<span style="color:#2b91af;">MaîtreD</span>&nbsp;maîtreD;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">async</span>&nbsp;<span style="color:#2b91af;">Task</span>&lt;<span style="color:#2b91af;">IActionResult</span>&gt;&nbsp;Post(<span style="color:#2b91af;">Reservation</span>&nbsp;reservation)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:blue;">await</span>&nbsp;Repository.ReadReservations(reservation.Date)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.Select(rs&nbsp;=&gt;&nbsp;maîtreD.TryAccept(rs,&nbsp;reservation))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.SelectMany(m&nbsp;=&gt;&nbsp;m.Traverse(Repository.Create))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.Match(InternalServerError(<span style="color:#a31515;">&quot;Table&nbsp;unavailable&quot;</span>),&nbsp;Ok);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+	</p>
+	<p>
+		Now the <code>Post</code> method is just a single, composed asynchronous pipeline. Is it a coincidence that this is possible?
+	</p>
+	<p>
+		This is no coincidence. This top-level method executes in the 'Task monad', and monads are, by definition, composable. You can chain operations together, and they don't all have to be asynchronous. Specifically, <code>maîtreD.TryAccept</code> is a synchronous piece of business logic. It's unaware that it's being injected into an asynchronous context. This type of design would be completely run of the mill in <a href="https://fsharp.org">F#</a> with its <a href="https://docs.microsoft.com/en-us/dotnet/fsharp/language-reference/asynchronous-workflows">asynchronous workflows</a>.
+	</p>
+	<h3 id="ff3eb0a846d24e1b82291004b5acf126">
+		Summary <a href="#ff3eb0a846d24e1b82291004b5acf126" title="permalink">#</a>
+	</h3>
+	<p>
+		Dependency Injection frequently involves I/O-bound operations. Those typically get hidden behind interfaces so that they can be mocked or stubbed. You may want to access those I/O-bound resources asynchronously, but with C#'s support for asynchronous programming, you'll have to make your abstractions asynchronous.
+	</p>
+	<p>
+		When you make the leaf nodes in your call graph asynchronous, that design change ripples through the entire code base, forcing you to be <em>async all the way</em>. One result of this is that the domain model must also accommodate asynchrony, although this is rarely required by the logic it implements. These concessions to asynchrony are leaky abstractions.
+	</p>
+	<p>
+		Pragmatically, it's hardly a big problem. You can use the <code>async</code> and <code>await</code> keywords to deal with the asynchrony, and it's unlikely to, in itself, cause a problem with maintenance.
+	</p>
+	<p>
+		In functional programming, monads can address asynchrony without introducing sweeping leaky abstractions. Instead of making DI asynchronous, you can inject desired behaviour into an asynchronous context.
+	</p>
+	<p>
+		Behaviour Injection, not Dependency Injection.
+	</p>
+</div>
