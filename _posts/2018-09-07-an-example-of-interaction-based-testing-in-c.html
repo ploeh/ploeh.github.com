@@ -1,0 +1,424 @@
+---
+layout: post
+title: "An example of interaction-based testing in C#"
+description: "An example of using Mocks and Stubs for unit testing in C#."
+date: 2018-09-07 10:24 UTC
+tags: [Unit Testing]
+---
+{% include JB/setup %}
+
+<div id="post">
+	<p>
+		<em>{{ page.description }}</em>
+	</p>
+	<p>
+		This article is an instalment in an article series about how to move <a href="">from interaction-based testing to state-based testing</a>. In this series, you'll be presented with some alternatives to interaction-based testing with Mocks and Stubs. Before we reach the alternatives, however, we need to establish an example of interaction-based testing, so that you have something against which you can compare those alternatives. In this article, I'll present a simple example, in the form of C# code.
+	</p>
+	<p>
+		The code shown in this article is <a href="">available on GitHub</a>.
+	</p>
+	<h3 id="7cc38b5dd1bc44c6aacb5077ae65c288">
+		Connect two users <a href="#7cc38b5dd1bc44c6aacb5077ae65c288" title="permalink">#</a>
+	</h3>
+	<p>
+		For the example, I'll use a simplified version of the example that runs through my two <a href="https://cleancoders.com">Clean Coders</a> videos, <a href="https://cleancoders.com/episode/humane-code-real-episode-4/show">Church Visitor</a> and <a href="https://cleancoders.com/episode/humane-code-real-episode-5/show">Preserved in translation</a>.
+	</p>
+	<p>
+		The desired functionality is simple: implement a REST API that enables one user to connect to another user. You could imagine some sort of social media platform, or essentially any sort of online service where users might be interested in connecting with, or following, other users.
+	</p>
+	<p>
+		In essence, you could imagine that a user interface makes an HTTP POST request against our REST API:
+	</p>
+	<p>
+		<pre>POST /connections/42 HTTP/1.1
+Content-Type: application/json
+
+{
+    "otherUserId": 1337
+}</pre>
+	</p>
+	<p>
+		Let's further imagine that we implement the desired functionality with a C# method with this signature:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">IHttpActionResult</span>&nbsp;Post(<span style="color:blue;">string</span>&nbsp;userId,&nbsp;<span style="color:blue;">string</span>&nbsp;otherUserId)</pre>
+	</p>
+	<p>
+		We'll return to the implementation later, but I want to point out a few things.
+	</p>
+	<p>
+		First, notice that both <code>userId</code> and <code>otherUserId</code> are <code>string</code> arguments. While the above example encodes both IDs as numbers, essentially, both URLs and JSON are text-based. Following <a href="https://en.wikipedia.org/wiki/Robustness_principle">Postel's law</a>, the method should also accept JSON like <code>{ "otherUserId": "1337" }</code>. That's the reason the <code>Post</code> method takes <code>string</code> arguments instead of <code>int</code> arguments.
+	</p>
+	<p>
+		Second, the return type is <code>IHttpActionResult</code>. Don't worry if you don't know that interface. It's just a way to model HTTP responses, such as <code>200 OK</code> or <code>400 Bad Request</code>.
+	</p>
+	<p>
+		Depending on the input values, and the state of the application, several outcomes are possible:
+		<table>
+			<col>
+			<col>
+			<colgroup span="3"></colgroup>
+			<thead>
+				<tr>
+					<td colspan="2" rowspan="2"></td>
+					<th colspan="3" scope="colgroup">Other user</th>
+				</tr>
+				<tr>
+					<th scope="col">Found</th>
+					<th scope="col">Not found</th>
+					<th scope="col">Invalid</th>
+				</tr>
+			</thead>
+			<tbody>
+				<tr>
+					<th rowspan="3" scope="rowgroup">User</th>
+					<th scope="row">Found</th>
+					<td><em>Other user</em></td>
+					<td><code>"Other user not found."</code></td>
+					<td><code>"Invalid ID for other user."</code></td>
+				</tr>
+				<tr>
+					<th scope="row">Not found</th>
+					<td><code>"User not found."</code></td>
+					<td><code>"User not found."</code></td>
+					<td><code>"User not found."</code></td>
+				</tr>
+				<tr>
+					<th scope="row">Invalid</th>
+					<td><code>"Invalid user ID."</code></td>
+					<td><code>"Invalid user ID."</code></td>
+					<td><code>"Invalid user ID."</code></td>
+				</tr>
+			</tbody>
+		</table>
+		You'll notice that although this is a 3x3 matrix, there's only five distinct outcomes. This is just an implementation decision. If the first user ID is invalid (e.g. if it's a string like <code>"foo"</code> that doesn't represent a number), then it doesn't matter if the other user exists. Likewise, even if the first user ID is well-formed, it might still be the case that no user with that ID exists in the database.
+	</p>
+	<p>
+		The assumption here is that the underlying user database uses integers as row IDs.
+	</p>
+	<p>
+		When both users are found, the other user should be returned in the HTTP response, like this:
+	</p>
+	<p>
+		<pre>HTTP/1.1 200 OK
+Content-Type: application/json
+
+{
+    "id": 1337,
+    "name": "ploeh",
+    "connections": [{
+        "id": 42,
+        "name": "fnaah"
+    }, {
+        "id": 2112,
+        "name": "ndøh"
+    }]
+}</pre>
+	</p>
+	<p>
+		The intent is that when the first user (e.g. the one with the <code>42</code> ID) successfully connects to user <em>1337</em>, a user interface can show the full details of the other user, including the other user's connections.
+	</p>
+	<h3 id="2f013c5e86ef4abda25de01c06a90f25">
+		Happy path test case <a href="#2f013c5e86ef4abda25de01c06a90f25" title="permalink">#</a>
+	</h3>
+	<p>
+		Since there's five distinct outcomes, you ought to write at least five test cases. You could start with the happy-path case, where both user IDs are well-formed and the users exist.
+	</p>
+	<p>
+		All tests in this article use <a href="https://xunit.github.io">xUnit.net</a> 2.3.1, <a href="https://github.com/moq/moq4">Moq</a> 4.8.1, and <a href="https://github.com/AutoFixture/AutoFixture">AutoFixture</a> 4.1.0.
+	</p>
+	<p>
+		<pre>[<span style="color:#2b91af;">Theory</span>,&nbsp;<span style="color:#2b91af;">UserManagementTestConventions</span>]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;UsersSuccessfullyConnect(
+&nbsp;&nbsp;&nbsp;&nbsp;[<span style="color:#2b91af;">Frozen</span>]<span style="color:#2b91af;">Mock</span>&lt;<span style="color:#2b91af;">IUserReader</span>&gt;&nbsp;readerTD,
+&nbsp;&nbsp;&nbsp;&nbsp;[<span style="color:#2b91af;">Frozen</span>]<span style="color:#2b91af;">Mock</span>&lt;<span style="color:#2b91af;">IUserRepository</span>&gt;&nbsp;repoTD,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">User</span>&nbsp;user,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">User</span>&nbsp;otherUser,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">ConnectionsController</span>&nbsp;sut)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;readerTD
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.Setup(r&nbsp;=&gt;&nbsp;r.Lookup(user.Id.ToString()))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.Returns(<span style="color:#2b91af;">Result</span>.Success&lt;<span style="color:#2b91af;">User</span>,&nbsp;<span style="color:#2b91af;">IUserLookupError</span>&gt;(user));
+&nbsp;&nbsp;&nbsp;&nbsp;readerTD
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.Setup(r&nbsp;=&gt;&nbsp;r.Lookup(otherUser.Id.ToString()))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.Returns(<span style="color:#2b91af;">Result</span>.Success&lt;<span style="color:#2b91af;">User</span>,&nbsp;<span style="color:#2b91af;">IUserLookupError</span>&gt;(otherUser));
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;actual&nbsp;=&nbsp;sut.Post(user.Id.ToString(),&nbsp;otherUser.Id.ToString());
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;ok&nbsp;=&nbsp;<span style="color:#2b91af;">Assert</span>.IsAssignableFrom&lt;<span style="color:#2b91af;">OkNegotiatedContentResult</span>&lt;<span style="color:#2b91af;">User</span>&gt;&gt;(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;actual);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Assert</span>.Equal(otherUser,&nbsp;ok.Content);
+&nbsp;&nbsp;&nbsp;&nbsp;repoTD.Verify(r&nbsp;=&gt;&nbsp;r.Update(user));
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Assert</span>.Contains(otherUser.Id,&nbsp;user.Connections);
+}</pre>
+	</p>
+	<p>
+		To be clear, as far as Overspecified Software goes, this isn't a bad test. It only has two Test Doubles, <code>readerTD</code> and <code>repoTD</code>. My current habit is to name any Test Double with the <em>TD</em> suffix (for <em>Test Double</em>), instead of explicitly naming them <code>readerStub</code> and <code>repoMock</code>. The latter would have been more correct, though, since the <code>Mock&lt;IUserReader&gt;</code> object is consistently used as a Stub, whereas the <code>Mock&lt;IUserRepository&gt;</code> object is used only as a Mock. This is as it should be, because it follows the rule that you should use <a href="http://blog.ploeh.dk/2013/10/23/mocks-for-commands-stubs-for-queries">Mocks for Commands, Stubs for Queries</a>.
+	</p>
+	<p>
+		<code>IUserRepository.Update</code> is, indeed a Command:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">interface</span>&nbsp;<span style="color:#2b91af;">IUserRepository</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">void</span>&nbsp;Update(<span style="color:#2b91af;">User</span>&nbsp;user);
+}</pre>
+	</p>
+	<p>
+		Since the method returns <code>void</code>, unless it doesn't do anything at all, the only thing it can do is to somehow change the state of the system. The test verifies that <code>IUserRepository.Update</code> was invoked with the appropriate input argument.
+	</p>
+	<p>
+		This is fine.
+	</p>
+	<p>
+		I'd like to emphasise that this isn't the biggest problem with this test. A Mock like this verifies that a desired interaction took place. If <code>IUserRepository.Update</code> isn't called in this test case, it would constitute a defect. The software wouldn't have the desired behaviour, so the test ought to fail.
+	</p>
+	<p>
+		The signature of <code>IUserReader.Lookup</code>, on the other hand, implies that it's a Query:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">interface</span>&nbsp;<span style="color:#2b91af;">IUserReader</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">IResult</span>&lt;<span style="color:#2b91af;">User</span>,&nbsp;<span style="color:#2b91af;">IUserLookupError</span>&gt;&nbsp;Lookup(<span style="color:blue;">string</span>&nbsp;id);
+}</pre>
+	</p>
+	<p>
+		In C# and most other languages, you can't be sure that implementations of the <code>Lookup</code> method have no side effects. If, however, we assume that the code base in question obeys the <a href="http://en.wikipedia.org/wiki/Command%E2%80%93query_separation">Command Query Separation</a> principle, then, by elimination, this must be a Query (since it's not a Command, because the return type isn't <code>void</code>).
+	</p>
+	<p>
+		For a detailed walkthrough of the <code>IResult&lt;S, E&gt;</code> interface, see my <a href="https://cleancoders.com/episode/humane-code-real-episode-5/show">Preserved in translation</a> video. It's just an <a href="http://blog.ploeh.dk/2018/06/11/church-encoded-either">Either</a> with different terminology, though. <code>Right</code> is equivalent to <code>SuccessResult</code>, and <code>Left</code> corresponds to <code>ErrorResult</code>.
+	</p>
+	<p>
+		The test configures the <code>IUserReader</code> Stub twice. It's necessary to give the Stub some behaviour, but unfortunately you can't just use Moq's <code>It.IsAny&lt;string&gt;()</code> for configuration, because in order to model the test case, the reader should return two different objects for two different inputs.
+	</p>
+	<p>
+		This starts to look like Overspecified Software.
+	</p>
+	<p>
+		Ideally, a Stub should just be present to 'make happy noises' in case the SUT decides to interact with the dependency, but with these two <code>Setup</code> calls, the interaction is overspecified. The test is tightly coupled to how the SUT is implemented. If you change the interaction implemented in the <code>Post</code> method, you could break the test.
+	</p>
+	<p>
+		In any case, what the test does specify is that when you query the <code>UserReader</code>, it returns a <code>Success</code> object for both user lookups, a <code>200 OK</code> result is returned, and the <code>Update</code> method was called with <code>user</code>.
+	</p>
+	<h3 id="e60081720b2e4468883e3b35b9555c47">
+		Invalid user ID test case <a href="#e60081720b2e4468883e3b35b9555c47" title="permalink">#</a>
+	</h3>
+	<p>
+		If the first user ID is invalid (i.e. not an integer) then the return value should represent <code>400 Bad Request</code> and the message body should indicate as much. This test verifies that this is the case:
+	</p>
+	<p>
+		<pre>[<span style="color:#2b91af;">Theory</span>,&nbsp;<span style="color:#2b91af;">UserManagementTestConventions</span>]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;UsersFailToConnectWhenUserIdIsInvalid(
+&nbsp;&nbsp;&nbsp;&nbsp;[<span style="color:#2b91af;">Frozen</span>]<span style="color:#2b91af;">Mock</span>&lt;<span style="color:#2b91af;">IUserReader</span>&gt;&nbsp;readerTD,
+&nbsp;&nbsp;&nbsp;&nbsp;[<span style="color:#2b91af;">Frozen</span>]<span style="color:#2b91af;">Mock</span>&lt;<span style="color:#2b91af;">IUserRepository</span>&gt;&nbsp;repoTD,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">string</span>&nbsp;userId,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">User</span>&nbsp;otherUser,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">ConnectionsController</span>&nbsp;sut)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Assert</span>.False(<span style="color:blue;">int</span>.TryParse(userId,&nbsp;<span style="color:blue;">out</span>&nbsp;<span style="color:blue;">var</span>&nbsp;_));
+&nbsp;&nbsp;&nbsp;&nbsp;readerTD
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.Setup(r&nbsp;=&gt;&nbsp;r.Lookup(userId))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.Returns(<span style="color:#2b91af;">Result</span>.Error&lt;<span style="color:#2b91af;">User</span>,&nbsp;<span style="color:#2b91af;">IUserLookupError</span>&gt;(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">UserLookupError</span>.InvalidId));
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;actual&nbsp;=&nbsp;sut.Post(userId,&nbsp;otherUser.Id.ToString());
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;err&nbsp;=&nbsp;<span style="color:#2b91af;">Assert</span>.IsAssignableFrom&lt;<span style="color:#2b91af;">BadRequestErrorMessageResult</span>&gt;(actual);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Assert</span>.Equal(<span style="color:#a31515;">&quot;Invalid&nbsp;user&nbsp;ID.&quot;</span>,&nbsp;err.Message);
+&nbsp;&nbsp;&nbsp;&nbsp;repoTD.Verify(r&nbsp;=&gt;&nbsp;r.Update(<span style="color:#2b91af;">It</span>.IsAny&lt;<span style="color:#2b91af;">User</span>&gt;()),&nbsp;<span style="color:#2b91af;">Times</span>.Never());
+}</pre>
+	</p>
+	<p>
+		This test starts with a Guard Assertion that <code>userId</code> isn't an integer. This is mostly an artefact of using AutoFixture. Had you used specific example values, then this wouldn't have been necessary. On the other hand, had you written the test case as a property-based test, it would have been even more important to <a href="http://blog.ploeh.dk/2016/01/18/make-pre-conditions-explicit-in-property-based-tests">explicitly encode such a constraint</a>.
+	</p>
+	<p>
+		Perhaps a better design would have been to use a domain-specific method to check for the validity of the ID, but there's always room for improvement.
+	</p>
+	<p>
+		This test is more brittle than it looks. It only defines what should happen when <code>IUserReader.Lookup</code> is called with the invalid <code>userId</code>. What happens if <code>IUserReader.Lookup</code> is called with the <code>Id</code> associated with <code>otherUser</code>?
+	</p>
+	<p>
+		This currently doesn't matter, so the test passes.
+	</p>
+	<p>
+		The test relies, however, on an implementation detail. This test implicitly assumes that the implementation short-circuits as soon as it discovers that <code>userId</code> is invalid. What if, however, you'd made some performance measurements, and you'd discovered that in most cases, the software would run faster if you <code>Lookup</code> both users in parallel?
+	</p>
+	<p>
+		Such an innocuous performance optimisation could break the test, because the behaviour of <code>readerTD</code> is unspecified for all other cases than for <code>userId</code>.
+	</p>
+	<h3 id="d691fe8c85fa42b7baa3ad565c3e6f10">
+		Invalid ID for other user test case <a href="#d691fe8c85fa42b7baa3ad565c3e6f10" title="permalink">#</a>
+	</h3>
+	<p>
+		What happens if the other user ID is invalid? This unit test exercises that test case:
+	</p>
+	<p>
+		<pre>[<span style="color:#2b91af;">Theory</span>,&nbsp;<span style="color:#2b91af;">UserManagementTestConventions</span>]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;UsersFailToConnectWhenOtherUserIdIsInvalid(
+&nbsp;&nbsp;&nbsp;&nbsp;[<span style="color:#2b91af;">Frozen</span>]<span style="color:#2b91af;">Mock</span>&lt;<span style="color:#2b91af;">IUserReader</span>&gt;&nbsp;readerTD,
+&nbsp;&nbsp;&nbsp;&nbsp;[<span style="color:#2b91af;">Frozen</span>]<span style="color:#2b91af;">Mock</span>&lt;<span style="color:#2b91af;">IUserRepository</span>&gt;&nbsp;repoTD,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">User</span>&nbsp;user,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">string</span>&nbsp;otherUserId,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">ConnectionsController</span>&nbsp;sut)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Assert</span>.False(<span style="color:blue;">int</span>.TryParse(otherUserId,&nbsp;<span style="color:blue;">out</span>&nbsp;<span style="color:blue;">var</span>&nbsp;_));
+&nbsp;&nbsp;&nbsp;&nbsp;readerTD
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.Setup(r&nbsp;=&gt;&nbsp;r.Lookup(user.Id.ToString()))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.Returns(<span style="color:#2b91af;">Result</span>.Success&lt;<span style="color:#2b91af;">User</span>,&nbsp;<span style="color:#2b91af;">IUserLookupError</span>&gt;(user));
+&nbsp;&nbsp;&nbsp;&nbsp;readerTD
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.Setup(r&nbsp;=&gt;&nbsp;r.Lookup(otherUserId))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.Returns(<span style="color:#2b91af;">Result</span>.Error&lt;<span style="color:#2b91af;">User</span>,&nbsp;<span style="color:#2b91af;">IUserLookupError</span>&gt;(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">UserLookupError</span>.InvalidId));
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;actual&nbsp;=&nbsp;sut.Post(user.Id.ToString(),&nbsp;otherUserId);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;err&nbsp;=&nbsp;<span style="color:#2b91af;">Assert</span>.IsAssignableFrom&lt;<span style="color:#2b91af;">BadRequestErrorMessageResult</span>&gt;(actual);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Assert</span>.Equal(<span style="color:#a31515;">&quot;Invalid&nbsp;ID&nbsp;for&nbsp;other&nbsp;user.&quot;</span>,&nbsp;err.Message);
+&nbsp;&nbsp;&nbsp;&nbsp;repoTD.Verify(r&nbsp;=&gt;&nbsp;r.Update(<span style="color:#2b91af;">It</span>.IsAny&lt;<span style="color:#2b91af;">User</span>&gt;()),&nbsp;<span style="color:#2b91af;">Times</span>.Never());
+}</pre>
+	</p>
+	<p>
+		Notice how the test configures <code>readerTD</code> twice: once for the <code>Id</code> associated with <code>user</code>, and once for <code>otherUserId</code>. Why does this test look different from the previous test?
+	</p>
+	<p>
+		Why is the first <code>Setup</code> required? Couldn't the <em>arrange</em> phase of the test just look like the following?
+	</p>
+	<p>
+		<pre><span style="color:#2b91af;">Assert</span>.False(<span style="color:blue;">int</span>.TryParse(otherUserId,&nbsp;<span style="color:blue;">out</span>&nbsp;<span style="color:blue;">var</span>&nbsp;_));
+readerTD
+&nbsp;&nbsp;&nbsp;&nbsp;.Setup(r&nbsp;=&gt;&nbsp;r.Lookup(otherUserId))
+&nbsp;&nbsp;&nbsp;&nbsp;.Returns(<span style="color:#2b91af;">Result</span>.Error&lt;<span style="color:#2b91af;">User</span>,&nbsp;<span style="color:#2b91af;">IUserLookupError</span>&gt;(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">UserLookupError</span>.InvalidId));</pre>
+	</p>
+	<p>
+		If you wrote the test like that, it would resemble the previous test (<code>UsersFailToConnectWhenUserIdIsInvalid</code>). The problem, though, is that if you remove the <code>Setup</code> for the valid user, the test fails.
+	</p>
+	<p>
+		This is another example of how the use of interaction-based testing makes the tests brittle. The tests are tightly coupled to the implementation.
+	</p>
+	<h3 id="1d8f30969e8345f394af8f3e1bda37ae">
+		Missing users test cases <a href="#1d8f30969e8345f394af8f3e1bda37ae" title="permalink">#</a>
+	</h3>
+	<p>
+		I don't want to belabour the point, so here's the two remaining tests:
+	</p>
+	<p>
+		<pre>[<span style="color:#2b91af;">Theory</span>,&nbsp;<span style="color:#2b91af;">UserManagementTestConventions</span>]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;UsersDoNotConnectWhenUserDoesNotExist(
+&nbsp;&nbsp;&nbsp;&nbsp;[<span style="color:#2b91af;">Frozen</span>]<span style="color:#2b91af;">Mock</span>&lt;<span style="color:#2b91af;">IUserReader</span>&gt;&nbsp;readerTD,
+&nbsp;&nbsp;&nbsp;&nbsp;[<span style="color:#2b91af;">Frozen</span>]<span style="color:#2b91af;">Mock</span>&lt;<span style="color:#2b91af;">IUserRepository</span>&gt;&nbsp;repoTD,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">string</span>&nbsp;userId,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">User</span>&nbsp;otherUser,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">ConnectionsController</span>&nbsp;sut)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;readerTD
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.Setup(r&nbsp;=&gt;&nbsp;r.Lookup(userId))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.Returns(<span style="color:#2b91af;">Result</span>.Error&lt;<span style="color:#2b91af;">User</span>,&nbsp;<span style="color:#2b91af;">IUserLookupError</span>&gt;(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">UserLookupError</span>.NotFound));
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;actual&nbsp;=&nbsp;sut.Post(userId,&nbsp;otherUser.Id.ToString());
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;err&nbsp;=&nbsp;<span style="color:#2b91af;">Assert</span>.IsAssignableFrom&lt;<span style="color:#2b91af;">BadRequestErrorMessageResult</span>&gt;(actual);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Assert</span>.Equal(<span style="color:#a31515;">&quot;User&nbsp;not&nbsp;found.&quot;</span>,&nbsp;err.Message);
+&nbsp;&nbsp;&nbsp;&nbsp;repoTD.Verify(r&nbsp;=&gt;&nbsp;r.Update(<span style="color:#2b91af;">It</span>.IsAny&lt;<span style="color:#2b91af;">User</span>&gt;()),&nbsp;<span style="color:#2b91af;">Times</span>.Never());
+}
+ 
+[<span style="color:#2b91af;">Theory</span>,&nbsp;<span style="color:#2b91af;">UserManagementTestConventions</span>]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;UsersDoNotConnectWhenOtherUserDoesNotExist(
+&nbsp;&nbsp;&nbsp;&nbsp;[<span style="color:#2b91af;">Frozen</span>]<span style="color:#2b91af;">Mock</span>&lt;<span style="color:#2b91af;">IUserReader</span>&gt;&nbsp;readerTD,
+&nbsp;&nbsp;&nbsp;&nbsp;[<span style="color:#2b91af;">Frozen</span>]<span style="color:#2b91af;">Mock</span>&lt;<span style="color:#2b91af;">IUserRepository</span>&gt;&nbsp;repoTD,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">User</span>&nbsp;user,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">int</span>&nbsp;otherUserId,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">ConnectionsController</span>&nbsp;sut)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;readerTD
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.Setup(r&nbsp;=&gt;&nbsp;r.Lookup(user.Id.ToString()))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.Returns(<span style="color:#2b91af;">Result</span>.Success&lt;<span style="color:#2b91af;">User</span>,&nbsp;<span style="color:#2b91af;">IUserLookupError</span>&gt;(user));
+&nbsp;&nbsp;&nbsp;&nbsp;readerTD
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.Setup(r&nbsp;=&gt;&nbsp;r.Lookup(otherUserId.ToString()))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.Returns(<span style="color:#2b91af;">Result</span>.Error&lt;<span style="color:#2b91af;">User</span>,&nbsp;<span style="color:#2b91af;">IUserLookupError</span>&gt;(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">UserLookupError</span>.NotFound));
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;actual&nbsp;=&nbsp;sut.Post(user.Id.ToString(),&nbsp;otherUserId.ToString());
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;err&nbsp;=&nbsp;<span style="color:#2b91af;">Assert</span>.IsAssignableFrom&lt;<span style="color:#2b91af;">BadRequestErrorMessageResult</span>&gt;(actual);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Assert</span>.Equal(<span style="color:#a31515;">&quot;Other&nbsp;user&nbsp;not&nbsp;found.&quot;</span>,&nbsp;err.Message);
+&nbsp;&nbsp;&nbsp;&nbsp;repoTD.Verify(r&nbsp;=&gt;&nbsp;r.Update(<span style="color:#2b91af;">It</span>.IsAny&lt;<span style="color:#2b91af;">User</span>&gt;()),&nbsp;<span style="color:#2b91af;">Times</span>.Never());
+}</pre>
+	</p>
+	<p>
+		Again, notice the asymmetry of these two tests. The top one passes with only one <code>Setup</code> of <code>readerTD</code>, whereas the bottom test requires two in order to pass.
+	</p>
+	<p>
+		You can add a second <code>Setup</code> to the top test to make the two tests equivalent, but people often forget to take such precautions. The result is Fragile Tests.
+	</p>
+	<h3 id="ece9e2b8532f4e7c9e445e9840789121">
+		Post implementation <a href="#ece9e2b8532f4e7c9e445e9840789121" title="permalink">#</a>
+	</h3>
+	<p>
+		In the spirit of test-driven development, I've shown you the tests before the implementation.
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">ConnectionsController</span>&nbsp;:&nbsp;<span style="color:#2b91af;">ApiController</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;ConnectionsController(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">IUserReader</span>&nbsp;userReader,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">IUserRepository</span>&nbsp;userRepository)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;UserReader&nbsp;=&nbsp;userReader;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;UserRepository&nbsp;=&nbsp;userRepository;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">IUserReader</span>&nbsp;UserReader&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">IUserRepository</span>&nbsp;UserRepository&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">IHttpActionResult</span>&nbsp;Post(<span style="color:blue;">string</span>&nbsp;userId,&nbsp;<span style="color:blue;">string</span>&nbsp;otherUserId)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;userRes&nbsp;=&nbsp;UserReader.Lookup(userId).SelectError(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;error&nbsp;=&gt;&nbsp;error.Accept(<span style="color:#2b91af;">UserLookupError</span>.Switch(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;onInvalidId:&nbsp;<span style="color:#a31515;">&quot;Invalid&nbsp;user&nbsp;ID.&quot;</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;onNotFound:&nbsp;&nbsp;<span style="color:#a31515;">&quot;User&nbsp;not&nbsp;found.&quot;</span>)));
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;otherUserRes&nbsp;=&nbsp;UserReader.Lookup(otherUserId).SelectError(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;error&nbsp;=&gt;&nbsp;error.Accept(<span style="color:#2b91af;">UserLookupError</span>.Switch(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;onInvalidId:&nbsp;<span style="color:#a31515;">&quot;Invalid&nbsp;ID&nbsp;for&nbsp;other&nbsp;user.&quot;</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;onNotFound:&nbsp;&nbsp;<span style="color:#a31515;">&quot;Other&nbsp;user&nbsp;not&nbsp;found.&quot;</span>)));
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;connect&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">from</span>&nbsp;user&nbsp;<span style="color:blue;">in</span>&nbsp;userRes
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">from</span>&nbsp;otherUser&nbsp;<span style="color:blue;">in</span>&nbsp;otherUserRes
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">select</span>&nbsp;Connect(user,&nbsp;otherUser);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;connect.SelectBoth(Ok,&nbsp;BadRequest).Bifold();
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:#2b91af;">User</span>&nbsp;Connect(<span style="color:#2b91af;">User</span>&nbsp;user,&nbsp;<span style="color:#2b91af;">User</span>&nbsp;otherUser)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;user.Connect(otherUser);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;UserRepository.Update(user);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;otherUser;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+	</p>
+	<p>
+		This is a simplified version of the code shown towards the end of my <a href="https://cleancoders.com/episode/humane-code-real-episode-5/show">Preserved in translation</a> video, so I'll refer you there for a detailed explanation.
+	</p>
+	<h3 id="ed29f1f1efa14245a29e33010c4dd4d1">
+		Summary <a href="#ed29f1f1efa14245a29e33010c4dd4d1" title="permalink">#</a>
+	</h3>
+	<p>
+		The premise of <a href="http://amzn.to/YPdQDf">Refactoring</a> is that in order to be able to refactor, the "precondition is [...] solid tests". In reality, many development organisations have the opposite experience. When programmers attempt to make changes to how their code is organised, tests break. In <a href="http://bit.ly/xunitpatterns">xUnit Test Patterns</a> this problem is called <em>Fragile Tests</em>, and the cause is often <em>Overspecified Software</em>. This means that tests are tightly coupled to implementation details of the System Under Test (SUT).
+	</p>
+	<p>
+		It's easy to inadvertently fall into this trap when you use Mocks and Stubs, even when you follow the rule of using Mocks for Commands and Stubs for Queries. In my experience, it's often the explicit configuration of Stubs that tend to make tests brittle. A Command represents an intentional side effect, and you want to verify that such a side effect takes place. A Query, on the other hand, has no side effect, so a black-box test shouldn't be concerned with any interactions involving Queries.
+	</p>
+	<p>
+		Yet, using an 'isolation framework' such as Moq, <a href="https://fakeiteasy.github.io/">FakeItEasy</a>, <a href="http://nsubstitute.github.io/">NSubstitute</a>, and so on, will pull you towards overspecifying the interactions the SUT has with its Query dependencies.
+	</p>
+	<p>
+		How can we improve? One strategy is to move towards a more functional design, which is <a href="http://blog.ploeh.dk/2015/05/07/functional-design-is-intrinsically-testable">intrinsically testable</a>. In the next article, you'll see how to rewrite both tests and implementation in <a href="https://www.haskell.org">Haskell</a>.
+	</p>
+	<p>
+		<strong>Next:</strong> An example of state-based testing in Haskell.
+	</p>
+</div>
