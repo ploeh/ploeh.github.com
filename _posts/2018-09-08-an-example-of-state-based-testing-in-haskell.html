@@ -1,0 +1,318 @@
+---
+layout: post
+title: "An example of state-based testing in Haskell"
+description: "How do you do state-based testing when state is immutable? You use the State monad."
+date: 2018-09-08 14:52 UTC
+tags: [Unit Testing, Haskell]
+---
+{% include JB/setup %}
+
+<div id="post">
+	<p>
+		<em>{{ page.description }}</em>
+	</p>
+	<p>
+		This article is an instalment in an article series about how to move <a href="">from interaction-based testing to state-based testing</a>. In the previous article, you saw <a href="">an example of an interaction-based unit test</a> written in C#. The problem that this article series attempts to address is that interaction-based testing can lead to what <a href="http://bit.ly/xunitpatterns">xUnit Test Patterns</a> calls <em>Fragile Tests</em>, because the tests get coupled to implementation details, instead of overall behaviour.
+	</p>
+	<p>
+		My experience is that functional programming is better aligned with unit testing because <a href="http://blog.ploeh.dk/2015/05/07/functional-design-is-intrinsically-testable">functional design is intrinsically testable</a>. While I believe that functional programming is <a href="http://bit.ly/mythical-man-month">no silver bullet</a>, it still seems to me that we can learn many valuable lessons about programming from it.
+	</p>
+	<p>
+		People often ask me about <a href="https://fsharp.org">F#</a> programming: <em>How do I know that my F# code is functional?</em>
+	</p>
+	<p>
+		I sometimes wonder that myself, about my own F# code. One can certainly choose to ignore such a question as irrelevant, and I sometimes do, as well. Still, in my experience, asking such questions can create learning opportunities.
+	</p>
+	<p>
+		The best answer that I've found is: <em>Port the F# code to <a href="https://www.haskell.org">Haskell</a>.</em>
+	</p>
+	<p>
+		Haskell enforces <a href="https://en.wikipedia.org/wiki/Referential_transparency">referential transparency</a> via its compiler. If Haskell code compiles, it's functional. In this article, then, I take the problem from the previous article and port it to Haskell.
+	</p>
+	<p>
+		The code shown in this article is <a href="">available on GitHub</a>.
+	</p>
+	<h3 id="ae68546c3d9f4810a18ea99c2bcc873c">
+		A function to connect two users <a href="#ae68546c3d9f4810a18ea99c2bcc873c" title="permalink">#</a>
+	</h3>
+	<p>
+		In the previous article, you saw implementation and test coverage of a piece of software functionality to connect two users with each other. This was a simplification of the example running through my two <a href="https://cleancoders.com">Clean Coders</a> videos, <a href="https://cleancoders.com/episode/humane-code-real-episode-4/show">Church Visitor</a> and <a href="https://cleancoders.com/episode/humane-code-real-episode-5/show">Preserved in translation</a>.
+	</p>
+	<p>
+		In contrast to the previous article, we'll start with the implementation of the System Under Test (SUT).
+	</p>
+	<p>
+		<pre><span style="color:#2b91af;">post</span>&nbsp;::&nbsp;<span style="color:blue;">Monad</span>&nbsp;m&nbsp;<span style="color:blue;">=&gt;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(a&nbsp;-&gt;&nbsp;m&nbsp;(Either&nbsp;UserLookupError&nbsp;User))&nbsp;-&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(User&nbsp;-&gt;&nbsp;m&nbsp;<span style="color:blue;">()</span>)&nbsp;-&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;a&nbsp;-&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;a&nbsp;-&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;m&nbsp;(HttpResponse&nbsp;User)
+post&nbsp;lookupUser&nbsp;updateUser&nbsp;userId&nbsp;otherUserId&nbsp;=&nbsp;<span style="color:blue;">do</span>
+&nbsp;&nbsp;userRes&nbsp;&lt;-&nbsp;first&nbsp;(\<span style="color:blue;">case</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;InvalidId&nbsp;-&gt;&nbsp;<span style="color:#a31515;">&quot;Invalid&nbsp;user&nbsp;ID.&quot;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;NotFound&nbsp;&nbsp;-&gt;&nbsp;<span style="color:#a31515;">&quot;User&nbsp;not&nbsp;found.&quot;</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&lt;$&gt;&nbsp;lookupUser&nbsp;userId
+&nbsp;&nbsp;otherUserRes&nbsp;&lt;-&nbsp;first&nbsp;(\<span style="color:blue;">case</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;InvalidId&nbsp;-&gt;&nbsp;<span style="color:#a31515;">&quot;Invalid&nbsp;ID&nbsp;for&nbsp;other&nbsp;user.&quot;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;NotFound&nbsp;&nbsp;-&gt;&nbsp;<span style="color:#a31515;">&quot;Other&nbsp;user&nbsp;not&nbsp;found.&quot;</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&lt;$&gt;&nbsp;lookupUser&nbsp;otherUserId
+
+&nbsp;&nbsp;connect&nbsp;&lt;-&nbsp;runExceptT&nbsp;$&nbsp;<span style="color:blue;">do</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;user&nbsp;&lt;-&nbsp;ExceptT&nbsp;$&nbsp;<span style="color:blue;">return</span>&nbsp;userRes
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;otherUser&nbsp;&lt;-&nbsp;ExceptT&nbsp;$&nbsp;<span style="color:blue;">return</span>&nbsp;otherUserRes
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;lift&nbsp;$&nbsp;updateUser&nbsp;$&nbsp;addConnection&nbsp;user&nbsp;otherUser
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;otherUser
+
+&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;$&nbsp;either&nbsp;BadRequest&nbsp;OK&nbsp;connect
+</pre>
+	</p>
+	<p>
+		This is as direct a translation of the C# code as makes sense. If I'd only been implementing the desired functionality in Haskell, without having to port existing code, I'd designed the code differently.
+	</p>
+	<p>
+		This <code>post</code> function uses <a href="http://blog.ploeh.dk/2017/01/30/partial-application-is-dependency-injection">partial application as an analogy to dependency injection</a>, but in order to enable potentially impure operations to take place, everything must happen inside of some monad. While the production code must ultimately run in the <code>IO</code> monad in order to interact with a database, tests can choose to run in another monad.
+	</p>
+	<p>
+		In the C# example, two dependencies are injected into the class that defines the <code>Post</code> method. In the above Haskell function, these two dependencies are instead passed as function arguments. Notice that both functions return values in the monad <code>m</code>.
+	</p>
+	<p>
+		The intent of the <code>lookupUser</code> argument is that it'll query a database with a user ID. It'll return the user if present, but it could also return a <code>UserLookupError</code>, which is a simple <a href="https://en.wikipedia.org/wiki/Tagged_union">sum type:</a>
+	</p>
+	<p>
+		<pre><span style="color:blue;">data</span>&nbsp;UserLookupError&nbsp;=&nbsp;InvalidId&nbsp;|&nbsp;NotFound&nbsp;<span style="color:blue;">deriving</span>&nbsp;(<span style="color:#2b91af;">Show</span>,&nbsp;<span style="color:#2b91af;">Eq</span>)</pre>
+	</p>
+	<p>
+		If both users are found, the function connects the users and calls the <code>updateUser</code> function argument. The intent of this 'dependency' is that it updates the database. This is recognisably a <a href="https://en.wikipedia.org/wiki/Command%E2%80%93query_separation">Command</a>, since its return type is <code>m ()</code> - <a href="http://blog.ploeh.dk/2018/01/15/unit-isomorphisms/"><em>unit</em> (<code>()</code>) is equivalent to <code>void</code></a>.
+	</p>
+	<h3 id="6855a96abefe47c3a924b6d7d94e7bc8">
+		State-based testing <a href="#6855a96abefe47c3a924b6d7d94e7bc8" title="permalink">#</a>
+	</h3>
+	<p>
+		How do you unit test such a function? How do you use Mocks and Stubs in Haskell? You don't; you don't have to. While the <code>post</code> method <em>can</em> be impure (when <code>m</code> is <code>IO</code>), it doesn't have to be. Functional design is intrinsically testable, but that proposition depends on purity. Thus, it's worth figuring out how to keep the <code>post</code> function <a href="https://en.wikipedia.org/wiki/Pure_function">pure</a> in the context of unit testing.
+	</p>
+	<p>
+		While <code>IO</code> implies impurity, most common monads are pure. Which one should you choose? You could attempt to entirely 'erase' the monadic quality of the <code>post</code> function with the <code>Identity</code> monad, but if you do that, you can't verify whether or not <code>updateUser</code> was invoked.
+	</p>
+	<p>
+		While you <em>could</em> write an ad-hoc Mock using, for example, the <code>Writer</code> monad, it might be a better choice to investigate if something closer to state-based testing would be possible.
+	</p>
+	<p>
+		In an object-oriented context, state-based testing implies that you exercise the SUT, which mutates some state, and then you verify that the (mutated) state matches your expectations. You can't do that when you test a pure function, but you can examine the state of the function's return value. The <code>State</code> monad is an obvious choice, then.
+	</p>
+	<h3 id="6d9ce24e5e374c5d9987ac481b1fbd37">
+		A Fake database <a href="#6d9ce24e5e374c5d9987ac481b1fbd37" title="permalink">#</a>
+	</h3>
+	<p>
+		Haskell's <code>State</code> monad is parametrised on the state type as well as the normal 'value type', so in order to be able to test the <code>post</code> function, you'll have to figure out what type of state to use. The interactions implied by the <code>post</code> function's <code>lookupUser</code> and <code>updateUser</code> arguments are those of database interactions. A <a href="http://xunitpatterns.com/Fake%20Object.html">Fake</a> database seems an obvious choice.
+	</p>
+	<p>
+		For the purposes of testing the <code>post</code> function, an in-memory database implemented using a <code>Map</code> is appropriate:
+	</p>
+	<p>
+		<pre><span style="color:blue;">type</span>&nbsp;DB&nbsp;=&nbsp;Map&nbsp;Integer&nbsp;User</pre>
+	</p>
+	<p>
+		This is simply a dictionary keyed by <code>Integer</code> values and containing <code>User</code> values. You can implement compatible <code>lookupUser</code> and <code>updateUser</code> functions with <code>State DB</code> as the <code>Monad</code>. The <code>updateUser</code> function is the easiest one to implement:
+	</p>
+	<p>
+		<pre><span style="color:#2b91af;">updateUser</span>&nbsp;::&nbsp;<span style="color:blue;">User</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">State</span>&nbsp;<span style="color:blue;">DB</span>&nbsp;()
+updateUser&nbsp;user&nbsp;=&nbsp;modify&nbsp;$&nbsp;Map.insert&nbsp;(userId&nbsp;user)&nbsp;user</pre>
+	</p>
+	<p>
+		This simply inserts the <code>user</code> into the database, using the <code>userId</code> as the key. The type of the function is compatible with the general requirement of <code>User -&gt; m ()</code>, since here, <code>m</code> is <code>State DB</code>.
+	</p>
+	<p>
+		The <code>lookupUser</code> Fake implementation is a bit more involved:
+	</p>
+	<p>
+		<pre><span style="color:#2b91af;">lookupUser</span>&nbsp;::&nbsp;<span style="color:#2b91af;">String</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">State</span>&nbsp;<span style="color:blue;">DB</span>&nbsp;(<span style="color:#2b91af;">Either</span>&nbsp;<span style="color:blue;">UserLookupError</span>&nbsp;<span style="color:blue;">User</span>)
+lookupUser&nbsp;s&nbsp;=&nbsp;<span style="color:blue;">do</span>
+&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;maybeInt&nbsp;=&nbsp;readMaybe&nbsp;s&nbsp;::&nbsp;Maybe&nbsp;Integer
+&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;eitherInt&nbsp;=&nbsp;<span style="color:blue;">maybe</span>&nbsp;(Left&nbsp;InvalidId)&nbsp;Right&nbsp;maybeInt
+&nbsp;&nbsp;db&nbsp;&lt;-&nbsp;get
+&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;$&nbsp;eitherInt&nbsp;&gt;&gt;=&nbsp;<span style="color:blue;">maybe</span>&nbsp;(Left&nbsp;NotFound)&nbsp;Right&nbsp;.&nbsp;<span style="color:blue;">flip</span>&nbsp;Map.<span style="color:blue;">lookup</span>&nbsp;db</pre>
+	</p>
+	<p>
+		First, consider the type. The function takes a <code>String</code> value as an argument and returns a <code>State DB (Either UserLookupError User)</code>. The requirement is a function compatible with the type <code>a -&gt; m (Either UserLookupError User)</code>. This works when <code>a</code> is <code>String</code> and <code>m</code> is, again, <code>State DB</code>.
+	</p>
+	<p>
+		The entire function is written in <code>do</code> notation, where the inferred <code>Monad</code> is, indeed, <code>State DB</code>. The first line attempts to parse the <code>String</code> into an <code>Integer</code>. Since the built-in <code>readMaybe</code> function returns a <code>Maybe Integer</code>, the next line uses the <code>maybe</code> function to handle the two possible cases, converting the <code>Nothing</code> case into the <code>Left InvalidId</code> value, and the <code>Just</code> case into a <code>Right</code> value.
+	</p>
+	<p>
+		It then uses the <code>State</code> module's <code>get</code> function to access the database <code>db</code>, and finally attempt a <code>lookup</code> against that <code>Map</code>. Again, <code>maybe</code> is used to convert the <code>Maybe</code> value returned by <code>Map.lookup</code> into an <code>Either</code> value.
+	</p>
+	<h3 id="280bfa2e191e42d095f6f762e0a94a55">
+		Happy path test case <a href="#280bfa2e191e42d095f6f762e0a94a55" title="permalink">#</a>
+	</h3>
+	<p>
+		This is all you need in terms of <a href="http://xunitpatterns.com/Test%20Double.html">Test Doubles</a>. You now have test-specific <code>lookupUser</code> and <code>updateUser</code> functions that you can pass to the <code>post</code> function.
+	</p>
+	<p>
+		Like in the previous article, you can start by exercising the happy path where a user successfully connects with another user:
+	</p>
+	<p>
+		<pre>testProperty&nbsp;<span style="color:#a31515;">&quot;Users&nbsp;successfully&nbsp;connect&quot;</span>&nbsp;$&nbsp;\
+&nbsp;&nbsp;user&nbsp;otherUser&nbsp;-&gt;&nbsp;runStateTest&nbsp;$&nbsp;<span style="color:blue;">do</span>
+ 
+&nbsp;&nbsp;put&nbsp;$&nbsp;Map.fromList&nbsp;[toDBEntry&nbsp;user,&nbsp;toDBEntry&nbsp;otherUser]
+
+&nbsp;&nbsp;actual&nbsp;&lt;-&nbsp;post&nbsp;lookupUser&nbsp;updateUser&nbsp;(<span style="color:blue;">show</span>&nbsp;$&nbsp;userId&nbsp;user)&nbsp;(<span style="color:blue;">show</span>&nbsp;$&nbsp;userId&nbsp;otherUser)
+ 
+&nbsp;&nbsp;db&nbsp;&lt;-&nbsp;get
+&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;$
+&nbsp;&nbsp;&nbsp;&nbsp;isOK&nbsp;actual&nbsp;&amp;&amp;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">any</span>&nbsp;(<span style="color:blue;">elem</span>&nbsp;otherUser&nbsp;.&nbsp;connectedUsers)&nbsp;(Map.<span style="color:blue;">lookup</span>&nbsp;(userId&nbsp;user)&nbsp;db)</pre>
+	</p>
+	<p>
+		Here I'm <a href="http://blog.ploeh.dk/2018/05/07/inlined-hunit-test-lists">inlining test cases as anonymous functions</a> - this time expressing the tests as QuickCheck properties. I'll later return to the <code>runStateTest</code> helper function, but first I want to focus on the test body itself. It's written in <code>do</code> notation, and specifically, it runs in the <code>State DB</code> monad.
+	</p>
+	<p>
+		<code>user</code> and <code>otherUser</code> are input arguments to the property. These are both <code>User</code> values, since the test also defines <code>Arbitrary</code> instances for that type (not shown in this article; see the source code repository for details).
+	</p>
+	<p>
+		The first step in the test is to 'save' both users in the Fake database. This is easily done by converting each <code>User</code> value to a database entry:
+	</p>
+	<p>
+		<pre><span style="color:#2b91af;">toDBEntry</span>&nbsp;::&nbsp;<span style="color:blue;">User</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;(<span style="color:#2b91af;">Integer</span>,&nbsp;<span style="color:blue;">User</span>)
+toDBEntry&nbsp;=&nbsp;userId&nbsp;&amp;&amp;&amp;&nbsp;<span style="color:blue;">id</span></pre>
+	</p>
+	<p>
+		Recall that the Fake database is nothing but an alias over <code>Map Integer User</code>, so the only operation required to turn a <code>User</code> into a database entry is to extract the key.
+	</p>
+	<p>
+		The next step in the test is to exercise the SUT, passing the test-specific <code>lookupUser</code> and <code>updateUser</code> Test Doubles to the <code>post</code> function, together with the user IDs converted to <code>String</code> values.
+	</p>
+	<p>
+		In the <em>assert</em> phase of the test, it first extracts the current state of the database, using the <code>State</code> library's built-in <code>get</code> function. It then verifies that <code>actual</code> represents a <code>200 OK</code> value, and that the <code>user</code> entry in the database now contains <code>otherUser</code> as a connected user.
+	</p>
+	<h3 id="050ecaa9962a487c9381da982ab264e7">
+		Missing user test case <a href="#050ecaa9962a487c9381da982ab264e7" title="permalink">#</a>
+	</h3>
+	<p>
+		While there's one happy-path test case, there's four other test cases left. One of these is when the first user doesn't exist:
+	</p>
+	<p>
+		<pre>testProperty&nbsp;<span style="color:#a31515;">&quot;Users&nbsp;don&#39;t&nbsp;connect&nbsp;when&nbsp;user&nbsp;doesn&#39;t&nbsp;exist&quot;</span>&nbsp;$&nbsp;\
+&nbsp;&nbsp;(Positive&nbsp;i)&nbsp;otherUser&nbsp;-&gt;&nbsp;runStateTest&nbsp;$&nbsp;<span style="color:blue;">do</span>
+ 
+&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;db&nbsp;=&nbsp;Map.fromList&nbsp;[toDBEntry&nbsp;otherUser]
+&nbsp;&nbsp;put&nbsp;db
+&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;uniqueUserId&nbsp;=&nbsp;<span style="color:blue;">show</span>&nbsp;$&nbsp;userId&nbsp;otherUser&nbsp;+&nbsp;i
+ 
+&nbsp;&nbsp;actual&nbsp;&lt;-&nbsp;post&nbsp;lookupUser&nbsp;updateUser&nbsp;uniqueUserId&nbsp;(<span style="color:blue;">show</span>&nbsp;$&nbsp;userId&nbsp;otherUser)
+ 
+&nbsp;&nbsp;assertPostFailure&nbsp;db&nbsp;actual</pre>
+	</p>
+	<p>
+		What ought to trigger this test case is that the 'first' user doesn't exist, even if the <code>otherUser</code> does exist. For this reason, the test inserts the <code>otherUser</code> into the Fake database.
+	</p>
+	<p>
+		Since the test is a QuickCheck property, <code>i</code> could be <em>any</em> positive <code>Integer</code> value - <em>including</em> the <code>userId</code> of <code>otherUser</code>. In order to properly exercise the test case, however, you'll need to call the <code>post</code> function with a <code>uniqueUserId</code> - thas it: an ID which is guaranteed to not be equal to the <code>userId</code> of <code>otherUser</code>. There's several options for achieving this guarantee (including, as you'll see soon, the <code>==&gt;</code> operator), but a simple way is to add a non-zero number to the number you need to avoid.
+	</p>
+	<p>
+		You then exercise the <code>post</code> function and, as a verification, call a reusable <code>assertPostFailure</code> function:
+	</p>
+	<p>
+		<pre><span style="color:#2b91af;">assertPostFailure</span>&nbsp;::&nbsp;(<span style="color:blue;">Eq</span>&nbsp;s,&nbsp;<span style="color:blue;">Monad</span>&nbsp;m)&nbsp;<span style="color:blue;">=&gt;</span>&nbsp;s&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">HttpResponse</span>&nbsp;a&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">StateT</span>&nbsp;s&nbsp;m&nbsp;<span style="color:#2b91af;">Bool</span>
+assertPostFailure&nbsp;stateBefore&nbsp;resp&nbsp;=&nbsp;<span style="color:blue;">do</span>
+&nbsp;&nbsp;stateAfter&nbsp;&lt;-&nbsp;get
+&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;stateDidNotChange&nbsp;=&nbsp;stateBefore&nbsp;==&nbsp;stateAfter
+&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;$&nbsp;stateDidNotChange&nbsp;&amp;&amp;&nbsp;isBadRequest&nbsp;resp</pre>
+	</p>
+	<p>
+		This function verifies that the state of the database didn't change, and that the response value represents a <code>400 Bad Request</code> HTTP response. This verification doesn't actually verify that the error message associated with the <code>BadRequest</code> case is the expected message, like in the previous article. This would, however, involve a fairly trivial change to the code.
+	</p>
+	<h3 id="dbd934d3e4f7431d95d78dfb0c1d7f4e">
+		Missing other user test case <a href="#dbd934d3e4f7431d95d78dfb0c1d7f4e" title="permalink">#</a>
+	</h3>
+	<p>
+		Similar to the above test case, users will also fail to connect if the 'other user' doesn't exist. The property is almost identical:
+	</p>
+	<p>
+		<pre>testProperty&nbsp;<span style="color:#a31515;">&quot;Users&nbsp;don&#39;t&nbsp;connect&nbsp;when&nbsp;other&nbsp;user&nbsp;doesn&#39;t&nbsp;exist&quot;</span>&nbsp;$&nbsp;\
+&nbsp;&nbsp;(Positive&nbsp;i)&nbsp;user&nbsp;-&gt;&nbsp;runStateTest&nbsp;$&nbsp;<span style="color:blue;">do</span>
+&nbsp;&nbsp;
+&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;db&nbsp;=&nbsp;Map.fromList&nbsp;[toDBEntry&nbsp;user]
+&nbsp;&nbsp;put&nbsp;db
+&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;uniqueOtherUserId&nbsp;=&nbsp;<span style="color:blue;">show</span>&nbsp;$&nbsp;userId&nbsp;user&nbsp;+&nbsp;i
+ 
+&nbsp;&nbsp;actual&nbsp;&lt;-&nbsp;post&nbsp;lookupUser&nbsp;updateUser&nbsp;(<span style="color:blue;">show</span>&nbsp;$&nbsp;userId&nbsp;user)&nbsp;uniqueOtherUserId
+ 
+&nbsp;&nbsp;assertPostFailure&nbsp;db&nbsp;actual</pre>
+	</p>
+	<p>
+		Since this test body is so similar to the previous test, I'm not going to give you a detailed walkthrough. I did, however, promise to describe the <code>runStateTest</code> helper function:
+	</p>
+	<p>
+		<pre><span style="color:#2b91af;">runStateTest</span>&nbsp;::&nbsp;<span style="color:blue;">State</span>&nbsp;(<span style="color:blue;">Map</span>&nbsp;k&nbsp;a)&nbsp;b&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;b
+runStateTest&nbsp;=&nbsp;<span style="color:blue;">flip</span>&nbsp;evalState&nbsp;Map.empty</pre>
+	</p>
+	<p>
+		Since this is a one-liner, you could also write all the tests by simply in-lining that little expression, but I thought that it made the tests more readable to give this function an explicit name.
+	</p>
+	<p>
+		It takes any <code>State (Map k a) b</code> and runs it with an empty map. Thus, all <code>State</code>-valued functions, like the tests, must explicitly put data into the state. This is also what the tests do.
+	</p>
+	<p>
+		Notice that all the tests return <code>State</code> values. For example, the <code>assertPostFailure</code> function returns <code>StateT s m Bool</code>, of which <code>State s Bool</code> is an alias. This fits <code>State (Map k a) b</code> when <code>s</code> is <code>Map k a</code>, which again is aliased to <code>DB</code>. Reducing all of this, the tests are simply functions that return <code>Bool</code>.
+	</p>
+	<h3 id="bc67a5ebaf7347ffa4906b209c31d156">
+		Invalid user ID test cases <a href="#bc67a5ebaf7347ffa4906b209c31d156" title="permalink">#</a>
+	</h3>
+	<p>
+		Finally, you can also cover the two test cases where one of the user IDs is invalid:
+	</p>
+	<p>
+		<pre>testProperty&nbsp;<span style="color:#a31515;">&quot;Users&nbsp;don&#39;t&nbsp;connect&nbsp;when&nbsp;user&nbsp;Id&nbsp;is&nbsp;invalid&quot;</span>&nbsp;$&nbsp;\
+&nbsp;&nbsp;s&nbsp;otherUser&nbsp;-&gt;&nbsp;isIdInvalid&nbsp;s&nbsp;==&gt;&nbsp;runStateTest&nbsp;$&nbsp;<span style="color:blue;">do</span>
+ 
+&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;db&nbsp;=&nbsp;Map.fromList&nbsp;[toDBEntry&nbsp;otherUser]
+&nbsp;&nbsp;put&nbsp;db
+ 
+&nbsp;&nbsp;actual&nbsp;&lt;-&nbsp;post&nbsp;lookupUser&nbsp;updateUser&nbsp;s&nbsp;(<span style="color:blue;">show</span>&nbsp;$&nbsp;userId&nbsp;otherUser)
+ 
+&nbsp;&nbsp;assertPostFailure&nbsp;db&nbsp;actual
+ 
+,
+testProperty&nbsp;<span style="color:#a31515;">&quot;Users&nbsp;don&#39;t&nbsp;connect&nbsp;when&nbsp;other&nbsp;user&nbsp;Id&nbsp;is&nbsp;invalid&quot;</span>&nbsp;$&nbsp;\
+&nbsp;&nbsp;s&nbsp;user&nbsp;-&gt;&nbsp;isIdInvalid&nbsp;s&nbsp;==&gt;&nbsp;runStateTest&nbsp;$&nbsp;<span style="color:blue;">do</span>
+ 
+&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;db&nbsp;=&nbsp;Map.fromList&nbsp;[toDBEntry&nbsp;user]
+&nbsp;&nbsp;put&nbsp;db
+ 
+&nbsp;&nbsp;actual&nbsp;&lt;-&nbsp;post&nbsp;lookupUser&nbsp;updateUser&nbsp;(<span style="color:blue;">show</span>&nbsp;$&nbsp;userId&nbsp;user)&nbsp;s
+ 
+&nbsp;&nbsp;assertPostFailure&nbsp;db&nbsp;actual</pre>
+	</p>
+	<p>
+		Both of these properties take a <code>String</code> value <code>s</code> as input. When QuickCheck generates a <code>String</code>, that could be any <code>String</code> value. Both tests require that the value is an invalid user ID. Specifically, it mustn't be possible to parse the string into an <code>Integer</code>. If you don't constrain QuickCheck, it'll generate various strings, including e.g. <code>"8"</code> and other strings that can be parsed as numbers.
+	</p>
+	<p>
+		In the above <code>"Users don't connect when user doesn't exist"</code> test, you saw how one way to explicitly model constraints on data is to project a seed value in such a way that the constraint always holds. Another way is to use QuickCheck's built-in <code>==&gt;</code> operator to filter out undesired values. In this example, both tests employ the <code>isIdInvalid</code> function:
+	</p>
+	<p>
+		<pre><span style="color:#2b91af;">isIdInvalid</span>&nbsp;::&nbsp;<span style="color:#2b91af;">String</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:#2b91af;">Bool</span>
+isIdInvalid&nbsp;s&nbsp;=
+&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;userInt&nbsp;=&nbsp;readMaybe&nbsp;s&nbsp;::&nbsp;Maybe&nbsp;Integer
+&nbsp;&nbsp;<span style="color:blue;">in</span>&nbsp;isNothing&nbsp;userInt</pre>
+	</p>
+	<p>
+		Using <code>isIdInvalid</code> with the <code>==&gt;</code> operator guarantees that <code>s</code> is an invalid ID.
+	</p>
+	<h3 id="5d89ffd490454c0890dedff39c2f0852">
+		Summary <a href="#5d89ffd490454c0890dedff39c2f0852" title="permalink">#</a>
+	</h3>
+	<p>
+		While state-based testing may, at first, sound incompatible with strictly functional programming, it's not only possible with the State monad, but even, with good language support, easily done.
+	</p>
+	<p>
+		The tests shown in this article aren't concerned with the interactions between the SUT and its dependencies. Instead, they compare the initial state with the state after exercising the SUT. Comparing values, even complex data structures such as maps, tends to be trivial in functional programming. Immutable values typically have built-in structural equality (in Haskell signified by the automatic <code>Eq</code> type class), which makes comparing them trivial.
+	</p>
+	<p>
+		Now that we know that state-based testing is possible even with Haskell's enforced purity, it should be clear that we can repeat the feat in F#.
+	</p>
+	<p>
+		<strong>Next:</strong> An example of state-based testing in F#.
+	</p>
+</div>
