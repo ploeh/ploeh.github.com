@@ -1,0 +1,194 @@
+---
+layout: post
+title: "Asynchronous functors"
+description: "Asynchronous computations form functors. An article for object-oriented programmers."
+date: 2018-09-24 3:37 UTC
+tags: [Software Design]
+image: "/content/binary/equivalence-of-task-and-async.png"
+image_alt: "Equivalence of Task and Async."
+---
+{% include JB/setup %}
+
+<div id="post">
+	<p>
+		<em>{{ page.description }}</em>
+	</p>
+	<p>
+		This article is an instalment in <a href="http://blog.ploeh.dk/2018/03/22/functors">an article series about functors</a>. The previous article covered the <a href="http://blog.ploeh.dk/2018/09/10/the-lazy-functor">Lazy functor</a>. In this article, you'll learn about closely related functors: .NET Tasks and <a href="https://fsharp.org">F#</a> <a href="https://docs.microsoft.com/en-us/dotnet/fsharp/language-reference/asynchronous-workflows">asynchronous workflows</a>.
+	</p>
+	<p>
+		A word of warning is in order. .NET Tasks aren't <a href="https://en.wikipedia.org/wiki/Referential_transparency">referentially transparent</a>, whereas F# asynchronous computations are. You could argue, then, that .NET Tasks aren't proper functors, but you mostly observe the difference when you perform impure operations. As a general observation, when impure operations are allowed, the conclusions of <a href="http://blog.ploeh.dk/2017/10/04/from-design-patterns-to-category-theory">this overall article series</a> are precarious. We can't radically change how the .NET languages work, so we'll have to soldier on, pretending that impure operations are delegated to other parts of our system. Under this undue assumption, we can pretend that <a href="https://docs.microsoft.com/en-us/dotnet/api/system.threading.tasks.task-1">Task&lt;T&gt;</a> forms a functor.
+	</p>
+	<h3 id="f82479d93d5d40ed83749a6d9fc309dc">
+		Task functor <a href="#f82479d93d5d40ed83749a6d9fc309dc" title="permalink">#</a>
+	</h3>
+	<p>
+		You can write an idiomatic <code>Select</code> extension method for <code>Task&lt;T&gt;</code> like this:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">async</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:#2b91af;">Task</span>&lt;<span style="color:#2b91af;">TResult</span>&gt;&nbsp;Select&lt;<span style="color:#2b91af;">T</span>,&nbsp;<span style="color:#2b91af;">TResult</span>&gt;(
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>&nbsp;<span style="color:#2b91af;">Task</span>&lt;<span style="color:#2b91af;">T</span>&gt;&nbsp;source,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:#2b91af;">T</span>,&nbsp;<span style="color:#2b91af;">TResult</span>&gt;&nbsp;selector)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;x&nbsp;=&nbsp;<span style="color:blue;">await</span>&nbsp;source;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;selector(x);
+}</pre>
+	</p>
+	<p>
+		With this extension method in scope, you can compose asynchronous computations like this:
+	</p>
+	<p>
+		<pre><span style="color:#2b91af;">Task</span>&lt;<span style="color:blue;">int</span>&gt;&nbsp;x&nbsp;=&nbsp;<span style="color:green;">//&nbsp;...</span>
+<span style="color:#2b91af;">Task</span>&lt;<span style="color:blue;">string</span>&gt;&nbsp;y&nbsp;=&nbsp;x.Select(i&nbsp;=&gt;&nbsp;i.ToString());</pre>
+	</p>
+	<p>
+		Or, if you prefer <em>query syntax:</em>
+	</p>
+	<p>
+		<pre><span style="color:#2b91af;">Task</span>&lt;<span style="color:blue;">int</span>&gt;&nbsp;x&nbsp;=&nbsp;<span style="color:green;">//&nbsp;...</span>
+<span style="color:#2b91af;">Task</span>&lt;<span style="color:blue;">string</span>&gt;&nbsp;y&nbsp;=&nbsp;<span style="color:blue;">from</span>&nbsp;i&nbsp;<span style="color:blue;">in</span>&nbsp;x&nbsp;<span style="color:blue;">select</span>&nbsp;i.ToString();</pre>
+	</p>
+	<p>
+		In both cases, you start with a <code>Task&lt;int&gt;</code> which you map into a <code>Task&lt;string&gt;</code>. Perhaps you've noticed that these two examples closely resemble the equivalent <a href="http://blog.ploeh.dk/2018/09/10/the-lazy-functor">Lazy functor examples</a>. The resemblance isn't coincidental. The same <em>abstraction</em> is in use in both places. This is the <em>functor</em> abstraction. That's what this article series is all about, after all.
+	</p>
+	<p>
+		The difference between the Task functor and the Lazy functor is that lazy computations don't run until forced. Tasks, on the other hand, typically start running in the background when created. Thus, when you finally <code>await</code> the value, you may actually not have to wait for it. This does, however, depend on how you created the initial task.
+	</p>
+	<h3 id="8d66efff8d5a4e73b3007878b3ec7227">
+		First functor law for Task <a href="#8d66efff8d5a4e73b3007878b3ec7227" title="permalink">#</a>
+	</h3>
+	<p>
+		The <code>Select</code> method obeys the first functor law. As usual in this article series, actually proving that this is the case belongs to the realm of computer science. Instead of proving that the law holds, you can use property-based testing to demonstrate that it does. The following example shows a single property written with <a href="https://fscheck.github.io/FsCheck/">FsCheck</a> 2.11.0 and <a href="https://xunit.github.io/">xUnit.net</a> 2.4.0.		
+	</p>
+	<p>
+		<pre>[<span style="color:#2b91af;">Property</span>(QuietOnSuccess&nbsp;=&nbsp;<span style="color:blue;">true</span>)]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;TaskObeysFirstFunctorLaw(<span style="color:blue;">int</span>&nbsp;i)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;&nbsp;left&nbsp;=&nbsp;<span style="color:#2b91af;">Task</span>.FromResult(i);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;right&nbsp;=&nbsp;<span style="color:#2b91af;">Task</span>.FromResult(i).Select(x&nbsp;=&gt;&nbsp;x);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Assert</span>.Equal(left.Result,&nbsp;right.Result);
+}</pre>
+	</p>
+	<p>
+		This property accesses the <a href="https://docs.microsoft.com/en-us/dotnet/api/system.threading.tasks.task-1.result">Result property</a> of the Tasks involved. This is typically not the preferred way to pull the value of Tasks, but I decided to do it like this since <a href="https://github.com/fscheck/FsCheck/issues/167">FsCheck 2.4.0 doesn't support asynchronous properties</a>.
+	</p>
+	<p>
+		Even though you may feel that a property-based test gives you more confidence than a few hard-coded examples, such a test is nothing but a demonstration of the first functor law. It's no proof, and it only demonstrates that the law holds for <code>Task&lt;int&gt;</code>, not that it holds for <code>Task&lt;string&gt;</code>, <code>Task&lt;Product&gt;</code>, etcetera.
+	</p>
+	<h3 id="12b3ea8d8963414496a6c695f130a4b9">
+		Second functor law for Task <a href="#12b3ea8d8963414496a6c695f130a4b9" title="permalink">#</a>
+	</h3>
+	<p>
+		As is the case with the first functor law, you can also use a property to demonstrate that the second functor law holds:
+	</p>
+	<p>
+		<pre>[<span style="color:#2b91af;">Property</span>(QuietOnSuccess&nbsp;=&nbsp;<span style="color:blue;">true</span>)]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;TaskObeysSecondFunctorLaw(
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:blue;">string</span>,&nbsp;<span style="color:blue;">byte</span>&gt;&nbsp;f,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:blue;">int</span>,&nbsp;<span style="color:blue;">string</span>&gt;&nbsp;g,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">int</span>&nbsp;i)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;&nbsp;left&nbsp;=&nbsp;<span style="color:#2b91af;">Task</span>.FromResult(i).Select(g).Select(f);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;right&nbsp;=&nbsp;<span style="color:#2b91af;">Task</span>.FromResult(i).Select(x&nbsp;=&gt;&nbsp;f(g(x)));
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Assert</span>.Equal(left.Result,&nbsp;right.Result);
+}</pre>
+	</p>
+	<p>
+		Again the same admonitions apply: that property is no proof. It does show, however, that given two functions, <code>f</code> and <code>g</code>, it doesn't matter if you map a Task in one or two steps. The output is the same in both cases.
+	</p>
+	<h3 id="d87480f7e0124db18b22aaacbff3672a">
+		Async functor <a href="#d87480f7e0124db18b22aaacbff3672a" title="permalink">#</a>
+	</h3>
+	<p>
+		F# had asynchronous workflows long before C#, so it uses a slightly different model, supported by separate types. Instead of <code>Task&lt;T&gt;</code>, F# relies on a generic type called <a href="https://msdn.microsoft.com/en-us/visualfsharpdocs/conceptual/control.async%5b%27t%5d-type-%5bfsharp%5d">Async&lt;'T&gt;</a>. It's still a functor, since you can trivially implement a <code>map</code> function for it:
+	</p>
+	<p>
+		<pre><span style="color:blue;">module</span>&nbsp;Async&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;&#39;a&nbsp;-&gt;&nbsp;Async&lt;&#39;a&gt;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;fromValue&nbsp;x&nbsp;=&nbsp;async&nbsp;{&nbsp;<span style="color:blue;">return</span>&nbsp;x&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;(&#39;a&nbsp;-&gt;&nbsp;&#39;b)&nbsp;-&gt;&nbsp;Async&lt;&#39;a&gt;&nbsp;-&gt;&nbsp;Async&lt;&#39;b&gt;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;map&nbsp;f&nbsp;x&nbsp;=&nbsp;async&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;x&#39;&nbsp;=&nbsp;x
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;f&nbsp;x&#39;&nbsp;}</pre>
+	</p>
+	<p>
+		The <code>map</code> function uses the <code>async</code> <a href="https://docs.microsoft.com/en-us/dotnet/fsharp/language-reference/computation-expressions">computation expression</a> to access the value being computed asynchronously. You can use a <code>let!</code> binding to await the value computed in <code>x</code>, and then use the function <code>f</code> to translate that value. The <code>return</code> keyword turns the result into a new <code>Async</code> value.
+	</p>
+	<p>
+		With the <code>map</code> function, you can write code like this:
+	</p>
+	<p>
+		<pre><span style="color:blue;">let</span>&nbsp;(x&nbsp;:&nbsp;Async&lt;int&gt;)&nbsp;=&nbsp;<span style="color:green;">//&nbsp;...</span>
+<span style="color:blue;">let</span>&nbsp;(y&nbsp;:&nbsp;Async&lt;string&gt;)&nbsp;=&nbsp;x&nbsp;|&gt;&nbsp;Async.map&nbsp;string</pre>
+	</p>
+	<p>
+		Once you've composed an asynchronous workflow to your liking, you can run it to compute the value in which you're interested:
+	</p>
+	<p>
+		<pre>&gt; Async.RunSynchronously y;;
+val it : string = "42"</pre>
+	</p>
+	<p>
+		This is the main difference between F# asynchronous workflows and .NET Tasks. You have to explicitly run an asynchronous workflows, whereas Tasks are usually, implicitly, already running in the background.
+	</p>
+	<h3 id="f572e55512ab484584450dc0af7fe9b3">
+		First functor law for Async <a href="#f572e55512ab484584450dc0af7fe9b3" title="permalink">#</a>
+	</h3>
+	<p>
+		The <code>Async.map</code> function obeys the first functor law. Like above, you can use FsCheck to demonstrate how that works:
+	</p>
+	<p>
+		<pre>[&lt;Property(QuietOnSuccess&nbsp;=&nbsp;<span style="color:blue;">true</span>)&gt;]
+<span style="color:blue;">let</span>&nbsp;``Async&nbsp;obeys&nbsp;first&nbsp;functor&nbsp;law``&nbsp;(i&nbsp;:&nbsp;int)&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;&nbsp;left&nbsp;=&nbsp;Async.fromValue&nbsp;i
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;right&nbsp;=&nbsp;Async.fromValue&nbsp;i&nbsp;|&gt;&nbsp;Async.map&nbsp;id
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;Async.RunSynchronously&nbsp;left&nbsp;=!&nbsp;Async.RunSynchronously&nbsp;right</pre>
+	</p>
+	<p>
+		In addition to FsCheck and xUnit.net, this property also uses <a href="https://github.com/SwensenSoftware/unquote">Unquote</a> 4.0.0 for the assertion. The <code>=!</code> operator is an assertion that the left-hand side <em>must equal</em> the right-hand side. If it doesn't, then the operator throws a descriptive exception.
+	</p>
+	<h3 id="6fd1ba5d9c0647c49ba06d7580b2c552">
+		Second functor law for Async <a href="#6fd1ba5d9c0647c49ba06d7580b2c552" title="permalink">#</a>
+	</h3>
+	<p>
+		As is the case with the first functor law, you can also use a property to demonstrate that the second functor law holds:
+	</p>
+	<p>
+		<pre>[&lt;Property(QuietOnSuccess&nbsp;=&nbsp;<span style="color:blue;">true</span>)&gt;]
+<span style="color:blue;">let</span>&nbsp;``Async&nbsp;obeys&nbsp;second&nbsp;functor&nbsp;law``&nbsp;(f&nbsp;:&nbsp;string&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;byte)&nbsp;g&nbsp;(i&nbsp;:&nbsp;int)&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;&nbsp;left&nbsp;=&nbsp;Async.fromValue&nbsp;i&nbsp;|&gt;&nbsp;Async.map&nbsp;g&nbsp;|&gt;&nbsp;Async.map&nbsp;f
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;right&nbsp;=&nbsp;Async.fromValue&nbsp;i&nbsp;|&gt;&nbsp;Async.map&nbsp;(g&nbsp;&gt;&gt;&nbsp;f)
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;Async.RunSynchronously&nbsp;left&nbsp;=!&nbsp;Async.RunSynchronously&nbsp;right</pre>
+	</p>
+	<p>
+		As usual, the second functor law states that given two arbitrary (but <a href="https://en.wikipedia.org/wiki/Pure_function">pure</a>) functions <code>f</code> and <code>g</code>, it doesn't matter if you map an asynchronous workflow in one or two steps. There could be a difference in performance, but the functor laws don't concern themselves with the time dimension.
+	</p>
+	<p>
+		Both of the above properties use the <code>Async.fromValue</code> helper function to create <code>Async</code> values. Perhaps you consider it cheating that it immediately produces a value, but you can add a delay if you want to pretend that actual asynchronous computation takes place. It'll make the tests run slower, but otherwise will not affect the outcome.
+	</p>
+	<h3 id="9ad596ae1e5f483cb6d02ad963a0a378">
+		Task and Async isomorphism <a href="#9ad596ae1e5f483cb6d02ad963a0a378" title="permalink">#</a>
+	</h3>
+	<p>
+		The reason I've covered both <code>Task&lt;T&gt;</code>	and <code>Async&lt;'a&gt;</code> in the same article is that they're equivalent. You can translate a Task to an asynchronous workflow, or the other way around. 
+	</p>
+	<p>
+		<img src="{{ page.image }}" alt="{{ page.image_alt }}">
+	</p>
+	<p>
+		There's performance implications of going back and forth between <code>Task&lt;T&gt;</code>	and <code>Async&lt;'a&gt;</code>, but there's no loss of information. You can, therefore, consider these to representations of asynchronous computations <a href="http://blog.ploeh.dk/2018/01/08/software-design-isomorphisms">isomorphic</a>.
+	</p>
+	<h3 id="4bb86c51ae37462b94e278247d33f8f5">
+		Summary <a href="#4bb86c51ae37462b94e278247d33f8f5" title="permalink">#</a>
+	</h3>
+	<p>
+		Whether you do asynchronous programming with <code>Task&lt;T&gt;</code> or <code>Async&lt;'a&gt;</code>, asynchronous computations form functors. This enables you to piecemeal compose asynchronous workflows.
+	</p>
+	<p>
+		<strong>Next:</strong> Applicative functors.
+	</p>
+</div>
