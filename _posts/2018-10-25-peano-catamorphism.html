@@ -1,0 +1,282 @@
+---
+layout: post
+title: "Peano catamorphism"
+description: "The catamorphism for Peano numbers involves a base value and a successor function."
+date: 2018-10-25 6:25 UTC
+tags: [Software Design, Haskell]
+---
+{% include JB/setup %}
+
+<div id="post">
+	<p>
+		<em>{{ page.description }}</em>
+	</p>
+	<p>
+		This article is part of an <a href="">article series about catamorphisms</a>. A catamorphism is a <a href="http://blog.ploeh.dk/2017/10/04/from-design-patterns-to-category-theory">universal abstraction</a> that describes how to digest a data structure into a potentially more compact value.
+	</p>
+	<p>
+		This article presents the catamorphism for <a href="https://en.wikipedia.org/wiki/Natural_number">natural numbers</a>, as well as how to identify it. The beginning of this article presents the catamorphism in C#, with examples. The rest of the article describes how I deduced the catamorphism. This part of the article presents my work in <a href="https://www.haskell.org">Haskell</a>. Readers not comfortable with Haskell can just read the first part, and consider the rest of the article as an optional appendix.
+	</p>
+	<h3 id="742f4b9c0c014152a933961c10f98b66">
+		C# catamorphism <a href="#742f4b9c0c014152a933961c10f98b66" title="permalink">#</a>
+	</h3>
+	<p>
+		In this article, I model natural numbers using <a href="https://en.wikipedia.org/wiki/Peano_axioms">Peano's model</a>, and I'll reuse the <a href="http://blog.ploeh.dk/2018/05/28/church-encoded-natural-numbers">Church-encoded implementation you've seen before</a>. The catamorphism for <code>INaturalNumber</code> is:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:#2b91af;">T</span>&nbsp;Cata&lt;<span style="color:#2b91af;">T</span>&gt;(<span style="color:blue;">this</span>&nbsp;<span style="color:#2b91af;">INaturalNumber</span>&nbsp;n,&nbsp;<span style="color:#2b91af;">T</span>&nbsp;zero,&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:#2b91af;">T</span>,&nbsp;<span style="color:#2b91af;">T</span>&gt;&nbsp;succ)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;n.Match(zero,&nbsp;p&nbsp;=&gt;&nbsp;p.Cata(succ(zero),&nbsp;succ));
+}</pre>
+	</p>
+	<p>
+		Notice that this is an extension method on <code>INaturalNumber</code>, taking two other arguments: a <code>zero</code> argument which will be returned when the number is <em>zero</em>, and a successor function to return the 'next' value based on a previous value.
+	</p>
+	<p>
+		The <code>zero</code> argument is the easiest to understand. It's simply passed to <code>Match</code> so that this is the value that <code>Cata</code> returns when <code>n</code> is <em>zero</em>.
+	</p>
+	<p>
+		The other argument to <code>Match</code> must be a <code>Func&lt;INaturalNumber, T&gt;</code>; that is, a function that takes an <code>INaturalNumber</code> as input and returns a value of the type <code>T</code>. You can supply such a function by using a lambda expression. This expression receives a predecessor <code>p</code> as input, and has to return a value of the type <code>T</code>. The only function available in this context, however, is <code>succ</code>, which has the type <code>Func&lt;T, T&gt;</code>. How can you make that work?
+	</p>
+	<p>
+		As is often the case when programming with generics, it pays to <em>follow the types</em>. A <code>Func&lt;T, T&gt;</code> requires an input of the type <code>T</code>. Do you have any <code>T</code> objects around?
+	</p>
+	<p>
+		The only available <code>T</code> object is <code>zero</code>, so you could call <code>succ(zero)</code> to produce another <code>T</code> value. While you could return that immediately, that'd ignore the predecessor <code>p</code>, so that's not going to work. Another option, which is the one that works, is to recursively call <code>Cata</code> with <code>succ(zero)</code> as the <code>zero</code> value, and <code>succ</code> as the second argument.
+	</p>
+	<p>
+		What this accomplishes is that <code>Cata</code> keeps recursively calling itself until <code>n</code> is <em>zero</em>. The <code>zero</code> object, however, will be the result of repeated applications of <code>succ(zero)</code>. In other words, <code>succ</code> will be called as many times as the natural number. If <code>n</code> is 7, then <code>succ</code> will be called seven times, the first time with the original <code>zero</code> value, the next time with the result of <code>succ(zero)</code>, the third time with the result of <code>succ(succ(zero))</code>, and so on. If the number is 42, <code>succ</code> will be called 42 times.
+	</p>
+	<h3 id="633dae2048cd45ebaa17962710048c67">
+		Arithmetic <a href="#633dae2048cd45ebaa17962710048c67" title="permalink">#</a>
+	</h3>
+	<p>
+		You can implement all the functionality you saw in the article on Church-encoded natural numbers. You can start gently by converting a Peano number into a normal C# <code>int</code>:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:blue;">int</span>&nbsp;Count(<span style="color:blue;">this</span>&nbsp;<span style="color:#2b91af;">INaturalNumber</span>&nbsp;n)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;n.Cata(0,&nbsp;x&nbsp;=&gt;&nbsp;1&nbsp;+&nbsp;x);
+}</pre>
+	</p>
+	<p>
+		You can play with the functionality in <em>C# Interactive</em> to get a feel for how it works:
+	</p>
+	<p>
+		<pre>&gt; <span style="color:#2b91af;">NaturalNumber</span>.Eight.Count()
+8
+&gt; <span style="color:#2b91af;">NaturalNumber</span>.Five.Count()
+5</pre>
+	</p>
+	<p>
+		The <code>Count</code> extension method uses <code>Cata</code> to count the level of recursion. The <code>zero</code> value is, not surprisingly, <code>0</code>, and the successor function simply adds one to the previous number. Since the successor function runs as many times as encoded by the Peano number, and since the initial value is <code>0</code>, you get the integer value of the number when <code>Cata</code> exits.
+	</p>
+	<p>
+		A useful building block you can write using <code>Cata</code> is a function to increment a natural number by one:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:#2b91af;">INaturalNumber</span>&nbsp;Increment(<span style="color:blue;">this</span>&nbsp;<span style="color:#2b91af;">INaturalNumber</span>&nbsp;n)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;n.Cata(One,&nbsp;p&nbsp;=&gt;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Successor</span>(p));
+}</pre>
+	</p>
+	<p>
+		This, again, works as you'd expect:
+	</p>
+	<p>
+		<pre>&gt; <span style="color:#2b91af;">NaturalNumber</span>.Zero.Increment().Count()
+1
+&gt; <span style="color:#2b91af;">NaturalNumber</span>.Eight.Increment().Count()
+9</pre>
+	</p>
+	<p>
+		With the <code>Increment</code> method and <code>Cata</code>, you can easily implement addition:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:#2b91af;">INaturalNumber</span>&nbsp;Add(<span style="color:blue;">this</span>&nbsp;<span style="color:#2b91af;">INaturalNumber</span>&nbsp;x,&nbsp;<span style="color:#2b91af;">INaturalNumber</span>&nbsp;y)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;x.Cata(y,&nbsp;p&nbsp;=&gt;&nbsp;p.Increment());
+}</pre>
+	</p>
+	<p>
+		The trick here is to use <code>y</code> as the <code>zero</code> case for <code>x</code>. In other words, if <code>x</code> is <em>zero</em>, then <code>Add</code> should return <code>y</code>. If <code>x</code> isn't <em>zero</em>, then <code>Increment</code> it as many times as the number encodes, but starting at <code>y</code>. In other words, start with <code>y</code> and <code>Increment</code> <code>x</code> times.
+	</p>
+	<p>
+		The catamorphism makes it much easier to implement arithmetic operation. Just consider multiplication, which wasn't the simplest implementation in the previous article. Now, it's as simple as this:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:#2b91af;">INaturalNumber</span>&nbsp;Multiply(<span style="color:blue;">this</span>&nbsp;<span style="color:#2b91af;">INaturalNumber</span>&nbsp;x,&nbsp;<span style="color:#2b91af;">INaturalNumber</span>&nbsp;y)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;x.Cata(Zero,&nbsp;p&nbsp;=&gt;&nbsp;p.Add(y));
+}</pre>
+	</p>
+	<p>
+		Start at <code>0</code> and simply <code>Add(y)</code> <code>x</code> times.
+	</p>
+	<p>
+		<pre>&gt; <span style="color:#2b91af;">NaturalNumber</span>.Nine.Multiply(<span style="color:#2b91af;">NaturalNumber</span>.Four).Count()
+36</pre>
+	</p>
+	<p>
+		Finally, you can also implement some common predicates:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:#2b91af;">IChurchBoolean</span>&nbsp;IsZero(<span style="color:blue;">this</span>&nbsp;<span style="color:#2b91af;">INaturalNumber</span>&nbsp;n)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;n.Cata&lt;<span style="color:#2b91af;">IChurchBoolean</span>&gt;(<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">ChurchTrue</span>(),&nbsp;_&nbsp;=&gt;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">ChurchFalse</span>());
+}
+ 
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:#2b91af;">IChurchBoolean</span>&nbsp;IsEven(<span style="color:blue;">this</span>&nbsp;<span style="color:#2b91af;">INaturalNumber</span>&nbsp;n)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;n.Cata&lt;<span style="color:#2b91af;">IChurchBoolean</span>&gt;(<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">ChurchTrue</span>(),&nbsp;b&nbsp;=&gt;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">ChurchNot</span>(b));
+}
+ 
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:#2b91af;">IChurchBoolean</span>&nbsp;IsOdd(<span style="color:blue;">this</span>&nbsp;<span style="color:#2b91af;">INaturalNumber</span>&nbsp;n)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">ChurchNot</span>(n.IsEven());
+}</pre>
+	</p>
+	<p>
+		Particularly <code>IsEven</code> is elegant: It considers <code>zero</code> even, so simply uses a <code>new ChurchTrue()</code> object for that case. In all other cases, it alternates between <em>false</em> and <em>true</em> by negating the predecessor.
+	</p>
+	<p>
+		<pre>&gt; <span style="color:#2b91af;">NaturalNumber</span>.Three.IsEven().ToBool()
+false</pre>
+	</p>
+	<p>
+		It seems convincing that we can use <code>Cata</code> to implement all the other functionality we need. That's a characteristic of a catamorphism. Still, how do we know that <code>Cata</code> is, in fact, the catamorphism for natural numbers?
+	</p>
+	<h3 id="05dbca489b8a49be830df87e13bfcae3">
+		Peano F-Algebra <a href="#05dbca489b8a49be830df87e13bfcae3" title="permalink">#</a>
+	</h3>
+	<p>
+		As in the <a href="">previous article</a>, I'll use <code>Fix</code> and <code>cata</code> as explained in <a href="https://bartoszmilewski.com">Bartosz Milewski</a>'s excellent <a href="https://bartoszmilewski.com/2017/02/28/f-algebras/">article on F-Algebras</a>. The <code>NatF</code> type comes from his article as well:
+	</p>
+	<p>
+		<pre><span style="color:blue;">data</span>&nbsp;NatF&nbsp;a&nbsp;=&nbsp;ZeroF&nbsp;|&nbsp;SuccF&nbsp;a&nbsp;<span style="color:blue;">deriving</span>&nbsp;(<span style="color:#2b91af;">Show</span>,&nbsp;<span style="color:#2b91af;">Eq</span>,&nbsp;<span style="color:#2b91af;">Read</span>)
+ 
+<span style="color:blue;">instance</span>&nbsp;<span style="color:blue;">Functor</span>&nbsp;<span style="color:blue;">NatF</span>&nbsp;<span style="color:blue;">where</span>
+&nbsp;&nbsp;<span style="color:blue;">fmap</span>&nbsp;_&nbsp;ZeroF&nbsp;=&nbsp;ZeroF
+&nbsp;&nbsp;<span style="color:blue;">fmap</span>&nbsp;f&nbsp;(SuccF&nbsp;x)&nbsp;=&nbsp;SuccF&nbsp;$&nbsp;f&nbsp;x</pre>
+	</p>
+	<p>
+		You can use the fixed point of this functor to define numbers with a shared type. Here's just the first ten:
+	</p>
+	<p>
+		<pre><span style="color:#2b91af;">zeroF</span>,&nbsp;<span style="color:#2b91af;">oneF</span>,&nbsp;<span style="color:#2b91af;">twoF</span>,&nbsp;<span style="color:#2b91af;">threeF</span>,&nbsp;<span style="color:#2b91af;">fourF</span>,&nbsp;<span style="color:#2b91af;">fiveF</span>,&nbsp;<span style="color:#2b91af;">sixF</span>,&nbsp;<span style="color:#2b91af;">sevenF</span>,&nbsp;<span style="color:#2b91af;">eightF</span>,&nbsp;<span style="color:#2b91af;">nineF</span>&nbsp;::&nbsp;<span style="color:blue;">Fix</span>&nbsp;<span style="color:blue;">NatF</span>
+zeroF&nbsp;&nbsp;=&nbsp;Fix&nbsp;ZeroF
+oneF&nbsp;&nbsp;&nbsp;=&nbsp;Fix&nbsp;$&nbsp;SuccF&nbsp;zeroF
+twoF&nbsp;&nbsp;&nbsp;=&nbsp;Fix&nbsp;$&nbsp;SuccF&nbsp;oneF
+threeF&nbsp;=&nbsp;Fix&nbsp;$&nbsp;SuccF&nbsp;twoF
+fourF&nbsp;&nbsp;=&nbsp;Fix&nbsp;$&nbsp;SuccF&nbsp;threeF
+fiveF&nbsp;&nbsp;=&nbsp;Fix&nbsp;$&nbsp;SuccF&nbsp;fourF
+sixF&nbsp;&nbsp;&nbsp;=&nbsp;Fix&nbsp;$&nbsp;SuccF&nbsp;fiveF
+sevenF&nbsp;=&nbsp;Fix&nbsp;$&nbsp;SuccF&nbsp;sixF
+eightF&nbsp;=&nbsp;Fix&nbsp;$&nbsp;SuccF&nbsp;sevenF
+nineF&nbsp;&nbsp;=&nbsp;Fix&nbsp;$&nbsp;SuccF&nbsp;eightF</pre>
+	</p>
+	<p>
+		That's all you need to identify the catamorphism.
+	</p>
+	<h3 id="f0e66c873a034830a4b069229971299a">
+		Haskell catamorphism <a href="#f0e66c873a034830a4b069229971299a" title="permalink">#</a>
+	</h3>
+	<p>
+		At this point, you have two out of three elements of an F-Algebra. You have an endofunctor (<code>NatF</code>), and an object <code>a</code>, but you still need to find a morphism <code>NatF a -&gt; a</code>.
+	</p>
+	<p>
+		As in the previous article, start by writing a function that will become the catamorphism, based on <code>cata</code>:
+	</p>
+	<p>
+		<pre>natF&nbsp;=&nbsp;cata&nbsp;alg
+&nbsp;&nbsp;<span style="color:blue;">where</span>&nbsp;alg&nbsp;ZeroF&nbsp;=&nbsp;<span style="color:blue;">undefined</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;alg&nbsp;(SuccF&nbsp;predecessor)&nbsp;=&nbsp;<span style="color:blue;">undefined</span></pre>
+	</p>
+	<p>
+		While this compiles, with its <code>undefined</code> implementations, it obviously doesn't do anything useful. I find, however, that it helps me think. How can you return a value of the type <code>a</code> from the <code>ZeroF</code> case? You could pass an argument to the <code>natF</code> function:
+	</p>
+	<p>
+		<pre>natF&nbsp;z&nbsp;=&nbsp;cata&nbsp;alg
+&nbsp;&nbsp;<span style="color:blue;">where</span>&nbsp;alg&nbsp;ZeroF&nbsp;=&nbsp;z
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;alg&nbsp;(SuccF&nbsp;predecessor)&nbsp;=&nbsp;<span style="color:blue;">undefined</span></pre>
+	</p>
+	<p>
+		In the <code>SuccF</code> case, <code>predecessor</code> is already of the polymorphic type <code>a</code>, so instead of returning a constant value, you can supply a function as an argument to <code>natF</code> and use it in that case:
+	</p>
+	<p>
+		<pre><span style="color:#2b91af;">natF</span>&nbsp;::&nbsp;a&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;(a&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;a)&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">Fix</span>&nbsp;<span style="color:blue;">NatF</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;a
+natF&nbsp;z&nbsp;next&nbsp;=&nbsp;cata&nbsp;alg
+&nbsp;&nbsp;<span style="color:blue;">where</span>&nbsp;alg&nbsp;ZeroF&nbsp;=&nbsp;z
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;alg&nbsp;(SuccF&nbsp;predecessor)&nbsp;=&nbsp;next&nbsp;predecessor</pre>
+	</p>
+	<p>
+		This works. Since <code>cata</code> has the type <code>Functor f =&gt; (f a -&gt; a) -&gt; Fix f -&gt; a</code>, that means that <code>alg</code> has the type <code>f a -&gt; a</code>. In the case of <code>NatF</code>, the compiler infers that the <code>alg</code> function has the type <code>NatF a -&gt; a</code>, which is just what you need!
+	</p>
+	<p>
+		For good measure, I should point out that, as usual, the above <code>natF</code> function isn't the only possible catamorphism. Trivially, you can flip the order of the arguments, and this would also be a catamorphism. These two alternatives are isomorphic.
+	</p>
+	<p>
+		The <code>natF</code> function identifies the Peano number catamorphism, which is equivalent to the C# representation in the beginning of the article. I called the function <code>natF</code>, because there's a tendency in Haskell to name the 'case analysis' or catamorphism after the type, just with a lower-case initial letter.
+	</p>
+	<h3 id="e78ae79059e14f4b92f525393cc74861">
+		Basis <a href="#e78ae79059e14f4b92f525393cc74861" title="permalink">#</a>
+	</h3>
+	<p>
+		A catamorphism can be used to implement most (if not all) other useful functionality, like all of the above C# functionality. In fact, I wrote the Haskell code first, and then translated my implementations into the above C# extension methods. This means that the following functions apply the same reasoning:
+	</p>
+	<p>
+		<pre><span style="color:#2b91af;">evenF</span>&nbsp;::&nbsp;<span style="color:blue;">Fix</span>&nbsp;<span style="color:blue;">NatF</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">Fix</span>&nbsp;<span style="color:blue;">BoolF</span>
+evenF&nbsp;=&nbsp;natF&nbsp;trueF&nbsp;notF
+ 
+<span style="color:#2b91af;">oddF</span>&nbsp;::&nbsp;<span style="color:blue;">Fix</span>&nbsp;<span style="color:blue;">NatF</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">Fix</span>&nbsp;<span style="color:blue;">BoolF</span>
+oddF&nbsp;=&nbsp;notF&nbsp;.&nbsp;evenF
+ 
+<span style="color:#2b91af;">incF</span>&nbsp;::&nbsp;<span style="color:blue;">Fix</span>&nbsp;<span style="color:blue;">NatF</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">Fix</span>&nbsp;<span style="color:blue;">NatF</span>
+incF&nbsp;=&nbsp;natF&nbsp;oneF&nbsp;$&nbsp;Fix&nbsp;.&nbsp;SuccF
+ 
+<span style="color:#2b91af;">addF</span>&nbsp;::&nbsp;<span style="color:blue;">Fix</span>&nbsp;<span style="color:blue;">NatF</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">Fix</span>&nbsp;<span style="color:blue;">NatF</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">Fix</span>&nbsp;<span style="color:blue;">NatF</span>
+addF&nbsp;x&nbsp;y&nbsp;=&nbsp;natF&nbsp;y&nbsp;incF&nbsp;x
+ 
+<span style="color:#2b91af;">multiplyF</span>&nbsp;::&nbsp;<span style="color:blue;">Fix</span>&nbsp;<span style="color:blue;">NatF</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">Fix</span>&nbsp;<span style="color:blue;">NatF</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">Fix</span>&nbsp;<span style="color:blue;">NatF</span>
+multiplyF&nbsp;x&nbsp;y&nbsp;=&nbsp;natF&nbsp;zeroF&nbsp;(addF&nbsp;y)&nbsp;x</pre>
+	</p>
+	<p>
+		Here are some GHCi usage examples:
+	</p>
+	<p>
+		<pre>Prelude Boolean Nat&gt; evenF eightF
+Fix TrueF
+Prelude Boolean Nat&gt; toNum $ multiplyF sevenF sixF
+42</pre>
+	</p>
+	<p>
+		The <code>toNum</code> function corresponds to the above <code>Count</code> C# method. It is, again, based on <code>cata</code>. You can use <code>ana</code> to convert the other way:
+	</p>
+	<p>
+		<pre><span style="color:#2b91af;">toNum</span>&nbsp;::&nbsp;<span style="color:blue;">Num</span>&nbsp;a&nbsp;<span style="color:blue;">=&gt;</span>&nbsp;<span style="color:blue;">Fix</span>&nbsp;<span style="color:blue;">NatF</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;a
+toNum&nbsp;=&nbsp;natF&nbsp;0&nbsp;(+&nbsp;1)
+ 
+<span style="color:#2b91af;">fromNum</span>&nbsp;::&nbsp;(<span style="color:blue;">Eq</span>&nbsp;a,&nbsp;<span style="color:blue;">Num</span>&nbsp;a)&nbsp;<span style="color:blue;">=&gt;</span>&nbsp;a&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">Fix</span>&nbsp;<span style="color:blue;">NatF</span>
+fromNum&nbsp;=&nbsp;ana&nbsp;coalg
+&nbsp;&nbsp;<span style="color:blue;">where</span>&nbsp;coalg&nbsp;0&nbsp;=&nbsp;ZeroF
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;coalg&nbsp;x&nbsp;=&nbsp;SuccF&nbsp;$&nbsp;x&nbsp;-&nbsp;1</pre>
+	</p>
+	<p>
+		This demonstrates that <code>Fix NatF</code> is isomorphic to <code>Num</code> instances, such as <code>Integer</code>.
+	</p>
+	<h3 id="d09e79446af14875a42f66869e10f33a">
+		Summary <a href="#d09e79446af14875a42f66869e10f33a" title="permalink">#</a>
+	</h3>
+	<p>
+		The catamorphism for Peano numbers is a pair consisting of a zero value and a successor function. The most common description of catamorphisms that I've found emphasise how a catamorphism is like a <em>fold;</em> an operation you can use to reduce a data structure like a list or a tree to a single value. This is what happens here, but even so, the <code>Fix NatF</code> type isn't a <code>Foldable</code> instance. The reason is that while <code>NatF</code> is a polymorphic type, its fixed point <code>Fix NatF</code> isn't. Haskell's <code>Foldable</code> type class requires foldable containers to be polymorphic (what C# programmers would call 'generic').
+	</p>
+	<p>
+		When I first ran into the concept of a <em>catamorphism</em>, it was invariably described as a 'generalisation of fold'. The examples shown were always how the catamorphism for linked list is the same as its <em>fold</em>. I found such explanations unhelpful, because I couldn't understand how those two concepts differ.
+	</p>
+	<p>
+		The purpose with this article series is to show just how much more general the abstraction of a catamorphism is. In this article you saw how an infinitely recursive data structure like Peano numbers have a catamorphism, even though it isn't a parametrically polymorphic type. In the next article, though, you'll see the first example of a polymorphic type where the catamorphism coincides with the fold.
+	</p>
+	<p>
+		<strong>Next:</strong> Maybe catamorphism.
+	</p>
+</div>
