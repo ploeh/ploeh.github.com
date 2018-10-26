@@ -1,0 +1,323 @@
+---
+layout: post
+title: "Maybe catamorphism"
+description: "The catamorphism for Maybe is just a simplification of its fold."
+date: 2018-10-26 6:31 UTC
+tags: [Software Design, Haskell]
+---
+{% include JB/setup %}
+
+<div id="post">
+	<p>
+		<em>{{ page.description }}</em>
+	</p>
+	<p>
+		This article is part of an <a href="">article series about catamorphisms</a>. A catamorphism is a <a href="http://blog.ploeh.dk/2017/10/04/from-design-patterns-to-category-theory">universal abstraction</a> that describes how to digest a data structure into a potentially more compact value.
+	</p>
+	<p>
+		This article presents the catamorphism for <a href="http://blog.ploeh.dk/2018/03/26/the-maybe-functor">Maybe</a>, as well as how to identify it. The beginning of this article presents the catamorphism in C#, with examples. The rest of the article describes how to deduce the catamorphism. This part of the article presents my work in <a href="https://www.haskell.org">Haskell</a>. Readers not comfortable with Haskell can just read the first part, and consider the rest of the article as an optional appendix.
+	</p>
+	<p>
+		<em>Maybe</em> is a <a href="https://bartoszmilewski.com/2014/01/14/functors-are-containers">data container</a> that models the absence or presence of a value. <a href="http://blog.ploeh.dk/2015/11/13/null-has-no-type-but-maybe-has">Contrary to null, Maybe has a type</a>, so offers a sane and reasonable way to model that situation.
+	</p>
+	<h3 id="1feeee3382ff44d182e0a28a33f8f80a">
+		C# catamorphism <a href="#1feeee3382ff44d182e0a28a33f8f80a" title="permalink">#</a>
+	</h3>
+	<p>
+		This article uses <a href="http://blog.ploeh.dk/2018/06/04/church-encoded-maybe">Church-encoded Maybe</a>. Other, <a href="http://blog.ploeh.dk/2018/03/26/the-maybe-functor">alternative implementations of Maybe are possible</a>. The catamorphism for Maybe is the <code>Match</code> method:
+	</p>
+	<p>
+		<pre><span style="color:#2b91af;">TResult</span>&nbsp;Match&lt;<span style="color:#2b91af;">TResult</span>&gt;(<span style="color:#2b91af;">TResult</span>&nbsp;nothing,&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:#2b91af;">T</span>,&nbsp;<span style="color:#2b91af;">TResult</span>&gt;&nbsp;just);</pre>
+	</p>
+	<p>
+		Like the <a href="">Peano catamorphism</a>, the Maybe catamorphism is a pair of a value and a function. The <code>nothing</code> value corresponds to the absence of data, whereas the <code>just</code> function handles the presence of data.
+	</p>
+	<p>
+		Given, for example, a Maybe containing a number, you can use <code>Match</code> to <a href="">get the value out of the Maybe</a>:
+	</p>
+	<p>
+		<pre>&gt; <span style="color:#2b91af;">IMaybe</span>&lt;<span style="color:blue;">int</span>&gt;&nbsp;maybe&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Just</span>&lt;<span style="color:blue;">int</span>&gt;(42);
+&gt; maybe.Match(0,&nbsp;x&nbsp;=&gt;&nbsp;x)
+42
+&gt; <span style="color:#2b91af;">IMaybe</span>&lt;<span style="color:blue;">int</span>&gt;&nbsp;maybe&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Nothing</span>&lt;<span style="color:blue;">int</span>&gt;();
+&gt; maybe.Match(0,&nbsp;x&nbsp;=&gt;&nbsp;x)
+0</pre>
+	</p>
+	<p>
+		The functionality is, however, more useful than a simple <em>get-value-or-default</em> operation. Often, you don't have a good default value for the type potentially wrapped in a Maybe object. In the core of your application architecture, it may not be clear how to deal with, say, the absence of a <code>Reservation</code> object, whereas at the boundary of your system, it's evident how to convert both absence and presence of data into a unifying type, such as an HTTP response:
+	</p>
+	<p>
+		<pre><span style="color:#2b91af;">Maybe</span>&lt;<span style="color:#2b91af;">Reservation</span>&gt;&nbsp;maybe&nbsp;=&nbsp;<span style="color:green;">//&nbsp;...</span>
+<span style="color:blue;">return</span>&nbsp;maybe
+&nbsp;&nbsp;&nbsp;&nbsp;.Select(r&nbsp;=&gt;&nbsp;Repository.Create(r))
+&nbsp;&nbsp;&nbsp;&nbsp;.Match&lt;<span style="color:#2b91af;">IHttpActionResult</span>&gt;(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;nothing:&nbsp;Content(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">HttpStatusCode</span>.InternalServerError,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">HttpError</span>(<span style="color:#a31515;">&quot;Couldn&#39;t&nbsp;accept.&quot;</span>)),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;just:&nbsp;id&nbsp;=&gt;&nbsp;Ok(id));</pre>
+	</p>
+	<p>
+		This enables you to avoid special cases, such as null <code>Reservation</code> objects, or magic numbers like <code>-1</code> to indicate the absence of <code>id</code> values. At the boundary of an HTTP-based application, you know that you must return an HTTP response. That's the unifying type, so you can return <code>200 OK</code> with a reservation ID in the response body when data is present, and <code>500 Internal Server Error</code> when data is absent.
+	</p>
+	<h3 id="87d91da8944f4eb5b8b24e9ea20d3e1b">
+		Maybe F-Algebra <a href="#87d91da8944f4eb5b8b24e9ea20d3e1b" title="permalink">#</a>
+	</h3>
+	<p>
+		As in the <a href="">previous article</a>, I'll use <code>Fix</code> and <code>cata</code> as explained in <a href="https://bartoszmilewski.com">Bartosz Milewski</a>'s excellent <a href="https://bartoszmilewski.com/2017/02/28/f-algebras/">article on F-Algebras</a>.
+	</p>
+	<p>
+		While F-Algebras and fixed points are mostly used for recursive data structures, you can also define an F-Algebra for a non-recursive data structure. You already saw an example of that in the article about <a href="">Boolean catamorphism</a>. The difference between Boolean values and Maybe is that the <em>just</em> case of Maybe carries a value. You can model this as a <code>Functor</code> with both a carrier type and a type argument for the data that Maybe may contain:
+	</p>
+	<p>
+		<pre><span style="color:blue;">data</span>&nbsp;MaybeF&nbsp;a&nbsp;c&nbsp;=&nbsp;NothingF&nbsp;|&nbsp;JustF&nbsp;a&nbsp;<span style="color:blue;">deriving</span>&nbsp;(<span style="color:#2b91af;">Show</span>,&nbsp;<span style="color:#2b91af;">Eq</span>,&nbsp;<span style="color:#2b91af;">Read</span>)
+ 
+<span style="color:blue;">instance</span>&nbsp;<span style="color:blue;">Functor</span>&nbsp;(<span style="color:blue;">MaybeF</span>&nbsp;a)&nbsp;<span style="color:blue;">where</span>
+&nbsp;&nbsp;<span style="color:blue;">fmap</span>&nbsp;_&nbsp;&nbsp;NothingF&nbsp;=&nbsp;NothingF
+&nbsp;&nbsp;<span style="color:blue;">fmap</span>&nbsp;_&nbsp;(JustF&nbsp;x)&nbsp;=&nbsp;JustF&nbsp;x</pre>
+	</p>
+	<p>
+		I chose to call the 'data type' <code>a</code> and the carrier type <code>c</code> (for <em>carrier</em>). As was also the case with <code>BoolF</code>, the <code>Functor</code> instance ignores the map function because the carrier type is missing from both the <code>NothingF</code> case and the <code>JustF</code> case. Like the <code>Functor</code> instance for <code>BoolF</code>, it'd seem that nothing happens, but at the type level, this is still a translation from <code>MaybeF a c</code> to <code>MaybeF a c1</code>. Not much of a function, perhaps, but definitely an <em>endofunctor</em>.
+	</p>
+	<p>
+		In the previous articles, it was possible to work directly with the fixed points of both functors; i.e. <code>Fix BoolF</code> and <code>Fix NatF</code>. Haskell isn't happy about attempts to define various instances for <code>Fix (MaybeF a)</code>, so in order to make this easier, you can define a <code>newtype</code> wrapper:
+	</p>
+	<p>
+		<pre><span style="color:blue;">newtype</span>&nbsp;MaybeFix&nbsp;a&nbsp;=
+&nbsp;&nbsp;MaybeFix&nbsp;{&nbsp;unMaybeFix&nbsp;::&nbsp;Fix&nbsp;(MaybeF&nbsp;a)&nbsp;}&nbsp;<span style="color:blue;">deriving</span>&nbsp;(<span style="color:#2b91af;">Show</span>,&nbsp;<span style="color:#2b91af;">Eq</span>,&nbsp;<span style="color:#2b91af;">Read</span>)</pre>
+	</p>
+	<p>
+		In order to make it easier to work with <code>MaybeFix</code> you can add helper functions to create values:
+	</p>
+	<p>
+		<pre><span style="color:#2b91af;">nothingF</span>&nbsp;::&nbsp;<span style="color:blue;">MaybeFix</span>&nbsp;a
+nothingF&nbsp;=&nbsp;MaybeFix&nbsp;$&nbsp;Fix&nbsp;NothingF
+ 
+<span style="color:#2b91af;">justF</span>&nbsp;::&nbsp;a&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">MaybeFix</span>&nbsp;a
+justF&nbsp;=&nbsp;MaybeFix&nbsp;.&nbsp;Fix&nbsp;.&nbsp;JustF</pre>
+	</p>
+	<p>
+		You can now create <code>MaybeFix</code> values to your heart's content:
+	</p>
+	<p>
+		<pre>Prelude Fix Maybe&gt; justF 42
+MaybeFix {unMaybeFix = Fix (JustF 42)}
+Prelude Fix Maybe&gt; nothingF
+MaybeFix {unMaybeFix = Fix NothingF}</pre>
+	</p>
+	<p>
+		That's all you need to identify the catamorphism.
+	</p>
+	<h3 id="24db4c715d1f4540bd8f87604819952f">
+		Haskell catamorphism <a href="#24db4c715d1f4540bd8f87604819952f" title="permalink">#</a>
+	</h3>
+	<p>
+		At this point, you have two out of three elements of an F-Algebra. You have an endofunctor (<code>MaybeF</code>), and an object <code>a</code>, but you still need to find a morphism <code>MaybeF a c -&gt; c</code>. Notice that the algebra you have to find is the function that reduces the functor to its <em>carrier type</em> <code>c</code>, not the 'data type' <code>a</code>. This takes some time to get used to, but that's how catamorphisms work. This doesn't mean, however, that you get to ignore <code>a</code>, as you'll see.
+	</p>
+	<p>
+		As in the previous article, start by writing a function that will become the catamorphism, based on <code>cata</code>:
+	</p>
+	<p>
+		<pre>maybeF&nbsp;=&nbsp;cata&nbsp;alg&nbsp;.&nbsp;unMaybeFix
+&nbsp;&nbsp;<span style="color:blue;">where</span>&nbsp;alg&nbsp;&nbsp;NothingF&nbsp;=&nbsp;<span style="color:blue;">undefined</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;alg&nbsp;(JustF&nbsp;x)&nbsp;=&nbsp;<span style="color:blue;">undefined</span></pre>
+	</p>
+	<p>
+		While this compiles, with its <code>undefined</code> implementations, it obviously doesn't do anything useful. I find, however, that it helps me think. How can you return a value of the type <code>c</code> from the <code>NothingF</code> case? You could pass an argument to the <code>maybeF</code> function:
+	</p>
+	<p>
+		<pre>maybeF&nbsp;n&nbsp;=&nbsp;cata&nbsp;alg&nbsp;.&nbsp;unMaybeFix
+&nbsp;&nbsp;<span style="color:blue;">where</span>&nbsp;alg&nbsp;&nbsp;NothingF&nbsp;=&nbsp;n
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;alg&nbsp;(JustF&nbsp;x)&nbsp;=&nbsp;<span style="color:blue;">undefined</span></pre>
+	</p>
+	<p>
+		The <code>JustF</code> case, contrary to <code>NothingF</code>, already contains a value, and it'd be incorrect to ignore it. On the other hand, <code>x</code> is a value of type <code>a</code>, and you need to return a value of type <code>c</code>. You'll need a function to perform the conversion, so pass such a function as an argument to <code>maybeF</code> as well:
+	</p>
+	<p>
+		<pre><span style="color:#2b91af;">maybeF</span>&nbsp;::&nbsp;c&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;(a&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;c)&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">MaybeFix</span>&nbsp;a&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;c
+maybeF&nbsp;n&nbsp;f&nbsp;=&nbsp;cata&nbsp;alg&nbsp;.&nbsp;unMaybeFix
+&nbsp;&nbsp;<span style="color:blue;">where</span>&nbsp;alg&nbsp;&nbsp;NothingF&nbsp;=&nbsp;n
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;alg&nbsp;(JustF&nbsp;x)&nbsp;=&nbsp;f&nbsp;x</pre>
+	</p>
+	<p>
+		This works. Since <code>cata</code> has the type <code>Functor f =&gt; (f a -&gt; a) -&gt; Fix f -&gt; a</code>, that means that <code>alg</code> has the type <code>f a -&gt; a</code>. In the case of <code>MaybeF</code>, the compiler infers that the <code>alg</code> function has the type <code>MaybeF a c -&gt; c</code>, which is just what you need!
+	</p>
+	<p>
+		You can now see what the carrier type <code>c</code> is for. It's the type that the algebra extracts, and thus the type that the catamorphism returns.
+	</p>
+	<p>
+		Notice that <code>maybeF</code>, like the above C# <code>Match</code> method, takes as arguments a pair of a value and a function (together with the Maybe value itself). Those are two representations of the same idea. Furthermore, this is nearly identical to the <code>maybe</code> function in Haskell's <code>Data.Maybe</code> module. I found if fitting, therefore, to name the function <code>maybeF</code>.
+	</p>
+	<h3 id="d8a0eed800de48a994085c419b7b5379">
+		Basis <a href="#d8a0eed800de48a994085c419b7b5379" title="permalink">#</a>
+	</h3>
+	<p>
+		You can implement most other useful functionality with <code>maybeF</code>. Here's the <code>Functor</code> instance:
+	</p>
+	<p>
+		<pre><span style="color:blue;">instance</span>&nbsp;<span style="color:blue;">Functor</span>&nbsp;<span style="color:blue;">MaybeFix</span>&nbsp;<span style="color:blue;">where</span>
+&nbsp;&nbsp;<span style="color:blue;">fmap</span>&nbsp;f&nbsp;=&nbsp;maybeF&nbsp;nothingF&nbsp;(justF&nbsp;.&nbsp;f)</pre>
+	</p>
+	<p>
+		Since <code>fmap</code> should be a structure-preserving map, you'll have to map the <em>nothing</em> case to the <em>nothing</em> case, and <em>just</em> to <em>just</em>. When calling <code>maybeF</code>, you must supply a value for the <em>nothing</em> case and a function to deal with the <em>just</em> case. The <em>nothing</em> case is easy to handle: just use <code>nothingF</code>.
+	</p>
+	<p>
+		In the <em>just</em> case, first apply the function <code>f</code> to map from <code>a</code> to <code>b</code>, and then use <code>justF</code> to wrap the <code>b</code> value in a new <code>MaybeFix</code> container to get <code>MaybeFix b</code>.
+	</p>
+	<p>
+		<code>Applicative</code> is a little harder, but not much:
+	</p>
+	<p>
+		<pre><span style="color:blue;">instance</span>&nbsp;<span style="color:blue;">Applicative</span>&nbsp;<span style="color:blue;">MaybeFix</span>&nbsp;<span style="color:blue;">where</span>
+&nbsp;&nbsp;pure&nbsp;=&nbsp;justF
+&nbsp;&nbsp;f&nbsp;&lt;*&gt;&nbsp;x&nbsp;=&nbsp;maybeF&nbsp;nothingF&nbsp;(&lt;$&gt;&nbsp;x)&nbsp;f</pre>
+	</p>
+	<p>
+		The <code>pure</code> function is just <em>justF</em> (pun intended). The <em>apply</em> operator <code>&lt;*&gt;</code> is more complex.
+	</p>
+	<p>
+		Both <code>f</code> and <code>x</code> surrounding <code>&lt;*&gt;</code> are <code>MaybeFix</code> values: <code>f</code> is <code>MaybeFix (a -&gt; b)</code>, and <code>x</code> is <code>MaybeFix a</code>. While it's becoming increasingly clear that you can use a catamorphism like <code>maybeF</code> to implement most other functionality, to which <code>MaybeFix</code> value should you apply it? To <code>f</code> or <code>x</code>?
+	</p>
+	<p>
+		Both are possible, but the code looks (in my opinion) more readable if you apply it to <code>f</code>. Again, when <code>f</code> is <em>nothing</em>, return <code>nothingF</code>. When <code>f</code> is <em>just</em>, use the functor instance to map <code>x</code> (using the infix <code>fmap</code> alias <code>&lt;$&gt;</code>).
+	</p>
+	<p>
+		The <code>Monad</code> instance, on the other hand, is almost trivial:
+	</p>
+	<p>
+		<pre><span style="color:blue;">instance</span>&nbsp;<span style="color:blue;">Monad</span>&nbsp;<span style="color:blue;">MaybeFix</span>&nbsp;<span style="color:blue;">where</span>
+&nbsp;&nbsp;x&nbsp;&gt;&gt;=&nbsp;f&nbsp;=&nbsp;maybeF&nbsp;nothingF&nbsp;f&nbsp;x</pre>
+	</p>
+	<p>
+		As usual, map <em>nothing</em> to <em>nothing</em> by supplying <code>nothingF</code>. <code>f</code> is already a function that returns a <code>MaybeFix b</code> value, so just use that.
+	</p>
+	<p>
+		The <code>Foldable</code> instance is likewise trivial (although, as you'll see below, you can make it even more trivial):
+	</p>
+	<p>
+		<pre><span style="color:blue;">instance</span>&nbsp;<span style="color:blue;">Foldable</span>&nbsp;<span style="color:blue;">MaybeFix</span>&nbsp;<span style="color:blue;">where</span>
+&nbsp;&nbsp;foldMap&nbsp;=&nbsp;maybeF&nbsp;mempty</pre>
+	</p>
+	<p>
+		The <code>foldMap</code> function must return a <code>Monoid</code> instance, so for the <em>nothing</em> case, simply return the identity, <em>mempty</em>. Furthermore, <code>foldMap</code> takes a function <code>a -&gt; m</code>, but since the <code>foldMap</code> implementation is <a href="https://en.wikipedia.org/wiki/Tacit_programming">point-free</a>, you can't 'see' that function as an argument.
+	</p>
+	<p>
+		Finally, for the sake of completeness, here's the <code>Traversable</code> instance:
+	</p>
+	<p>
+		<pre><span style="color:blue;">instance</span>&nbsp;<span style="color:blue;">Traversable</span>&nbsp;<span style="color:blue;">MaybeFix</span>&nbsp;<span style="color:blue;">where</span>
+&nbsp;&nbsp;sequenceA&nbsp;=&nbsp;maybeF&nbsp;(pure&nbsp;nothingF)&nbsp;(justF&nbsp;&lt;$&gt;)</pre>
+	</p>
+	<p>
+		In the <em>nothing</em> case, you can put <code>nothingF</code> into the desired <code>Applicative</code> with <code>pure</code>. In the <em>just</em> case you can take advantage of the desired <code>Applicative</code> being also a <code>Functor</code> by simply mapping the inner value(s) with <code>justF</code>.
+	</p>
+	<p>
+		Since the <code>Applicative</code> instance for <code>MaybeFix</code> equals <code>pure</code> to <code>justF</code>, you could alternatively write the <code>Traversable</code> instance like this:
+	</p>
+	<p>
+		<pre><span style="color:blue;">instance</span>&nbsp;<span style="color:blue;">Traversable</span>&nbsp;<span style="color:blue;">MaybeFix</span>&nbsp;<span style="color:blue;">where</span>
+&nbsp;&nbsp;sequenceA&nbsp;=&nbsp;maybeF&nbsp;(pure&nbsp;nothingF)&nbsp;(pure&nbsp;&lt;$&gt;)</pre>
+	</p>
+	<p>
+		I like this alternative less, since I find it confusing. The two appearances of <code>pure</code> relate to two different types. The <code>pure</code> in <code>pure nothingF</code> has the type <code>MaybeFix a -&gt; f (MaybeFix a)</code>, while the <code>pure</code> in <code>pure&nbsp;&lt;$&gt;</code> has the type <code>a -&gt; MaybeFix a</code>!
+	</p>
+	<p>
+		Both implementations work the same, though:
+	</p>
+	<p>
+		<pre>Prelude Fix Maybe&gt; sequenceA (justF ("foo", 42))
+("foo",MaybeFix {unMaybeFix = Fix (JustF 42)})</pre>
+	</p>
+	<p>
+		Here, I'm using the <code>Applicative</code> instance of <code>(,) String</code>.
+	</p>
+	<p>
+		Finally, you can implement conversions to and from the standard <code>Maybe</code> type, using <code>ana</code> as the dual of <code>cata</code>:
+	</p>
+	<p>
+		<pre><span style="color:#2b91af;">toMaybe</span>&nbsp;::&nbsp;<span style="color:blue;">MaybeFix</span>&nbsp;a&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:#2b91af;">Maybe</span>&nbsp;a
+toMaybe&nbsp;=&nbsp;maybeF&nbsp;Nothing&nbsp;<span style="color:blue;">return</span>
+ 
+<span style="color:#2b91af;">fromMaybe</span>&nbsp;::&nbsp;<span style="color:#2b91af;">Maybe</span>&nbsp;a&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">MaybeFix</span>&nbsp;a
+fromMaybe&nbsp;=&nbsp;MaybeFix&nbsp;.&nbsp;ana&nbsp;coalg
+&nbsp;&nbsp;<span style="color:blue;">where</span>&nbsp;coalg&nbsp;&nbsp;Nothing&nbsp;=&nbsp;NothingF
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;coalg&nbsp;(Just&nbsp;x)&nbsp;=&nbsp;JustF&nbsp;x</pre>
+	</p>
+	<p>
+		This demonstrates that <code>MaybeFix</code> is isomorphic to <code>Maybe</code>, which again establishes that <code>maybeF</code> and <code>maybe</code> are equivalent.
+	</p>
+	<h3 id="2ec047e5122b4750a10cbe2012285524">
+		Alternatives <a href="#2ec047e5122b4750a10cbe2012285524" title="permalink">#</a>
+	</h3>
+	<p>
+		As usual, the above <code>maybeF</code> isn't the only possible catamorphism. A trivial variation is to flip its arguments, but other variations exist.
+	</p>
+	<p>
+		It's a recurring observation that a catamorphism is just a generalisation of a <em>fold</em>. In the above code, the <code>Foldable</code> instance already looked as simple as anyone could desire, but another variation of a catamorphism for Maybe is this gratuitously embellished definition:
+	</p>
+	<p>
+		<pre><span style="color:#2b91af;">maybeF</span>&nbsp;::&nbsp;(a&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;c&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;c)&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;c&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">MaybeFix</span>&nbsp;a&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;c
+maybeF&nbsp;f&nbsp;n&nbsp;=&nbsp;cata&nbsp;alg&nbsp;.&nbsp;unMaybeFix
+&nbsp;&nbsp;<span style="color:blue;">where</span>&nbsp;alg&nbsp;&nbsp;NothingF&nbsp;=&nbsp;n
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;alg&nbsp;(JustF&nbsp;x)&nbsp;=&nbsp;f&nbsp;x&nbsp;n</pre>
+	</p>
+	<p>
+		This variation redundantly passes <code>n</code> as an argument to <code>f</code>, thereby changing the type of <code>f</code> to <code>a -&gt; c -&gt; c</code>. There's no particular motivation for doing this, apart from establishing that this catamorphism is exactly the same as the fold:
+	</p>
+	<p>
+		<pre><span style="color:blue;">instance</span>&nbsp;<span style="color:blue;">Foldable</span>&nbsp;<span style="color:blue;">MaybeFix</span>&nbsp;<span style="color:blue;">where</span>
+&nbsp;&nbsp;<span style="color:blue;">foldr</span>&nbsp;=&nbsp;maybeF</pre>
+	</p>
+	<p>
+		You can still implement the other instances as well, but the rest of the code suffers in clarity. Here's a few examples:
+	</p>
+	<p>
+		<pre><span style="color:blue;">instance</span>&nbsp;<span style="color:blue;">Functor</span>&nbsp;<span style="color:blue;">MaybeFix</span>&nbsp;<span style="color:blue;">where</span>
+&nbsp;&nbsp;<span style="color:blue;">fmap</span>&nbsp;f&nbsp;=&nbsp;maybeF&nbsp;(<span style="color:blue;">const</span>&nbsp;.&nbsp;justF&nbsp;.&nbsp;f)&nbsp;nothingF
+ 
+<span style="color:blue;">instance</span>&nbsp;<span style="color:blue;">Applicative</span>&nbsp;<span style="color:blue;">MaybeFix</span>&nbsp;<span style="color:blue;">where</span>
+&nbsp;&nbsp;pure&nbsp;=&nbsp;justF
+&nbsp;&nbsp;f&nbsp;&lt;*&gt;&nbsp;x&nbsp;=&nbsp;maybeF&nbsp;(<span style="color:blue;">const</span>&nbsp;.&nbsp;(&lt;$&gt;&nbsp;x))&nbsp;nothingF&nbsp;f
+ 
+<span style="color:blue;">instance</span>&nbsp;<span style="color:blue;">Monad</span>&nbsp;<span style="color:blue;">MaybeFix</span>&nbsp;<span style="color:blue;">where</span>
+&nbsp;&nbsp;x&nbsp;&gt;&gt;=&nbsp;f&nbsp;=&nbsp;maybeF&nbsp;(<span style="color:blue;">const</span>&nbsp;.&nbsp;f)&nbsp;nothingF&nbsp;x</pre>
+	</p>
+	<p>
+		I find that the need to compose with <code>const</code> does nothing to improve the readability of the code, so this variation is mostly, I think, of academic interest. It does show, though, that the catamorphism of Maybe is isomorphic to its fold, as the diagram in the overview article indicated:
+	</p>
+	<p>
+		<img src="/content/binary/catamorphism-and-fold-relations.png" alt="Catamorphisms and folds as sets, for various sum types.">
+	</p>
+	<p>
+		You can demonstrate that this variation, too, is isomorphic to <code>Maybe</code> with a set of conversion:
+	</p>
+	<p>
+		<pre><span style="color:#2b91af;">toMaybe</span>&nbsp;::&nbsp;<span style="color:blue;">MaybeFix</span>&nbsp;a&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:#2b91af;">Maybe</span>&nbsp;a
+toMaybe&nbsp;=&nbsp;maybeF&nbsp;(<span style="color:blue;">const</span>&nbsp;.&nbsp;<span style="color:blue;">return</span>)&nbsp;Nothing
+ 
+<span style="color:#2b91af;">fromMaybe</span>&nbsp;::&nbsp;<span style="color:#2b91af;">Maybe</span>&nbsp;a&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">MaybeFix</span>&nbsp;a
+fromMaybe&nbsp;=&nbsp;MaybeFix&nbsp;.&nbsp;ana&nbsp;coalg
+&nbsp;&nbsp;<span style="color:blue;">where</span>&nbsp;coalg&nbsp;&nbsp;Nothing&nbsp;=&nbsp;NothingF
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;coalg&nbsp;(Just&nbsp;x)&nbsp;=&nbsp;JustF&nbsp;x</pre>
+	</p>
+	<p>
+		Only <code>toMaybe</code> has changed, compared to above; the <code>fromMaybe</code> function remains the same. The only change to <code>toMaybe</code> is that the arguments have been flipped, and <code>return</code> is now composed with <code>const</code>.
+	</p>
+	<p>
+		Since (according to <a href="http://amzn.to/13tGJ0f">Conceptual Mathematics</a>) isomorphisms are transitive this means that the two variations of <code>maybeF</code> are isomorphic. The latter, more complex, variation of <code>maybeF</code> is identical <code>foldr</code>, so we can consider the simpler, more frequently encountered variation a simplification of <em>fold</em>.
+	</p>
+	<h3 id="f88757d425a04e97956d89270b32c0c0">
+		Summary <a href="#f88757d425a04e97956d89270b32c0c0" title="permalink">#</a>
+	</h3>
+	<p>
+		The catamorphism for Maybe is the same as its Church encoding: a pair made from a default value and a function. In Haskell's base library, this is simply called <code>maybe</code>. In the above C# code, it's called <code>Match</code>.
+	</p>
+	<p>
+		This function is total, and you can implement any other functionality you need with it. I therefore consider it the canonical representation of Maybe, which is also why it annoys me that most Maybe implementations come equipped with partial functions like <code>fromJust</code>, or F#'s <code>Option.get</code>. Those functions shouldn't be part of a sane and reasonable Maybe API. You shouldn't need them.
+	</p>
+	<p>
+		In this series of articles about catamorphisms, you've now seen the first example of catamorphism and fold coinciding. In the next article, you'll see another such example - probably the most well-known catamorphism example of them all.
+	</p>
+	<p>
+		<strong>Next:</strong> List catamorphism.
+	</p>
+</div>
