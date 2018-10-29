@@ -1,0 +1,197 @@
+---
+layout: post
+title: "The Maybe applicative functor"
+date: 2017-06-27 5:50 UTC
+tags: [Software Design, F#]
+---
+{% include JB/setup %}
+
+<div id="post">
+	<p>
+		<em>An introduction to the Maybe applicative functor for object-oriented programmers.</em>
+	</p>
+	<p>
+		This article is an instalment in <a href="">an article series about applicative functors</a>. Previously, in a related series, you got an introduction to <a href="">Maybe as a functor</a>. Not all functors are applicative, but some are, and Maybe is one of them (like list).
+	</p>
+	<p>
+		In this article, you'll see how to make a C# Maybe class applicative. While I'm going to start with F# and <a href="https://www.haskell.org">Haskell</a>, you can skip to the C# section if you'd like.
+	</p>
+	<p>
+		<strong>F#</strong>
+	</p>
+	<p>
+		A year ago, <a href="http://blog.ploeh.dk/2016/06/28/roman-numerals-via-property-based-tdd">I did the <em>Roman numerals</em> kata</a> in F#. This is an exercise where you have to convert between normal base 10 integers and <a href="https://en.wikipedia.org/wiki/Roman_numerals">Roman numerals</a>. Conversions can fail in both directions, because Roman numerals don't support negative numbers, zero, or numbers greater than 3,999, and Roman numerals represented as strings could be malformed.
+	</p>
+	<p>
+		Some Roman numbers are written in a subtractive style, e.g. "IV" means <em>subtract 1 (I) from 5 (V)</em>. It's easy enough to subtract two numbers, but because parsing isn't guaranteed to succeed, I didn't have two numbers; I had two number <em>options</em> (recall that in F#, Maybe is called <code>option</code>).
+	</p>
+	<p>
+		How do you subtract one <code>int option</code> from another <code>int option</code>?
+	</p>
+	<p>
+		Both of these values could be <code>Some</code>, or they could be <code>None</code>. What should happen in each case? With Maybe, only four combinations are possible, so you can put them in a table:
+		<table>
+			<thead>
+				<tr>
+					<th></th>
+					<th><code>Some x</code></th>
+					<th><code>None</code></th>
+				</tr>
+			</thead>
+			<tbody>
+				<tr>
+					<td><strong><code>Some y</code></strong></td>
+					<td><code>Some (x - y)</code></td>
+					<td><code>None</code></td>
+				</tr>
+				<tr>
+					<td><strong><code>None</code></strong></td>
+					<td><code>None</code></td>
+					<td><code>None</code></td>
+				</tr>
+			</tbody>
+		</table>
+		Only if both values are <code>Some</code> cases should you return a <code>Some</code> case with the result of the subtraction; in all other cases, you should return <code>None</code>.
+	</p>
+	<p>
+		You can do this with regular pattern matching, but it's hardly the most elegant solution:
+	</p>
+	<p>
+		<pre><span style="color:green;">//&nbsp;int&nbsp;option</span>
+<span style="color:blue;">let</span>&nbsp;difference&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">match</span>&nbsp;minuend,&nbsp;subtrahend&nbsp;<span style="color:blue;">with</span>
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:navy;">Some</span>&nbsp;m,&nbsp;<span style="color:navy;">Some</span>&nbsp;s&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:navy;">Some</span>&nbsp;(m&nbsp;-&nbsp;s)
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;_&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:navy;">None</span></pre>
+	</p>
+	<p>
+		You <em>could</em> attempt to solve this with a specialised helper function like this:
+	</p>
+	<p>
+		<pre><span style="color:blue;">module</span>&nbsp;<span style="color:teal;">Option</span>&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;(&#39;a&nbsp;-&gt;&nbsp;&#39;b&nbsp;-&gt;&nbsp;&#39;c)&nbsp;-&gt;&nbsp;&#39;a&nbsp;option&nbsp;-&gt;&nbsp;&#39;b&nbsp;option&nbsp;-&gt;&nbsp;&#39;c&nbsp;option</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;<span style="color:navy;">map2</span>&nbsp;<span style="color:navy;">f</span>&nbsp;xo&nbsp;yo&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">match</span>&nbsp;xo,&nbsp;yo&nbsp;<span style="color:blue;">with</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:navy;">Some</span>&nbsp;x,&nbsp;<span style="color:navy;">Some</span>&nbsp;y&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:navy;">Some</span>&nbsp;(<span style="color:navy;">f</span>&nbsp;x&nbsp;y)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;_&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:navy;">None</span></pre>
+	</p>
+	<p>
+		which you could use like this:
+	</p>
+	<p>
+		<pre><span style="color:blue;">let</span>&nbsp;difference&nbsp;=&nbsp;<span style="color:teal;">Option</span>.<span style="color:navy;">map2</span>&nbsp;(-)&nbsp;minuend&nbsp;subtrahend
+</pre>
+	</p>
+	<p>
+		It doesn't, however, generalise well... What if you need to operate on three option values, instead of two? Or four? Should you add <code>map3</code> and <code>map4</code> functions as well?
+	</p>
+	<p>
+		Making <code>option</code> an applicative functor addresses that problem. Here's one possible implementation of <code>&lt;*&gt;</code>:
+	</p>
+	<p>
+		<pre><span style="color:green;">//&nbsp;(&#39;a&nbsp;-&gt;&nbsp;&#39;b)&nbsp;option&nbsp;-&gt;&nbsp;&#39;a&nbsp;option&nbsp;-&gt;&nbsp;&#39;b&nbsp;option</span>
+<span style="color:blue;">let</span>&nbsp;(&lt;*&gt;)&nbsp;fo&nbsp;xo&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">match</span>&nbsp;fo,&nbsp;xo&nbsp;<span style="color:blue;">with</span>
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:navy;">Some</span>&nbsp;<span style="color:navy;">f</span>,&nbsp;<span style="color:navy;">Some</span>&nbsp;x&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:navy;">Some</span>&nbsp;(<span style="color:navy;">f</span>&nbsp;x)
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;_&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:navy;">None</span></pre>
+	</p>
+	<p>
+		This enables you two write the subtraction like this:
+	</p>
+	<p>
+		<pre><span style="color:blue;">let</span>&nbsp;difference&nbsp;=&nbsp;<span style="color:navy;">Some</span>&nbsp;(-)&nbsp;&lt;*&gt;&nbsp;minuend&nbsp;&lt;*&gt;&nbsp;subtrahend
+</pre>
+	</p>
+	<p>
+		For a detailed explanation on how that works, see the <a href="">previous explanation for lists</a>; it works the same way for Maybe as it does for List.
+	</p>
+	<p>
+		In the end, however, I didn't think that this was the most readable code, so in the Roman numeral exercise, I chose to use a <a href="https://docs.microsoft.com/en-us/dotnet/fsharp/language-reference/computation-expressions">computation expression</a> instead.
+	</p>
+	<p>
+		<strong>Haskell</strong>
+	</p>
+	<p>
+		In Haskell, <code>Maybe</code> is already <code>Applicative</code> as part of the language. Without further ado, you can simply write:
+	</p>
+	<p>
+		<pre>difference&nbsp;<span style="color:#666666;">=</span>&nbsp;pure&nbsp;<span style="color:#600277;">(-)</span>&nbsp;<span style="color:#666666;">&lt;*&gt;</span>&nbsp;minuend&nbsp;<span style="color:#666666;">&lt;*&gt;</span>&nbsp;subtrahend
+</pre>
+	</p>
+	<p>
+		As is the case with the F# code, I don't consider this the most <em>readable</em> way to express the subtraction of two integers. In F#, I ultimately decided to use a computation expression. In Haskell, that's equivalent to using <code>do</code> notation:
+	</p>
+	<p>
+		<pre><span style="color:#600277;">difference</span>&nbsp;::&nbsp;Maybe&nbsp;Integer
+difference&nbsp;<span style="color:#666666;">=</span>&nbsp;<span style="color:#af00db;">do</span>
+&nbsp;&nbsp;m&nbsp;<span style="color:#666666;">&lt;-</span>&nbsp;minuend
+&nbsp;&nbsp;s&nbsp;<span style="color:#666666;">&lt;-</span>&nbsp;subtrahend
+&nbsp;&nbsp;return&nbsp;<span style="color:#666666;">$</span>&nbsp;m&nbsp;<span style="color:#666666;">-</span>&nbsp;s</pre>
+	</p>
+	<p>
+		While more verbose, I think it's clearer that one number is being subtracted from another number.
+	</p>
+	<p>
+		This works for <code>Maybe</code> because not only is <code>Maybe</code> <code>Applicative</code>, it's also a <code>Monad</code>. It's its monadness that enables the <code>do</code> notation. Not all applicative functors are monads, but Maybe is.
+	</p>
+	<p>
+		<strong>C#</strong>
+	</p>
+	<p>
+		In a <a href="">previous article</a> you saw how to implement the Maybe functor in C#. You can extend it so that it also becomes an applicative functor:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:#2b91af;">Maybe</span>&lt;<span style="color:#2b91af;">TResult</span>&gt;&nbsp;Apply&lt;<span style="color:#2b91af;">T</span>,&nbsp;<span style="color:#2b91af;">TResult</span>&gt;(
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>&nbsp;<span style="color:#2b91af;">Maybe</span>&lt;<span style="color:#2b91af;">Func</span>&lt;<span style="color:#2b91af;">T</span>,&nbsp;<span style="color:#2b91af;">TResult</span>&gt;&gt;&nbsp;selector,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Maybe</span>&lt;<span style="color:#2b91af;">T</span>&gt;&nbsp;source)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;(selector.HasItem&nbsp;&amp;&amp;&nbsp;source.HasItem)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Maybe</span>&lt;<span style="color:#2b91af;">TResult</span>&gt;(selector.Item(source.Item));
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">else</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Maybe</span>&lt;<span style="color:#2b91af;">TResult</span>&gt;();
+}
+ 
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:#2b91af;">Maybe</span>&lt;<span style="color:#2b91af;">Func</span>&lt;<span style="color:#2b91af;">T2</span>,&nbsp;<span style="color:#2b91af;">TResult</span>&gt;&gt;&nbsp;Apply&lt;<span style="color:#2b91af;">T1</span>,&nbsp;<span style="color:#2b91af;">T2</span>,&nbsp;<span style="color:#2b91af;">TResult</span>&gt;(
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>&nbsp;<span style="color:#2b91af;">Maybe</span>&lt;<span style="color:#2b91af;">Func</span>&lt;<span style="color:#2b91af;">T1</span>,&nbsp;<span style="color:#2b91af;">T2</span>,&nbsp;<span style="color:#2b91af;">TResult</span>&gt;&gt;&nbsp;selector,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Maybe</span>&lt;<span style="color:#2b91af;">T1</span>&gt;&nbsp;source)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;(selector.HasItem&nbsp;&amp;&amp;&nbsp;source.HasItem)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:#2b91af;">T2</span>,&nbsp;<span style="color:#2b91af;">TResult</span>&gt;&nbsp;g&nbsp;=&nbsp;x&nbsp;=&gt;&nbsp;selector.Item(source.Item,&nbsp;x);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Maybe</span>&lt;<span style="color:#2b91af;">Func</span>&lt;<span style="color:#2b91af;">T2</span>,&nbsp;<span style="color:#2b91af;">TResult</span>&gt;&gt;(g);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">else</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Maybe</span>&lt;<span style="color:#2b91af;">Func</span>&lt;<span style="color:#2b91af;">T2</span>,&nbsp;<span style="color:#2b91af;">TResult</span>&gt;&gt;();
+}</pre>
+	</p>
+	<p>
+		As was the case for making sequences applicative in C#, you <a href="">need overloads of the <code>Apply</code> method</a>, because C#'s type inference is inadequate for this task.
+	</p>
+	<p>
+		If you have two <code>Maybe&lt;int&gt;</code> values, <code>minuend</code> and <code>subtrahend</code>, you can now perform the subtraction:
+	</p>
+	<p>
+		<pre><span style="color:#2b91af;">Func</span>&lt;<span style="color:blue;">int</span>,&nbsp;<span style="color:blue;">int</span>,&nbsp;<span style="color:blue;">int</span>&gt;&nbsp;subtract&nbsp;=&nbsp;(x,&nbsp;y)&nbsp;=&gt;&nbsp;x&nbsp;-&nbsp;y;
+<span style="color:#2b91af;">Maybe</span>&lt;<span style="color:blue;">int</span>&gt;&nbsp;difference&nbsp;=&nbsp;subtract.ToMaybe().Apply(minuend).Apply(subtrahend);</pre>
+	</p>
+	<p>
+		Like in F# and Haskell, applicative style is hardly the most readable way to express subtraction. It'd be nice if you could write it like Haskell's <code>do</code> notation. You can, but to do that, you must make Maybe a monad, and this isn't a monad tutorial. <a href="http://mikehadlow.com">Mike Hadlow</a> has a good <a href="http://mikehadlow.blogspot.dk/2011/01/monads-in-c1-introduction.html">monad tutorial for C# developers</a>, the gist of which is that you must implement <code>SelectMany</code> in order to turn your generic type into a monad. For now, I'll leave this as an exercise for you, but if you add an appropriate <code>SelectMany</code> method, you'd be able to write the subtraction like this:
+	</p>
+	<p>
+		<pre><span style="color:#2b91af;">Maybe</span>&lt;<span style="color:blue;">int</span>&gt;&nbsp;difference&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">from</span>&nbsp;m&nbsp;<span style="color:blue;">in</span>&nbsp;minuend
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">from</span>&nbsp;s&nbsp;<span style="color:blue;">in</span>&nbsp;subtrahend
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">select</span>&nbsp;m&nbsp;-&nbsp;s;</pre>
+	</p>
+	<p>
+		Again, I think this is more readable, but it does require that the type in question is a monad, and not all applicative functors are (but Maybe is).
+	</p>
+	<p>
+		<strong>Summary</strong>
+	</p>
+	<p>
+		This article demonstrates that lists or sequences aren't the only applicative functors. Maybe is also an applicative functor, but more exist. The next article will give you another example.
+	</p>
+	<p>
+		<strong>Next:</strong> Applicative validation.
+	</p>
+</div>
