@@ -1,0 +1,167 @@
+---
+layout: post
+title: "Set is not a functor"
+date: 2018-04-17 11:22 UTC
+tags: [Software Design]
+---
+{% include JB/setup %}
+
+<div id="post">
+	<p>
+		<em>Sets aren't functors. An example for object-oriented programmers.</em>
+	</p>
+	<p>
+		The way <a href="http://blog.ploeh.dk/2018/03/22/functors">functors</a> are frequently presented to programmes is as a generic container (<code>Foo&lt;T&gt;</code>) equipped with a translation method, normally called <em>map</em>, but in C# <a href="http://blog.ploeh.dk/2015/08/03/idiomatic-or-idiosyncratic">idiomatically</a> called <code>Select</code>.
+	</p>
+	<p>
+		It'd be tempting to believe that any generic type with a <code>Select</code> method is a functor, but it takes more than that. The <code>Select</code> method must also obey the <a href="http://blog.ploeh.dk/2018/03/22/functors">functor laws</a>. This article shows an example of a translation that violates the second functor law.
+	</p>
+	<p>
+		<strong>Mapping sets</strong>
+	</p>
+	<p>
+		The .NET Base Class Library comes with a class called <a href="https://docs.microsoft.com/en-gb/dotnet/api/system.collections.generic.hashset-1">HashSet&lt;T&gt;</a>. This generic class implements <code>IEnumerable&lt;T&gt;</code>, so, via extension methods, it has a <code>Select</code> method.
+	</p>
+	<p>
+		Unfortunately, that <code>Select</code> method isn't a structure-preserving translation of sets. The problem is that it treats sets as enumerable sequences, which implies an order to elements that isn't part of a set's structure.
+	</p>
+	<p>
+		In order to understand what the problem is, consider this <a href="https://xunit.github.io">xUnit.net</a> test:
+	</p>
+	<p>
+		<pre>[<span style="color:#2b91af;">Fact</span>]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;SetAsEnumerableSelectLeadsToWrongConclusions()
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;set1&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">HashSet</span>&lt;<span style="color:blue;">int</span>&gt;&nbsp;{&nbsp;1,&nbsp;2,&nbsp;3&nbsp;};
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;set2&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">HashSet</span>&lt;<span style="color:blue;">int</span>&gt;&nbsp;{&nbsp;3,&nbsp;2,&nbsp;1&nbsp;};
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Assert</span>.True(set1.SetEquals(set2));
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:blue;">int</span>,&nbsp;<span style="color:blue;">int</span>&gt;&nbsp;id&nbsp;=&nbsp;x&nbsp;=&gt;&nbsp;x;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;seq1&nbsp;=&nbsp;set1.AsEnumerable().Select(id);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;seq2&nbsp;=&nbsp;set2.AsEnumerable().Select(id);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Assert</span>.False(seq1.SequenceEqual(seq2));
+}</pre>
+	</p>
+	<p>
+		This test creates two sets, and by using a <a href="http://xunitpatterns.com/Guard%20Assertion.html">Guard Assertion</a> demonstrates that they're equal to each other. It then proceeds to <code>Select</code> over both sets, using the identity function <code>id</code>. The return values aren't <code>HashSet&lt;T&gt;</code> objects, but rather <code>IEnumerable&lt;T&gt;</code> sequences. Due to an implementation detail in <code>HashSet&lt;T&gt;</code>, these two sequences are different, because they were populated in reverse order of each other.
+	</p>
+	<p>
+		The problem is that the <code>Select</code> extension method has the signature <code>IEnumerable&lt;TResult&gt; Select&lt;T, TResult&gt;(IEnumerable&lt;T&gt;, Func&lt;T, TResult&gt;)</code>. It doesn't operate on <code>HashSet&lt;T&gt;</code>, but instead treats it as an ordered sequence of elements. A set isn't ordered, so that's not the translation you need.
+	</p>
+	<p>
+		To be clear, <code>IEnumerable&lt;T&gt;</code> <em>is</em> a functor (as long as the sequence is <a href="https://en.wikipedia.org/wiki/Referential_transparency">referentially transparent</a>). It's just not the functor you're looking for. What you need is a method with the signature <code>HashSet&lt;TResult&gt; Select&lt;T, TResult&gt;(HashSet&lt;T&gt;, Func&lt;T, TResult&gt;)</code>. Fortunately, such a method is trivial to implement:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:#2b91af;">HashSet</span>&lt;<span style="color:#2b91af;">TResult</span>&gt;&nbsp;Select&lt;<span style="color:#2b91af;">T</span>,&nbsp;<span style="color:#2b91af;">TResult</span>&gt;(
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>&nbsp;<span style="color:#2b91af;">HashSet</span>&lt;<span style="color:#2b91af;">T</span>&gt;&nbsp;source,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:#2b91af;">T</span>,&nbsp;<span style="color:#2b91af;">TResult</span>&gt;&nbsp;selector)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">HashSet</span>&lt;<span style="color:#2b91af;">TResult</span>&gt;(source.AsEnumerable().Select(selector));
+}</pre>
+	</p>
+	<p>
+		This extension method offers a proper <code>Select</code> method that translates one <code>HashSet&lt;T&gt;</code> into another. It does so by enumerating the elements of the set, then using the <code>Select</code> method for <code>IEnumerable&lt;T&gt;</code>, and finally wrapping the resulting sequence in a new <code>HashSet&lt;TResult&gt;</code> object.
+	</p>
+	<p>
+		This is a better candidate for a translation of sets. Is it a functor, then?
+	</p>
+	<p>
+		<strong>Second functor law</strong>		
+	</p>
+	<p>
+		Even though <code>HashSet&lt;T&gt;</code> and the new <code>Select</code> method have the correct types, it's still only a functor if it obeys the functor laws. It's easy, however, to come up with a counter-example that demonstrates that <code>Select</code> violates the second functor law.
+	</p>
+	<p>
+		Consider a pair of conversion methods between <code>string</code> and <code>DateTimeOffset</code>:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:#2b91af;">DateTimeOffset</span>&nbsp;ParseDateTime(<span style="color:blue;">string</span>&nbsp;s)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">DateTimeOffset</span>&nbsp;dt;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;(<span style="color:#2b91af;">DateTimeOffset</span>.TryParse(s,&nbsp;<span style="color:blue;">out</span>&nbsp;dt))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;dt;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:#2b91af;">DateTimeOffset</span>.MinValue;
+}
+ 
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:blue;">string</span>&nbsp;FormatDateTime(<span style="color:#2b91af;">DateTimeOffset</span>&nbsp;dt)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;dt.ToString(<span style="color:#a31515;">&quot;yyyy&#39;-&#39;MM&#39;-&#39;dd&#39;T&#39;HH&#39;:&#39;mm&#39;:&#39;sszzz&quot;</span>);
+}</pre>
+	</p>
+	<p>
+		The first method, <code>ParseDateTime</code>, converts a <code>string</code> into a <code>DateTimeOffset</code> value. It tries to parse the input, and returns the corresponding <code>DateTimeOffset</code> value if this is possible; for all other input values, it simply returns <code>DateTimeOffset.MinValue</code>. You may dislike how the method deals with input values it can't parse, but that's not important. In order to prove that sets aren't functors, I just need <em>one</em> counter-example, and the one I'll pick will not involve unparseable strings.
+	</p>
+	<p>
+		The <code>FormatDateTime</code> converts any <code>DateTimeOffset</code> value to an <a href="https://en.wikipedia.org/wiki/ISO_8601">ISO 8601 string</a>.
+	</p>
+	<p>
+		The <code>DateTimeOffset</code> type is the interesting piece of the puzzle. In case you're not intimately familiar with it, a <code>DateTimeOffset</code> value contains a date, a time, and a time-zone offset. You can, for example create one like this:
+	</p>
+	<p>
+		<pre>&gt; <span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">DateTimeOffset</span>(2018,&nbsp;4,&nbsp;17,&nbsp;15,&nbsp;9,&nbsp;55,&nbsp;<span style="color:#2b91af;">TimeSpan</span>.FromHours(2))
+[17.04.2018 15:09:55 +02:00]</pre>
+	</p>
+	<p>
+		This represents April 17, 2018, at 15:09:55 at UTC+2. You can convert that value to UTC:
+	</p>
+	<p>
+		<pre>&gt; <span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">DateTimeOffset</span>(2018,&nbsp;4,&nbsp;17,&nbsp;15,&nbsp;9,&nbsp;55,&nbsp;<span style="color:#2b91af;">TimeSpan</span>.FromHours(2)).ToUniversalTime()
+[17.04.2018 13:09:55 +00:00]</pre>		
+	</p>
+	<p>
+		This value clearly contains different constituent elements, but it does represent the same instant in time. This is how <code>DateTimeOffset</code> implements <code>Equals</code>. These two object are considered equal, as the following test will demonstrate.
+	</p>
+	<p>
+		In a sense, you could argue that there's some sense in implementing equality for <code>DateTimeOffset</code> in that way, but this unusual behaviour provides just the counter-example that demonstrates that sets aren't functors:
+	</p>
+	<p>
+		<pre>[<span style="color:#2b91af;">Fact</span>]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;SetViolatesSecondFunctorLaw()
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;x&nbsp;=&nbsp;<span style="color:#a31515;">&quot;2018-04-17T13:05:28+02:00&quot;</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;y&nbsp;=&nbsp;<span style="color:#a31515;">&quot;2018-04-17T11:05:28+00:00&quot;</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Assert</span>.Equal(ParseDateTime(x),&nbsp;ParseDateTime(y));
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;set&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">HashSet</span>&lt;<span style="color:blue;">string</span>&gt;&nbsp;{&nbsp;x,&nbsp;y&nbsp;};
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;l&nbsp;=&nbsp;set.Select(ParseDateTime).Select(FormatDateTime);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;r&nbsp;=&nbsp;set.Select(s&nbsp;=&gt;&nbsp;FormatDateTime(ParseDateTime(s)));
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Assert</span>.False(l.SetEquals(r));
+}</pre>
+	</p>
+	<p>
+		This passing test provides the required counter-example. It first creates two ISO 8601 representations of the same instant. As the Guard Assertion demonstrates, the corresponding <code>DateTimeOffset</code> values are considered equal.
+	</p>
+	<p>
+		In <a href="http://blog.ploeh.dk/2013/06/24/a-heuristic-for-formatting-code-according-to-the-aaa-pattern">the <em>act</em> phase</a>, the test creates a <code>set</code> of these two strings. It then performs two round-trips over <code>DateTimeOffset</code> and back to <code>string</code>. The second functor law states that it shouldn't matter whether you do it in one or two steps, but it does. <code>Assert.False</code> passes because <code>l</code> is <em>not</em> equal to <code>r</code>. Q.E.D.
+	</p>
+	<p>
+		<strong>An illustration</strong>
+	</p>
+	<p>
+		The problem is that sets only contain one element of each value, and due to the way that <code>DateTimeOffset</code> interprets equality, two values that both represent the same instant are collapsed into a single element when taking an intermediary step. You can illustrate it like this:
+	</p>
+	<p>
+		<img src="/content/binary/set-violating-second-functor-law.png" alt="Diagram illustrating the above counter-example.">
+	</p>
+	<p>
+		In this illustration, I've hidden the date behind an ellipsis in order to improve clarity. The date segments are irrelevant in this example, since they're all identical.
+	</p>
+	<p>
+		You start with a set of two <code>string</code> values. These are obviously different, so the set contains two elements. When you map the set using the <code>ParseDateTime</code> function, you get two <code>DateTimeOffset</code> values that .NET considers equal. For that reason, <code>HashSet&lt;DateTimeOffset&gt;</code> considers the second value redundant, and ignores it. Therefore, the intermediary set contains only a single element. When you map that set with <code>FormatDateTime</code>, there's only a single element to translate, so the final set contains only a single <code>string</code> value.
+	</p>
+	<p>
+		On the other hand, when you map the input set without an intermediary set, each <code>string</code> value is first converted into a <code>DateTimeOffset</code> value, and then immediately thereafter converted back to a <code>string</code> value. Since the two resulting strings are different, the resulting set contains two values.
+	</p>
+	<p>
+		Which of these paths is correct, then? Both of them. That's the problem. When considering the semantics of sets, both translations produce correct results. Since the results diverge, however, the translation isn't a functor.
+	</p>
+	<p>
+		<strong>Summary</strong>
+	</p>
+	<p>
+		A functor must not only preserve the structure of the data container, but also of functions. The functor laws express that a translation of functions preserves the structure of how the functions compose, in addition to preserving the structure of the containers. Mapping a set doesn't preserve those structures, and that's the reason that sets aren't functors.
+	</p>
+</div>
