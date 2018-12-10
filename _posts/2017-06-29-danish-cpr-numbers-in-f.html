@@ -1,0 +1,277 @@
+---
+layout: post
+title: "Danish CPR numbers in F#"
+date: 2017-06-29 12:42 UTC
+tags: [Software Design, F#]
+---
+{% include JB/setup %}
+
+<div id="post">
+	<p>
+		<em>An example of domain-modelling in F#, including a fine example of using the option type as an applicative functor.</em>
+	</p>
+	<p>
+		This article is an instalment in <a href="">an article series about applicative functors</a>, although the applicative functor example doesn't appear until towards the end. This article also serves the purpose of showing an example of <a href="http://amzn.to/WBCwx7">Domain-Driven Design</a> in F#.
+	</p>
+	<p>
+		<strong>Danish personal identification numbers</strong>
+	</p>
+	<p>
+		As outlined in the <a href="">previous article</a>, in Denmark, everyone has a <a href="https://en.wikipedia.org/wiki/Personal_identification_number_(Denmark)">personal identification number</a>, in Danish called <em>CPR-nummer</em> (<em>CPR number</em>).
+	</p>
+	<p>
+		CPR numbers have a simple format: <code>DDMMYY-SSSS</code>, where the first six digits indicate a person's birth date, and the last four digits are a sequence number. Some information, however, is also embedded in the sequence number. An example could be <code>010203-1234</code>, which indicates a woman born February 1, 1903.
+	</p>
+	<p>
+		One way to model this in F# is with a single-case discriminated union:
+	</p>
+	<p>
+		<pre><span style="color:blue;">type</span>&nbsp;<span style="color:teal;">CprNumber</span>&nbsp;=&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:navy;">CprNumber</span>&nbsp;<span style="color:blue;">of</span>&nbsp;(<span style="color:teal;">int</span>&nbsp;*&nbsp;<span style="color:teal;">int</span>&nbsp;*&nbsp;<span style="color:teal;">int</span>&nbsp;*&nbsp;<span style="color:teal;">int</span>)&nbsp;<span style="color:blue;">with</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">override</span>&nbsp;x.<span style="color:navy;">ToString</span>&nbsp;()&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;(<span style="color:navy;">CprNumber</span>&nbsp;(day,&nbsp;month,&nbsp;year,&nbsp;sequenceNumber))&nbsp;=&nbsp;x
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:navy;">sprintf</span>&nbsp;<span style="color:#a31515;">&quot;</span><span style="color:teal;">%02d%02d%02d</span><span style="color:#a31515;">-</span><span style="color:teal;">%04d</span><span style="color:#a31515;">&quot;</span>&nbsp;day&nbsp;month&nbsp;year&nbsp;sequenceNumber</pre>
+	</p>
+	<p>
+		This is a common idiom in F#. In object-oriented design with e.g. C# or Java, you'd typically create a class and put guard clauses in its constructor. This would prevent a user from initialising an object with invalid data (such as <code>401500-1234</code>). While you <em>can</em> create classes in F# as well, a single-case union with a private case constructor can achieve the same degree of encapsulation.
+	</p>
+	<p>
+		In this case, I decided to use a quadruple (4-tuple) as the internal representation, but this isn't visible to users. This gives me the option to refactor the internal representation, if I need to, without breaking existing clients.
+	</p>
+	<p>
+		<strong>Creating CPR number values</strong>
+	</p>
+	<p>
+		Since the <code>CprNumber</code> case constructor is private, you can't just create new values like this:
+	</p>
+	<p>
+		<pre><span style="color:blue;">let</span>&nbsp;<span style="color:#9b9b9b;">cpr</span>&nbsp;=&nbsp;CprNumber&nbsp;(1,&nbsp;1,&nbsp;1,&nbsp;1118)
+</pre>
+	</p>
+	<p>
+		If you're outside the <code>Cpr</code> module that defines the type, this <strong>doesn't compile</strong>. This is by design, but obviously you need a way to create values. For convenience, input values for day, month, and so on, are represented as <code>int</code>s, which can be zero, negative, or way too large for CPR numbers. There's no way to statically guarantee that you can create a value, so you'll have to settle for a <code>tryCreate</code> function; i.e. a function that returns <code>Some CprNumber</code> if the input is valid, or <code>None</code> if it isn't.
+	</p>
+	<p>
+		There's a couple of rules to check. All integer values must fall in certain ranges. Days must be between 1 and 31, months must be between 1 and 12, and so on. One way to enable succinct checks like that is with an <a href="https://docs.microsoft.com/en-us/dotnet/fsharp/language-reference/active-patterns">active pattern</a>:
+	</p>
+	<p>
+		<pre><span style="color:blue;">let</span>&nbsp;<span style="color:blue;">private</span>&nbsp;(|<span style="color:navy;">Between</span>|_|)&nbsp;min&nbsp;max&nbsp;candidate&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;min&nbsp;&lt;=&nbsp;candidate&nbsp;&amp;&amp;&nbsp;candidate&nbsp;&lt;=&nbsp;max
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">then</span>&nbsp;<span style="color:navy;">Some</span>&nbsp;candidate
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">else</span>&nbsp;<span style="color:navy;">None</span></pre>
+	</p>
+	<p>
+		Straightforward: return <code>Some candidate</code> if <code>candidate</code> is between <code>min</code> and <code>max</code>; otherwise, <code>None</code>. This enables you to pattern-match input integer values to particular ranges.
+	</p>
+	<p>
+		Perhaps you've already noticed that years are represented with only two digits. CPR is an old system (from 1968), and back then, bits were expensive. No reason to waste bits on recording the millennium or century in which people were born. It turns out, after all, that there's a way to at least partially figure out the century in which people were born. The first digit of the sequence number contains that information:
+	</p>
+	<p>
+		<pre><span style="color:green;">//&nbsp;int&nbsp;-&gt;&nbsp;int&nbsp;-&gt;&nbsp;int</span>
+<span style="color:blue;">let</span>&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:navy;">calculateFourDigitYear</span>&nbsp;year&nbsp;sequenceNumber&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;centuryDigit&nbsp;=&nbsp;sequenceNumber&nbsp;/&nbsp;1000&nbsp;<span style="color:green;">//&nbsp;Integer&nbsp;division</span>
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;Table&nbsp;from&nbsp;https://da.wikipedia.org/wiki/CPR-nummer</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">match</span>&nbsp;centuryDigit,&nbsp;year&nbsp;<span style="color:blue;">with</span>
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:navy;">Between</span>&nbsp;0&nbsp;3&nbsp;_,&nbsp;_&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;1900
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;4&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;,&nbsp;<span style="color:navy;">Between</span>&nbsp;0&nbsp;36&nbsp;_&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;2000
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;4&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;,&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;_&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;1900
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:navy;">Between</span>&nbsp;5&nbsp;8&nbsp;_,&nbsp;<span style="color:navy;">Between</span>&nbsp;0&nbsp;57&nbsp;_&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;2000
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:navy;">Between</span>&nbsp;5&nbsp;8&nbsp;_,&nbsp;_&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;1800
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;_&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;,&nbsp;<span style="color:navy;">Between</span>&nbsp;0&nbsp;36&nbsp;_&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;2000
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;_&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;1900
+&nbsp;&nbsp;&nbsp;&nbsp;+&nbsp;year</pre>
+	</p>
+	<p>
+		As the code comment informs the reader, there's a table that defines the century, based on the two-digit year and the first digit of the sequence number. Note that birth dates in the nineteenth century are possible. No Danes born before 1900 are alive any longer, but at the time the CPR system was introduced, one person in the system was born in 1863!
+	</p>
+	<p>
+		The <code>calculateFourDigitYear</code> function starts by pulling the first digit out of the sequence number. This is a four-digit number, so dividing by 1,000 produces the digit. I left a comment about integer division, because I often miss that detail when I read code.
+	</p>
+	<p>
+		The big pattern-match expression uses the <code>Between</code> active pattern, but it ignores the return value from the pattern. This explains the wild cards (<code>_</code>), I hope.
+	</p>
+	<p>
+		Although a pattern-match expression is often formatted over several lines of code, it's a single expression that produces a single value. Often, you see code where a <code>let</code>-binding binds a named value to a pattern-match expression. Another occasional idiom is to pipe a pattern-match expression to a function. In the <code>calculateFourDigitYear</code> function I use a language construct I've never seen anywhere else: the eight-lines pattern-match expression returns an <code>int</code>, which I simply add to <code>year</code> using the <code>+</code> operator.
+	</p>
+	<p>
+		Both <code>calculateFourDigitYear</code> and the <code>Between</code> active pattern are private functions. They're only there as support functions for the public API. You can now implement a <code>tryCreate</code> function:
+	</p>
+	<p>
+		<pre><span style="color:green;">//&nbsp;int&nbsp;-&gt;&nbsp;int&nbsp;-&gt;&nbsp;int&nbsp;-&gt;&nbsp;int&nbsp;-&gt;&nbsp;CprNumber&nbsp;option</span>
+<span style="color:blue;">let</span>&nbsp;<span style="color:navy;">tryCreate</span>&nbsp;day&nbsp;month&nbsp;year&nbsp;sequenceNumber&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">match</span>&nbsp;month,&nbsp;year,&nbsp;sequenceNumber&nbsp;<span style="color:blue;">with</span>
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:navy;">Between</span>&nbsp;1&nbsp;12&nbsp;m,&nbsp;<span style="color:navy;">Between</span>&nbsp;0&nbsp;99&nbsp;y,&nbsp;<span style="color:navy;">Between</span>&nbsp;0&nbsp;9999&nbsp;s&nbsp;<span style="color:blue;">-&gt;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;fourDigitYear&nbsp;=&nbsp;<span style="color:navy;">calculateFourDigitYear</span>&nbsp;y&nbsp;s
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;1&nbsp;&lt;=&nbsp;day&nbsp;&amp;&amp;&nbsp;day&nbsp;&lt;=&nbsp;<span style="color:teal;">DateTime</span>.<span style="color:navy;">DaysInMonth</span>&nbsp;(fourDigitYear,&nbsp;m)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">then</span>&nbsp;<span style="color:navy;">Some</span>&nbsp;(<span style="color:navy;">CprNumber</span>&nbsp;(day,&nbsp;m,&nbsp;y,&nbsp;s))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">else</span>&nbsp;<span style="color:navy;">None</span>
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;_&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:navy;">None</span></pre>
+	</p>
+	<p>
+		The <code>tryCreate</code> function begins by pattern-matching a triple (3-tuple) using the <code>Between</code> active pattern. The <code>month</code> must always be between <code>1</code> and <code>12</code> (both included), the <code>year</code> must be between <code>0</code> and <code>99</code>, and the <code>sequenceNumber</code> must always be between <code>0</code> and <code>9999</code> (in fact, I'm not completely sure if <code>0000</code> is valid).
+	</p>
+	<p>
+		Finding the appropriate range for the <code>day</code> is more intricate. Is <code>31</code> always valid? Clearly not, because there's no November 31, for example. Is <code>30</code> always valid? No, because there's never a February 30. Is <code>29</code> valid? This depends on whether or not the year is a leap year.
+	</p>
+	<p>
+		This reveals why you need <code>calculateFourDigitYear</code>. While you can use <code>DateTime.DaysInMonth</code> to figure out how many days a given month has, you need the year. Specifically, February 19<strong>00</strong> had 28 days, while February 20<strong>00</strong> had 29.
+	</p>
+	<p>
+		Ergo, if <code>day</code>, <code>month</code>, <code>year</code>, and <code>sequenceNumber</code> all fall within their appropriate ranges, <code>tryCreate</code> returns a <code>Some CprNumber</code> value; otherwise, it returns <code>None</code>.
+	</p>
+	<p>
+		Notice how this is different from an object-oriented constructor with guard clauses. If you try to create an object with invalid input, it'll throw an exception. If you try to create a <code>CprNumber</code> value, you'll receive a <code>CprNumber option</code>, and you, as the client developer, <em>must</em> handle both the <code>Some</code> and the <code>None</code> case. The compiler will enforce this.
+	</p>
+	<p>
+		<pre>&gt; let gjern = Cpr.tryCreate 11 11 11 1118;;
+val gjern : Cpr.CprNumber option = Some 111111-1118
+
+&gt; gjern |&gt; Option.map Cpr.born;;
+val it : DateTime option =
+  Some 11.11.1911 00:00:00</pre>
+	</p>
+	<p>
+		As most F# developers know, F# gives you enough syntactic sugar to make this a joy rather than a chore... and the warm and fuzzy feeling of safety is priceless.
+	</p>
+	<p>
+		<strong>CPR data</strong>
+	</p>
+	<p>
+		The above FSI session uses <code>Cpr.born</code>, which you haven't seen yet. With the tools available so far, it's trivial to implement; all the work is already done:
+	</p>
+	<p>
+		<pre><span style="color:green;">//&nbsp;CprNumber&nbsp;-&gt;&nbsp;DateTime</span>
+<span style="color:blue;">let</span>&nbsp;<span style="color:navy;">born</span>&nbsp;(<span style="color:navy;">CprNumber</span>&nbsp;(day,&nbsp;month,&nbsp;year,&nbsp;sequenceNumber))&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:teal;">DateTime</span>&nbsp;(<span style="color:navy;">calculateFourDigitYear</span>&nbsp;year&nbsp;sequenceNumber,&nbsp;month,&nbsp;day)</pre>
+	</p>
+	<p>
+		While the <code>CprNumber</code> case constructor is <code>private</code>, it's still available from inside of the module. The <code>born</code> function pattern-matches <code>day</code>, <code>month</code>, <code>year</code>, and <code>sequenceNumber</code> out of its input argument, and trivially delegates the hard work to <code>calculateFourDigitYear</code>.
+	</p>
+	<p>
+		Another piece of data you can deduce from a CPR number is the gender of the person:
+	</p>
+	<p>
+		<pre><span style="color:green;">//&nbsp;CprNumber&nbsp;-&gt;&nbsp;bool</span>
+<span style="color:blue;">let</span>&nbsp;<span style="color:navy;">isFemale</span>&nbsp;(<span style="color:navy;">CprNumber</span>&nbsp;(_,&nbsp;_,&nbsp;_,&nbsp;sequenceNumber))&nbsp;=&nbsp;sequenceNumber&nbsp;%&nbsp;2&nbsp;&nbsp;=&nbsp;0
+<span style="color:blue;">let</span>&nbsp;<span style="color:navy;">isMale</span>&nbsp;&nbsp;&nbsp;(<span style="color:navy;">CprNumber</span>&nbsp;(_,&nbsp;_,&nbsp;_,&nbsp;sequenceNumber))&nbsp;=&nbsp;sequenceNumber&nbsp;%&nbsp;2&nbsp;&lt;&gt;&nbsp;0</pre>
+	</p>
+	<p>
+		The rule is that if the sequence number is even, then the person is female; otherwise, the person is male (and if you change sex, you get a new CPR number).
+	</p>
+	<p>
+		<pre>&gt; gjern |&gt; Option.map Cpr.isFemale;;
+val it : bool option = Some true</pre>
+	</p>
+	<p>
+		Since <code>1118</code> is even, this is a woman.
+	</p>
+	<p>
+		<strong>Parsing CPR strings</strong>
+	</p>
+	<p>
+		CPR numbers are often passed around as text, so you'll need to be able to parse a <code>string</code> representation. As described in the <a href="">previous article</a>, you should follow <a href="https://en.wikipedia.org/wiki/Robustness_principle">Postel's law</a>. Input could include extra white space, and the middle dash could be missing.
+	</p>
+	<p>
+		The .NET Base Class Library contains enough utility methods working on <code>string</code> values that this isn't going to be particularly difficult. It can, however, be awkward to interoperate with object-oriented APIs, so you'll often benefit from adding a few utility functions that give you curried functions instead of objects with methods. Here's one that adapts <code>Int32.TryParse</code>:
+	</p>
+	<p>
+		<pre><span style="color:blue;">module</span>&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:teal;">Int</span>&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;string&nbsp;-&gt;&nbsp;int&nbsp;option</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;<span style="color:navy;">tryParse</span>&nbsp;candidate&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">match</span>&nbsp;candidate&nbsp;|&gt;&nbsp;<span style="color:teal;">Int32</span>.<span style="color:navy;">TryParse</span>&nbsp;<span style="color:blue;">with</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:blue;">true</span>,&nbsp;i&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:navy;">Some</span>&nbsp;i
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;_&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:navy;">None</span></pre>
+	</p>
+	<p>
+		Nothing much goes on here. While F# has pleasant syntax for handling <code>out</code> parameters, it can be inconvenient to have to pattern-match every time you'd like to try to parse an integer.
+	</p>
+	<p>
+		Here's another helper function:
+	</p>
+	<p>
+		<pre><span style="color:blue;">module</span>&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:teal;">String</span>&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;int&nbsp;-&gt;&nbsp;int&nbsp;-&gt;&nbsp;string&nbsp;-&gt;&nbsp;string&nbsp;option</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;<span style="color:navy;">trySubstring</span>&nbsp;startIndex&nbsp;length&nbsp;(s&nbsp;:&nbsp;<span style="color:teal;">string</span>)&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;s.Length&nbsp;&lt;&nbsp;startIndex&nbsp;+&nbsp;length
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">then</span>&nbsp;<span style="color:navy;">None</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">else</span>&nbsp;<span style="color:navy;">Some</span>&nbsp;(s.<span style="color:navy;">Substring</span>&nbsp;(startIndex,&nbsp;length))</pre>
+	</p>
+	<p>
+		This one comes with two benefits: The first benefit is that it's curried, which enables partial application and piping. You'll see an example of this further down. The second benefit is that it handles at least one error condition in a type-safe manner. When trying to extract a sub-string from a string, the <code>Substring</code> <em>method</em> can throw an exception if the index or length arguments are out of range. This function checks whether it can extract the requested sub-string, and returns <code>None</code> if it can't.
+	</p>
+	<p>
+		I wouldn't be surprised if there are edge cases (for example involving negative integers) that <code>trySubstring</code> doesn't handle gracefully, but as you may have noticed, this is a function in a <code>private</code> module. I only need it to handle a particular use case, and it does that.
+	</p>
+	<p>
+		You can now add the <code>tryParse</code> function:
+	</p>
+	<p>
+		<pre><span style="color:green;">//&nbsp;string&nbsp;-&gt;&nbsp;CprNumber&nbsp;option</span>
+<span style="color:blue;">let</span>&nbsp;<span style="color:navy;">tryParse</span>&nbsp;(candidate&nbsp;:&nbsp;<span style="color:teal;">string</span>&nbsp;)&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;(&lt;*&gt;)&nbsp;fo&nbsp;xo&nbsp;=&nbsp;fo&nbsp;|&gt;&nbsp;<span style="color:teal;">Option</span>.<span style="color:navy;">bind</span>&nbsp;(<span style="color:blue;">fun</span>&nbsp;<span style="color:navy;">f</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;xo&nbsp;|&gt;&nbsp;<span style="color:teal;">Option</span>.<span style="color:navy;">map</span>&nbsp;<span style="color:navy;">f</span>)
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;canonicalized&nbsp;=&nbsp;candidate.<span style="color:navy;">Trim</span>().<span style="color:navy;">Replace</span>(<span style="color:#a31515;">&quot;-&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;&quot;</span>)
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;dayCandidate&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;=&nbsp;canonicalized&nbsp;|&gt;&nbsp;<span style="color:teal;">String</span>.<span style="color:navy;">trySubstring</span>&nbsp;0&nbsp;2
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;monthCandidate&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;=&nbsp;canonicalized&nbsp;|&gt;&nbsp;<span style="color:teal;">String</span>.<span style="color:navy;">trySubstring</span>&nbsp;2&nbsp;2
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;yearCandidate&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;=&nbsp;canonicalized&nbsp;|&gt;&nbsp;<span style="color:teal;">String</span>.<span style="color:navy;">trySubstring</span>&nbsp;4&nbsp;2
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;sequenceNumberCandidate&nbsp;=&nbsp;canonicalized&nbsp;|&gt;&nbsp;<span style="color:teal;">String</span>.<span style="color:navy;">trySubstring</span>&nbsp;6&nbsp;4
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:navy;">Some</span>&nbsp;<span style="color:navy;">tryCreate</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&lt;*&gt;&nbsp;<span style="color:teal;">Option</span>.<span style="color:navy;">bind</span>&nbsp;<span style="color:teal;">Int</span>.<span style="color:navy;">tryParse</span>&nbsp;dayCandidate
+&nbsp;&nbsp;&nbsp;&nbsp;&lt;*&gt;&nbsp;<span style="color:teal;">Option</span>.<span style="color:navy;">bind</span>&nbsp;<span style="color:teal;">Int</span>.<span style="color:navy;">tryParse</span>&nbsp;monthCandidate
+&nbsp;&nbsp;&nbsp;&nbsp;&lt;*&gt;&nbsp;<span style="color:teal;">Option</span>.<span style="color:navy;">bind</span>&nbsp;<span style="color:teal;">Int</span>.<span style="color:navy;">tryParse</span>&nbsp;yearCandidate
+&nbsp;&nbsp;&nbsp;&nbsp;&lt;*&gt;&nbsp;<span style="color:teal;">Option</span>.<span style="color:navy;">bind</span>&nbsp;<span style="color:teal;">Int</span>.<span style="color:navy;">tryParse</span>&nbsp;sequenceNumberCandidate
+&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;&nbsp;<span style="color:teal;">Option</span>.<span style="color:navy;">bind</span>&nbsp;<span style="color:navy;">id</span></pre>
+	</p>
+	<p>
+		The function starts by defining a private <code>&lt;*&gt;</code> operator. Readers of the <a href="">applicative functor article series</a> will recognise this as the 'apply' operator. The reason I added it as a private operator is that I don't need it anywhere else in the code base, and in F#, I'm always worried that if I add <code>&lt;*&gt;</code> at a more visible level, it could collide with other definitions of <code>&lt;*&gt;</code> - for example <a href="">one for lists</a>. This one particularly makes <code>option</code> an applicative functor.
+	</p>
+	<p>
+		The first step in parsing <code>candidate</code> is to remove surrounding white space and the interior dash.
+	</p>
+	<p>
+		The next step is to use <code>String.trySubstring</code> to pull out candidates for <em>day</em>, <em>month</em>, and so on. Each of these four are <code>string option</code> values.
+	</p>
+	<p>
+		All four of these must be <code>Some</code> values before we can even start to attempt to turn them into a <code>CprNumber</code> value. If only a single value is <code>None</code>, <code>tryParse</code> should return <code>None</code> as well.
+	</p>
+	<p>
+		You may want to re-read the <a href="">article on the List applicative functor</a> for a detailed explanation of how the <code>&lt;*&gt;</code> operator works. In <code>tryParse</code>, you have four <code>option</code> values, so you apply them all using four <code>&lt;*&gt;</code> operators. Since four values are being applied, you'll need a function that takes four curried input arguments of the appropriate types. In this case, all four are <code>int option</code> values, so for the first expression in the <code>&lt;*&gt;</code> chain, you'll need an option of a function that takes four <code>int</code> arguments.
+	</p>
+	<p>
+		Lo and behold! <code>tryCreate</code> takes four <code>int</code> arguments, so the only action you need to take is to make it an <code>option</code> by putting it in a <code>Some</code> case.
+	</p>
+	<p>
+		The only remaining hurdle is that <code>tryCreate</code> returns <code>CprNumber option</code>, and since you're already 'in' the <code>option</code> applicative functor, you now have a <code>CprNumber option option</code>. Fortunately, <code>bind id</code> is always the 'flattening' combo, so that's easily dealt with.
+	</p>
+	<p>
+		<pre>&gt; let andreas = Cpr.tryParse " 0109636221";;
+val andreas : Cpr.CprNumber option = Some 010963-6221</pre>
+	</p>
+	<p>
+		Since you now have both a way to parse a string, and turn a <code>CprNumber</code> into a string, you can write the usual round-trip property:
+	</p>
+	<p>
+		<pre>[&lt;<span style="color:teal;">Fact</span>&gt;]
+<span style="color:blue;">let</span>&nbsp;<span style="color:navy;">``CprNumber&nbsp;correctly&nbsp;round-trips``</span>&nbsp;()&nbsp;=&nbsp;<span style="color:teal;">Property</span>.<span style="color:navy;">check</span>&nbsp;&lt;|&nbsp;<span style="color:blue;">property</span>&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;expected&nbsp;=&nbsp;<span style="color:teal;">Gen</span>.cprNumber
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;&nbsp;actual&nbsp;&nbsp;&nbsp;=&nbsp;expected&nbsp;|&gt;&nbsp;<span style="color:navy;">string</span>&nbsp;|&gt;&nbsp;<span style="color:teal;">Cpr</span>.<span style="color:navy;">tryParse</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:navy;">Some</span>&nbsp;expected&nbsp;=!&nbsp;actual&nbsp;}</pre>
+	</p>
+	<p>
+		This test uses <a href="https://github.com/hedgehogqa/fsharp-hedgehog">Hedgehog</a>, <a href="http://www.swensensoftware.com/unquote">Unquote</a>, and <a href="https://xunit.github.io">xUnit.net</a>. The previous article demonstrates a way to test that <code>Cpr.tryParse</code> can handle mangled input.
+	</p>
+	<p>
+		<strong>Summary</strong>
+	</p>
+	<p>
+		This article mostly exhibited various F# design techniques you can use to achieve an even better degree of encapsulation than you can easily get with object-oriented languages. Towards the end, you saw how using <code>option</code> as an applicative functor enables you to compose more complex optional values from smaller values. If just a single value is <code>None</code>, the entire expression becomes <code>None</code>, but if all values are <code>Some</code> values, the computation succeeds.
+	</p>
+	<p>
+		This article concludes the article series about applicative functors. The next article series is an introduction to monoids and semigroups for object-oriented programmers.
+	</p>
+	<p>
+		<strong>Next: </strong> The Lazy applicative functor.
+	</p>
+</div>
