@@ -1,0 +1,201 @@
+---
+layout: post
+title: "How to get the value out of the monad"
+description: "How do I get the value out of my monad? You don't. You inject the desired behaviour into the monad."
+date: 2018-08-23 10:53 UTC
+tags: [Software Design, Functional Programming]
+---
+{% include JB/setup %}
+
+<div id="post">
+	<p>
+		<em>{{ page.description }}</em>
+	</p>
+	<p>
+		A frequently asked question about monads can be paraphrased as: <em>How do I get the value out of my monad?</em> This seems to particularly come up when the monad in question is <a href="https://www.haskell.org">Haskell</a>'s <code>IO</code> monad, from which you <em>can't</em> extract the value. This is by design, but then beginners are often stumped on how to write the code they have in mind.
+	</p>
+	<p>
+		You can encounter variations of the question, or at least the underlying conceptual misunderstanding, with other monads. This seems to be particularly prevalent when object-oriented or procedural programmers start working with <a href="http://blog.ploeh.dk/2018/03/26/the-maybe-functor">Maybe</a> or <a href="">Either</a>. People really want to extract 'the value' from those monads as well, despite the lack of guarantee that there will be a value.
+	</p>
+	<p>
+		So how do you extract the value from a monad?
+	</p>
+	<p>
+		The answer isn't <em>use a comonad</em>, although it could be, for a limited set of monads. Rather, the answer is <a href="https://en.wikipedia.org/wiki/Mu_(negative)">mu</a>.
+	</p>
+	<h3 id="8edf2d16396b46ad9b5a7d595c36b4a5">
+		Scalar containers <a href="#8edf2d16396b46ad9b5a7d595c36b4a5" title="permalink">#</a>
+	</h3>
+	<p>
+		Before I attempt to address how to work with monads, I think it's worthwhile to speculate on what misleads people into thinking that it makes sense to even contemplate extracting 'the value' from a monad. After all, you rarely encounter the question: <em>How do I get the value out of my list?</em>
+	</p>
+	<p>
+		Various collections form monads, but everyone intuitively understand that there isn't a single value in a collection. Collections could be empty, or contain many elements. Collections could easily be the most ordinary monad. Programmers deal with collections all the time.
+	</p>
+	<p>
+		Yet, I think that most programmers don't realise that collections form monads. The reason for this could be that mainstream languages rarely makes this relationship explicit. Even <a href="https://docs.microsoft.com/en-us/dotnet/csharp/programming-guide/concepts/linq/query-syntax-and-method-syntax-in-linq">C# query syntax</a>, which is nothing but monads in disguise, hides this fact.
+	</p>
+	<p>
+		What happens, I think, is that when programmers first come across monads, they often encounter one of a few <em>scalar containers</em>.
+	</p>
+	<p>
+		What's a <em>scalar container?</em> I admit that the word is one I made up, because I couldn't detect existing terminology on this topic. The idea, though, is that it's a <a href="http://blog.ploeh.dk/2018/03/22/functors">functor</a> guaranteed to contain exactly one value. Since <a href="https://bartoszmilewski.com/2014/01/14/functors-are-containers">functors are containers</a>, I call such types <em>scalar containers</em>. Examples include <a href="">Identity</a>, <a href="">Lazy</a>, and <a href="">asynchronous functors</a>.
+	</p>
+	<p>
+		You can extract 'the value' from most scalar containers (with <code>IO</code> being the notable exception from the rule). Trivially, you can get the item contained in an Identity container:
+	</p>
+	<p>
+		<pre>&gt; <span style="color:#2b91af;">Identity</span>&lt;<span style="color:blue;">string</span>&gt;&nbsp;x&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Identity</span>&lt;<span style="color:blue;">string</span>&gt;(<span style="color:#a31515;">"bar"</span>);
+&gt; x.Item
+"bar"</pre>
+	</p>
+	<p>
+		Likewise, you can extract the value from lazy and asynchronous values:
+	</p>
+	<p>
+		<pre>&gt; <span style="color:#4ec9b0;">Lazy</span>&lt;<span style="color:#569cd6;">int</span>&gt;&nbsp;x&nbsp;<span style="color:#b4b4b4;">=</span>&nbsp;<span style="color:#569cd6;">new</span>&nbsp;<span style="color:#4ec9b0;">Lazy</span>&lt;<span style="color:#569cd6;">int</span>&gt;(()&nbsp;<span style="color:#b4b4b4;">=&gt;</span>&nbsp;<span style="color:#b5cea8;">42</span>);
+&gt; x.Value
+42
+
+&gt; <span style="color:#4ec9b0;">Task</span>&lt;<span style="color:#569cd6;">int</span>&gt;&nbsp;y&nbsp;<span style="color:#b4b4b4;">=</span>&nbsp;<span style="color:#4ec9b0;">Task</span><span style="color:#b4b4b4;">.</span>Run(()&nbsp;<span style="color:#b4b4b4;">=&gt;</span>&nbsp;<span style="color:#b5cea8;">1337</span>);
+&gt; <span style="color:#569cd6;">await</span>&nbsp;y
+1337</pre>
+	</p>
+	<p>
+		My theory, then, is that some programmers are introduced to the concept of monads via lazy or asynchronous computations, and that this could establish incorrect mental models.
+	</p>
+	<h3 id="393e8bcfa18244a988ff8ea56a1209b3">
+		Semi-scalar containers <a href="#393e8bcfa18244a988ff8ea56a1209b3" title="permalink">#</a>
+	</h3>
+	<p>
+		There's another category of monad that we could call <em>semi-scalar containers</em> (again, I'm open to suggestions for a better name). These are data containers that contain either a single value, or no value. In this set of monads, we find <a href="https://stackoverflow.com/a/48490711/126014">Nullable&lt;T&gt;</a>, Maybe, and Either.
+	</p>
+	<p>
+		Unfortunately, Maybe implementations often come with an API that enables you to ask a Maybe object if it's populated or empty, and a way to extract the value from the Maybe container. This misleads many programmers to write code like this:
+	</p>
+	<p>
+		<pre><span style="color:#2b91af;">Maybe</span>&lt;<span style="color:blue;">int</span>&gt;&nbsp;id&nbsp;=&nbsp;<span style="color:green;">//&nbsp;...</span>
+<span style="color:blue;">if</span>&nbsp;(id.HasItem)
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Customer</span>(id.Item);
+<span style="color:blue;">else</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">throw</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">DontKnowWhatToDoException</span>();</pre>
+	</p>
+	<p>
+		Granted, in many cases, people do something more reasonable than throwing a useless exception. In a specific context, it may be clear what to do with an empty Maybe object, but there are problems with this Tester-Doer approach:
+		<ul>
+			<li>It doesn't compose.</li>
+			<li>There's no systematic technique to apply. You always need to handle empty objects in a context-specific way.</li>
+		</ul>
+		These issues interact in unpleasant ways.
+	</p>
+	<p>
+		If you throw an exception when the object is empty, you'll likely have to deal with that exception further up in the call stack.		
+	</p>
+	<p>
+		If you return a magic value (like returning <code>-1</code> when a natural number is expected), you again force all callers to check for that magic number.
+	</p>
+	<p>
+		If you set a flag that indicates that an object was empty, again, you put the burden on callers to check for the flag.
+	</p>
+	<p>
+		This leads to <a href="http://blog.ploeh.dk/2013/07/08/defensive-coding">defensive coding</a>, which, at best, makes the code unreadable.
+	</p>
+	<h3 id="f2fd9c0c72fd45ea86908edb606740b6">
+		Behavior Injection <a href="#f2fd9c0c72fd45ea86908edb606740b6" title="permalink">#</a>
+	</h3>
+	<p>
+		Interestingly, programmers rarely take a Tester-Doer approach to working with collections. Instead, they rely on APIs for collections and arrays.
+	</p>
+	<p>
+		In C#, <a href="https://docs.microsoft.com/en-us/dotnet/csharp/programming-guide/concepts/linq">LINQ</a> has been around since 2007, and most programmers love it. It's common knowledge that you can use the <code>Select</code> method to, for example, convert an array of numbers to an array of strings:
+	</p>
+	<p>
+		<pre>&gt; <span style="color:blue;">new</span>[]&nbsp;{&nbsp;42,&nbsp;1337,&nbsp;2112,&nbsp;90125&nbsp;}.Select(i&nbsp;=&gt;&nbsp;i.ToString())
+string[4] { "42", "1337", "2112", "90125" }</pre>
+	</p>
+	<p>
+		You can do that with all functors, including Maybe:
+	</p>
+	<p>
+		<pre><span style="color:#2b91af;">Maybe</span>&lt;<span style="color:blue;">int</span>&gt;&nbsp;id&nbsp;=&nbsp;<span style="color:green;">//&nbsp;...</span>
+<span style="color:#2b91af;">Maybe</span>&lt;<span style="color:#2b91af;">Customer</span>&gt;&nbsp;c&nbsp;=&nbsp;id.Select(x&nbsp;=&gt;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Customer</span>(x));</pre>
+	</p>
+	<p>
+		A <a href="http://blog.ploeh.dk/2018/03/26/the-maybe-functor">previous article</a> offers a slightly more compelling example:
+	</p>
+	<p>
+		<pre><span style="color:blue;">var</span>&nbsp;viewModel&nbsp;=&nbsp;repository.Read(id).Select(r&nbsp;=&gt;&nbsp;r.ToViewModel());</pre>
+	</p>
+	<p>
+		Common to all the three above examples is that instead of trying to extract a value from the monad (which makes no sense in the array example), you inject the desired behaviour into the context of the data container. What that eventually brings about depends on the monad in question.
+	</p>
+	<p>
+		In the array example, the behaviour being injected is that of turning a number into a string. Since this behaviour is injected into a collection, it's applied to every element in the source array.
+	</p>
+	<p>
+		In the second example, the behaviour being injected is that of turning an integer into a <code>Customer</code> object. Since this behaviour is injected into a Maybe, it's only applied if the source object is populated.
+	</p>
+	<p>
+		In the third example, the behaviour being injected is that of turning a <code>Reservation</code> domain object into a View Model. Again, this only happens if the original Maybe object is populated.
+	</p>
+	<h3 id="9bfd775fc56740198bec05809c6c1b06">
+		Composability <a href="#9bfd775fc56740198bec05809c6c1b06" title="permalink">#</a>
+	</h3>
+	<p>
+		The marvellous quality of monads is that they're composable. You could, for example, start by attempting to parse a string into a number:
+	</p>
+	<p>
+		<pre><span style="color:blue;">string</span>&nbsp;candidate&nbsp;=&nbsp;<span style="color:green;">//&nbsp;Some&nbsp;string&nbsp;from&nbsp;application&nbsp;boundary</span>
+<span style="color:#2b91af;">Maybe</span>&lt;<span style="color:blue;">int</span>&gt;&nbsp;idm&nbsp;=&nbsp;TryParseInt(candidate);</pre>
+	</p>
+	<p>
+		This code could be defined in a part of your code base that deals with user input. Instead of trying to get 'the value' out of <code>idm</code>, you can pass the entire object to other parts of the code. The next step, defined in a different method, in a different class, perhaps even in a different library, then queries a database to read a <code>Reservation</code> object corresponding to that ID - if the ID is there, that is:
+	</p>
+	<p>
+		<pre><span style="color:#2b91af;">Maybe</span>&lt;<span style="color:#2b91af;">Reservation</span>&gt;&nbsp;rm&nbsp;=&nbsp;idm.SelectMany(repository.Read);</pre>
+	</p>
+	<p>
+		The <code>Read</code> method on the repository has this signature:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">Maybe</span>&lt;<span style="color:#2b91af;">Reservation</span>&gt;&nbsp;Read(<span style="color:blue;">int</span>&nbsp;id)</pre>
+	</p>
+	<p>
+		This is because you could pass any <code>int</code> to the method, but there may not be a row in the database that corresponds to that number. Had you used <code>Select</code> on <code>idm</code>, the return type would have been <code>Maybe&lt;Maybe&lt;Reservation&gt;&gt;</code>. This is a typical example of a nested functor, so instead, you use <code>SelectMany</code>, which flattens the functor. You can do this because Maybe is a monad.
+	</p>
+	<p>
+		The result at this stage is a <code>Maybe&lt;Reservation&gt;</code> object. If all goes according to plan, it's populated with a <code>Reservation</code> object from the database. Two things could go wrong at this stage, though:
+		<ol>
+			<li>The <code>candidate</code> string didn't represent a number.</li>
+			<li>The database didn't contain a row for the parsed ID.</li>
+		</ol>
+		If any of these errors occur, <code>idm</code> is empty.
+	</p>
+	<p>
+		You can now pass <code>rm</code> to another part of the code base, which then performs this step:
+	</p>
+	<p>
+		<pre><span style="color:#2b91af;">Maybe</span>&lt;<span style="color:#2b91af;">ReservationViewModel</span>&gt;&nbsp;vm&nbsp;=&nbsp;rm.Select(r&nbsp;=&gt;&nbsp;r.ToViewModel());</pre>
+	</p>
+	<p>
+		Functors and monads are composable (i.e. 'chainable'). This is a fundamental trait of functors; they're (endo)morphisms, which, by definition, are composable. In order to leverage that composability, though, you must retain the monad. If you extract 'the value' from the monad, composability is lost.
+	</p>
+	<p>
+		For that reason, you're not supposed to 'get the value out of the monad'. Instead, you inject the desired behaviour into the monad in question, so that it stays composable. In the above example, <code>repository.Read</code> and <code>r.ToViewModel()</code> are behaviors injected into the Maybe monad.
+	</p>
+	<h3 id="e3be91ccb5a04a99a67d57c39e49b446">
+		Summary <a href="#e3be91ccb5a04a99a67d57c39e49b446" title="permalink">#</a>
+	</h3>
+	<p>
+		When we learn something new, there's always a phase where we struggle to understand a new concept. Sometimes, we may, inadvertently, erect a tentative, but misleading mental model of a concept. It seems to me that this happens to many people while they're grappling with the concept of functors and monads.
+	</p>
+	<p>
+		One common mental wrong turn that many people seem to take is to try to 'get the value out of the monad'. This seems to be particularly common with <code>IO</code> in Haskell, where the issue is a <a href="https://stackoverflow.com/q/51614573/126014">frequently</a> <a href="https://stackoverflow.com/q/8567743/126014">asked</a> <a href="https://stackoverflow.com/q/7314789/126014">question</a>.
+	</p>
+	<p>
+		I've also reviewed enough <a href="https://fsharp.org">F#</a> code to have noticed that people often take the imperative, Tester-Doer road to <code>'a option</code>. That's the reason this article uses a majority of its space on various Maybe examples.
+	</p>
+	<p>
+		In a future article, I'll show a more complete and compelling example of behaviour injection.
+	</p>
+</div>
