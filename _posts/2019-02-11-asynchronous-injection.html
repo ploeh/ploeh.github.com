@@ -802,4 +802,55 @@ private async Task&lt;bool&gt; CheckTableAvailability(Reservation reservation)
 		</div>
 		<div class="comment-date">2019-02-13 19:54 UTC</div>
 	</div>
+		
+	<div class="comment" id="451723a601f9487397c9aa7fa09381dc">
+		<div class="comment-author">Ramon Pfeiffer</div>
+		<div class="comment-content">
+			<p>
+				Apparently, I answered my own question when I moved the table availability check into its own private method. This way, a new dependency <code>TableAvailabilityChecker</code> can handle the availability check (complete with reservations book and phone calls), acting as a common data access layer.
+			</p>
+			<p>
+				I have created a <a href="https://github.com/Thaoden/RestaurantReservation" target="_blank">repository</a>, where I tried to follow the steps outlined in this blog post with the new dependency. After all refactorings the controller looks like this:
+			</p>
+			<pre>
+public class ReservationsController : ControllerBase
+{
+	private readonly MaitreD _maitreD;
+
+	public ReservationsController(int capacity, IReservationsRepository repository, ITelephone telephone)
+	{
+		_maitreD = new MaitreD(capacity);
+		Repository = repository;
+		Telephone = telephone;
+	}
+
+	public IReservationsRepository Repository { get; }
+	public ITelephone Telephone { get; }
+
+	public async Task<IActionResult> Post(Reservation reservation)
+	{
+		Reservation[] currentReservations = await Repository.ReadReservations(reservation.Date);
+		var confirmationCalls = currentReservations.Select(cr => Telephone.AskConfirmation(cr.Guest.PhoneNumber));
+
+		return _maitreD.CheckTableAvailability(currentReservations, reservation)
+			.Match(
+				some: r => new Maybe<Reservation>(r),
+				none: _maitreD.AskConfirmation(await Task.WhenAll(confirmationCalls), reservation)
+			)
+			.Match(
+				some: r => Ok(Repository.Create(_maitreD.Accept(r))),
+				none: new ContentResult { Content = "Table unavailable", StatusCode = StatusCodes.Status500InternalServerError } as ActionResult
+			);
+	}
+}
+			</pre>
+			<p>
+				During the refactorings, I was able to remove the <code>TableAvailabilityChecker</code> again; I'm quite happy that the maître d'hôtel is checking the table availability and asking for the confirmations with the resources that are given to him. I'm not so happy with the <code>Task.WhenAll()</code> part, but I don't know how to make this more readable and at the same time make the calls only if we need them.
+			</p>
+			<p>
+				All in all, I now think a bit differently about the controller responsibilities: Being at the boundary of the system, it is arguably the best place to make calls to external systems. If and how the information gathered from the outside <i>is used</i> however is still up to the business objects. Thanks, Mark, for the insight!
+			</p>
+		</div>
+		<div class="comment-date">2019-02-15 11:40 UTC</div>
+	</div>
 </div>
