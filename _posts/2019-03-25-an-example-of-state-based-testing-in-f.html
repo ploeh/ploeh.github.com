@@ -1,0 +1,217 @@
+---
+layout: post
+title: "An example of state based-testing in F#"
+description: "While F# is a functional-first language, it's okay to occasionally be pragmatic and use mutable state, for example to easily write some sustainable state-based tests."
+date: 2019-03-25 6:34 UTC
+tags: [Unit Testing, F#]
+---
+{% include JB/setup %}
+
+<div id="post">
+	<p>
+		<em>{{ page.description }}</em>
+	</p>
+	<p>
+		This article is an instalment in an article series about how to move <a href="/2019/02/18/from-interaction-based-to-state-based-testing">from interaction-based testing to state-based testing</a>. In the previous article, you saw how to write <a href="/2019/03/11/an-example-of-state-based-testing-in-haskell">state-based tests in Haskell</a>. In this article, you'll see how to apply what you've learned in <a href="https://fsharp.org">F#</a>.
+	</p>
+	<p>
+		The code shown in this article is <a href="https://github.com/ploeh/UserManagement">available on GitHub</a>.
+	</p>
+	<h3 id="57929a79c0a740c5986df12fc6e4b1c1">
+		A function to connect two users <a href="#57929a79c0a740c5986df12fc6e4b1c1" title="permalink">#</a>
+	</h3>
+	<p>
+		This article, like the others in this series, implements an operation to connect two users. I explain the example in details in my two <a href="https://cleancoders.com">Clean Coders</a> videos, <a href="https://cleancoders.com/episode/humane-code-real-episode-4/show">Church Visitor</a> and <a href="https://cleancoders.com/episode/humane-code-real-episode-5/show">Preserved in translation</a>.
+	</p>
+	<p>
+		Like in the previous <a href="https://www.haskell.org">Haskell</a> example, in this article we'll start with the implementation, and then see how to unit test it.
+	</p>
+	<p>
+		<pre><span style="color:green;">//&nbsp;(&#39;a&nbsp;-&gt;&nbsp;Result&lt;User,UserLookupError&gt;)&nbsp;-&gt;&nbsp;(User&nbsp;-&gt;&nbsp;unit)&nbsp;-&gt;&nbsp;&#39;a&nbsp;-&gt;&nbsp;&#39;a&nbsp;-&gt;&nbsp;HttpResponse&lt;User&gt;</span>
+<span style="color:blue;">let</span>&nbsp;post&nbsp;lookupUser&nbsp;updateUser&nbsp;userId&nbsp;otherUserId&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;userRes&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;lookupUser&nbsp;userId&nbsp;|&gt;&nbsp;Result.mapError&nbsp;(<span style="color:blue;">function</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;InvalidId&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:#a31515;">&quot;Invalid&nbsp;user&nbsp;ID.&quot;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;NotFound&nbsp;&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:#a31515;">&quot;User&nbsp;not&nbsp;found.&quot;</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;otherUserRes&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;lookupUser&nbsp;otherUserId&nbsp;|&gt;&nbsp;Result.mapError&nbsp;(<span style="color:blue;">function</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;InvalidId&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:#a31515;">&quot;Invalid&nbsp;ID&nbsp;for&nbsp;other&nbsp;user.&quot;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;NotFound&nbsp;&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:#a31515;">&quot;Other&nbsp;user&nbsp;not&nbsp;found.&quot;</span>)
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;connect&nbsp;=&nbsp;result&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;user&nbsp;=&nbsp;userRes
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;otherUser&nbsp;=&nbsp;otherUserRes
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;addConnection&nbsp;user&nbsp;otherUser&nbsp;|&gt;&nbsp;updateUser
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;otherUser&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">match</span>&nbsp;connect&nbsp;<span style="color:blue;">with</span>&nbsp;Ok&nbsp;u&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;OK&nbsp;u&nbsp;|&nbsp;Error&nbsp;msg&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;BadRequest&nbsp;msg</pre>
+	</p>
+	<p>
+		While <a href="/2019/02/25/an-example-of-interaction-based-testing-in-c">the original C# example</a> used Constructor Injection, the above <code>post</code> function uses <a href="/2017/01/30/partial-application-is-dependency-injection">partial application for Dependency Injection</a>. The two function arguments <code>lookupUser</code> and <code>updateUser</code> represent interactions with a database. Since functions are polymorphic, however, it's possible to replace them with <a href="http://xunitpatterns.com/Test%20Double.html">Test Doubles</a>.
+	</p>
+	<h3 id="dd0384ed4c2d478f8374dbd55c86b197">
+		A Fake database <a href="#dd0384ed4c2d478f8374dbd55c86b197" title="permalink">#</a>
+	</h3>
+	<p>
+		Like in the Haskell example, you can implement a <a href="http://xunitpatterns.com/Fake%20Object.html">Fake</a> database in F#. It's also possible to implement the State monad in F#, but there's less need for it. F# is a functional-first language, but you can also write mutable code if need be. You could, then, choose to be pragmatic and base your Fake database on mutable state.
+	</p>
+	<p>
+		<pre><span style="color:blue;">type</span>&nbsp;FakeDB&nbsp;()&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;users&nbsp;=&nbsp;Dictionary&lt;int,&nbsp;User&gt;&nbsp;()
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">member</span>&nbsp;<span style="color:blue;">val</span>&nbsp;IsDirty&nbsp;=&nbsp;<span style="color:blue;">false</span>&nbsp;<span style="color:blue;">with</span>&nbsp;get,&nbsp;set
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">member</span>&nbsp;this.AddUser&nbsp;user&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;this.IsDirty&nbsp;<span style="color:blue;">&lt;-</span>&nbsp;<span style="color:blue;">true</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;users.Add&nbsp;(user.UserId,&nbsp;user)
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">member</span>&nbsp;this.TryFind&nbsp;i&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">match</span>&nbsp;users.TryGetValue&nbsp;i&nbsp;<span style="color:blue;">with</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:blue;">false</span>,&nbsp;_&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;None
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:blue;">true</span>,&nbsp;&nbsp;u&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;Some&nbsp;u
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">member</span>&nbsp;this.LookupUser&nbsp;s&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">match</span>&nbsp;Int32.TryParse&nbsp;s&nbsp;<span style="color:blue;">with</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:blue;">false</span>,&nbsp;_&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;Error&nbsp;InvalidId
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:blue;">true</span>,&nbsp;i&nbsp;<span style="color:blue;">-&gt;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">match</span>&nbsp;users.TryGetValue&nbsp;i&nbsp;<span style="color:blue;">with</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:blue;">false</span>,&nbsp;_&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;Error&nbsp;NotFound
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:blue;">true</span>,&nbsp;u&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;Ok&nbsp;u
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">member</span>&nbsp;this.UpdateUser&nbsp;u&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;this.IsDirty&nbsp;<span style="color:blue;">&lt;-</span>&nbsp;<span style="color:blue;">true</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;users.[u.UserId]&nbsp;<span style="color:blue;">&lt;-</span>&nbsp;u</pre>
+	</p>
+	<p>
+		This <code>FakeDB</code> type is <em>a class</em> that wraps a mutable dictionary. While it 'implements' <code>LookupUser</code> and <code>UpdateUser</code>, it also exposes what <a href="http://bit.ly/xunitpatterns">xUnit Test Patterns</a> calls a <em>Retrieval Interface:</em> an API that tests can use to examine the state of the object.
+	</p>
+	<p>
+		Immutable values normally have structural equality. This means that two values are considered equal if they contain the same constituent values, and have the same structure. Mutable objects, on the other hand, typically have reference equality. This makes it harder to compare two objects, which is, however, what almost all unit testing is about. You compare expected state with actual state.
+	</p>
+	<p>
+		In the previous article, the Fake database was simply an immutable dictionary. This meant that tests could easily compare expected and actual values, since they were immutable. When you use a mutable object, like the above dictionary, this is harder. Instead, what I chose to do here was to introduce an <code>IsDirty</code> flag. This enables easy verification of whether or not the database changed.
+	</p>
+	<h3 id="88dbfa0dd8f34f4ba91f2b7acc6173b1">
+		Happy path test case <a href="#88dbfa0dd8f34f4ba91f2b7acc6173b1" title="permalink">#</a>
+	</h3>
+	<p>
+		This is all you need in terms of Test Doubles. You now have test-specific <code>LookupUser</code> and <code>UpdateUser</code> methods that you can pass to the <code>post</code> function.
+	</p>
+	<p>
+		Like in the previous article, you can start by exercising the happy path where a user successfully connects with another user:
+	</p>
+	<p>
+		<pre>[&lt;Fact&gt;]
+<span style="color:blue;">let</span>&nbsp;``Users&nbsp;successfully&nbsp;connect``&nbsp;()&nbsp;=&nbsp;Property.check&nbsp;&lt;|&nbsp;property&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;user&nbsp;=&nbsp;Gen.user
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;otherUser&nbsp;=&nbsp;Gen.withOtherId&nbsp;user
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;db&nbsp;=&nbsp;FakeDB&nbsp;()
+&nbsp;&nbsp;&nbsp;&nbsp;db.AddUser&nbsp;user
+&nbsp;&nbsp;&nbsp;&nbsp;db.AddUser&nbsp;otherUser
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;actual&nbsp;=&nbsp;post&nbsp;db.LookupUser&nbsp;db.UpdateUser&nbsp;(string&nbsp;user.UserId)&nbsp;(string&nbsp;otherUser.UserId)
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;test&nbsp;&lt;@&nbsp;db.TryFind&nbsp;user.UserId
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;Option.exists
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(<span style="color:blue;">fun</span>&nbsp;u&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;u.ConnectedUsers&nbsp;|&gt;&nbsp;List.contains&nbsp;otherUser)&nbsp;@&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;test&nbsp;&lt;@&nbsp;isOK&nbsp;actual&nbsp;@&gt;&nbsp;}</pre>
+	</p>
+	<p>
+		All tests in this article use <a href="https://xunit.github.io">xUnit.net</a> 2.3.1, <a href="https://github.com/SwensenSoftware/unquote">Unquote</a> 4.0.0, and <a href="https://github.com/hedgehogqa/fsharp-hedgehog">Hedgehog</a> 0.7.0.0.
+	</p>
+	<p>
+		This test first adds two valid users to the Fake database <code>db</code>. It then calls the <code>post</code> function, passing the <code>db.LookupUser</code> and <code>db.UpdateUser</code> methods as arguments. Finally, it verifies that the 'first' user's <code>ConnectedUsers</code> now contains the <code>otherUser</code>. It also verifies that <code>actual</code> represents a <code>200 OK</code> HTTP response.
+	</p>
+	<h3 id="750f435b6e854db898e0da44119ee4f6">
+		Missing user test case <a href="#750f435b6e854db898e0da44119ee4f6" title="permalink">#</a>
+	</h3>
+	<p>
+		While there's one happy-path test case, there's four other test cases left. One of these is when the first user doesn't exist:
+	</p>
+	<p>
+		<pre>[&lt;Fact&gt;]
+<span style="color:blue;">let</span>&nbsp;``Users&nbsp;don&#39;t&nbsp;connect&nbsp;when&nbsp;user&nbsp;doesn&#39;t&nbsp;exist``&nbsp;()&nbsp;=&nbsp;Property.check&nbsp;&lt;|&nbsp;property&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;i&nbsp;=&nbsp;Range.linear&nbsp;1&nbsp;1_000_000&nbsp;|&gt;&nbsp;Gen.int
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;otherUser&nbsp;=&nbsp;Gen.user
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;db&nbsp;=&nbsp;FakeDB&nbsp;()
+&nbsp;&nbsp;&nbsp;&nbsp;db.AddUser&nbsp;otherUser
+&nbsp;&nbsp;&nbsp;&nbsp;db.IsDirty&nbsp;<span style="color:blue;">&lt;-</span>&nbsp;<span style="color:blue;">false</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;uniqueUserId&nbsp;=&nbsp;string&nbsp;(otherUser.UserId&nbsp;+&nbsp;i)
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;actual&nbsp;=&nbsp;post&nbsp;db.LookupUser&nbsp;db.UpdateUser&nbsp;uniqueUserId&nbsp;(string&nbsp;otherUser.UserId)
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;test&nbsp;&lt;@&nbsp;not&nbsp;db.IsDirty&nbsp;@&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;test&nbsp;&lt;@&nbsp;isBadRequest&nbsp;actual&nbsp;@&gt;&nbsp;}</pre>
+	</p>
+	<p>
+		This test adds one valid user to the Fake database. Once it's done with configuring the database, it sets <code>IsDirty</code> to <code>false</code>. The <code>AddUser</code> method sets <code>IsDirty</code> to <code>true</code>, so it's important to reset the flag before the <em>act</em> phase of the test. You could consider this a bit of a hack, but I think it makes the intent of the test clear. This is, however, a position I'm ready to reassess should the tests evolve to make this design awkward.
+	</p>
+	<p>
+		As explained in the previous article, this test case requires an ID of a user that doesn't exist. Since this is a property-based test, there's a risk that Hedgehog might generate a number <code>i</code> equal to <code>otherUser.UserId</code>. One way to get around that problem is to add the two numbers together. Since <code>i</code> is generated from the range <em>1 - 1,000,000</em>, <code>uniqueUserId</code> is guaranteed to be different from <code>otherUser.UserId</code>.
+	</p>
+	<p>
+		The test verifies that the state of the database didn't change (that <code>IsDirty</code> is still <code>false</code>), and that <code>actual</code> represents a <code>400 Bad Request</code> HTTP response.
+	</p>
+	<h3 id="4dbe21251f8440b1a594192d07b53c9f">
+		Remaining test cases <a href="#4dbe21251f8440b1a594192d07b53c9f" title="permalink">#</a>
+	</h3>
+	<p>
+		You can write the remaining three test cases in the same vein:
+	</p>
+	<p>
+		<pre>[&lt;Fact&gt;]
+<span style="color:blue;">let</span>&nbsp;``Users&nbsp;don&#39;t&nbsp;connect&nbsp;when&nbsp;other&nbsp;user&nbsp;doesn&#39;t&nbsp;exist``&nbsp;()&nbsp;=&nbsp;Property.check&nbsp;&lt;|&nbsp;property&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;i&nbsp;=&nbsp;Range.linear&nbsp;1&nbsp;1_000_000&nbsp;|&gt;&nbsp;Gen.int
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;user&nbsp;=&nbsp;Gen.user
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;db&nbsp;=&nbsp;FakeDB&nbsp;()
+&nbsp;&nbsp;&nbsp;&nbsp;db.AddUser&nbsp;user
+&nbsp;&nbsp;&nbsp;&nbsp;db.IsDirty&nbsp;<span style="color:blue;">&lt;-</span>&nbsp;<span style="color:blue;">false</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;uniqueOtherUserId&nbsp;=&nbsp;string&nbsp;(user.UserId&nbsp;+&nbsp;i)
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;actual&nbsp;=&nbsp;post&nbsp;db.LookupUser&nbsp;db.UpdateUser&nbsp;(string&nbsp;user.UserId)&nbsp;uniqueOtherUserId&nbsp;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;test&nbsp;&lt;@&nbsp;not&nbsp;db.IsDirty&nbsp;@&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;test&nbsp;&lt;@&nbsp;isBadRequest&nbsp;actual&nbsp;@&gt;&nbsp;}
+ 
+[&lt;Fact&gt;]
+<span style="color:blue;">let</span>&nbsp;``Users&nbsp;don&#39;t&nbsp;connect&nbsp;when&nbsp;user&nbsp;Id&nbsp;is&nbsp;invalid``&nbsp;()&nbsp;=&nbsp;Property.check&nbsp;&lt;|&nbsp;property&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;s&nbsp;=&nbsp;Gen.alphaNum&nbsp;|&gt;&nbsp;Gen.string&nbsp;(Range.linear&nbsp;0&nbsp;100)&nbsp;|&gt;&nbsp;Gen.filter&nbsp;isIdInvalid
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;otherUser&nbsp;=&nbsp;Gen.user
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;db&nbsp;=&nbsp;FakeDB&nbsp;()
+&nbsp;&nbsp;&nbsp;&nbsp;db.AddUser&nbsp;otherUser
+&nbsp;&nbsp;&nbsp;&nbsp;db.IsDirty&nbsp;<span style="color:blue;">&lt;-</span>&nbsp;<span style="color:blue;">false</span>
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;actual&nbsp;=&nbsp;post&nbsp;db.LookupUser&nbsp;db.UpdateUser&nbsp;s&nbsp;(string&nbsp;otherUser.UserId)
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;test&nbsp;&lt;@&nbsp;not&nbsp;db.IsDirty&nbsp;@&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;test&nbsp;&lt;@&nbsp;isBadRequest&nbsp;actual&nbsp;@&gt;&nbsp;}
+ 
+[&lt;Fact&gt;]
+<span style="color:blue;">let</span>&nbsp;``Users&nbsp;don&#39;t&nbsp;connect&nbsp;when&nbsp;other&nbsp;user&nbsp;Id&nbsp;is&nbsp;invalid``&nbsp;()&nbsp;=&nbsp;Property.check&nbsp;&lt;|&nbsp;property&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;s&nbsp;=&nbsp;Gen.alphaNum&nbsp;|&gt;&nbsp;Gen.string&nbsp;(Range.linear&nbsp;0&nbsp;100)&nbsp;|&gt;&nbsp;Gen.filter&nbsp;isIdInvalid
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;user&nbsp;=&nbsp;Gen.user
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;db&nbsp;=&nbsp;FakeDB&nbsp;()
+&nbsp;&nbsp;&nbsp;&nbsp;db.AddUser&nbsp;user
+&nbsp;&nbsp;&nbsp;&nbsp;db.IsDirty&nbsp;<span style="color:blue;">&lt;-</span>&nbsp;<span style="color:blue;">false</span>
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;actual&nbsp;=&nbsp;post&nbsp;db.LookupUser&nbsp;db.UpdateUser&nbsp;(string&nbsp;user.UserId)&nbsp;s
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;test&nbsp;&lt;@&nbsp;not&nbsp;db.IsDirty&nbsp;@&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;test&nbsp;&lt;@&nbsp;isBadRequest&nbsp;actual&nbsp;@&gt;&nbsp;}</pre>
+	</p>
+	<p>
+		All tests inspect the state of the Fake database after the calling the <code>post</code> function. The exact interactions between <code>post</code> and <code>db</code> aren't specified. Instead, these tests rely on setting up the initial state, exercising the System Under Test, and verifying the final state. These are all state-based tests that avoid over-specifying the interactions.
+	</p>
+	<h3 id="102ff7e3a9b247b4914f113b06afd6df">
+		Summary <a href="#102ff7e3a9b247b4914f113b06afd6df" title="permalink">#</a>
+	</h3>
+	<p>
+		While the previous Haskell example demonstrated that it's possible to write state-based unit tests in a functional style, when using F#, it sometimes make sense to leverage the object-oriented features already available in the .NET framework, such as mutable dictionaries. It would have been possible to write purely functional state-based tests in F# as well, by porting the Haskell examples, but here, I wanted to demonstrate that this isn't required.
+	</p>
+	<p>
+		I tend to be of the opinion that it's only possible to be pragmatic if you know how to be dogmatic, but now that we know how to write state-based tests in a strictly functional style, I think it's fine to be pragmatic and use a bit of mutable state in F#. The benefit of this is that it now seems clear how to apply what we've learned to the original C# example.
+	</p>
+	<p>
+		<strong>Next: </strong> An example of state based-testing in C#.
+	</p>
+</div>
