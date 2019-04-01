@@ -1,0 +1,288 @@
+---
+layout: post
+title: "An example of state-based testing in C#"
+description: "An example of avoiding Mocks and Stubs in C# unit testing."
+date: 2018-09-10 6:07 UTC
+tags: [Unit Testing]
+---
+{% include JB/setup %}
+
+<div id="post">
+	<p>
+		<em>{{ page.description }}</em>
+	</p>
+	<p>
+		This article is an instalment in an article series about how to move <a href="">from interaction-based testing to state-based testing</a>. In the previous article, you saw <a href="">an example of a pragmatic state-based test in F#</a>. You can now take your new-found knowledge and apply it to the <a href="">original C# example</a>.
+	</p>
+	<p>
+		In the spirit of <a href="http://bit.ly/xunitpatterns">xUnit Test Patterns</a>, in this article you'll see how to refactor the tests while keeping the implementation code constant.
+	</p>
+	<p>
+		The code shown in this article is <a href="">available on GitHub</a>.
+	</p>
+	<h3 id="da7f393fdef24bae9e72c4bcad7e8373">
+		Connect two users <a href="#da7f393fdef24bae9e72c4bcad7e8373" title="permalink">#</a>
+	</h3>
+	<p>
+		The <a href="">previous article</a> provides more details on the System Under Test (SUT), but here it is, repeated, for your convenience:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">ConnectionsController</span>&nbsp;:&nbsp;<span style="color:#2b91af;">ApiController</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;ConnectionsController(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">IUserReader</span>&nbsp;userReader,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">IUserRepository</span>&nbsp;userRepository)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;UserReader&nbsp;=&nbsp;userReader;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;UserRepository&nbsp;=&nbsp;userRepository;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">IUserReader</span>&nbsp;UserReader&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">IUserRepository</span>&nbsp;UserRepository&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">IHttpActionResult</span>&nbsp;Post(<span style="color:blue;">string</span>&nbsp;userId,&nbsp;<span style="color:blue;">string</span>&nbsp;otherUserId)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;userRes&nbsp;=&nbsp;UserReader.Lookup(userId).SelectError(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;error&nbsp;=&gt;&nbsp;error.Accept(<span style="color:#2b91af;">UserLookupError</span>.Switch(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;onInvalidId:&nbsp;<span style="color:#a31515;">&quot;Invalid&nbsp;user&nbsp;ID.&quot;</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;onNotFound:&nbsp;&nbsp;<span style="color:#a31515;">&quot;User&nbsp;not&nbsp;found.&quot;</span>)));
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;otherUserRes&nbsp;=&nbsp;UserReader.Lookup(otherUserId).SelectError(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;error&nbsp;=&gt;&nbsp;error.Accept(<span style="color:#2b91af;">UserLookupError</span>.Switch(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;onInvalidId:&nbsp;<span style="color:#a31515;">&quot;Invalid&nbsp;ID&nbsp;for&nbsp;other&nbsp;user.&quot;</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;onNotFound:&nbsp;&nbsp;<span style="color:#a31515;">&quot;Other&nbsp;user&nbsp;not&nbsp;found.&quot;</span>)));
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;connect&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">from</span>&nbsp;user&nbsp;<span style="color:blue;">in</span>&nbsp;userRes
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">from</span>&nbsp;otherUser&nbsp;<span style="color:blue;">in</span>&nbsp;otherUserRes
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">select</span>&nbsp;Connect(user,&nbsp;otherUser);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;connect.SelectBoth(Ok,&nbsp;BadRequest).Bifold();
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:#2b91af;">User</span>&nbsp;Connect(<span style="color:#2b91af;">User</span>&nbsp;user,&nbsp;<span style="color:#2b91af;">User</span>&nbsp;otherUser)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;user.Connect(otherUser);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;UserRepository.Update(user);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;otherUser;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+	</p>
+	<p>
+		This implementation code is a simplification of the code example that serves as an example running through my two <a href="https://cleancoders.com">Clean Coders</a> videos, <a href="https://cleancoders.com/episode/humane-code-real-episode-4/show">Church Visitor</a> and <a href="https://cleancoders.com/episode/humane-code-real-episode-5/show">Preserved in translation</a>.
+	</p>
+	<h3 id="4e6812ee83ad4cda9b8deedef99ab4e1">
+		A Fake database <a href="#4e6812ee83ad4cda9b8deedef99ab4e1" title="permalink">#</a>
+	</h3>
+	<p>
+		As in the previous article, you can define a test-specific <a href="http://xunitpatterns.com/Fake%20Object.html">Fake</a> database:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">FakeDB</span>&nbsp;:&nbsp;<span style="color:#2b91af;">Collection</span>&lt;<span style="color:#2b91af;">User</span>&gt;,&nbsp;<span style="color:#2b91af;">IUserReader</span>,&nbsp;<span style="color:#2b91af;">IUserRepository</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">IResult</span>&lt;<span style="color:#2b91af;">User</span>,&nbsp;<span style="color:#2b91af;">IUserLookupError</span>&gt;&nbsp;Lookup(<span style="color:blue;">string</span>&nbsp;id)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;(!(<span style="color:blue;">int</span>.TryParse(id,&nbsp;<span style="color:blue;">out</span>&nbsp;<span style="color:blue;">int</span>&nbsp;i)))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:#2b91af;">Result</span>.Error&lt;<span style="color:#2b91af;">User</span>,&nbsp;<span style="color:#2b91af;">IUserLookupError</span>&gt;(<span style="color:#2b91af;">UserLookupError</span>.InvalidId);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;user&nbsp;=&nbsp;<span style="color:blue;">this</span>.FirstOrDefault(u&nbsp;=&gt;&nbsp;u.Id&nbsp;==&nbsp;i);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;(user&nbsp;==&nbsp;<span style="color:blue;">null</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:#2b91af;">Result</span>.Error&lt;<span style="color:#2b91af;">User</span>,&nbsp;<span style="color:#2b91af;">IUserLookupError</span>&gt;(<span style="color:#2b91af;">UserLookupError</span>.NotFound);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:#2b91af;">Result</span>.Success&lt;<span style="color:#2b91af;">User</span>,&nbsp;<span style="color:#2b91af;">IUserLookupError</span>&gt;(user);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">bool</span>&nbsp;IsDirty&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;<span style="color:blue;">set</span>;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;Update(<span style="color:#2b91af;">User</span>&nbsp;user)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;IsDirty&nbsp;=&nbsp;<span style="color:blue;">true</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;(!Contains(user))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Add(user);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+	</p>
+	<p>
+		This is one of the few cases where I find inheritance more convenient than composition. By deriving from <code>Collection&lt;User&gt;</code>, you don't have to explicitly write code to expose a <em>Retrieval Interface</em>. The entirety of a standard collection API is already available via the base class. Had this class been part of a public API, I'd be concerned that inheritance could introduce future breaking changes, but as part of a suite of unit tests, I hope that I've made the right decision.
+	</p>
+	<p>
+		Although you can derive a Fake database from a base class, you can still implement required interfaces - in this case <code>IUserReader</code> and <code>IUserRepository</code>. The <code>Update</code> method is the easiest one to implement, since it simply sets the <code>IsDirty</code> flag to <code>true</code> and adds the <code>user</code> if it's not already part of the collection.
+	</p>
+	<p>
+		The <code>IsDirty</code> flag is the only custom Retrieval Interface added to the <code>FakeDB</code> class. As the previous article explains, this flag provides a convenient was to verify whether or not the database has changed.
+	</p>
+	<p>
+		The <code>Lookup</code> method is a bit more involved, since it has to support all three outcomes implied by the protocol:
+		<ul>
+			<li>If the <code>id</code> is invalid, a result to that effect is returned.</li>
+			<li>If the user isn't found, a result to that effect is returned.</li>
+			<li>If the user with the requested <code>id</code> is found, then that user is returned.</li>
+		</ul>
+		This is a typical quality of a Fake: it contains <em>some</em> production-like behaviour, while still taking shortcuts compared to a full production implementation. In this case, it properly adheres to the protocol implied by the interface and protects its invariants. It still doesn't implement persistent storage, though.
+	</p>
+	<h3 id="92480e7451ad4c02a524f9fcd1ef1c8d">
+		Happy path test case <a href="#92480e7451ad4c02a524f9fcd1ef1c8d" title="permalink">#</a>
+	</h3>
+	<p>
+		This is all you need in terms of <a href="http://xunitpatterns.com/Test%20Double.html">Test Doubles</a>. You now have a test-specific <code>IUserReader</code> and <code>IUserRepository</code> implementation that you can pass to the <code>Post</code> method. Notice that a single class implements multiple interfaces. This is often key to be able to implement a Fake object in the first place.
+	</p>
+	<p>
+		Like in the previous article, you can start by exercising the happy path where a user successfully connects with another user:
+	</p>
+	<p>
+		<pre>[<span style="color:#2b91af;">Theory</span>,&nbsp;<span style="color:#2b91af;">UserManagementTestConventions</span>]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;UsersSuccessfullyConnect(
+&nbsp;&nbsp;&nbsp;&nbsp;[<span style="color:#2b91af;">Frozen</span>(<span style="color:#2b91af;">Matching</span>.ImplementedInterfaces)]<span style="color:#2b91af;">FakeDB</span>&nbsp;db,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">User</span>&nbsp;user,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">User</span>&nbsp;otherUser,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">ConnectionsController</span>&nbsp;sut)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;db.Add(user);
+&nbsp;&nbsp;&nbsp;&nbsp;db.Add(otherUser);
+&nbsp;&nbsp;&nbsp;&nbsp;db.IsDirty&nbsp;=&nbsp;<span style="color:blue;">false</span>;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;actual&nbsp;=&nbsp;sut.Post(user.Id.ToString(),&nbsp;otherUser.Id.ToString());
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;ok&nbsp;=&nbsp;<span style="color:#2b91af;">Assert</span>.IsAssignableFrom&lt;<span style="color:#2b91af;">OkNegotiatedContentResult</span>&lt;<span style="color:#2b91af;">User</span>&gt;&gt;(actual);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Assert</span>.Equal(otherUser,&nbsp;ok.Content);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Assert</span>.True(db.IsDirty);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Assert</span>.Contains(otherUser.Id,&nbsp;user.Connections);
+}</pre>
+	</p>
+	<p>
+		This, and all other tests in this article use <a href="https://xunit.github.io">xUnit.net</a> 2.3.1 and <a href="https://github.com/AutoFixture/AutoFixture">AutoFixture</a> 4.1.0.
+	</p>
+	<p>
+		The test is organised according to my standard <a href="http://blog.ploeh.dk/2013/06/24/a-heuristic-for-formatting-code-according-to-the-aaa-pattern">heuristic for formatting tests according to the Arrange Act Assert pattern</a>. In the Arrange phase, it adds the two valid <code>User</code> objects to the Fake <code>db</code> and sets the <code>IsDirty</code> flag to false.
+	</p>
+	<p>
+		Setting the flag is necessary because this is object-oriented code, where objects have mutable state. In the previous articles with examples in <a href="https://fsharp.org">F#</a> and <a href="https://www.haskell.org">Haskell</a>, the <code>User</code> types were immutable. Connecting two users didn't mutate one of the users, but rather returned a new <code>User</code> value, as this F# example demonstrates:
+	</p>
+	<p>
+		<pre><span style="color:green;">//&nbsp;User&nbsp;-&gt;&nbsp;User&nbsp;-&gt;&nbsp;User</span>
+<span style="color:blue;">let</span>&nbsp;addConnection&nbsp;user&nbsp;otherUser&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;{&nbsp;user&nbsp;<span style="color:blue;">with</span>&nbsp;ConnectedUsers&nbsp;=&nbsp;otherUser&nbsp;::&nbsp;user.ConnectedUsers&nbsp;}</pre>
+	</p>
+	<p>
+		In the current object-oriented code base, however, connecting one user to another is an instance method on the <code>User</code> class that mutates its state:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;Connect(<span style="color:#2b91af;">User</span>&nbsp;otherUser)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;connections.Add(otherUser.Id);
+}</pre>
+	</p>
+	<p>
+		As a consequence, the <code>Post</code> method could, if someone made a mistake in its implementation, call <code>user.Connect</code>, but forget to invoke <code>UserRepository.Update</code>. Even if that happened, then all the other assertions would pass. This is the reason that you need the <code>Assert.True(db.IsDirty)</code> assertion in the Assert phase of the test.
+	</p>
+	<p>
+		While we can apply to object-oriented code what we've learned from functional programming, the latter remains simpler.
+	</p>
+	<h3 id="011dc9e733ad44c9a656c07b2d420e1f">
+		Error test cases <a href="#011dc9e733ad44c9a656c07b2d420e1f" title="permalink">#</a>
+	</h3>
+	<p>
+		While there's one happy path, there's four distinct error paths that you ought to cover. You can use the Fake database for that as well:
+	</p>
+	<p>
+		<pre>[<span style="color:#2b91af;">Theory</span>,&nbsp;<span style="color:#2b91af;">UserManagementTestConventions</span>]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;UsersFailToConnectWhenUserIdIsInvalid(
+&nbsp;&nbsp;&nbsp;&nbsp;[<span style="color:#2b91af;">Frozen</span>(<span style="color:#2b91af;">Matching</span>.ImplementedInterfaces)]<span style="color:#2b91af;">FakeDB</span>&nbsp;db,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">string</span>&nbsp;userId,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">User</span>&nbsp;otherUser,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">ConnectionsController</span>&nbsp;sut)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Assert</span>.False(<span style="color:blue;">int</span>.TryParse(userId,&nbsp;<span style="color:blue;">out</span>&nbsp;<span style="color:blue;">var</span>&nbsp;_));
+&nbsp;&nbsp;&nbsp;&nbsp;db.Add(otherUser);
+&nbsp;&nbsp;&nbsp;&nbsp;db.IsDirty&nbsp;=&nbsp;<span style="color:blue;">false</span>;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;actual&nbsp;=&nbsp;sut.Post(userId,&nbsp;otherUser.Id.ToString());
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;err&nbsp;=&nbsp;<span style="color:#2b91af;">Assert</span>.IsAssignableFrom&lt;<span style="color:#2b91af;">BadRequestErrorMessageResult</span>&gt;(actual);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Assert</span>.Equal(<span style="color:#a31515;">&quot;Invalid&nbsp;user&nbsp;ID.&quot;</span>,&nbsp;err.Message);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Assert</span>.False(db.IsDirty);
+}
+ 
+[<span style="color:#2b91af;">Theory</span>,&nbsp;<span style="color:#2b91af;">UserManagementTestConventions</span>]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;UsersFailToConnectWhenOtherUserIdIsInvalid(
+&nbsp;&nbsp;&nbsp;&nbsp;[<span style="color:#2b91af;">Frozen</span>(<span style="color:#2b91af;">Matching</span>.ImplementedInterfaces)]<span style="color:#2b91af;">FakeDB</span>&nbsp;db,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">User</span>&nbsp;user,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">string</span>&nbsp;otherUserId,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">ConnectionsController</span>&nbsp;sut)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Assert</span>.False(<span style="color:blue;">int</span>.TryParse(otherUserId,&nbsp;<span style="color:blue;">out</span>&nbsp;<span style="color:blue;">var</span>&nbsp;_));
+&nbsp;&nbsp;&nbsp;&nbsp;db.Add(user);
+&nbsp;&nbsp;&nbsp;&nbsp;db.IsDirty&nbsp;=&nbsp;<span style="color:blue;">false</span>;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;actual&nbsp;=&nbsp;sut.Post(user.Id.ToString(),&nbsp;otherUserId);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;err&nbsp;=&nbsp;<span style="color:#2b91af;">Assert</span>.IsAssignableFrom&lt;<span style="color:#2b91af;">BadRequestErrorMessageResult</span>&gt;(actual);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Assert</span>.Equal(<span style="color:#a31515;">&quot;Invalid&nbsp;ID&nbsp;for&nbsp;other&nbsp;user.&quot;</span>,&nbsp;err.Message);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Assert</span>.False(db.IsDirty);
+}
+ 
+[<span style="color:#2b91af;">Theory</span>,&nbsp;<span style="color:#2b91af;">UserManagementTestConventions</span>]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;UsersDoNotConnectWhenUserDoesNotExist(
+&nbsp;&nbsp;&nbsp;&nbsp;[<span style="color:#2b91af;">Frozen</span>(<span style="color:#2b91af;">Matching</span>.ImplementedInterfaces)]<span style="color:#2b91af;">FakeDB</span>&nbsp;db,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">int</span>&nbsp;userId,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">User</span>&nbsp;otherUser,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">ConnectionsController</span>&nbsp;sut)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;db.Add(otherUser);
+&nbsp;&nbsp;&nbsp;&nbsp;db.IsDirty&nbsp;=&nbsp;<span style="color:blue;">false</span>;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;actual&nbsp;=&nbsp;sut.Post(userId.ToString(),&nbsp;otherUser.Id.ToString());
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;err&nbsp;=&nbsp;<span style="color:#2b91af;">Assert</span>.IsAssignableFrom&lt;<span style="color:#2b91af;">BadRequestErrorMessageResult</span>&gt;(actual);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Assert</span>.Equal(<span style="color:#a31515;">&quot;User&nbsp;not&nbsp;found.&quot;</span>,&nbsp;err.Message);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Assert</span>.False(db.IsDirty);
+}
+ 
+[<span style="color:#2b91af;">Theory</span>,&nbsp;<span style="color:#2b91af;">UserManagementTestConventions</span>]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;UsersDoNotConnectWhenOtherUserDoesNotExist(
+&nbsp;&nbsp;&nbsp;&nbsp;[<span style="color:#2b91af;">Frozen</span>(<span style="color:#2b91af;">Matching</span>.ImplementedInterfaces)]<span style="color:#2b91af;">FakeDB</span>&nbsp;db,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">User</span>&nbsp;user,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">int</span>&nbsp;otherUserId,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">ConnectionsController</span>&nbsp;sut)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;db.Add(user);
+&nbsp;&nbsp;&nbsp;&nbsp;db.IsDirty&nbsp;=&nbsp;<span style="color:blue;">false</span>;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;actual&nbsp;=&nbsp;sut.Post(user.Id.ToString(),&nbsp;otherUserId.ToString());
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;err&nbsp;=&nbsp;<span style="color:#2b91af;">Assert</span>.IsAssignableFrom&lt;<span style="color:#2b91af;">BadRequestErrorMessageResult</span>&gt;(actual);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Assert</span>.Equal(<span style="color:#a31515;">&quot;Other&nbsp;user&nbsp;not&nbsp;found.&quot;</span>,&nbsp;err.Message);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Assert</span>.False(db.IsDirty);
+}</pre>
+	</p>
+	<p>
+		There's little to say about these tests that hasn't already been said in at least one of the previous articles. All tests inspect the state of the Fake database after calling the <code>Post</code> method. The exact interactions between <code>Post</code> and <code>db</code> aren't specified. Instead, these tests rely on setting up the initial state, exercising the SUT, and verifying the final state. These are all state-based tests that avoid over-specifying the interactions.
+	</p>
+	<p>
+		Specifically, none of these tests use Mocks and Stubs. In fact, at this incarnation of the test code, I was able to entirely remove the reference to <a href="https://github.com/moq/moq4">Moq</a>.
+	</p>
+	<h3 id="2e73c70d74cf40dfbb3e258e4293a5cf">
+		Summary <a href="#2e73c70d74cf40dfbb3e258e4293a5cf" title="permalink">#</a>
+	</h3>
+	<p>
+		The premise of <a href="http://amzn.to/YPdQDf">Refactoring</a> is that in order to be able to refactor, the "precondition is [...] solid tests". In reality, many development organisations have the opposite experience. When programmers attempt to make changes to how their code is organised, tests break. In <a href="http://bit.ly/xunitpatterns">xUnit Test Patterns</a> this problem is called <em>Fragile Tests</em>, and the cause is often <em>Overspecified Software</em>. This means that tests are tightly coupled to implementation details of the SUT.
+	</p>
+	<p>
+		It's easy to inadvertently fall into this trap when you use Mocks and Stubs, even when you follow the rule of using <a href="http://blog.ploeh.dk/2013/10/23/mocks-for-commands-stubs-for-queries">Mocks for Commands and Stubs for Queries</a>. Refactoring tests towards state-based testing with Fake objects, instead of interaction-based testing, could make test suites more robust to changes.
+	</p>
+	<p>
+		It's intriguing, though, that state-based testing is simpler in functional programming. In Haskell, you can simply write your tests in the State monad and compare the expected outcome to the actual outcome. Since state in Haskell is immutable, it's trivial to compare the expected with the actual state.
+	</p>
+	<p>
+		As soon as you introduce mutable state, structural equality is no longer safe, and instead you have to rely on other inspection mechanisms, such as the <code>IsDirty</code> flag seen in this, and the previous, article. This makes the tests slightly more brittle, because it tends to pull towards interaction-based testing.
+	</p>
+	<p>
+		While you can implement the State monad in both F# and C#, it's probably more pragmatic to express state-based tests using mutable state and the occasional <code>IsDirty</code> flag. As always, there's <a href="http://bit.ly/mythical-man-month">no silver bullet</a>.
+	</p>
+	<p>
+		While this article concludes the series on moving towards state-based testing, I think that an appendix on Test Spies is in order.
+	</p>
+	<p>
+		<strong>Next:</strong> A pure Test Spy.
+	</p>
+</div>
