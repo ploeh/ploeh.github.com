@@ -1,0 +1,135 @@
+---
+layout: post
+title: "A pure Test Spy"
+description: "Ad-hoc Test Spies can be implemented in Haskell using the Writer monad."
+date: 2018-09-10 7:47 UTC
+tags: [Unit Testing, Haskell]
+image: "/content/binary/msdn-test-double-continuum.png"
+image_alt: "Spectrum of Test Doubles."
+---
+{% include JB/setup %}
+
+<div id="post">
+	<p>
+		<em>{{ page.description }}</em>
+	</p>
+	<p>
+		In a previous article on <a href="">state-based testing in Haskell</a>, I made the following throw-away statement:
+		<blockquote>
+			"you <em>could</em> write an ad-hoc Mock using, for example, the Writer monad"
+		</blockquote>
+		In that article, I didn't pursue that thought, since the theme was another. Instead, I'll expand on it here.
+	</p>
+	<h3 id="552a47e82a99466ebb8fe9d840b80a2f">
+		Test Double continuum <a href="#552a47e82a99466ebb8fe9d840b80a2f" title="permalink">#</a>
+	</h3>
+	<p>
+		More than a decade ago, I wrote an MSDN Magazine article called <em>Exploring The Continuum Of Test Doubles</em>. It was in the September 2007 issue, and since then, the Magazine restructured so that the article is no longer available online. You can still <a href="https://msdn.microsoft.com/en-us/magazine/msdn-magazine-issues.aspx">download the entire issue as a single file</a> and read the article offline, should you want to.
+	</p>
+	<p>
+		In the article, I made the argument that the classification of <a href="http://xunitpatterns.com/Test%20Double.html">Test Doubles</a> presented in the excellent <a href="http://bit.ly/xunitpatterns">xUnit Test Patterns</a> should be thought of more as a continuum with vague and fuzzy transitions, rather than discrete categories.
+	</p>
+	<p>
+		<img src="/content/binary/msdn-test-double-continuum.png" alt="Spectrum of Test Doubles.">
+	</p>
+	<p>
+		This figure appeared in the original article. Given that the entire MSDN Magazine issue is available for free, and that I'm the original author of the article, I consider it fair use to repeat it here.
+	</p>
+	<p>
+		The point is that it's not always clear whether a Test Double is, say, a Mock, or a Spy. What I'll show you in this article is closer to a Test Spy than to a Mock, but since the distinction is blurred anyway, I think that I can get away with it.
+	</p>
+	<h3 id="200ba4d9157442fe9caef2429371f7c6">
+		Test Spy <a href="#200ba4d9157442fe9caef2429371f7c6" title="permalink">#</a>
+	</h3>
+	<p>
+		<em>xUnit Test Patterns</em> defines a Test Spy as a Test Double that captures "the indirect output calls made to another component by the SUT [System Under Test] for later verification by the test." When, as shown in <a href="">a previous article</a>, you use <code>Mock&lt;T&gt;.Verify</code> to assert than an interaction took place, you're using the Test Double more as a Spy than a Mock:
+	</p>
+	<p>
+		<pre>repoTD.Verify(r&nbsp;=&gt;&nbsp;r.Update(user));</pre>
+	</p>
+	<p>
+		Strictly speaking, a Mock is a Test Double that <em>immediately</em> fails the test if any unexpected interaction takes place. People often call those <em>Strict Mocks</em>, but according to the book, that's a Mock. If the Test Double only records what happens, so that you can later query it to verify whether some interaction took place, it's closer to being a Test Spy.
+	</p>
+	<p>
+		Whether you call it a Mock or a Spy, you can implement verification similar to the above <code>Verify</code> method in functional programming using the Writer monad.
+	</p>
+	<h3 id="cf14cbf8e65a4dd6a47f879c1b850de5">
+		Writer-based Spy <a href="#cf14cbf8e65a4dd6a47f879c1b850de5" title="permalink">#</a>
+	</h3>
+	<p>
+		I'll show you a single example in <a href="https://www.haskell.org">Haskell</a>. In <a href="http://blog.ploeh.dk/2018/07/30/flattening-arrow-code-using-a-stack-of-monads">a previous article</a>, you saw a simplified function to implement a restaurant reservation feature, repeated here for your convenience:
+	</p>
+	<p>
+		<pre><span style="color:#2b91af;">tryAccept</span>&nbsp;::&nbsp;<span style="color:#2b91af;">Int</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">Reservation</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">MaybeT</span>&nbsp;<span style="color:blue;">ReservationsProgram</span>&nbsp;<span style="color:#2b91af;">Int</span>
+tryAccept&nbsp;capacity&nbsp;reservation&nbsp;=&nbsp;<span style="color:blue;">do</span>
+&nbsp;&nbsp;guard&nbsp;=&lt;&lt;&nbsp;isReservationInFuture&nbsp;reservation
+ 
+&nbsp;&nbsp;reservations&nbsp;&lt;-&nbsp;readReservations&nbsp;$&nbsp;reservationDate&nbsp;reservation
+&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;reservedSeats&nbsp;=&nbsp;<span style="color:blue;">sum</span>&nbsp;$&nbsp;reservationQuantity&nbsp;&lt;$&gt;&nbsp;reservations
+&nbsp;&nbsp;guard&nbsp;$&nbsp;reservedSeats&nbsp;+&nbsp;reservationQuantity&nbsp;reservation&nbsp;&lt;=&nbsp;capacity
+ 
+&nbsp;&nbsp;create&nbsp;$&nbsp;reservation&nbsp;{&nbsp;reservationIsAccepted&nbsp;=&nbsp;True&nbsp;}
+</pre>
+	</p>
+	<p>
+		This function runs in the <code>MaybeT</code> monad, so the two <code>guard</code> functions could easily prevent if from running 'to completion'. In the happy path, though, execution should reach 'the end' of the function and call the <code>create</code> function.
+	</p>
+	<p>
+		In order to test this happy path, you'll need to not only run a test-specific interpreter over the <code>ReservationsProgram</code> free monad, you should also verify that <code>reservationIsAccepted</code> is <code>True</code>.
+	</p>
+	<p>
+		You can do this using the <code>Writer</code> monad to implement a Test Spy:
+	</p>
+	<p>
+		<pre>testProperty&nbsp;<span style="color:#a31515;">&quot;tryAccept,&nbsp;happy&nbsp;path&quot;</span>&nbsp;$&nbsp;\
+&nbsp;&nbsp;(NonNegative&nbsp;i)
+&nbsp;&nbsp;(<span style="color:blue;">fmap</span>&nbsp;getReservation&nbsp;-&gt;&nbsp;reservations)
+&nbsp;&nbsp;(ArbReservation&nbsp;reservation)
+&nbsp;&nbsp;expected
+&nbsp;&nbsp;-&gt;
+&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;spy&nbsp;(IsReservationInFuture&nbsp;_&nbsp;next)&nbsp;=&nbsp;<span style="color:blue;">return</span>&nbsp;$&nbsp;next&nbsp;True
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;spy&nbsp;(ReadReservations&nbsp;_&nbsp;next)&nbsp;=&nbsp;<span style="color:blue;">return</span>&nbsp;$&nbsp;next&nbsp;reservations
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;spy&nbsp;(Create&nbsp;r&nbsp;next)&nbsp;=&nbsp;tell&nbsp;[r]&nbsp;&gt;&gt;&nbsp;<span style="color:blue;">return</span>&nbsp;(next&nbsp;expected)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;reservedSeats&nbsp;=&nbsp;<span style="color:blue;">sum</span>&nbsp;$&nbsp;reservationQuantity&nbsp;&lt;$&gt;&nbsp;reservations
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;capacity&nbsp;=&nbsp;reservedSeats&nbsp;+&nbsp;reservationQuantity&nbsp;reservation&nbsp;+&nbsp;i
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(actual,&nbsp;observedReservations)&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;runWriter&nbsp;$&nbsp;foldFreeT&nbsp;spy&nbsp;$&nbsp;runMaybeT&nbsp;$&nbsp;tryAccept&nbsp;capacity&nbsp;reservation
+ 
+&nbsp;&nbsp;<span style="color:blue;">in</span>&nbsp;&nbsp;Just&nbsp;expected&nbsp;==&nbsp;actual&nbsp;&amp;&amp;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;[True]&nbsp;==&nbsp;(reservationIsAccepted&nbsp;&lt;$&gt;&nbsp;observedReservations)</pre>
+	</p>
+	<p>
+		This test is an <a href="http://blog.ploeh.dk/2018/05/07/inlined-hunit-test-lists">inlined</a> QuickCheck-based property. The entire <a href="https://github.com/ploeh/dependency-injection-revisited">source code is available on GitHub</a>.
+	</p>
+	<p>
+		Notice the <code>spy</code> function. As the name implies, it's the Test Spy for the test. Its full type is:
+	</p>
+	<p>
+		<pre>spy&nbsp;::&nbsp;Monad&nbsp;m&nbsp;=&gt;&nbsp;ReservationsInstruction&nbsp;a&nbsp;-&gt;&nbsp;WriterT&nbsp;[Reservation]&nbsp;m&nbsp;a</pre>
+	</p>
+	<p>
+		This is a function that, for a given <code>ReservationsInstruction</code> value returns a <code>WriterT</code> value where the type of data being written is <code>[Reservation]</code>. The function only writes to the writer context in one of the three cases: the <code>Create</code> case. The <code>Create</code> case carries with it a <code>Reservation</code> value here named <code>r</code>. Before returning the <code>next</code> step in interpreting the free monad, the <code>spy</code> function calls <code>tell</code>, thereby writing a singleton list of <code>[r]</code> to the writer context.
+	</p>
+	<p>
+		In the Act phase of the test, it calls the <code>tryAccept</code> function and proceeds to interpret the result, which is a <code>MaybeT ReservationsProgram Int</code> value. Calling <code>runMaybeT</code> produces a <code>ReservationsProgram (Maybe Int)</code>, which you can then interpret with <code>foldFreeT spy</code>. This returns a <code>Writer [Reservation] (Maybe Int)</code>, which you can finally run with <code>runWriter</code> to get a <code>(Maybe Int, [Reservation])</code> tuple. Thus, <code>actual</code> is a <code>Maybe Int</code> value, and <code>observedReservations</code> is a <code>[Reservation]</code> value - the reservation that was written by <code>spy</code> using <code>tell</code>.
+	</p>
+	<p>
+		The Assert phase of the test is a Boolean expression that checks that <code>actual</code> is as expected, and that <code>reservationIsAccepted</code> of the observed reservation is <code>True</code>.
+	</p>
+	<p>
+		It takes a little while to make the pieces of the puzzle fit, but it's basically just standard Haskell library functions clicked together.
+	</p>
+	<h3 id="fd3478dba1a241a7bb95d9a97140ebac">
+		Summary <a href="#fd3478dba1a241a7bb95d9a97140ebac" title="permalink">#</a>
+	</h3>
+	<p>
+		People sometimes ask me: <em>How do Mocks and Stubs work in functional programming?</em>
+	</p>
+	<p>
+		In general, my answer is that you don't need Mocks and Stubs because when functions are <a href="https://en.wikipedia.org/wiki/Pure_function">pure</a>, you don't need to to test interactions. Sooner or later, though, you may run into higher-level interactions, even if they're <a href="http://blog.ploeh.dk/2017/07/10/pure-interactions">pure interactions</a>, and you'll likely want to unit test those.
+	</p>
+	<p>
+		In a previous article you saw how to apply <a href="">state-based testing in Haskell, using the State monad</a>. In this article you've seen how you can create ad-hoc Mocks or Spies with the Writer monad. No auto-magical test-specific 'isolation frameworks' are required.
+	</p>
+</div>
