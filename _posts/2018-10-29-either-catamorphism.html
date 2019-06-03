@@ -1,0 +1,297 @@
+---
+layout: post
+title: "Either catamorphism"
+description: "The catamorphism for Either is a generalisation of its fold. The catamorphism enables operations not available via fold."
+date: 2018-10-29 6:27 UTC
+tags: [Software Design, Haskell]
+image: "/content/binary/catamorphism-and-fold-relations.png"
+image_alt: "Catamorphisms and folds as sets, for various sum types."
+---
+{% include JB/setup %}
+
+<div id="post">
+	<p>
+		<em>{{ page.description }}</em>
+	</p>
+	<p>
+		This article is part of an <a href="">article series about catamorphisms</a>. A catamorphism is a <a href="http://blog.ploeh.dk/2017/10/04/from-design-patterns-to-category-theory">universal abstraction</a> that describes how to digest a data structure into a potentially more compact value.
+	</p>
+	<p>
+		This article presents the catamorphism for <a href="http://blog.ploeh.dk/2018/06/11/church-encoded-either">Either</a> (also known as <em>Result</em>), as well as how to identify it. The beginning of this article presents the catamorphism in C#, with examples. The rest of the article describes how to deduce the catamorphism. This part of the article presents my work in <a href="https://www.haskell.org">Haskell</a>. Readers not comfortable with Haskell can just read the first part, and consider the rest of the article as an optional appendix.
+	</p>
+	<p>
+		<em>Either</em> is a <a href="https://bartoszmilewski.com/2014/01/14/functors-are-containers">data container</a> that models two mutually exclusive results. It's often used to return values that may be either correct (<em>right</em>), or incorrect (<em>left</em>). In statically typed functional programming with a preference for total functions, Either offers a saner, more reasonable way to model success and error results than throwing exceptions.
+	</p>
+	<h3 id="d8214c38aac04ee7b80b9352d57d3bd1">
+		C# catamorphism <a href="#d8214c38aac04ee7b80b9352d57d3bd1" title="permalink">#</a>
+	</h3>
+	<p>
+		This article uses <a href="http://blog.ploeh.dk/2018/06/11/church-encoded-either">the Church encoding of Either</a>. The catamorphism for Either is the <code>Match</code> method:
+	</p>
+	<p>
+		<pre><span style="color:#2b91af;">T</span>&nbsp;Match&lt;<span style="color:#2b91af;">T</span>&gt;(<span style="color:#2b91af;">Func</span>&lt;<span style="color:#2b91af;">L</span>,&nbsp;<span style="color:#2b91af;">T</span>&gt;&nbsp;onLeft,&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:#2b91af;">R</span>,&nbsp;<span style="color:#2b91af;">T</span>&gt;&nbsp;onRight);</pre>
+	</p>
+	<p>
+		Until this article, all previous catamorphisms have been a pair made from an initial value and a function. The Either catamorphism is a generalisation, since it's a pair of functions. One function handles the case where there's a <em>left</em> value, and the other function handles the case where there's a <em>right</em> value. Both functions must return the same, unifying type, which is often a string or something similar that can be shown in a user interface:
+	</p>
+	<p>
+		<pre>&gt; <span style="color:#2b91af;">IEither</span>&lt;<span style="color:#2b91af;">TimeSpan</span>,&nbsp;<span style="color:blue;">int</span>&gt;&nbsp;e&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Left</span>&lt;<span style="color:#2b91af;">TimeSpan</span>,&nbsp;<span style="color:blue;">int</span>&gt;(<span style="color:#2b91af;">TimeSpan</span>.FromMinutes(3));
+&gt; e.Match(ts&nbsp;=&gt;&nbsp;ts.ToString(),&nbsp;i&nbsp;=&gt;&nbsp;i.ToString())
+"00:03:00"
+&gt; <span style="color:#2b91af;">IEither</span>&lt;<span style="color:#2b91af;">TimeSpan</span>,&nbsp;<span style="color:blue;">int</span>&gt;&nbsp;e&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Right</span>&lt;<span style="color:#2b91af;">TimeSpan</span>,&nbsp;<span style="color:blue;">int</span>&gt;(42);
+&gt; e.Match(ts&nbsp;=&gt;&nbsp;ts.ToString(),&nbsp;i&nbsp;=&gt;&nbsp;i.ToString())
+"42"</pre>
+	</p>
+	<p>
+		You'll often see examples like the above that turns both left and right cases into strings or something that can be represented as a unifying response type, but this is in no way required. If you can come up with a unifying type, you can convert both cases to that type:
+	</p>
+	<p>
+		<pre>&gt; <span style="color:#2b91af;">IEither</span>&lt;<span style="color:#2b91af;">Guid</span>,&nbsp;<span style="color:blue;">string</span>&gt;&nbsp;e&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Left</span>&lt;<span style="color:#2b91af;">Guid</span>,&nbsp;<span style="color:blue;">string</span>&gt;(<span style="color:#2b91af;">Guid</span>.NewGuid());
+&gt; e.Match(g&nbsp;=&gt;&nbsp;g.ToString().Count(c&nbsp;=&gt;&nbsp;<span style="color:#a31515;">&#39;a&#39;</span>&nbsp;&lt;=&nbsp;c),&nbsp;s&nbsp;=&gt;&nbsp;s.Length)
+12
+&gt; <span style="color:#2b91af;">IEither</span>&lt;<span style="color:#2b91af;">Guid</span>,&nbsp;<span style="color:blue;">string</span>&gt;&nbsp;e&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Right</span>&lt;<span style="color:#2b91af;">Guid</span>,&nbsp;<span style="color:blue;">string</span>&gt;(<span style="color:#a31515;">&quot;foo&quot;</span>);
+&gt; e.Match(g&nbsp;=&gt;&nbsp;g.ToString().Count(c&nbsp;=&gt;&nbsp;<span style="color:#a31515;">&#39;a&#39;</span>&nbsp;&lt;=&nbsp;c),&nbsp;s&nbsp;=&gt;&nbsp;s.Length)
+3</pre>
+	</p>
+	<p>
+		In the two above examples, you use two different functions that both reduce respectively <code>Guid</code> and <code>string</code> values to a number. The function that turns <code>Guid</code> values into a number counts how many of the hexadecimal digits that are greater than or equal to 10. The other function simply returns the length of the <code>string</code>, if it's there. That example makes little sense, but the <code>Match</code> method doesn't care about that.
+	</p>
+	<p>
+		In practical use, Either is often used for error handling. The <a href="http://blog.ploeh.dk/2018/06/11/church-encoded-either">article on the Church encoding of Either</a> contains an example.
+	</p>
+	<h3 id="99e1027823114e95bebf81c08d35779f">
+		Either F-Algebra <a href="#99e1027823114e95bebf81c08d35779f" title="permalink">#</a>
+	</h3>
+	<p>
+		As in the <a href="">previous article</a>, I'll use <code>Fix</code> and <code>cata</code> as explained in <a href="https://bartoszmilewski.com">Bartosz Milewski</a>'s excellent <a href="https://bartoszmilewski.com/2017/02/28/f-algebras/">article on F-Algebras</a>.
+	</p>
+	<p>
+		While F-Algebras and fixed points are mostly used for recursive data structures, you can also define an F-Algebra for a non-recursive data structure. You already saw an example of that in the articles about <a href="">Boolean catamorphism</a> and <a href="">Maybe catamorphism</a>. The difference between e.g. Maybe values and Either is that both cases of Either carry a value. You can model this as a <code>Functor</code> with both a carrier type and two type arguments for the data that Either may contain:
+	</p>
+	<p>
+		<pre><span style="color:blue;">data</span>&nbsp;EitherF&nbsp;l&nbsp;r&nbsp;c&nbsp;=&nbsp;LeftF&nbsp;l&nbsp;|&nbsp;RightF&nbsp;r&nbsp;<span style="color:blue;">deriving</span>&nbsp;(<span style="color:#2b91af;">Show</span>,&nbsp;<span style="color:#2b91af;">Eq</span>,&nbsp;<span style="color:#2b91af;">Read</span>)
+ 
+<span style="color:blue;">instance</span>&nbsp;<span style="color:blue;">Functor</span>&nbsp;(<span style="color:blue;">EitherF</span>&nbsp;l&nbsp;r)&nbsp;<span style="color:blue;">where</span>
+&nbsp;&nbsp;<span style="color:blue;">fmap</span>&nbsp;_&nbsp;&nbsp;(LeftF&nbsp;l)&nbsp;=&nbsp;LeftF&nbsp;l
+&nbsp;&nbsp;<span style="color:blue;">fmap</span>&nbsp;_&nbsp;(RightF&nbsp;r)&nbsp;=&nbsp;RightF&nbsp;r</pre>
+	</p>
+	<p>
+		I chose to call the 'data types' <code>l</code> (for <em>left</em>) and <code>r</code> (for <em>right</em>), and the carrier type <code>c</code> (for <em>carrier</em>). As was also the case with <code>BoolF</code> and <code>MaybeF</code>, the <code>Functor</code> instance ignores the map function because the carrier type is missing from both the <code>LeftF</code> case and the <code>RightF</code> case. Like the <code>Functor</code> instances for <code>BoolF</code> and <code>MaybeF</code>, it'd seem that nothing happens, but at the type level, this is still a translation from <code>EitherF l r c</code> to <code>EitherF l r c1</code>. Not much of a function, perhaps, but definitely an <em>endofunctor</em>.
+	</p>
+	<p>
+		As was also the case when deducing the Maybe and List catamorphisms, Haskell isn't too happy about defining instances for a type like <code>Fix (EitherF l r)</code>. To address that problem, you can introduce a <code>newtype</code> wrapper:
+	</p>
+	<p>
+		<pre><span style="color:blue;">newtype</span>&nbsp;EitherFix&nbsp;l&nbsp;r&nbsp;=&nbsp;EitherFix&nbsp;{&nbsp;unEitherFix&nbsp;::&nbsp;Fix&nbsp;(EitherF&nbsp;l&nbsp;r)&nbsp;}&nbsp;<span style="color:blue;">deriving</span>&nbsp;(<span style="color:#2b91af;">Show</span>,&nbsp;<span style="color:#2b91af;">Eq</span>,&nbsp;<span style="color:#2b91af;">Read</span>)</pre>
+	</p>
+	<p>
+		You can define <code>Functor</code>, <code>Applicative</code>, <code>Monad</code>, etc. instances for this type without resorting to any funky GHC extensions. Keep in mind that ultimately, the purpose of all this code is just to figure out what the catamorphism looks like. This code isn't intended for actual use.
+	</p>
+	<p>
+		A pair of helper functions make it easier to define <code>EitherFix</code> values:
+	</p>
+	<p>
+		<pre><span style="color:#2b91af;">leftF</span>&nbsp;::&nbsp;l&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">EitherFix</span>&nbsp;l&nbsp;r
+leftF&nbsp;=&nbsp;EitherFix&nbsp;.&nbsp;Fix&nbsp;.&nbsp;LeftF
+ 
+<span style="color:#2b91af;">rightF</span>&nbsp;::&nbsp;r&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">EitherFix</span>&nbsp;l&nbsp;r
+rightF&nbsp;=&nbsp;EitherFix&nbsp;.&nbsp;Fix&nbsp;.&nbsp;RightF</pre>
+	</p>
+	<p>
+		With those functions, you can create <code>EitherFix</code> values:
+	</p>
+	<p>
+		<pre>Prelude Data.UUID Data.UUID.V4 Fix Either&gt; leftF &lt;$&gt; nextRandom
+EitherFix {unEitherFix = Fix (LeftF e65378c2-0d6e-47e0-8bcb-7cc29d185fad)}
+Prelude Data.UUID Data.UUID.V4 Fix Either&gt; rightF "foo"
+EitherFix {unEitherFix = Fix (RightF "foo")}</pre>
+	</p>
+	<p>
+		That's all you need to identify the catamorphism.
+	</p>
+	<h3 id="67d13d05a8564f3481e181d0c32b3165">
+		Haskell catamorphism <a href="#67d13d05a8564f3481e181d0c32b3165" title="permalink">#</a>
+	</h3>
+	<p>
+		At this point, you have two out of three elements of an F-Algebra. You have an endofunctor (<code>EitherF l r</code>), and an object <code>c</code>, but you still need to find a morphism <code>EitherF l r c -&gt; c</code>. Notice that the algebra you have to find is the function that reduces the functor to its <em>carrier type</em> <code>c</code>, not the 'data types' <code>l</code> and <code>r</code>. This takes some time to get used to, but that's how catamorphisms work. This doesn't mean, however, that you get to ignore <code>l</code> and <code>r</code>, as you'll see.
+	</p>
+	<p>
+		As in the previous articles, start by writing a function that will become the catamorphism, based on <code>cata</code>:
+	</p>
+	<p>
+		<pre>eitherF&nbsp;=&nbsp;cata&nbsp;alg&nbsp;.&nbsp;unEitherFix
+&nbsp;&nbsp;<span style="color:blue;">where</span>&nbsp;alg&nbsp;&nbsp;(LeftF&nbsp;l)&nbsp;=&nbsp;<span style="color:blue;">undefined</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;alg&nbsp;(RightF&nbsp;r)&nbsp;=&nbsp;<span style="color:blue;">undefined</span></pre>
+	</p>
+	<p>
+		While this compiles, with its <code>undefined</code> implementations, it obviously doesn't do anything useful. I find, however, that it helps me think. How can you return a value of the type <code>c</code> from the <code>LeftF</code> case? You could pass an argument to the <code>eitherF</code> function:
+	</p>
+	<p>
+		<pre>eitherF&nbsp;fl&nbsp;=&nbsp;cata&nbsp;alg&nbsp;.&nbsp;unEitherFix
+&nbsp;&nbsp;<span style="color:blue;">where</span>&nbsp;alg&nbsp;&nbsp;(LeftF&nbsp;l)&nbsp;=&nbsp;fl&nbsp;l
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;alg&nbsp;(RightF&nbsp;r)&nbsp;=&nbsp;<span style="color:blue;">undefined</span></pre>
+	</p>
+	<p>
+		While you could, technically, pass an argument of the type <code>c</code> to <code>eitherF</code> and then return that value from the <code>LeftF</code> case, that would mean that you would ignore the <code>l</code> value. This would be incorrect, so instead, make the argument a function and call it with <code>l</code>. Likewise, you can deal with the <code>RightF</code> case in the same way:
+	</p>
+	<p>
+		<pre><span style="color:#2b91af;">eitherF</span>&nbsp;::&nbsp;(l&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;c)&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;(r&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;c)&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">EitherFix</span>&nbsp;l&nbsp;r&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;c
+eitherF&nbsp;fl&nbsp;fr&nbsp;=&nbsp;cata&nbsp;alg&nbsp;.&nbsp;unEitherFix
+&nbsp;&nbsp;<span style="color:blue;">where</span>&nbsp;alg&nbsp;&nbsp;(LeftF&nbsp;l)&nbsp;=&nbsp;fl&nbsp;l
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;alg&nbsp;(RightF&nbsp;r)&nbsp;=&nbsp;fr&nbsp;r</pre>
+	</p>
+	<p>
+		This works. Since <code>cata</code> has the type <code>Functor f =&gt; (f a -&gt; a) -&gt; Fix f -&gt; a</code>, that means that <code>alg</code> has the type <code>f a -&gt; a</code>. In the case of <code>EitherF</code>, the compiler infers that the <code>alg</code> function has the type <code>EitherF l r c -&gt; c</code>, which is just what you need!
+	</p>
+	<p>
+		You can now see what the carrier type <code>c</code> is for. It's the type that the algebra extracts, and thus the type that the catamorphism returns.
+	</p>
+	<p>
+		This, then, is the catamorphism for Either. As has been consistent so far, it's a pair, but now made from two functions. As you've seen repeatedly, this isn't the only possible catamorphism, since you can, for example, trivially flip the arguments to <code>eitherF</code>.
+	</p>
+	<p>
+		I've chosen the representation shown here because it's isomorphic to the <code>either</code> function from Haskell's built-in <code>Data.Either</code> module, which calls the function the "Case analysis for the <code>Either</code> type". Both of these functions (<code>eitherF</code> and <code>either</code>) are equivalent to the above C# <code>Match</code> method.
+	</p>
+	<h3 id="77731d63c79543b0994c06721521b6f3">
+		Basis <a href="#77731d63c79543b0994c06721521b6f3" title="permalink">#</a>
+	</h3>
+	<p>
+		You can implement most other useful functionality with <code>eitherF</code>. Here's the <code>Bifunctor</code> instance:
+	</p>
+	<p>
+		<pre><span style="color:blue;">instance</span>&nbsp;<span style="color:blue;">Bifunctor</span>&nbsp;<span style="color:blue;">EitherFix</span>&nbsp;<span style="color:blue;">where</span>
+&nbsp;&nbsp;bimap&nbsp;f&nbsp;s&nbsp;=&nbsp;eitherF&nbsp;(leftF&nbsp;.&nbsp;f)&nbsp;(rightF&nbsp;.&nbsp;s)</pre>
+	</p>
+	<p>
+		From that instance, the <code>Functor</code> instance trivially follows:
+	</p>
+	<p>
+		<pre><span style="color:blue;">instance</span>&nbsp;<span style="color:blue;">Functor</span>&nbsp;(<span style="color:blue;">EitherFix</span>&nbsp;l)&nbsp;<span style="color:blue;">where</span>
+&nbsp;&nbsp;<span style="color:blue;">fmap</span>&nbsp;=&nbsp;second</pre>
+	</p>
+	<p>
+		On top of <code>Functor</code> you can add <code>Applicative</code>:
+	</p>
+	<p>
+		<pre><span style="color:blue;">instance</span>&nbsp;<span style="color:blue;">Applicative</span>&nbsp;(<span style="color:blue;">EitherFix</span>&nbsp;l)&nbsp;<span style="color:blue;">where</span>
+&nbsp;&nbsp;pure&nbsp;=&nbsp;rightF
+&nbsp;&nbsp;f&nbsp;&lt;*&gt;&nbsp;x&nbsp;=&nbsp;eitherF&nbsp;leftF&nbsp;(&lt;$&gt;&nbsp;x)&nbsp;f</pre>
+	</p>
+	<p>
+		Notice that the <code>&lt;*&gt;</code> implementation is similar to to the <code>&lt;*&gt;</code> implementation for <code>MaybeFix</code>. The same is the case for the <code>Monad</code> instance:
+	</p>
+	<p>
+		<pre><span style="color:blue;">instance</span>&nbsp;<span style="color:blue;">Monad</span>&nbsp;(<span style="color:blue;">EitherFix</span>&nbsp;l)&nbsp;<span style="color:blue;">where</span>
+&nbsp;&nbsp;x&nbsp;&gt;&gt;=&nbsp;f&nbsp;=&nbsp;eitherF&nbsp;leftF&nbsp;f&nbsp;x</pre>
+	</p>
+	<p>
+		Not only is <code>EitherFix</code> <code>Foldable</code>, it's <code>Bifoldable</code>:
+	</p>
+	<p>
+		<pre><span style="color:blue;">instance</span>&nbsp;<span style="color:blue;">Bifoldable</span>&nbsp;<span style="color:blue;">EitherFix</span>&nbsp;<span style="color:blue;">where</span>
+&nbsp;&nbsp;bifoldMap&nbsp;=&nbsp;eitherF</pre>
+	</p>
+	<p>
+		Notice, interestingly, that <code>bifoldMap</code> is identical to <code>eitherF</code>.
+	</p>
+	<p>
+		The <code>Bifoldable</code> instance enables you to trivially implement the <code>Foldable</code> instance:
+	</p>
+	<p>
+		<pre><span style="color:blue;">instance</span>&nbsp;<span style="color:blue;">Foldable</span>&nbsp;(<span style="color:blue;">EitherFix</span>&nbsp;l)&nbsp;<span style="color:blue;">where</span>
+&nbsp;&nbsp;foldMap&nbsp;=&nbsp;bifoldMap&nbsp;mempty</pre>
+	</p>
+	<p>
+		You may find the presence of <code>mempty</code> puzzling, since <code>bifoldMap</code> (or <code>eitherF</code>; they're identical) takes as arguments two functions. Is <code>mempty</code> a function?
+	</p>
+	<p>
+		Yes, <code>mempty</code> can be a function. Here, it is. There's a <code>Monoid</code> instance for any function <code>a -&gt; m</code>, where <code>m</code> is a <code>Monoid</code> instance, and <code>mempty</code> is the identity for that monoid. That's the instance in use here.
+	</p>
+	<p>
+		Just as <code>EitherFix</code> is <code>Bifoldable</code>, it's also <code>Bitraversable</code>:
+	</p>
+	<p>
+		<pre><span style="color:blue;">instance</span>&nbsp;<span style="color:blue;">Bitraversable</span>&nbsp;<span style="color:blue;">EitherFix</span>&nbsp;<span style="color:blue;">where</span>
+&nbsp;&nbsp;bitraverse&nbsp;fl&nbsp;fr&nbsp;=&nbsp;eitherF&nbsp;(<span style="color:blue;">fmap</span>&nbsp;leftF&nbsp;.&nbsp;fl)&nbsp;(<span style="color:blue;">fmap</span>&nbsp;rightF&nbsp;.&nbsp;fr)</pre>
+	</p>
+	<p>
+		You can comfortably implement the <code>Traversable</code> instance based on the <code>Bitraversable</code> instance:
+	</p>
+	<p>
+		<pre><span style="color:blue;">instance</span>&nbsp;<span style="color:blue;">Traversable</span>&nbsp;(<span style="color:blue;">EitherFix</span>&nbsp;l)&nbsp;<span style="color:blue;">where</span>
+&nbsp;&nbsp;sequenceA&nbsp;=&nbsp;bisequenceA&nbsp;.&nbsp;first&nbsp;pure</pre>
+	</p>
+	<p>
+		Finally, you can implement conversions to and from the standard <code>Either</code> type, using <code>ana</code> as the dual of <code>cata</code>:
+	</p>
+	<p>
+		<pre><span style="color:#2b91af;">toEither</span>&nbsp;::&nbsp;<span style="color:blue;">EitherFix</span>&nbsp;l&nbsp;r&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:#2b91af;">Either</span>&nbsp;l&nbsp;r
+toEither&nbsp;=&nbsp;eitherF&nbsp;Left&nbsp;Right
+ 
+<span style="color:#2b91af;">fromEither</span>&nbsp;::&nbsp;<span style="color:#2b91af;">Either</span>&nbsp;a&nbsp;b&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">EitherFix</span>&nbsp;a&nbsp;b
+fromEither&nbsp;=&nbsp;EitherFix&nbsp;.&nbsp;ana&nbsp;coalg
+&nbsp;&nbsp;<span style="color:blue;">where</span>&nbsp;coalg&nbsp;&nbsp;(Left&nbsp;l)&nbsp;=&nbsp;&nbsp;LeftF&nbsp;l
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;coalg&nbsp;(Right&nbsp;r)&nbsp;=&nbsp;RightF&nbsp;r</pre>
+	</p>
+	<p>
+		This demonstrates that <code>EitherFix</code> is isomorphic to <code>Either</code>, which again establishes that <code>eitherF</code> and <code>either</code> are equivalent.
+	</p>
+	<h3 id="00a274a2317548538521d4a171191230">
+		Relationships <a href="#00a274a2317548538521d4a171191230" title="permalink">#</a>
+	</h3>
+	<p>
+		In this series, you've seen various examples of catamorphisms of structures that have no folds, catamorphisms that coincide with folds, and now a catamorphism that is more general than the fold. The introduction to the series included this diagram:
+	</p>
+	<p>
+		<img src="/content/binary/catamorphism-and-fold-relations.png" alt="Catamorphisms and folds as sets, for various sum types.">
+	</p>
+	<p>
+		This shows that Boolean values and Peano numbers have catamorphisms, but no folds, whereas for Maybe and List, the fold and the catamorphism is the same. For Either, however, the fold is a special case of the catamorphism. The fold for Either 'pretends' that the left side doesn't exist. Instead, the left value is interpreted as a missing right value. Thus, in order to fold Either values, you must supply a 'fallback' value that will be used in case an Either value isn't a <em>right</em> value:
+	</p>
+	<p>
+		<pre>Prelude Fix Either&gt; e = rightF LT :: EitherFix Integer Ordering
+Prelude Fix Either&gt; foldr (const . show) "" e
+"LT"
+Prelude Fix Either&gt; e = leftF 42 :: EitherFix Integer Ordering
+Prelude Fix Either&gt; foldr (const . show) "" e
+""</pre>
+	</p>
+	<p>
+		In a GHCi session like the above, you can create two Either values of the same type. The <em>right</em> case is an <code>Ordering</code> value, while the <em>left</em> case is an <code>Integer</code> value.
+	</p>
+	<p>
+		With <code>foldr</code>, there's no way to access the <em>left</em> case. While you can access and transform the right <code>Ordering</code> value, the number <code>42</code> is simply ignored during the fold. Instead, the default value <code>""</code> is returned.
+	</p>
+	<p>
+		Contrast this with the catamorphism, which can access both cases:
+	</p>
+	<p>
+		<pre>Prelude Fix Either&gt; e = rightF LT :: EitherFix Integer Ordering
+Prelude Fix Either&gt; eitherF show show e
+"LT"
+Prelude Fix Either&gt; e = leftF 42 :: EitherFix Integer Ordering
+Prelude Fix Either&gt; eitherF show show e
+"42"</pre>
+	</p>
+	<p>
+		In a session like this, you recreate the same values, but using the catamorphism <code>eitherF</code>, you can now access and transform both the <em>left</em> and the <em>right</em> cases. In other words, the catamorphism enables you to perform operations not possible with the fold.
+	</p>
+	<p>
+		It's interesting, however, to note that while the fold is a specialisation of the catamorphism, the <em>bifold</em> is identical to the catamorphism.
+	</p>
+	<h3 id="7512bca753b747ad9accde04bf13b6ca">
+		Summary <a href="#7512bca753b747ad9accde04bf13b6ca" title="permalink">#</a>
+	</h3>
+	<p>
+		The catamorphism for Either is a pair of functions. One function transforms the <em>left</em> case, while the other function transforms the <em>right</em> case. For any Either value, only one of those functions will be used.
+	</p>
+	<p>
+		When I originally encountered the concept of a <em>catamorphism</em>, I found it difficult to distinguish between catamorphism and fold. My problem was, I think, that the tutorials I ran into mostly used linked lists to demonstrate how, <a href="">in that case</a>, the fold <em>is</em> the catamorphism. It turns out, however, that this isn't always the case. A catamorphism is a general abstraction. A fold, on the other hand, seems to me to be mostly related to collections.
+	</p>
+	<p>
+		In this article you saw the first example of a catamorphism that can do more than the fold. For Either, the fold is just a special case of the catamorphism. You also saw, however, how the catamorphism was identical to the <em>bifold</em>. Thus, it's still not entirely clear how these concepts relate. Therefore, in the next article, you'll get an example of a <a href="https://bartoszmilewski.com/2014/01/14/functors-are-containers">container</a> where there's no bifold, and where the catamorphism is, indeed, a generalisation of the fold.
+	</p>
+	<p>
+		<strong>Next:</strong> Tree catamorphism.
+	</p>
+</div>
