@@ -1,0 +1,387 @@
+---
+layout: post
+title: "Full binary tree catamorphism"
+description: "The catamorphism for a full binary tree is a pair of functions."
+date: 2018-11-03 8:47 UTC
+tags: [Software Design, Haskell]
+image: "/content/binary/full-binary-tree-example.png"
+image_alt: "A full binary tree example diagram, with each node containing integers."
+---
+{% include JB/setup %}
+
+<div id="post">
+	<p>
+		<em>{{ page.description }}</em>
+	</p>
+	<p>
+		This article is part of an <a href="">article series about catamorphisms</a>. A catamorphism is a <a href="http://blog.ploeh.dk/2017/10/04/from-design-patterns-to-category-theory">universal abstraction</a> that describes how to digest a data structure into a potentially more compact value.
+	</p>
+	<p>
+		This article presents the catamorphism for a full <a href="https://en.wikipedia.org/wiki/Binary_tree">binary tree</a>, as well as how to identify it. The beginning of this article presents the catamorphism in C#, with examples. The rest of the article describes how to deduce the catamorphism. This part of the article presents my work in <a href="https://www.haskell.org">Haskell</a>. Readers not comfortable with Haskell can just read the first part, and consider the rest of the article as an optional appendix.
+	</p>
+	<p>
+		A <em>full binary tree</em> (also known as a <em>proper</em> or <em>plane</em> binary tree) is a tree in which each node has either two or no branches.
+	</p>
+	<p>
+		<img src="/content/binary/full-binary-tree-example.png" alt="A full binary tree example diagram, with each node containing integers.">
+	</p>
+	<p>
+		The diagram shows an example of a tree of integers. The left branch contains two children, of which the right branch again contains two sub-branches. The rest of the nodes are leaf-nodes with no sub-branches.
+	</p>
+	<h3 id="d6b9699fa3894a4383f9b2b2992a9e8f">
+		C# catamorphism <a href="#d6b9699fa3894a4383f9b2b2992a9e8f" title="permalink">#</a>
+	</h3>
+	<p>
+		As a C# representation of a full binary tree, I'll start with the <code>IBinaryTree&lt;T&gt;</code> API from <a href="http://blog.ploeh.dk/2018/08/13/a-visitor-functor">A Visitor functor</a>. The catamorphism is the <code>Accept</code> method:
+	</p>
+	<p>
+		<pre><span style="color:#2b91af;">TResult</span>&nbsp;Accept&lt;<span style="color:#2b91af;">TResult</span>&gt;(<span style="color:#2b91af;">IBinaryTreeVisitor</span>&lt;<span style="color:#2b91af;">T</span>,&nbsp;<span style="color:#2b91af;">TResult</span>&gt;&nbsp;visitor);</pre>
+	</p>
+	<p>
+		So far in this article series, you've mostly seen <a href="http://blog.ploeh.dk/2018/05/22/church-encoding">Church-encoded</a> catamorphisms, so a catamorphism represented as a <a href="https://en.wikipedia.org/wiki/Visitor_pattern">Visitor</a> may be too big of a cognitive leap. We know, however, from <a href="http://blog.ploeh.dk/2018/06/25/visitor-as-a-sum-type">Visitor as a sum type</a> that a Visitor representation is isomorphic to a Church encoding. Since these are isomorphic, it's possible to refactor <code>IBinaryTree&lt;T&gt;</code> to a Church encoding. The <a href="https://github.com/ploeh/ChurchEncoding">GitHub repository</a> contains a series of commits that demonstrates how that refactoring works. Once you're done, you arrive at this <code>Match</code> method, which is the refactored <code>Accept</code> method:
+	</p>
+	<p>
+		<pre><span style="color:#2b91af;">TResult</span>&nbsp;Match&lt;<span style="color:#2b91af;">TResult</span>&gt;(<span style="color:#2b91af;">Func</span>&lt;<span style="color:#2b91af;">TResult</span>,&nbsp;<span style="color:#2b91af;">T</span>,&nbsp;<span style="color:#2b91af;">TResult</span>,&nbsp;<span style="color:#2b91af;">TResult</span>&gt;&nbsp;node,&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:#2b91af;">T</span>,&nbsp;<span style="color:#2b91af;">TResult</span>&gt;&nbsp;leaf);</pre>
+	</p>
+	<p>
+		This method takes a pair of functions as arguments. The <code>node</code> function deals with an internal node in the tree (the blue nodes in the above diagram), whereas the <code>leaf</code> function deals with the leaf nodes (the green nodes in the diagram).
+	</p>
+	<p>
+		The <code>leaf</code> function may be the easiest one to understand. A leaf node only contains a value of the type <code>T</code>, so the only operation the function has to support is translating the <code>T</code> value to a <code>TResult</code> value. This is also the premise of the <code>Leaf</code> class' implementation of the method:
+	</p>
+	<p>
+		<pre><span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;<span style="color:#2b91af;">T</span>&nbsp;item;
+ 
+<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">TResult</span>&nbsp;Match&lt;<span style="color:#2b91af;">TResult</span>&gt;(<span style="color:#2b91af;">Func</span>&lt;<span style="color:#2b91af;">TResult</span>,&nbsp;<span style="color:#2b91af;">T</span>,&nbsp;<span style="color:#2b91af;">TResult</span>,&nbsp;<span style="color:#2b91af;">TResult</span>&gt;&nbsp;node,&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:#2b91af;">T</span>,&nbsp;<span style="color:#2b91af;">TResult</span>&gt;&nbsp;leaf)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;leaf(item);
+}</pre>
+	</p>
+	<p>
+		The <code>node</code> function is more tricky. It takes three input arguments, of the types <code>TResult</code>, <code>T</code>, and <code>TResult</code>. The roles of these are respectively <em>left</em>, <em>item</em>, and <em>right</em>. This is a typical representation of a binary node. Since there's always a left and a right branch, you put the node's value in the middle. As was the case with the <a href="">tree catamorphism</a>, the catamorphism function receives the branches as already-translated values; that is, both the left and right branch have already been translated to <code>TResult</code> when <code>node</code> is called. While it looks like magic, as always it's just the result of recursion:
+	</p>
+	<p>
+		<pre><span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;<span style="color:#2b91af;">IBinaryTree</span>&lt;<span style="color:#2b91af;">T</span>&gt;&nbsp;left;
+<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;<span style="color:#2b91af;">T</span>&nbsp;item;
+<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;<span style="color:#2b91af;">IBinaryTree</span>&lt;<span style="color:#2b91af;">T</span>&gt;&nbsp;right;
+ 
+<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">TResult</span>&nbsp;Match&lt;<span style="color:#2b91af;">TResult</span>&gt;(<span style="color:#2b91af;">Func</span>&lt;<span style="color:#2b91af;">TResult</span>,&nbsp;<span style="color:#2b91af;">T</span>,&nbsp;<span style="color:#2b91af;">TResult</span>,&nbsp;<span style="color:#2b91af;">TResult</span>&gt;&nbsp;node,&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:#2b91af;">T</span>,&nbsp;<span style="color:#2b91af;">TResult</span>&gt;&nbsp;leaf)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;node(left.Match(node,&nbsp;leaf),&nbsp;item,&nbsp;right.Match(node,&nbsp;leaf));
+}</pre>
+	</p>
+	<p>
+		This is the <code>Node&lt;T&gt;</code> class implementation of the <code>Match</code> method. It calls <code>node</code> and returns whatever it returns, but notice that as the <code>left</code> and <code>right</code> arguments, if first, recursively, calls <code>left.Match</code> and <code>right.Match</code>. This is how it can call <code>node</code> with the translated branches, as well as with the basic <code>item</code>.
+	</p>
+	<p>
+		The recursion stops and unwinds on <code>left</code> and <code>right</code> whenever one of those are <code>Leaf</code> instances.
+	</p>
+	<h3 id="c64210d585c94cb78653b96380cbf0e6">
+		Examples <a href="#c64210d585c94cb78653b96380cbf0e6" title="permalink">#</a>
+	</h3>
+	<p>
+		You can use <code>Match</code> to implement most other behaviour you'd like <code>IBinaryTree&lt;T&gt;</code> to have. In <a href="http://blog.ploeh.dk/2018/08/13/a-visitor-functor">the original article on the full binary tree functor</a> you saw how to implement <code>Select</code> with a Visitor, but now that the API is Church-encoded, you can derive <code>Select</code> from <code>Match</code>:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:#2b91af;">IBinaryTree</span>&lt;<span style="color:#2b91af;">TResult</span>&gt;&nbsp;Select&lt;<span style="color:#2b91af;">TResult</span>,&nbsp;<span style="color:#2b91af;">T</span>&gt;(
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>&nbsp;<span style="color:#2b91af;">IBinaryTree</span>&lt;<span style="color:#2b91af;">T</span>&gt;&nbsp;tree,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:#2b91af;">T</span>,&nbsp;<span style="color:#2b91af;">TResult</span>&gt;&nbsp;selector)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;(tree&nbsp;==&nbsp;<span style="color:blue;">null</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">throw</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">ArgumentNullException</span>(<span style="color:blue;">nameof</span>(tree));
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;(selector&nbsp;==&nbsp;<span style="color:blue;">null</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">throw</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">ArgumentNullException</span>(<span style="color:blue;">nameof</span>(selector));
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;tree.Match(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;node:&nbsp;(l,&nbsp;x,&nbsp;r)&nbsp;=&gt;&nbsp;Create(l,&nbsp;selector(x),&nbsp;r),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;leaf:&nbsp;x&nbsp;=&gt;&nbsp;Leaf(selector(x)));
+}</pre>
+	</p>
+	<p>
+		In the <code>leaf</code> case, the <code>Select</code> method simply calls <code>selector</code> with the <code>x</code> value it receives, and puts the resulting <code>TResult</code> object into a new <code>Leaf</code> object.
+	</p>
+	<p>
+		In the <code>node</code> case, the lambda expression receives three arguments: <code>l</code> and <code>r</code> are the <em>already-translated</em> left and right branches, so you only need to call <code>selector</code> on <code>x</code> and call the <code>Create</code> helper method to produce a new <code>Node</code> object.
+	</p>
+	<p>
+		You can also implement more specialised functionality, like calculating the sum of nodes, measuring the depth of the tree, and similar functions. You saw equivalent examples in the <a href="">previous article</a>.
+	</p>
+	<p>
+		For the examples in this article, I'll use the tree shown in the above diagram. Using static helper methods, you can write it like this:
+	</p>
+	<p>
+		<pre><span style="color:blue;">var</span>&nbsp;tree&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">BinaryTree</span>.Create(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">BinaryTree</span>.Create(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">BinaryTree</span>.Leaf(42),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;1337,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">BinaryTree</span>.Create(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">BinaryTree</span>.Leaf(2112),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;5040,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">BinaryTree</span>.Leaf(1984))),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;2,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">BinaryTree</span>.Leaf(90125));</pre>
+	</p>
+	<p>
+		To calculate the sum of all nodes, you can write a function like this:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:blue;">int</span>&nbsp;Sum(<span style="color:blue;">this</span>&nbsp;<span style="color:#2b91af;">IBinaryTree</span>&lt;<span style="color:blue;">int</span>&gt;&nbsp;tree)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;tree.Match((l,&nbsp;x,&nbsp;r)&nbsp;=&gt;&nbsp;l&nbsp;+&nbsp;x&nbsp;+&nbsp;r,&nbsp;x&nbsp;=&gt;&nbsp;x);
+}</pre>
+	</p>
+	<p>
+		The <code>leaf</code> function just returns the value of the node, while the <code>node</code> function adds the numbers together. It works for the above <code>tree</code>:
+	</p>
+	<p>
+		<pre>&gt; tree.Sum()
+100642</pre>
+	</p>
+	<p>
+		To find the maximum value, you can write another extension method:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:blue;">int</span>&nbsp;Max(<span style="color:blue;">this</span>&nbsp;<span style="color:#2b91af;">IBinaryTree</span>&lt;<span style="color:blue;">int</span>&gt;&nbsp;tree)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;tree.Match((l,&nbsp;x,&nbsp;r)&nbsp;=&gt;&nbsp;<span style="color:#2b91af;">Math</span>.Max(<span style="color:#2b91af;">Math</span>.Max(l,&nbsp;r),&nbsp;x),&nbsp;x&nbsp;=&gt;&nbsp;x);
+}</pre>
+	</p>
+	<p>
+		Again, the <code>leaf</code> function just returns the value of the node. The <code>node</code> function receives the value of the current node <code>x</code>, as well as the already-found maximum value of the left branch and the right branch; it then returns the maximum of these three values:
+	</p>
+	<p>
+		<pre>&gt; tree.Max()
+90125</pre>
+	</p>
+	<p>
+		As was also the case for rose trees, both of these operations are part of the standard repertoire available via a data structure's <em>fold</em>. That's not the case for the next two functions, which can't be implemented using a fold, but which can be defined with the catamorphism. The first is a function to count the leaves of a tree:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:blue;">int</span>&nbsp;CountLeaves&lt;<span style="color:#2b91af;">T</span>&gt;(<span style="color:blue;">this</span>&nbsp;<span style="color:#2b91af;">IBinaryTree</span>&lt;<span style="color:#2b91af;">T</span>&gt;&nbsp;tree)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;tree.Match((l,&nbsp;_,&nbsp;r)&nbsp;=&gt;&nbsp;l&nbsp;+&nbsp;r,&nbsp;_&nbsp;=&gt;&nbsp;1);
+}</pre>
+	</p>
+	<p>
+		Since the <code>leaf</code> function handles a leaf node, the number of leaf nodes in a leaf node is, by definition, <em>one</em>. Thus, that function can ignore the value of the node and always return <code>1</code>. The <code>node</code> function, on the other hand, receives the number of leaf nodes on the left-hand side (<code>l</code>), the value of the current node, and the number of leaf nodes on the right-hand side (<code>r</code>). Notice that since an internal node is never a leaf node, it doesn't count; instead, just add <code>l</code> and <code>r</code> together. Notice that, again, the value of the node itself is irrelevant.
+	</p>
+	<p>
+		How many leaf nodes does the above tree have?
+	</p>
+	<p>
+		<pre>&gt; tree.CountLeaves()
+4</pre>
+	</p>
+	<p>
+		You can also measure the maximum depth of a tree:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:blue;">int</span>&nbsp;MeasureDepth&lt;<span style="color:#2b91af;">T</span>&gt;(<span style="color:blue;">this</span>&nbsp;<span style="color:#2b91af;">IBinaryTree</span>&lt;<span style="color:#2b91af;">T</span>&gt;&nbsp;tree)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;tree.Match((l,&nbsp;_,&nbsp;r)&nbsp;=&gt;&nbsp;1&nbsp;+&nbsp;<span style="color:#2b91af;">Math</span>.Max(l,&nbsp;r),&nbsp;_&nbsp;=&gt;&nbsp;0);
+}</pre>
+	</p>
+	<p>
+		Like in the previous article, I've arbitrarily decided that the depth of a leaf node is <em>zero</em>; therefore, the <code>leaf</code> function always returns <code>0</code>. The <code>node</code> function receives the depth of the left and right branches, and returns the maximum of those two values, plus one, since the current node adds one level of depth.
+	</p>
+	<p>
+		<pre>&gt; tree.MeasureDepth()
+3</pre>
+	</p>
+	<p>
+		You may not have much need for working with full binary trees in your normal, day-to-day C# work, but I found it worthwhile to include this example for a couple of reasons. First, because the original of the API shows that a catamorphism may be hiding in a Visitor. Second, because binary trees are interesting, in that they're foldable <a href="http://blog.ploeh.dk/2018/03/22/functors">functors</a>, but not monads.
+	</p>
+	<p>
+		Where does the catamorphism come from, though? How can you trust that the <code>Match</code> method is the catamorphism?
+	</p>
+	<h3 id="d015bcc9afe742408d7c8ba6c6edce2a">
+		Binary tree F-Algebra <a href="#d015bcc9afe742408d7c8ba6c6edce2a" title="permalink">#</a>
+	</h3>
+	<p>
+		As in the <a href="">previous article</a>, I'll use <code>Fix</code> and <code>cata</code> as explained in <a href="https://bartoszmilewski.com">Bartosz Milewski</a>'s excellent <a href="https://bartoszmilewski.com/2017/02/28/f-algebras/">article on F-Algebras</a>.
+	</p>
+	<p>
+		As always, start with the underlying endofunctor. You can think of this one as a specialisation of the rose tree from the previous article:
+	</p>
+	<p>
+		<pre><span style="color:blue;">data</span>&nbsp;FullBinaryTreeF&nbsp;a&nbsp;c&nbsp;=&nbsp;LeafF&nbsp;a&nbsp;|&nbsp;NodeF&nbsp;c&nbsp;a&nbsp;c&nbsp;<span style="color:blue;">deriving</span>&nbsp;(<span style="color:#2b91af;">Show</span>,&nbsp;<span style="color:#2b91af;">Eq</span>,&nbsp;<span style="color:#2b91af;">Read</span>)
+ 
+<span style="color:blue;">instance</span>&nbsp;<span style="color:blue;">Functor</span>&nbsp;(<span style="color:blue;">FullBinaryTreeF</span>&nbsp;a)&nbsp;<span style="color:blue;">where</span>
+&nbsp;&nbsp;<span style="color:blue;">fmap</span>&nbsp;_&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(LeafF&nbsp;x)&nbsp;=&nbsp;LeafF&nbsp;x
+&nbsp;&nbsp;<span style="color:blue;">fmap</span>&nbsp;f&nbsp;(NodeF&nbsp;l&nbsp;x&nbsp;r)&nbsp;=&nbsp;NodeF&nbsp;(f&nbsp;l)&nbsp;x&nbsp;(f&nbsp;r)</pre>
+	</p>
+	<p>
+		As usual, I've called the 'data' type <code>a</code> and the carrier type <code>c</code> (for <em>carrier</em>). The <code>Functor</code> instance as usual translates the carrier type; the <code>fmap</code> function has the type <code>(c -&gt; c1) -&gt; FullBinaryTreeF a c -&gt; FullBinaryTreeF a c1</code>.
+	</p>
+	<p>
+		As was the case when deducing the recent catamorphisms, Haskell isn't too happy about defining instances for a type like <code>Fix (FullBinaryTreeF a)</code>. To address that problem, you can introduce a <code>newtype</code> wrapper:
+	</p>
+	<p>
+		<pre><span style="color:blue;">newtype</span>&nbsp;FullBinaryTreeFix&nbsp;a&nbsp;=
+&nbsp;&nbsp;FullBinaryTreeFix&nbsp;{&nbsp;unFullBinaryTreeFix&nbsp;::&nbsp;Fix&nbsp;(FullBinaryTreeF&nbsp;a)&nbsp;}
+&nbsp;&nbsp;<span style="color:blue;">deriving</span>&nbsp;(<span style="color:#2b91af;">Show</span>,&nbsp;<span style="color:#2b91af;">Eq</span>,&nbsp;<span style="color:#2b91af;">Read</span>)</pre>
+	</p>
+	<p>
+		You can define <code>Functor</code>, <code>Foldable</code>, and <code>Traversable</code> instances (but not <code>Monad</code>) for this type without resorting to any funky GHC extensions. Keep in mind that ultimately, the purpose of all this code is just to figure out what the catamorphism looks like. This code isn't intended for actual use.
+	</p>
+	<p>
+		A pair of helper functions make it easier to define <code>FullBinaryTreeFix</code> values:
+	</p>
+	<p>
+		<pre><span style="color:#2b91af;">fbtLeafF</span>&nbsp;::&nbsp;a&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">FullBinaryTreeFix</span>&nbsp;a
+fbtLeafF&nbsp;=&nbsp;FullBinaryTreeFix&nbsp;.&nbsp;Fix&nbsp;.&nbsp;LeafF
+ 
+<span style="color:#2b91af;">fbtNodeF</span>&nbsp;::&nbsp;<span style="color:blue;">FullBinaryTreeFix</span>&nbsp;a&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;a&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">FullBinaryTreeFix</span>&nbsp;a&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">FullBinaryTreeFix</span>&nbsp;a
+fbtNodeF&nbsp;(FullBinaryTreeFix&nbsp;l)&nbsp;x&nbsp;(FullBinaryTreeFix&nbsp;r)&nbsp;=&nbsp;FullBinaryTreeFix&nbsp;$&nbsp;Fix&nbsp;$&nbsp;NodeF&nbsp;l&nbsp;x&nbsp;r</pre>
+	</p>
+	<p>
+		In order to distinguish these helper functions from the ones that create <code>TreeFix a</code> values, I prefixed them with <code>fbt</code> (for <em>Full Binary Tree</em>). <code>fbtLeafF</code> creates a leaf node:
+	</p>
+	<p>
+		<pre>Prelude Fix FullBinaryTree&gt; fbtLeafF "fnaah"
+FullBinaryTreeFix {unFullBinaryTreeFix = Fix (LeafF "fnaah")}</pre>
+	</p>
+	<p>
+		<code>fbtNodeF</code> is a helper function to create an internal node:
+	</p>
+	<p>
+		<pre>Prelude Fix FullBinaryTree&gt; fbtNodeF (fbtLeafF 1337) 42 (fbtLeafF 2112)
+FullBinaryTreeFix {unFullBinaryTreeFix = Fix (NodeF (Fix (LeafF 1337)) 42 (Fix (LeafF 2112)))}</pre>
+	</p>
+	<p>
+		The <code>FullBinaryTreeFix</code> type, or rather the underlying <code>FullBinaryTreeF a</code> functor, is all you need to identify the catamorphism.
+	</p>
+	<h3 id="ced0da7dc61943b0be872ec79b4e3651">
+		Haskell catamorphism <a href="#ced0da7dc61943b0be872ec79b4e3651" title="permalink">#</a>
+	</h3>
+	<p>
+		At this point, you have two out of three elements of an F-Algebra. You have an endofunctor (<code>FullBinaryTreeF a</code>), and an object <code>c</code>, but you still need to find a morphism <code>FullBinaryTreeF a c -&gt; c</code>. Notice that the algebra you have to find is the function that reduces the functor to its <em>carrier type</em> <code>c</code>, not the 'data type' <code>a</code>. This takes some time to get used to, but that's how catamorphisms work. This doesn't mean, however, that you get to ignore <code>a</code>, as you'll see.
+	</p>
+	<p>
+		As in the previous articles, start by writing a function that will become the catamorphism, based on <code>cata</code>:
+	</p>
+	<p>
+		<pre>fullBinaryTreeF&nbsp;=&nbsp;cata&nbsp;alg&nbsp;.&nbsp;unFullBinaryTreeFix
+&nbsp;&nbsp;<span style="color:blue;">where</span>&nbsp;alg&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(LeafF&nbsp;x)&nbsp;=&nbsp;<span style="color:blue;">undefined</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;alg&nbsp;(NodeF&nbsp;l&nbsp;x&nbsp;r)&nbsp;=&nbsp;<span style="color:blue;">undefined</span></pre>
+	</p>
+	<p>
+		While this compiles, with its <code>undefined</code> implementation of <code>alg</code>, it obviously doesn't do anything useful. I find, however, that it helps me think. How can you return a value of the type <code>c</code> from <code>alg</code>? You could pass a function argument to the <code>fullBinaryTreeF</code> function and use it with <code>x</code>:
+	</p>
+	<p>
+		<pre>fullBinaryTreeF&nbsp;fl&nbsp;=&nbsp;cata&nbsp;alg&nbsp;.&nbsp;unFullBinaryTreeFix
+&nbsp;&nbsp;<span style="color:blue;">where</span>&nbsp;alg&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(LeafF&nbsp;x)&nbsp;=&nbsp;fl&nbsp;x
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;alg&nbsp;(NodeF&nbsp;l&nbsp;x&nbsp;r)&nbsp;=&nbsp;<span style="color:blue;">undefined</span></pre>
+	</p>
+	<p>
+		I called the function <code>fl</code> for <em>function, leaf</em>, because we're also going to need a function for the <code>NodeF</code> case:
+	</p>
+	<p>
+		<pre><span style="color:#2b91af;">fullBinaryTreeF</span>&nbsp;::&nbsp;(c&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;a&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;c&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;c)&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;(a&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;c)&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">FullBinaryTreeFix</span>&nbsp;a&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;c
+fullBinaryTreeF&nbsp;fn&nbsp;fl&nbsp;=&nbsp;cata&nbsp;alg&nbsp;.&nbsp;unFullBinaryTreeFix
+&nbsp;&nbsp;<span style="color:blue;">where</span>&nbsp;alg&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(LeafF&nbsp;x)&nbsp;=&nbsp;fl&nbsp;x
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;alg&nbsp;(NodeF&nbsp;l&nbsp;x&nbsp;r)&nbsp;=&nbsp;fn&nbsp;l&nbsp;x&nbsp;r</pre>
+	</p>
+	<p>
+		This works. Since <code>cata</code> has the type <code>Functor f =&gt; (f a -&gt; a) -&gt; Fix f -&gt; a</code>, that means that <code>alg</code> has the type <code>f a -&gt; a</code>. In the case of <code>FullBinaryTreeF</code>, the compiler infers that the <code>alg</code> function has the type <code>FullBinaryTreeF a c -&gt; c</code>, which is just what you need!
+	</p>
+	<p>
+		You can now see what the carrier type <code>c</code> is for. It's the type that the algebra extracts, and thus the type that the catamorphism returns.
+	</p>
+	<p>
+		This, then, is the catamorphism for a full binary tree. As always, it's not the only possible catamorphism, since you can easily reorder the arguments to both <code>fullBinaryTreeF</code>, <code>fn</code>, and <code>fl</code>. These would all be isomorphic, though.
+	</p>
+	<h3 id="3f87d49db58f4cd59dec76a97d31c0d2">
+		Basis <a href="#3f87d49db58f4cd59dec76a97d31c0d2" title="permalink">#</a>
+	</h3>
+	<p>
+		You can implement most other useful functionality with <code>treeF</code>. Here's the <code>Functor</code> instance:
+	</p>
+	<p>
+		<pre><span style="color:blue;">instance</span>&nbsp;<span style="color:blue;">Functor</span>&nbsp;<span style="color:blue;">FullBinaryTreeFix</span>&nbsp;<span style="color:blue;">where</span>
+&nbsp;&nbsp;<span style="color:blue;">fmap</span>&nbsp;f&nbsp;=&nbsp;fullBinaryTreeF&nbsp;(\l&nbsp;x&nbsp;r&nbsp;-&gt;&nbsp;fbtNodeF&nbsp;l&nbsp;(f&nbsp;x)&nbsp;r)&nbsp;(fbtLeafF&nbsp;.&nbsp;f)</pre>
+	</p>
+	<p>
+		The <code>fl</code> function first applies <code>f</code>, followed by <code>fbtLeafF</code>. The <code>fn</code> function uses the <code>fbtNodeF</code> helper function to create a new internal node. <code>l</code> and <code>r</code> are already-translated branches, so you just need to apply <code>f</code> to the node value <code>x</code>.
+	</p>
+	<p>
+		There's no <code>Monad</code> instance for binary trees, because you can't flatten a binary tree of binary trees. You can, on the other hand, define a <code>Foldable</code> instance:
+	</p>
+	<p>
+		<pre><span style="color:blue;">instance</span>&nbsp;<span style="color:blue;">Foldable</span>&nbsp;<span style="color:blue;">FullBinaryTreeFix</span>&nbsp;<span style="color:blue;">where</span>
+&nbsp;&nbsp;foldMap&nbsp;f&nbsp;=&nbsp;fullBinaryTreeF&nbsp;(\l&nbsp;x&nbsp;r&nbsp;-&gt;&nbsp;l&nbsp;&lt;&gt;&nbsp;f&nbsp;x&nbsp;&lt;&gt;&nbsp;r)&nbsp;f</pre>
+	</p>
+	<p>
+		The <code>f</code> function passed to <code>foldMap</code> has the type <code>Monoid m =&gt; (a -&gt; m)</code>, so the <code>fl</code> function that handles leaf nodes simply applies <code>f</code> to the contents of the node. The <code>fn</code> function receives two branches already translated to <code>m</code>, so it just has to apply <code>f</code> to <code>x</code> and combine all the <code>m</code> values using the <code>&lt;&gt;</code> operator.
+	</p>
+	<p>
+		The <code>Traversable</code> instance follows right on the heels of <code>Foldable</code>:
+	</p>
+	<p>
+		<pre><span style="color:blue;">instance</span>&nbsp;<span style="color:blue;">Traversable</span>&nbsp;<span style="color:blue;">FullBinaryTreeFix</span>&nbsp;<span style="color:blue;">where</span>
+&nbsp;&nbsp;sequenceA&nbsp;=&nbsp;fullBinaryTreeF&nbsp;(liftA3&nbsp;fbtNodeF)&nbsp;(<span style="color:blue;">fmap</span>&nbsp;fbtLeafF)</pre>
+	</p>
+	<p>
+		There are operations on binary trees that you can implement with a fold, but some that you can't. Consider the tree shown in the diagram at the beginning of the article. This is also the tree that the above C# examples use. In Haskell, using <code>FullBinaryTreeFix</code>, you can define that tree like this:
+	</p>
+	<p>
+		<pre>tree&nbsp;=&nbsp;
+&nbsp;&nbsp;fbtNodeF
+&nbsp;&nbsp;&nbsp;&nbsp;(fbtNodeF
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(fbtLeafF&nbsp;42)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;1337
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(fbtNodeF
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(fbtLeafF&nbsp;2112)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;5040
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(fbtLeafF&nbsp;1984)))
+&nbsp;&nbsp;&nbsp;&nbsp;2
+&nbsp;&nbsp;&nbsp;&nbsp;(fbtLeafF&nbsp;90125)</pre>
+	</p>
+	<p>
+		Since <code>FullBinaryTreeFix</code> is <code>Foldable</code>, and that type class already comes with <code>sum</code> and <code>maximum</code> functions, no further work is required to repeat the first two of the above C# examples:
+	</p>
+	<p>
+		<pre>Prelude Fix FullBinaryTree&gt; sum tree
+100642
+Prelude Fix FullBinaryTree&gt; maximum tree
+90125</pre>
+	</p>
+	<p>
+		Counting leaves, or measuring the depth of a tree, on the other hand, is impossible with the <code>Foldable</code> instance, but can be implemented using the catamorphism:
+	</p>
+	<p>
+		<pre><span style="color:#2b91af;">countLeaves</span>&nbsp;::&nbsp;<span style="color:blue;">Num</span>&nbsp;n&nbsp;<span style="color:blue;">=&gt;</span>&nbsp;<span style="color:blue;">FullBinaryTreeFix</span>&nbsp;a&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;n
+countLeaves&nbsp;=&nbsp;fullBinaryTreeF&nbsp;(\l&nbsp;_&nbsp;r&nbsp;-&gt;&nbsp;l&nbsp;+&nbsp;r)&nbsp;(<span style="color:blue;">const</span>&nbsp;1)
+ 
+<span style="color:#2b91af;">treeDepth</span>&nbsp;::&nbsp;(<span style="color:blue;">Ord</span>&nbsp;n,&nbsp;<span style="color:blue;">Num</span>&nbsp;n)&nbsp;<span style="color:blue;">=&gt;</span>&nbsp;<span style="color:blue;">FullBinaryTreeFix</span>&nbsp;a&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;n
+treeDepth&nbsp;=&nbsp;fullBinaryTreeF&nbsp;(\l&nbsp;_&nbsp;r&nbsp;-&gt;&nbsp;1&nbsp;+&nbsp;<span style="color:blue;">max</span>&nbsp;l&nbsp;r)&nbsp;(<span style="color:blue;">const</span>&nbsp;0)</pre>
+	</p>
+	<p>
+		The reasoning is the same as already explained in the above C# examples. The functions also produce the same results:
+	</p>
+	<p>
+		<pre>Prelude Fix FullBinaryTree&gt; countLeaves tree
+4
+Prelude Fix FullBinaryTree&gt; treeDepth tree
+3</pre>
+	</p>
+	<p>
+		This, hopefully, illustrates that the catamorphism is more capable, and that the fold is just a (list-biased) specialisation.
+	</p>
+	<h3 id="81b3e77b6fbe4760bc8c74805e4edba8">
+		Summary <a href="#81b3e77b6fbe4760bc8c74805e4edba8" title="permalink">#</a>
+	</h3>
+	<p>
+		The catamorphism for a full binary tree is a pair of functions. One function handles internal nodes, while the other function handles leaf nodes.
+	</p>
+	<p>
+		I thought it was interesting to show this example for two reasons: First, the original example was a Visitor implementation, and I think it's worth realising that a Visitor's <code>Accept</code> method can also be viewed as a catamorphism. Second, a binary tree is an example of a data structure that has a fold, but isn't a monad.
+	</p>
+	<p>
+		All articles in the article series have, so far, covered data structures well-known from computer science. The next example will, on the other hand, demonstrate that even completely ad-hoc domain-specific data structures have catamorphisms.
+	</p>
+	<p>
+		<strong>Next:</strong> Payment types catamorphism.
+	</p>
+</div>
