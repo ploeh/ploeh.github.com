@@ -1,0 +1,692 @@
+---
+layout: post
+title: "Chain of Responsibility as catamorphisms"
+description: "The Chain of Responsibility design pattern can be viewed as a list fold over the First monoid, followed by a Maybe fold."
+date: 2018-12-30 17:14 UTC
+tags: [Software Design, Design Patterns]
+image: "/content/binary/chain-of-responsibility-as-a-linked-list-double-fold.png"
+image_alt: "Chain of Responsibility illustrated as a linked list, with two consecutive folds."
+---
+{% include JB/setup %}
+
+<div id="post">
+	<p>
+		<em>{{ page.description }}</em>
+	</p>
+	<p>
+		This article is part of <a href="http://blog.ploeh.dk/2018/03/05/some-design-patterns-as-universal-abstractions">a series of articles about specific design patterns and their category theory counterparts</a>. In it, you'll see how the <a href="https://en.wikipedia.org/wiki/Chain-of-responsibility_pattern">Chain of Responsibility design pattern</a> is equivalent to a succession of <a href="">catamorphisms</a>. First, you apply the <a href="http://blog.ploeh.dk/2018/04/03/maybe-monoids">First Maybe monoid</a> over the <a href="">list catamorphism</a>, and then you conclude the reduction with the <a href="">Maybe catamorphism</a>.
+	</p>
+	<h3 id="46a6c41949db446d9387c8befbf3fdb1">
+		Pattern <a href="#46a6c41949db446d9387c8befbf3fdb1" title="permalink">#</a>
+	</h3>
+	<p>
+		The Chain of Responsibility design pattern gives you a way to model cascading conditionals with an object structure. It's a chain (or linked list) of objects that all implement the same interface (or base class). Each object (apart from the the last) has a reference to the next object in the list.
+	</p>
+	<p>
+		<img src="/content/binary/chain-of-responsibility-diagram.png" alt="General diagram of the Chain of Responsibility design pattern.">
+	</p>
+	<p>
+		A client (some other code) calls a method on the first object in the list. If that object can handle the request, it does so, and the interaction ends there. If the method returns a value, the object returns the value.
+	</p>
+	<p>
+		If the first object determines that it can't handle the method call, it calls the next object in the chain. It only knows the next object as the interface, so the only way it can delegate the call is by calling the same method as the first one. In the above diagram, <em>Imp1</em> can't handle the method call, so it calls the same method on <em>Imp2</em>, which also can't handle the request and delegates responsibility to <em>Imp3</em>. In the diagram, <em>Imp3</em> can handle the method call, so it does so and returns a result that propagates back up the chain. In that particular example, <em>Imp4</em> never gets involved.
+	</p>
+	<p>
+		You'll see an example below.
+	</p>
+	<p>
+		One of the advantages of the pattern is that you can rearrange the chain to change its behaviour. You can even do this at run time, if you'd like, since all objects implement the same interface.
+	</p>
+	<h3 id="08a67dafd71f4bdd9a2e2577b0e43f9a">
+		User icon example <a href="#08a67dafd71f4bdd9a2e2577b0e43f9a" title="permalink">#</a>
+	</h3>
+	<p>
+		Consider an online system that maintains user profiles for users. A user is modelled with the <code>User</code> class:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;User(<span style="color:blue;">int</span>&nbsp;id,&nbsp;<span style="color:blue;">string</span>&nbsp;name,&nbsp;<span style="color:blue;">string</span>&nbsp;email,&nbsp;<span style="color:blue;">bool</span>&nbsp;useGravatar,&nbsp;<span style="color:blue;">bool</span>&nbsp;useIdenticon)</pre>
+	</p>
+	<p>
+		While I only show the signature of the class' constructor, it should be enough to give you an idea. If you need more details, the entire example code base is <a href="">available on GitHub</a>.
+	</p>
+	<p>
+		Apart from an <code>id</code>, a <code>name</code> and <code>email</code> address, a user also has two flags. One flag tracks whether the user wishes to use his or her <a href="http://www.gravatar.com">Gravatar</a>, while another flag tracks if the user would like to use an <a href="https://en.wikipedia.org/wiki/Identicon">Identicon</a>. Obviously, both flags could be <code>true</code>, in which case the current business rule states that the Gravatar should take precedence.
+	</p>
+	<p>
+		If none of the flags are set, users might still have a picture associated with their profile. This could be a picture that they've uploaded to the system, and is being tracked by a database.
+	</p>
+	<p>
+		If no user icon can be found or generated, ultimately the system should use a fallback, default icon:
+	</p>
+	<p>
+		<img src="/content/binary/default-user-icon.png" alt="Default user icon.">
+	</p>
+	<p>
+		To summarise, the current rules are:
+		<ol>
+			<li>Use Gravatar if flag is set.</li>
+			<li>Use Identicon if flag is set.</li>
+			<li>Use uploaded picture if available.</li>
+			<li>Use default icon.</li>
+		</ol>
+		The order of precedence could change in the future, new images sources could be added, or some of the present sources could be removed. Modelling this set of rules as a Chain of Responsibility makes it easy for you to reorder the rules, should you need to.
+	</p>
+	<p>
+		To request an icon, a client can use the <code>IIconReader</code> interface:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">interface</span>&nbsp;<span style="color:#2b91af;">IIconReader</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Icon</span>&nbsp;ReadIcon(<span style="color:#2b91af;">User</span>&nbsp;user);
+}</pre>
+	</p>
+	<p>
+		The <code>Icon</code> class is just a <a href="https://martinfowler.com/bliki/ValueObject.html">Value Object</a> wrapper around a URL. The idea is that such a URL can be used in an <code>img</code> tag to show the icon. Again, the full source code is available on GitHub if you,d like to investigate the details.
+	</p>
+	<p>
+		The various rules for icon retrieval can be implemented using this interface.
+	</p>
+	<h3 id="b2a4cbfb576949c392ea0e0b3d440175">
+		Gravatar reader <a href="#b2a4cbfb576949c392ea0e0b3d440175" title="permalink">#</a>
+	</h3>
+	<p>
+		Although you don't have to implement the classes in the order in which you are going to compose them, it seems natural to do so, starting with the Gravatar implementation.
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">GravatarReader</span>&nbsp;:&nbsp;<span style="color:#2b91af;">IIconReader</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;<span style="color:#2b91af;">IIconReader</span>&nbsp;next;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;GravatarReader(<span style="color:#2b91af;">IIconReader</span>&nbsp;next)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.next&nbsp;=&nbsp;next;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">Icon</span>&nbsp;ReadIcon(<span style="color:#2b91af;">User</span>&nbsp;user)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;(user.UseGravatar)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Icon</span>(<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Gravatar</span>(user.Email).Url);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;next.ReadIcon(user);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+	</p>
+	<p>
+		The <code>GravatarReader</code> class both implements the <code>IIconReader</code> interface, but also decorates another object of the same polymorphic type. If <code>user.UseGravatar</code> is <code>true</code>, it generates the appropriate Gravatar URL based on the user's <code>Email</code> address; otherwise, it delegates the work to the <code>next</code> object in the Chain of Responsibility.
+	</p>
+	<p>
+		The <code>Gravatar</code> class contains the implementation details to generate the Gravatar <code>Url</code>. Again, please refer to the GitHub repository if you're interested in the details.
+	</p>
+	<h3 id="222ae025b264455695f1dbbd74cad17b">
+		Identicon reader <a href="#222ae025b264455695f1dbbd74cad17b" title="permalink">#</a>
+	</h3>
+	<p>
+		When you compose the chain, according to the above business logic, the next type of icon you should attempt to generate is an Identicon. It's natural to implement the Identicon reader next, then:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">IdenticonReader</span>&nbsp;:&nbsp;<span style="color:#2b91af;">IIconReader</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;<span style="color:#2b91af;">IIconReader</span>&nbsp;next;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;IdenticonReader(<span style="color:#2b91af;">IIconReader</span>&nbsp;next)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.next&nbsp;=&nbsp;next;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">Icon</span>&nbsp;ReadIcon(<span style="color:#2b91af;">User</span>&nbsp;user)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;(user.UseIdenticon)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Icon</span>(<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Uri</span>(baseUrl,&nbsp;HashUser(user)));
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;next.ReadIcon(user);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;Implementation&nbsp;details&nbsp;go&nbsp;here...</span>
+}</pre>
+	</p>
+	<p>
+		Again, I'm omitting implementation details in order to focus on the Chain of Responsibility design pattern. If <code>user.UseIdenticon</code> is <code>true</code>, the <code>IdenticonReader</code> generates the appropriate Identicon and returns the URL for it; otherwise, it delegates the work to the <code>next</code> object in the chain.
+	</p>
+	<h3 id="e9f2904333b940c1a9a90522d19a41f3">
+		Database icon reader <a href="#e9f2904333b940c1a9a90522d19a41f3" title="permalink">#</a>
+	</h3>
+	<p>
+		The <code>DBIconReader</code> class attempts to find an icon ID in a database. If it succeeds, it creates a URL corresponding to that ID. The assumption is that that resource exists; either it's a file on disk, or it's an image resource generated on the spot based on binary data stored in the database.
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">DBIconReader</span>&nbsp;:&nbsp;<span style="color:#2b91af;">IIconReader</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;<span style="color:#2b91af;">IUserRepository</span>&nbsp;repository;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;<span style="color:#2b91af;">IIconReader</span>&nbsp;next;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;DBIconReader(<span style="color:#2b91af;">IUserRepository</span>&nbsp;repository,&nbsp;<span style="color:#2b91af;">IIconReader</span>&nbsp;next)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.repository&nbsp;=&nbsp;repository;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.next&nbsp;=&nbsp;next;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">Icon</span>&nbsp;ReadIcon(<span style="color:#2b91af;">User</span>&nbsp;user)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;(!repository.TryReadIconId(user.Id,&nbsp;<span style="color:blue;">out</span>&nbsp;<span style="color:blue;">string</span>&nbsp;iconId))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;next.ReadIcon(user);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;parameters&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Dictionary</span>&lt;<span style="color:blue;">string</span>,&nbsp;<span style="color:blue;">string</span>&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{&nbsp;<span style="color:#a31515;">&quot;iconId&quot;</span>,&nbsp;iconId&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;};
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Icon</span>(urlTemplate.BindByName(baseUrl,&nbsp;parameters));
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;<span style="color:#2b91af;">Uri</span>&nbsp;baseUrl&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Uri</span>(<span style="color:#a31515;">&quot;https://example.com&quot;</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;<span style="color:#2b91af;">UriTemplate</span>&nbsp;urlTemplate&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">UriTemplate</span>(<span style="color:#a31515;">&quot;users/{iconId}/icon&quot;</span>);
+}</pre>
+	</p>
+	<p>
+		This class demonstrates some variations in the way you can implement the Chain of Responsibility design pattern. The above <code>GravatarReader</code> and <code>IdenticonReader</code> classes both follow the same implementation pattern of checking a condition, and then performing work if the condition is <code>true</code>. The delegation to the next object in the chain happens, in those two classes, outside of the <code>if</code> statement.
+	</p>
+	<p>
+		The <code>DBIconReader</code> class, on the other hand, reverses the structure of the code. It uses a <a href="https://refactoring.com/catalog/replaceNestedConditionalWithGuardClauses.html">Guard Clause</a> to detect whether to exit early, which is done by delegating work to the <code>next</code> object in the chain.
+	</p>
+	<p>
+		If <code>TryReadIconId</code> returns <code>true</code>, however, the <code>ReadIcon</code> method proceeds to create the appropriate icon URL.
+	</p>
+	<p>
+		Another variation on the Chain of Responsibility design pattern demonstrated by the <code>DBIconReader</code> class is that it takes a second dependency, apart from <code>next</code>. The <code>repository</code> is the usual misapplication of the Repository design pattern that everyone think they use correctly. Here, it's used in the common sense to provide access to a database. The main point, though, is that you can add as many other dependencies to a link in the chain as you'd like. All links, apart from the last, however, must have a reference to the <code>next</code> link in the chain.
+	</p>
+	<h3 id="cee40120578b4732892e6fd72329d5de">
+		Default icon reader <a href="#cee40120578b4732892e6fd72329d5de" title="permalink">#</a>
+	</h3>
+	<p>
+		Like linked lists, a Chain of Responsibility has to ultimately terminate. You can use the following <code>DefaultIconReader</code> for that.
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">DefaultIconReader</span>&nbsp;:&nbsp;<span style="color:#2b91af;">IIconReader</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">Icon</span>&nbsp;ReadIcon(<span style="color:#2b91af;">User</span>&nbsp;user)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:#2b91af;">Icon</span>.Default;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+	</p>
+	<p>
+		This class unconditionally returns the <code>Default</code> icon. Notice that it doesn't have any <code>next</code> object it delegates to. This terminates the chain. If no previous implementation of the <code>IIconReader</code> has returned an <code>Icon</code> for the <code>user</code>, this one does.
+	</p>
+	<h3 id="8eb05bed2d98488a91c09bab52b00a53">
+		Chain composition <a href="#8eb05bed2d98488a91c09bab52b00a53" title="permalink">#</a>
+	</h3>
+	<p>
+		With four implementations of <code>IIconReader</code>, you can now compose the Chain of Responsibility:
+	</p>
+	<p>
+		<pre><span style="color:#2b91af;">IIconReader</span>&nbsp;reader&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">GravatarReader</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">IdenticonReader</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">DBIconReader</span>(repo,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">DefaultIconReader</span>())));</pre>
+	</p>
+	<p>
+		The first link in the chain is a <code>GravatarReader</code> object that contains an <code>IdenticonReader</code> object as its <code>next</code> link, and so on. Referring back to the source code of <code>GravatarReader</code>, notice that its <code>next</code> dependency is declared as an <code>IIconReader</code>. Since the <code>IdenticonReader</code> class implements that interface, you can compose the chain like this, but if you later decide to change the order of the objects, you can do so simply by changing the composition. You could remove objects altogether, or add new classes, and you could even do this at run time, if required.
+	</p>
+	<p>
+		The <code>DBIconReader</code> class requires an extra <code>IUserRepository</code> dependency, here simply an existing object called <code>repo</code>.
+	</p>
+	<p>
+		The <code>DefaultIconReader</code> takes no other dependencies, so this effectively terminates the chain. If you try to pass another <code>IIconReader</code> to its constructor, the code doesn't compile.
+	</p>
+	<h3 id="fc1551665bb940b8ba5e75be81c0629a">
+		Haskell proof of concept <a href="#fc1551665bb940b8ba5e75be81c0629a" title="permalink">#</a>
+	</h3>
+	<p>
+		When evaluating whether a design is <a href="http://blog.ploeh.dk/2018/11/19/functional-architecture-a-definition">a functional architecture</a>, I often port the relevant parts to <a href="https://www.haskell.org">Haskell</a>. You can do the same with the above example, and put it in a form where it's clearer that the Chain of Responsibility pattern is equivalent to two well-known catamorphisms.
+	</p>
+	<p>
+		Readers not comfortable with Haskell can skip the next few sections. The object-oriented example continues below.
+	</p>
+	<p>
+		<code>User</code> and <code>Icon</code> types are defined by types equivalent to above. There's no explicit interface, however. Creation of Gravatars and Identicons are both pure functions with the type <code>User -&gt; Maybe Icon</code>. Here's the Gravatar function, but the Identicon function looks similar:
+	</p>
+	<p>
+		<pre><span style="color:#2b91af;">gravatarUrl</span>&nbsp;::&nbsp;<span style="color:#2b91af;">String</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:#2b91af;">String</span>
+gravatarUrl&nbsp;email&nbsp;=
+&nbsp;&nbsp;<span style="color:#a31515;">&quot;https://www.gravatar.com/avatar/&quot;</span>&nbsp;++&nbsp;<span style="color:blue;">show</span>&nbsp;(hashString&nbsp;email&nbsp;::&nbsp;MD5Digest)
+ 
+<span style="color:#2b91af;">getGravatar</span>&nbsp;::&nbsp;<span style="color:blue;">User</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:#2b91af;">Maybe</span>&nbsp;<span style="color:blue;">Icon</span>
+getGravatar&nbsp;u&nbsp;=
+&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;useGravatar&nbsp;u
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">then</span>&nbsp;Just&nbsp;$&nbsp;Icon&nbsp;$&nbsp;gravatarUrl&nbsp;$&nbsp;userEmail&nbsp;u
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">else</span>&nbsp;Nothing</pre>
+	</p>
+	<p>
+		Reading an icon ID from a database, however, is an impure operation, so the function to do this has the type <code>User -&gt; IO (Maybe Icon)</code>.
+	</p>
+	<h3 id="11adf8bd104d41fab9e6bcaef249210c">
+		Lazy I/O in Haskell <a href="#11adf8bd104d41fab9e6bcaef249210c" title="permalink">#</a>
+	</h3>
+	<p>
+		Notice that the database icon-querying function has the return type <code>IO (Maybe Icon)</code>. In the introduction you read that the Chain of Responsibility design pattern is a sequence of catamorphisms - the first one over a list of <code>First</code> values. While <code>First</code> is, in itself, a <code>Semigroup</code> instance, it gives rise to a <code>Monoid</code> instance when combined with <code>Maybe</code>. Thus, to showcase the abstractions being used, you could create a list of <code>Maybe (First Icon)</code> values. This forms a <code>Monoid</code>, so is easy to fold.
+	</p>
+	<p>
+		The problem with that, however, is that <code>IO</code> is strict under evaluation, so while it works, <a href="https://stackoverflow.com/q/47120384/126014">it's no longer lazy</a>. You can combine <code>IO (Maybe (First Icon))</code> values, but it leads to too much I/O activity.
+	</p>
+	<p>
+		You can <a href="https://stackoverflow.com/q/47120384/126014">solve this problem with a newtype wrapper</a>:
+	</p>
+	<p>
+		<pre><span style="color:blue;">newtype</span>&nbsp;FirstIO&nbsp;a&nbsp;=&nbsp;FirstIO&nbsp;(MaybeT&nbsp;IO&nbsp;a)&nbsp;<span style="color:blue;">deriving</span>&nbsp;(<span style="color:#2b91af;">Functor</span>,&nbsp;<span style="color:#2b91af;">Applicative</span>,&nbsp;<span style="color:#2b91af;">Monad</span>,&nbsp;<span style="color:#2b91af;">Alternative</span>)
+ 
+<span style="color:#2b91af;">firstIO</span>&nbsp;::&nbsp;<span style="color:#2b91af;">IO</span>&nbsp;(<span style="color:#2b91af;">Maybe</span>&nbsp;a)&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">FirstIO</span>&nbsp;a
+firstIO&nbsp;=&nbsp;FirstIO&nbsp;.&nbsp;MaybeT
+ 
+<span style="color:#2b91af;">getFirstIO</span>&nbsp;::&nbsp;<span style="color:blue;">FirstIO</span>&nbsp;a&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:#2b91af;">IO</span>&nbsp;(<span style="color:#2b91af;">Maybe</span>&nbsp;a)
+getFirstIO&nbsp;(FirstIO&nbsp;(MaybeT&nbsp;x))&nbsp;=&nbsp;x
+ 
+<span style="color:blue;">instance</span>&nbsp;<span style="color:blue;">Semigroup</span>&nbsp;(<span style="color:blue;">FirstIO</span>&nbsp;a)&nbsp;<span style="color:blue;">where</span>
+&nbsp;&nbsp;<span style="color:#2b91af;">(&lt;&gt;)</span>&nbsp;=&nbsp;<span style="color:#2b91af;">(&lt;|&gt;)</span>
+ 
+<span style="color:blue;">instance</span>&nbsp;<span style="color:blue;">Monoid</span>&nbsp;(<span style="color:blue;">FirstIO</span>&nbsp;a)&nbsp;<span style="color:blue;">where</span>
+&nbsp;&nbsp;mempty&nbsp;=&nbsp;empty</pre>
+	</p>
+	<p>
+		This uses the <code>GeneralizedNewtypeDeriving</code> GHC extension to automatically make <code>FirstIO</code> <code>Functor</code>, <code>Applicative</code>, <code>Monad</code>, and <code>Alternative</code>. It also uses the <code>Alternative</code> instance to implement <code>Semigroup</code> and <code>Monoid</code>. You may recall from <a href="http://hackage.haskell.org/package/base/docs/Control-Applicative.html">the documentation</a> that <code>Alternative</code> is already a "monoid on applicative functors."
+	</p>
+	<h3 id="995f9ea8f8344aea93b2ffd0b3aad71f">
+		Alignment <a href="#995f9ea8f8344aea93b2ffd0b3aad71f" title="permalink">#</a>
+	</h3>
+	<p>
+		You now have three functions with different types: two pure functions with the type <code>User -&gt; Maybe Icon</code> and one impure database-bound function with the type <code>User -&gt; IO (Maybe Icon)</code>. In order to have a common abstraction, you should align them so that all types match. At first glance, <code>User -&gt; IO (Maybe (First Icon))</code> seems like a type that fits all implementations, but that causes too much I/O to take place, so instead, use <code>User -&gt; FirstIO Icon</code>. Here's how to lift the pure <code>getGravatar</code> function:
+	</p>
+	<p>
+		<pre><span style="color:#2b91af;">getGravatarIO</span>&nbsp;::&nbsp;<span style="color:blue;">User</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">FirstIO</span>&nbsp;<span style="color:blue;">Icon</span>
+getGravatarIO&nbsp;=&nbsp;firstIO&nbsp;.&nbsp;<span style="color:blue;">return</span>&nbsp;.&nbsp;getGravatar</pre>
+	</p>
+	<p>
+		You can lift the other functions in similar fashion, to produce <code>getGravatarIO</code>, <code>getIdenticonIO</code>, and <code>getDBIconIO</code>, all with the mutual type <code>User -&gt; FirstIO Icon</code>.
+	</p>
+	<h3 id="f601a51f3006430398232e05b6595da0">
+		Haskell composition <a href="#f601a51f3006430398232e05b6595da0" title="permalink">#</a>
+	</h3>
+	<p>
+		The goal of the Haskell proof of concept is to compose a function that can provide an <code>Icon</code> for any <code>User</code> - just like the above C# composition that uses Chain of Responsibility. There's, however, no way around impurity, because one of the steps involve a database, so the aim is a composition with the type <code>User -&gt; IO Icon</code>.
+	</p>
+	<p>
+		While a more compact composition is possible, I'll show it in a way that makes the catamorphisms explicit:
+	</p>
+	<p>
+		<pre><span style="color:#2b91af;">getIcon</span>&nbsp;::&nbsp;<span style="color:blue;">User</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:#2b91af;">IO</span>&nbsp;<span style="color:blue;">Icon</span>
+getIcon&nbsp;u&nbsp;=&nbsp;<span style="color:blue;">do</span>
+&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;lazyIcons&nbsp;=&nbsp;<span style="color:blue;">fmap</span>&nbsp;(\f&nbsp;-&gt;&nbsp;f&nbsp;u)&nbsp;[getGravatarIO,&nbsp;getIdenticonIO,&nbsp;getDBIconIO]
+&nbsp;&nbsp;m&nbsp;&lt;-&nbsp;getFirstIO&nbsp;$&nbsp;fold&nbsp;lazyIcons
+&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;$&nbsp;fromMaybe&nbsp;defaultIcon&nbsp;m</pre>
+	</p>
+	<p>
+		The <code>getIcon</code> function starts with a list of all three functions. For each of them, it calls the function with the <code>User</code> value <code>u</code>. This may seem inefficient and redundant, because all three function calls may not be required, but since the return values are <code>FirstIO</code> values, all three function calls are lazily evaluated - even under <code>IO</code>. The result, <code>lazyIcons</code>, is a <code>[FirstIO Icon]</code> value; i.e. a lazily evaluated list of lazily evaluated values.
+	</p>
+	<p>
+		This first step is just to put the potential values in a form that's recognisable. You can now <code>fold</code> the <code>lazyIcons</code> to a single <code>FirstIO Icon</code> value, and then use <code>getFirstIO</code> to unwrap it. Due to <code>do</code> notation, <code>m</code> is a <code>Maybe Icon</code> value.
+	</p>
+	<p>
+		This is the first catamorphism. Granted, the generalisation that <code>fold</code> offers is not really required, since <code>lazyIcons</code> is a list; <code>mconcat</code> would have worked just as well. I did, however, choose to use <code>fold</code> (from <code>Data.Foldable</code>) to emphasise the point. While the <code>fold</code> function itself isn't the catamorphism for lists, we know that <a href="">it's derived from the list catamorphism</a>.
+	</p>
+	<p>
+		The final step is to utilise the Maybe catamorphism to reduce the <code>Maybe Icon</code> value to an <code>Icon</code> value. Again, the <code>getIcon</code> function doesn't use the Maybe catamorphism directly, but rather the derived <code>fromMaybe</code> function. The <a href="">Maybe catamorphism</a> is the <code>maybe</code> function, but you can trivially implement <code>fromMaybe</code> with <code>maybe</code>.
+	</p>
+	<p>
+		For <a href="https://en.wikipedia.org/wiki/Code_golf">golfers</a>, it's certainly possible to write this function in a more compact manner. Here's a <a href="https://en.wikipedia.org/wiki/Tacit_programming">point-free</a> version:
+	</p>
+	<p>
+		<pre><span style="color:#2b91af;">getIcon</span>&nbsp;::&nbsp;<span style="color:blue;">User</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:#2b91af;">IO</span>&nbsp;<span style="color:blue;">Icon</span>
+getIcon&nbsp;=
+&nbsp;&nbsp;<span style="color:blue;">fmap</span>&nbsp;(fromMaybe&nbsp;defaultIcon)&nbsp;.&nbsp;getFirstIO&nbsp;.&nbsp;fold&nbsp;[getGravatarIO,&nbsp;getIdenticonIO,&nbsp;getDBIconIO]</pre>
+	</p>
+	<p>
+		This alternative version utilises that <code>a -&gt; m</code> is a <code>Monoid</code> instance when <code>m</code> is a <code>Monoid</code> instance. That's the reason that you can <code>fold</code> a list of functions. The more explicit version above doesn't do that, but the behaviour is the same in both cases.
+	</p>
+	<p>
+		That's all the Haskell code we need to discern the universal abstractions involved in the Chain of Responsibility design pattern. We can now return to the C# code example.
+	</p>
+	<h3 id="492ff50788784d7dbf6560ed08ed6bf7">
+		Chains as lists <a href="#492ff50788784d7dbf6560ed08ed6bf7" title="permalink">#</a>
+	</h3>
+	<p>
+		The Chain of Responsibility design pattern is often illustrated like above, in a staircase-like diagram. There's, however, no inherent requirement to do so. You could also flatten the diagram:
+	</p>
+	<p>
+		<img src="/content/binary/chain-of-responsibility-as-a-linked-list.png" alt="Chain of Responsibility illustrated as a linked list.">
+	</p>
+	<p>
+		This looks a lot like a linked list.
+	</p>
+	<p>
+		The difference is, however, that the terminator of a linked list is usually empty. Here, however, you have two types of objects. All objects apart from the rightmost object represent a <em>potential</em>. Each object may, or may not, handle the method call and produce an outcome; if an object can't handle the method call, it'll delegate to the next object in the chain.
+	</p>
+	<p>
+		The rightmost object, however, is different. This object can't delegate any further, but <em>must</em> handle the method call. In the icon reader example, this is the <code>DefaultIconReader</code> class.
+	</p>
+	<p>
+		Once you start to see most of the list as a list of potential values, you may realise that you'll be able to collapse into it a single potential value. This is possible because <a href="http://blog.ploeh.dk/2018/04/03/maybe-monoids">a list of values where you pick the first non-empty value forms a monoid</a>. This is sometimes called the <em>First</em> <a href="http://blog.ploeh.dk/2017/10/06/monoids">monoid</a>.
+	</p>
+	<p>
+		In other words, you can reduce, or fold, all of the list, except the rightmost value, to a single potential value:
+	</p>
+	<p>
+		<img src="/content/binary/chain-of-responsibility-as-a-linked-list-single-fold.png" alt="Chain of Responsibility illustrated as a linked list, with all but the rightmost objects folded to one.">
+	</p>
+	<p>
+		When you do that, however, you're left with a single potential value. The result of folding most of the list is that you get the leftmost non-empty value in the list. There's no guarantee, however, that that value is non-empty. If all the values in the list are empty, the result is also empty. This means that you somehow need to combine a potential value with a value that's guaranteed to be present: the terminator.
+	</p>
+	<p>
+		You can do that wither another fold:
+	</p>
+	<p>
+		<img src="/content/binary/chain-of-responsibility-as-a-linked-list-double-fold.png" alt="Chain of Responsibility illustrated as a linked list, with two consecutive folds.">
+	</p>
+	<p>
+		This second fold isn't a list fold, but rather a Maybe fold.
+	</p>
+	<h3 id="7632b9ff458d417fa49b1c65f7b198ed">
+		Maybe <a href="#7632b9ff458d417fa49b1c65f7b198ed" title="permalink">#</a>
+	</h3>
+	<p>
+		The <em>First</em> monoid is a monoid over <a href="http://blog.ploeh.dk/2018/03/26/the-maybe-functor">Maybe</a>, so add a <code>Maybe</code> class to the code base. In Haskell, the catamorphism for Maybe is called <code>maybe</code>, but that's not a good method name in object-oriented design. Another option is some variation of <em>fold</em>, but in C#, this functionality tends to be called <code>Aggregate</code>, at least for <code>IEnumerable&lt;T&gt;</code>, so I'll reuse that terminology:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">TResult</span>&nbsp;Aggregate&lt;<span style="color:#2b91af;">TResult</span>&gt;(<span style="color:#2b91af;">TResult</span>&nbsp;@default,&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:#2b91af;">T</span>,&nbsp;<span style="color:#2b91af;">TResult</span>&gt;&nbsp;func)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;(func&nbsp;==&nbsp;<span style="color:blue;">null</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">throw</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">ArgumentNullException</span>(<span style="color:blue;">nameof</span>(func));
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;hasItem&nbsp;?&nbsp;func(item)&nbsp;:&nbsp;@default;
+}</pre>
+	</p>
+	<p>
+		You can implement another, more list-like <code>Aggregate</code> overload from this one, but for this article, you don't need it.
+	</p>
+	<h3 id="8b60d0c605d14cffbfa5e237cf26b7b2">
+		From TryReadIconId to Maybe <a href="#8b60d0c605d14cffbfa5e237cf26b7b2" title="permalink">#</a>
+	</h3>
+	<p>
+		In the above code examples, <code>DBIconReader</code> depends on <code>IUserRepository</code>, which defined this method:
+	</p>
+	<p>
+		<pre><span style="color:blue;">bool</span>&nbsp;TryReadIconId(<span style="color:blue;">int</span>&nbsp;userId,&nbsp;<span style="color:blue;">out</span>&nbsp;<span style="color:blue;">string</span>&nbsp;iconId);</pre>
+	</p>
+	<p>
+		From <a href="">Tester-Doer isomorphisms</a> we know, however, that such a design is isomorphic to returning a Maybe value, and since that's more composable, do that:
+	</p>
+	<p>
+		<pre><span style="color:#2b91af;">Maybe</span>&lt;<span style="color:blue;">string</span>&gt;&nbsp;ReadIconId(<span style="color:blue;">int</span>&nbsp;userId);</pre>
+	</p>
+	<p>
+		This requires you to refactor the <code>DBIconReader</code> implementation of the <code>ReadIcon</code> method:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">Icon</span>&nbsp;ReadIcon(<span style="color:#2b91af;">User</span>&nbsp;user)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Maybe</span>&lt;<span style="color:blue;">string</span>&gt;&nbsp;mid&nbsp;=&nbsp;repository.ReadIconId(user.Id);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Lazy</span>&lt;<span style="color:#2b91af;">Icon</span>&gt;&nbsp;lazyResult&nbsp;=&nbsp;mid.Aggregate(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;@default:&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Lazy</span>&lt;<span style="color:#2b91af;">Icon</span>&gt;(()&nbsp;=&gt;&nbsp;next.ReadIcon(user)),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;func:&nbsp;id&nbsp;=&gt;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Lazy</span>&lt;<span style="color:#2b91af;">Icon</span>&gt;(()&nbsp;=&gt;&nbsp;CreateIcon(id)));
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;lazyResult.Value;
+}</pre>
+	</p>
+	<p>
+		A few things are worth a mention. Notice that the above <code>Aggregate</code> method (the Maybe catamorphism) requires you to supply a <code>@default</code> value (to be used if the Maybe object is empty). In the Chain of Responsibility design pattern, however, the fallback value is produced by calling the <code>next</code> object in the chain. If you do this unconditionally, however, you perform too much work. You're only supposed to call <code>next</code> if the current object can't handle the method call.
+	</p>
+	<p>
+		The solution is to aggregate the <code>mid</code> object to a <code>Lazy&lt;Icon&gt;</code> and then return its <code>Value</code>. The <code>@default</code> value is now a lazy computation that calls <code>next</code> only if its <code>Value</code> is read. When <code>mid</code> is populated, on the other hand, the lazy computation calls the private <code>CreateIcon</code> method when <code>Value</code> is accessed. The private <code>CreateIcon</code> method contains the same logic as before the refactoring.
+	</p>
+	<p>
+		This change of <code>DBIconReader</code> isn't strictly necessary in order to change the overall Chain of Responsibility to a pair of catamorphisms, but serves, I think, as a nice introduction to the use of the Maybe catamorphism.
+	</p>
+	<h3 id="ec329c8a0b70432d81d6f69e7084c13f">
+		Optional icon readers <a href="#ec329c8a0b70432d81d6f69e7084c13f" title="permalink">#</a>
+	</h3>
+	<p>
+		Previously, the <code>IIconReader</code> interface <em>required</em> each implementation to return an <code>Icon</code> object:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">interface</span>&nbsp;<span style="color:#2b91af;">IIconReader</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Icon</span>&nbsp;ReadIcon(<span style="color:#2b91af;">User</span>&nbsp;user);
+}</pre>
+	</p>
+	<p>
+		When you have an object like <code>GravatarReader</code> that may or may not return an <code>Icon</code>, this requirement leads toward the Chain of Responsibility design pattern. You can, however, shift the responsibility of what to do next by changing the interface:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">interface</span>&nbsp;<span style="color:#2b91af;">IIconReader</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Maybe</span>&lt;<span style="color:#2b91af;">Icon</span>&gt;&nbsp;ReadIcon(<span style="color:#2b91af;">User</span>&nbsp;user);
+}</pre>
+	</p>
+	<p>
+		An implementation like <code>GravatarReader</code> becomes simpler:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">GravatarReader</span>&nbsp;:&nbsp;<span style="color:#2b91af;">IIconReader</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">Maybe</span>&lt;<span style="color:#2b91af;">Icon</span>&gt;&nbsp;ReadIcon(<span style="color:#2b91af;">User</span>&nbsp;user)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;(user.UseGravatar)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Maybe</span>&lt;<span style="color:#2b91af;">Icon</span>&gt;(<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Icon</span>(<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Gravatar</span>(user.Email).Url));
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Maybe</span>&lt;<span style="color:#2b91af;">Icon</span>&gt;();
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+	</p>
+	<p>
+		No longer do you have to pass in a <code>next</code> dependency. Instead, you just return an empty <code>Maybe&lt;Icon&gt;</code> if you can't handle the method call. The same change applies to the <code>IdenticonReader</code> class.
+	</p>
+	<p>
+		Since <a href="http://blog.ploeh.dk/2018/03/26/the-maybe-functor">Maybe is a functor</a>, and the <code>DBIconReader</code> already works on a <code>Maybe&lt;string&gt;</code> value, its implementation is greatly simplified:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">Maybe</span>&lt;<span style="color:#2b91af;">Icon</span>&gt;&nbsp;ReadIcon(<span style="color:#2b91af;">User</span>&nbsp;user)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;repository.ReadIconId(user.Id).Select(CreateIcon);
+}</pre>
+	</p>
+	<p>
+		Since <code>ReadIconId</code> returns a <code>Maybe&lt;string&gt;</code>, you can simply use <code>Select</code> to transform the icon ID to an <code>Icon</code> object if the Maybe is populated.
+	</p>
+	<h3 id="94cac3b9e52e48c2a1768fd24c72e4bd">
+		Coalescing Composite <a href="#94cac3b9e52e48c2a1768fd24c72e4bd" title="permalink">#</a>
+	</h3>
+	<p>
+		As an intermediate step, you can compose the various readers using a <a href="http://blog.ploeh.dk/2018/04/09/coalescing-composite-as-a-monoid">Coalescing Composite</a>:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">CompositeIconReader</span>&nbsp;:&nbsp;<span style="color:#2b91af;">IIconReader</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;<span style="color:#2b91af;">IIconReader</span>[]&nbsp;iconReaders;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;CompositeIconReader(<span style="color:blue;">params</span>&nbsp;<span style="color:#2b91af;">IIconReader</span>[]&nbsp;iconReaders)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.iconReaders&nbsp;=&nbsp;iconReaders;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">Maybe</span>&lt;<span style="color:#2b91af;">Icon</span>&gt;&nbsp;ReadIcon(<span style="color:#2b91af;">User</span>&nbsp;user)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">foreach</span>&nbsp;(<span style="color:blue;">var</span>&nbsp;iconReader&nbsp;<span style="color:blue;">in</span>&nbsp;iconReaders)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;mIcon&nbsp;=&nbsp;iconReader.ReadIcon(user);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;(IsPopulated(mIcon))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;mIcon;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Maybe</span>&lt;<span style="color:#2b91af;">Icon</span>&gt;();
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:blue;">bool</span>&nbsp;IsPopulated&lt;<span style="color:#2b91af;">T</span>&gt;(<span style="color:#2b91af;">Maybe</span>&lt;<span style="color:#2b91af;">T</span>&gt;&nbsp;m)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;m.Aggregate(<span style="color:blue;">false</span>,&nbsp;_&nbsp;=&gt;&nbsp;<span style="color:blue;">true</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+	</p>
+	<p>
+		I prefer a more explicit design over this one, so this is just an intermediate step. This <code>IIconReader</code> implementation composes an array of other <code>IIconReader</code> objects and queries each in order to return the first populated Maybe value it finds. If it doesn't find any populated value, it returns an empty Maybe object.
+	</p>
+	<p>
+		You can now compose your <code>IIconReader</code> objects into a <a href="https://en.wikipedia.org/wiki/Composite_pattern">Composite</a>:
+	</p>
+	<p>
+		<pre><span style="color:#2b91af;">IIconReader</span>&nbsp;reader&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">CompositeIconReader</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">GravatarReader</span>(),
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">IdenticonReader</span>(),
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">DBIconReader</span>(repo));</pre>
+	</p>
+	<p>
+		While this gives you a single object on which you can call <code>ReadIcon</code>, the return value of that method is still a <code>Maybe&lt;Icon&gt;</code> object. You still need to reduce the <code>Maybe&lt;Icon&gt;</code> object to an <code>Icon</code> object. You can do this with a Maybe helper method:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">T</span>&nbsp;GetValueOrDefault(<span style="color:#2b91af;">T</span>&nbsp;@default)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;Aggregate(@default,&nbsp;x&nbsp;=&gt;&nbsp;x);
+}</pre>
+	</p>
+	<p>
+		Given a <code>User</code> object named <code>user</code>, you can now use the composition and the <code>GetValueOrDefault</code> method to get an <code>Icon</code> object:
+	</p>
+	<p>
+		<pre><span style="color:#2b91af;">Icon</span>&nbsp;icon&nbsp;=&nbsp;reader.ReadIcon(user).GetValueOrDefault(<span style="color:#2b91af;">Icon</span>.Default);</pre>
+	</p>
+	<p>
+		First you use the composed <code>reader</code> to produce a <code>Maybe&lt;Icon&gt;</code> object, and then you use the <code>GetValueOrDefault</code> method to reduce the <code>Maybe&lt;Icon&gt;</code> object to an <code>Icon</code> object.
+	</p>
+	<p>
+		The latter of these two steps, <code>GetValueOrDefault</code>, is already based on the Maybe catamorphism, but the first step is still too implicit to clearly show the nature of what's actually going on. The next step is to refactor the Coalescing Composite to a list of monoidal values.
+	</p>
+	<h3 id="c75ce57c2b4f4315a93eaa91b653a370">
+		First <a href="#c75ce57c2b4f4315a93eaa91b653a370" title="permalink">#</a>
+	</h3>
+	<p>
+		While not strictly necessary, you can introduce a <code>First&lt;T&gt;</code> wrapper:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">sealed</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">First</span>&lt;<span style="color:#2b91af;">T</span>&gt;
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;First(<span style="color:#2b91af;">T</span>&nbsp;item)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;(item&nbsp;==&nbsp;<span style="color:blue;">null</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">throw</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">ArgumentNullException</span>(<span style="color:blue;">nameof</span>(item));
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Item&nbsp;=&nbsp;item;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">T</span>&nbsp;Item&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">override</span>&nbsp;<span style="color:blue;">bool</span>&nbsp;Equals(<span style="color:blue;">object</span>&nbsp;obj)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;(!(obj&nbsp;<span style="color:blue;">is</span>&nbsp;<span style="color:#2b91af;">First</span>&lt;<span style="color:#2b91af;">T</span>&gt;&nbsp;other))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:blue;">false</span>;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;Equals(Item,&nbsp;other.Item);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">override</span>&nbsp;<span style="color:blue;">int</span>&nbsp;GetHashCode()
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;Item.GetHashCode();
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+	</p>
+	<p>
+		In this particular example, the <code>First&lt;T&gt;</code> class adds no new capabilities, so it's technically redundant. You could add to it methods to combine two <code>First&lt;T&gt;</code> objects into one (since <em>First</em> forms a <a href="http://blog.ploeh.dk/2017/11/27/semigroups">semigroup</a>), and perhaps a method or two to <a href="http://blog.ploeh.dk/2017/12/11/semigroups-accumulate">accumulate multiple values</a>, but in this article, none of those are required.
+	</p>
+	<p>
+		While the class as shown above doesn't add any behaviour, I like that it signals intent, so I'll use it in that role.
+	</p>
+	<h3 id="c3feb40d90fc4d389fa0b3812abaa62c">
+		Lazy I/O in C# <a href="#c3feb40d90fc4d389fa0b3812abaa62c" title="permalink">#</a>
+	</h3>
+	<p>
+		Like in the above Haskell code, you'll need to be able to combine two <code>First&lt;T&gt;</code> objects in a lazy fashion, in such a way that if the first object is populated, the I/O associated with producing the second value never happens. In Haskell I addressed that concern with a <code>newtype</code> that, among other abstractions, is a monoid. You can do the same in C# with an extension method:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:#2b91af;">Lazy</span>&lt;<span style="color:#2b91af;">Maybe</span>&lt;<span style="color:#2b91af;">First</span>&lt;<span style="color:#2b91af;">T</span>&gt;&gt;&gt;&nbsp;FindFirst&lt;<span style="color:#2b91af;">T</span>&gt;(
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>&nbsp;<span style="color:#2b91af;">Lazy</span>&lt;<span style="color:#2b91af;">Maybe</span>&lt;<span style="color:#2b91af;">First</span>&lt;<span style="color:#2b91af;">T</span>&gt;&gt;&gt;&nbsp;m,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Lazy</span>&lt;<span style="color:#2b91af;">Maybe</span>&lt;<span style="color:#2b91af;">First</span>&lt;<span style="color:#2b91af;">T</span>&gt;&gt;&gt;&nbsp;other)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;(m.Value.IsPopulated())
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;m;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;other;
+}
+ 
+<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:blue;">bool</span>&nbsp;IsPopulated&lt;<span style="color:#2b91af;">T</span>&gt;(<span style="color:blue;">this</span>&nbsp;<span style="color:#2b91af;">Maybe</span>&lt;<span style="color:#2b91af;">T</span>&gt;&nbsp;m)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;m.Aggregate(<span style="color:blue;">false</span>,&nbsp;_&nbsp;=&gt;&nbsp;<span style="color:blue;">true</span>);
+}</pre>
+	</p>
+	<p>
+		The <code>FindFirst</code> method returns the first (leftmost) non-empty object of two options. It's a lazy version of the <em>First</em> monoid, and <a href="">that's still a monoid</a>. It's truly lazy because it never accesses the <code>Value</code> property on <code>other</code>. While it has to force evaluation of the first lazy computation, <code>m</code>, it doesn't have to evaluate <code>other</code>. Thus, whenever <code>m</code> is populated, <code>other</code> can remain non-evaluated.
+	</p>
+	<p>
+		Since <a href="http://blog.ploeh.dk/2017/11/20/monoids-accumulate">monoids accumulate</a>, you can also write an extension method to implement that functionality:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:#2b91af;">Lazy</span>&lt;<span style="color:#2b91af;">Maybe</span>&lt;<span style="color:#2b91af;">First</span>&lt;<span style="color:#2b91af;">T</span>&gt;&gt;&gt;&nbsp;FindFirst&lt;<span style="color:#2b91af;">T</span>&gt;(<span style="color:blue;">this</span>&nbsp;<span style="color:#2b91af;">IEnumerable</span>&lt;<span style="color:#2b91af;">Lazy</span>&lt;<span style="color:#2b91af;">Maybe</span>&lt;<span style="color:#2b91af;">First</span>&lt;<span style="color:#2b91af;">T</span>&gt;&gt;&gt;&gt;&nbsp;source)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;identity&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Lazy</span>&lt;<span style="color:#2b91af;">Maybe</span>&lt;<span style="color:#2b91af;">First</span>&lt;<span style="color:#2b91af;">T</span>&gt;&gt;&gt;(()&nbsp;=&gt;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Maybe</span>&lt;<span style="color:#2b91af;">First</span>&lt;<span style="color:#2b91af;">T</span>&gt;&gt;());
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;source.Aggregate(identity,&nbsp;(acc,&nbsp;x)&nbsp;=&gt;&nbsp;acc.FindFirst(x));
+}</pre>
+	</p>
+	<p>
+		This overload just uses the earlier <code>FindFirst</code> extension method to fold an arbitrary number of lazy <code>First&lt;T&gt;</code> objects into one. Notice that <code>Aggregate</code> is the C# name for the list catamorphisms.
+	</p>
+	<p>
+		You can now compose the desired functionality using the basic building blocks of monoids, <a href="http://blog.ploeh.dk/2018/03/22/functors">functors</a>, and catamorphisms.
+	</p>
+	<h3 id="0fe80a69c74c463dacb8af0f86898518">
+		Composition from universal abstractions <a href="#0fe80a69c74c463dacb8af0f86898518" title="permalink">#</a>
+	</h3>
+	<p>
+		The goal is still a function that takes a <code>User</code> object as input and produces an <code>Icon</code> object as output. While you could compose that functionality directly in-line where you need it, I think it may be helpful to package the composition in a <a href="https://en.wikipedia.org/wiki/Facade_pattern">Facade</a> object.
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">IconReaderFacade</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;<span style="color:#2b91af;">IReadOnlyCollection</span>&lt;<span style="color:#2b91af;">IIconReader</span>&gt;&nbsp;readers;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;IconReaderFacade(<span style="color:#2b91af;">IUserRepository</span>&nbsp;repository)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;readers&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">IIconReader</span>[]
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">GravatarReader</span>(),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">IdenticonReader</span>(),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">DBIconReader</span>(repository)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;};
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">Icon</span>&nbsp;ReadIcon(<span style="color:#2b91af;">User</span>&nbsp;user)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">IEnumerable</span>&lt;<span style="color:#2b91af;">Lazy</span>&lt;<span style="color:#2b91af;">Maybe</span>&lt;<span style="color:#2b91af;">First</span>&lt;<span style="color:#2b91af;">Icon</span>&gt;&gt;&gt;&gt;&nbsp;lazyIcons&nbsp;=&nbsp;readers
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.Select(r&nbsp;=&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Lazy</span>&lt;<span style="color:#2b91af;">Maybe</span>&lt;<span style="color:#2b91af;">First</span>&lt;<span style="color:#2b91af;">Icon</span>&gt;&gt;&gt;(()&nbsp;=&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;r.ReadIcon(user).Select(i&nbsp;=&gt;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">First</span>&lt;<span style="color:#2b91af;">Icon</span>&gt;(i))));
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Lazy</span>&lt;<span style="color:#2b91af;">Maybe</span>&lt;<span style="color:#2b91af;">First</span>&lt;<span style="color:#2b91af;">Icon</span>&gt;&gt;&gt;&nbsp;m&nbsp;=&nbsp;lazyIcons.FindFirst();
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;m.Value.Aggregate(<span style="color:#2b91af;">Icon</span>.Default,&nbsp;fi&nbsp;=&gt;&nbsp;fi.Item);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+	</p>
+	<p>
+		When you initialise an <code>IconReaderFacade</code> object, it creates an array of the desired <code>readers</code>. Whenever <code>ReadIcon</code> is invoked, it first transforms all those readers to a sequence of potential icons. All the values in the sequence are lazily evaluated, so in this step, nothing actually happens, even though it looks as though all readers' <code>ReadIcon</code> method gets called. The <code>Select</code> method is a structure-preserving map, so all readers are still potential produces of <code>Icon</code> objects.
+	</p>
+	<p>
+		You now have an <code>IEnumerable&lt;Lazy&lt;Maybe&lt;First&lt;Icon&gt;&gt;&gt;&gt;</code>, which must be a good candidate for the prize for the <em>most nested generic .NET type of 2019</em>. It fits, though, the input type for the above <code>FindFirst</code> overload, so you can call that. The result is a single potential value <code>m</code>. That's the list catamorphism applied.
+	</p>
+	<p>
+		Finally, you force evaluation of the lazy computation and apply the Maybe catamorphism (<code>Aggregate</code>). The <code>@default</code> value is <code>Icon.Default</code>, which gets returned if <code>m</code> turns out to be empty. When <code>m</code> is populated, you pull the <code>Item</code> out of the <code>First</code> object. In either case, you now have an <code>Icon</code> object to return.
+	</p>
+	<p>
+		This composition has exactly the same behaviour as the initial Chain of Responsibility implementation, but is now composed from universal abstractions.
+	</p>
+	<h3 id="23819ca370344b94875ddbf5bde5aef3">
+		Summary <a href="#23819ca370344b94875ddbf5bde5aef3" title="permalink">#</a>
+	</h3>
+	<p>
+		The Chain of Responsibility design pattern describes a flexible way to implement conditional logic. Instead of relying on keywords like <code>if</code> or <code>switch</code>, you can compose the conditional logic from polymorphic objects. This gives you several advantages. One is that you get better separations of concerns, which will tend to make it easier to refactor the code. Another is that it's possible to change the behaviour at run time, by moving the objects around.
+	</p>
+	<p>
+		You can achieve a similar design, with equivalent advantages, by composing polymorphically similar functions in a list, map the functions to a list of potential values, and then use the list catamorphism to reduce many potential values to one. Finally, you apply the Maybe catamorphism to produce a value, even if the potential value is empty.
+	</p>
+</div>
