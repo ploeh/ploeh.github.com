@@ -1,0 +1,542 @@
+---
+layout: post
+title: "Picture archivist in F#"
+description: "A comprehensive code example showing how to implement a functional architecture in F#."
+date: 2018-12-21 9:11 UTC
+tags: [Functional Programming, Unit Testing, F#]
+image: "/content/binary/functional-file-system-interaction.png"
+image_alt: "A functional program typically loads data, transforms it, and stores it again."
+---
+{% include JB/setup %}
+
+<div id="post">
+	<p>
+		<em>{{ page.description }}</em>
+	</p>
+	<p>
+		This article shows how to implement the <a href="">picture archivist architecture described in a previous article</a>. In short, the task is to move some image files to directories based on their date-taken metadata. The architectural idea is to load a directory structure from disk into an in-memory tree, manipulate that tree, and use the resulting tree to perform the desired actions:
+	</p>
+	<p>
+		<img src="/content/binary/functional-file-system-interaction.png" alt="A functional program typically loads data, transforms it, and stores it again.">
+	</p>
+	<p>
+		Much of the program will manipulate the tree data, which is immutable.
+	</p>
+	<p>
+		The previous article showed how to implement the <a href="">picture archivist architecture in Haskell</a>. In this article, you'll see how to do it in <a href="https://fsharp.org">F#</a>. This is essentially a port of the <a href="https://www.haskell.org">Haskell</a> code.
+	</p>
+	<h3 id="949a876ffec843e09d4faa5ae1c1b4c5">
+		Tree <a href="#949a876ffec843e09d4faa5ae1c1b4c5" title="permalink">#</a>
+	</h3>
+	<p>
+		You can start by defining a <a href="https://en.wikipedia.org/wiki/Rose_tree">rose tree</a>:
+	</p>
+	<p>
+		<pre><span style="color:blue;">type</span>&nbsp;Tree&lt;&#39;a,&nbsp;&#39;b&gt;&nbsp;=&nbsp;Node&nbsp;<span style="color:blue;">of</span>&nbsp;&#39;a&nbsp;*&nbsp;Tree&lt;&#39;a,&nbsp;&#39;b&gt;&nbsp;list&nbsp;|&nbsp;Leaf&nbsp;<span style="color:blue;">of</span>&nbsp;&#39;b</pre>
+	</p>
+	<p>
+		If you wanted to, you could put all the <code>Tree</code> code in a reusable library, because none of it is coupled to a particular application, such as <a href="https://amzn.to/2V06Kji">moving pictures</a>. You could also write a comprehensive test suite for the following functions, but in this article, I'll skip that.
+	</p>
+	<p>
+		Notice that this sort of tree explicitly distinguishes between internal and leaf nodes. This is necessary because you'll need to keep track of the directory names (the internal nodes), while at the same time you'll want to enrich the leaves with additional data - data that you can't meaningfully add to the internal nodes. You'll see this later in the article.
+	</p>
+	<p>
+		While I typically tend to define F# types outside of modules (so that you don't have to, say, prefix the type name with the module name - <code>Tree.Tree</code> is so awkward), the rest of the tree code goes into a module, including two helper functions:
+	</p>
+	<p>
+		<pre><span style="color:blue;">module</span>&nbsp;Tree&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;&#39;b&nbsp;-&gt;&nbsp;Tree&lt;&#39;a,&#39;b&gt;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;leaf&nbsp;=&nbsp;Leaf
+&nbsp;&nbsp;&nbsp;&nbsp;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;&#39;a&nbsp;-&gt;&nbsp;Tree&lt;&#39;a,&#39;b&gt;&nbsp;list&nbsp;-&gt;&nbsp;Tree&lt;&#39;a,&#39;b&gt;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;node&nbsp;x&nbsp;xs&nbsp;=&nbsp;Node&nbsp;(x,&nbsp;xs)</pre>
+	</p>
+	<p>
+		The <code>leaf</code> function doesn't add much value, but the <code>node</code> function offers a curried alternative to the <code>Node</code> case constructor. That's occasionally useful.
+	</p>
+	<p>
+		The rest of the code related to trees is also defined in the <code>Tree</code> module, but I'm going to present it formatted as free-standing functions. If you're confused about the layout of the code, the entire code base is <a href="">available on GitHub</a>.
+	</p>
+	<p>
+		The <a href="">rose tree catamorphism</a> is this <code>cata</code> function:
+	</p>
+	<p>
+		<pre><span style="color:green;">//&nbsp;(&#39;a&nbsp;-&gt;&nbsp;&#39;c&nbsp;list&nbsp;-&gt;&nbsp;&#39;c)&nbsp;-&gt;&nbsp;(&#39;b&nbsp;-&gt;&nbsp;&#39;c)&nbsp;-&gt;&nbsp;Tree&lt;&#39;a,&#39;b&gt;&nbsp;-&gt;&nbsp;&#39;c</span>
+<span style="color:blue;">let</span>&nbsp;<span style="color:blue;">rec</span>&nbsp;cata&nbsp;fd&nbsp;ff&nbsp;=&nbsp;<span style="color:blue;">function</span>
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;Leaf&nbsp;x&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;ff&nbsp;x
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;Node&nbsp;(x,&nbsp;xs)&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;xs&nbsp;|&gt;&nbsp;List.map&nbsp;(cata&nbsp;fd&nbsp;ff)&nbsp;|&gt;&nbsp;fd&nbsp;x</pre>
+	</p>
+	<p>
+		In the corresponding Haskell implementation of this architecture, I called this function <code>foldTree</code>, so why not retain that name? The short answer is that the naming conventions differ between Haskell and F#, and while I favour learning from Haskell, I still want my F# code to be as <a href="http://blog.ploeh.dk/2015/08/03/idiomatic-or-idiosyncratic">idiomatic</a> as possible.
+	</p>
+	<p>
+		While I don't enforce that client code <em>must</em> use the <code>Tree</code> module name to access the functions within, I prefer to name the functions so that they make sense when used with qualified access. Having to write <code>Tree.foldTree</code> seems redundant. A more idiomatic name would be <code>fold</code>, so that you could write <code>Tree.fold</code>. The problem with that name, though, is that <code>fold</code> usually implies a list-biased <em>fold</em> (corresponding to <code>foldl</code> in Haskell), and I'll actually need that name for that particular purpose later.
+	</p>
+	<p>
+		So, <code>cata</code> it is.
+	</p>
+	<p>
+		In this article, tree functionality is (with one exception) directly or transitively implemented with <code>cata</code>.
+	</p>
+	<h3 id="3f30722983ad47bd83c88cec4ba80983">
+		Filtering trees <a href="#3f30722983ad47bd83c88cec4ba80983" title="permalink">#</a>
+	</h3>
+	<p>
+		It'll be useful to be able to filter the contents of a tree. For example, the picture archivist program will only move image files with valid metadata. This means that it'll need to filter out all files that aren't image files, as well as image files without valid metadata.
+	</p>
+	<p>
+		It turns out that it'll be useful to supply a function that throws away <code>None</code> values from a tree of <code>option</code> leaves. This is similar to <a href="https://msdn.microsoft.com/en-us/visualfsharpdocs/conceptual/list.choose%5B't%2C'u%5D-function-%5Bfsharp%5D">List.choose</a>, so I call it <code>Tree.choose</code>:
+	</p>
+	<p>
+		<pre><span style="color:green;">//&nbsp;(&#39;a&nbsp;-&gt;&nbsp;&#39;b&nbsp;option)&nbsp;-&gt;&nbsp;Tree&lt;&#39;c,&#39;a&gt;&nbsp;-&gt;&nbsp;Tree&lt;&#39;c,&#39;b&gt;&nbsp;option</span>
+<span style="color:blue;">let</span>&nbsp;choose&nbsp;f&nbsp;=&nbsp;cata&nbsp;(<span style="color:blue;">fun</span>&nbsp;x&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;List.choose&nbsp;id&nbsp;&gt;&gt;&nbsp;node&nbsp;x&nbsp;&gt;&gt;&nbsp;Some)&nbsp;(f&nbsp;&gt;&gt;&nbsp;Option.map&nbsp;Leaf)</pre>
+	</p>
+	<p>
+		You may find the type of the function surprising. Why does it return a <code>Tree option</code>, instead of simply a <code>Tree</code>?
+	</p>
+	<p>
+		While <code>List.choose</code> simply returns a list, it can do this because lists can be empty. This <code>Tree</code> type, on the other hand, can't be empty. If the purpose of <code>Tree.choose</code> is to throw away all <code>None</code> values, then how do you return a tree from <code>Leaf None</code>?
+	</p>
+	<p>
+		You can't return a <code>Leaf</code> because you have no value to put in the leaf. Similarly, you can't return a <code>Node</code> because, again, you have no value to put in the node.
+	</p>
+	<p>
+		In order to handle this edge case, then, you'll have to return <code>None</code>:
+	</p>
+	<p>
+		<pre>&gt; let l : Tree&lt;string, int option&gt; = Leaf None;;
+val l : Tree&lt;string,int option&gt; = Leaf None
+
+&gt; Tree.choose id l;;
+val it : Tree&lt;string,int&gt; option = None</pre>
+	</p>
+	<p>
+		If you have anything other than a <code>None</code> leaf, though, you'll get a proper tree, but wrapped in an <code>option</code>:
+	</p>
+	<p>
+		<pre>&gt; Tree.node "Foo" [Leaf (Some 42); Leaf None; Leaf (Some 2112)] |&gt; Tree.choose id;;
+val it : Tree&lt;string,int&gt; option = Some (Node ("Foo",[Leaf 42; Leaf 2112]))</pre>
+	</p>
+	<p>
+		While the resulting tree is wrapped in a <code>Some</code> case, the leaves contain unwrapped values.
+	</p>
+	<h3 id="32f46f2c16cf428abc39c3d79433caa6">
+		Bifunctor, functor, and folds <a href="#32f46f2c16cf428abc39c3d79433caa6" title="permalink">#</a>
+	</h3>
+	<p>
+		Through its type class language feature, Haskell has formal definitions of <a href="http://blog.ploeh.dk/2018/03/22/functors">functors</a>, <a href="">bifunctors</a>, and other types of <em>folds</em> (list-biased <a href="">catamorphisms</a>). F# doesn't have a similar degree of formalism, which means that while you can still implement the corresponding functionality, you'll have to rely on conventions to make the functions recognisable.
+	</p>
+	<p>
+		It's straighforward to start with the bifunctor functionality:
+	</p>
+	<p>
+		<pre><span style="color:green;">//&nbsp;(&#39;a&nbsp;-&gt;&nbsp;&#39;b)&nbsp;-&gt;&nbsp;(&#39;c&nbsp;-&gt;&nbsp;&#39;d)&nbsp;-&gt;&nbsp;Tree&lt;&#39;a,&#39;c&gt;&nbsp;-&gt;&nbsp;Tree&lt;&#39;b,&#39;d&gt;</span>
+<span style="color:blue;">let</span>&nbsp;bimap&nbsp;f&nbsp;g&nbsp;=&nbsp;cata&nbsp;(f&nbsp;&gt;&gt;&nbsp;node)&nbsp;(g&nbsp;&gt;&gt;&nbsp;leaf)</pre>
+	</p>
+	<p>
+		This is, apart from the syntax differences, the same implementation as in Haskell. Based on <code>bimap</code>, you can also trivially implement <code>mapNode</code> and <code>mapLeaf</code> functions if you'd like, but you're not going to need those for the code in this article. You do need, however, a function that we could consider an alias of a hypothetical <code>mapLeaf</code> function:
+	</p>
+	<p>
+		<pre><span style="color:green;">//&nbsp;(&#39;b&nbsp;-&gt;&nbsp;&#39;c)&nbsp;-&gt;&nbsp;Tree&lt;&#39;a,&#39;b&gt;&nbsp;-&gt;&nbsp;Tree&lt;&#39;a,&#39;c&gt;</span>
+<span style="color:blue;">let</span>&nbsp;map&nbsp;f&nbsp;=&nbsp;bimap&nbsp;id&nbsp;f</pre>
+	</p>
+	<p>
+		This makes <code>Tree</code> a functor.
+	</p>
+	<p>
+		It'll also be useful to reduce a tree to a potentially more compact value, so you can add some specialised folds:
+	</p>
+	<p>
+		<pre><span style="color:green;">//&nbsp;(&#39;c&nbsp;-&gt;&nbsp;&#39;a&nbsp;-&gt;&nbsp;&#39;c)&nbsp;-&gt;&nbsp;(&#39;c&nbsp;-&gt;&nbsp;&#39;b&nbsp;-&gt;&nbsp;&#39;c)&nbsp;-&gt;&nbsp;&#39;c&nbsp;-&gt;&nbsp;Tree&lt;&#39;a,&#39;b&gt;&nbsp;-&gt;&nbsp;&#39;c</span>
+<span style="color:blue;">let</span>&nbsp;bifold&nbsp;f&nbsp;g&nbsp;z&nbsp;t&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;flip&nbsp;f&nbsp;x&nbsp;y&nbsp;=&nbsp;f&nbsp;y&nbsp;x
+&nbsp;&nbsp;&nbsp;&nbsp;cata&nbsp;(<span style="color:blue;">fun</span>&nbsp;x&nbsp;xs&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;flip&nbsp;f&nbsp;x&nbsp;&gt;&gt;&nbsp;List.fold&nbsp;(&gt;&gt;)&nbsp;id&nbsp;xs)&nbsp;(flip&nbsp;g)&nbsp;t&nbsp;z
+ 
+<span style="color:green;">//&nbsp;(&#39;a&nbsp;-&gt;&nbsp;&#39;c&nbsp;-&gt;&nbsp;&#39;c)&nbsp;-&gt;&nbsp;(&#39;b&nbsp;-&gt;&nbsp;&#39;c&nbsp;-&gt;&nbsp;&#39;c)&nbsp;-&gt;&nbsp;Tree&lt;&#39;a,&#39;b&gt;&nbsp;-&gt;&nbsp;&#39;c&nbsp;-&gt;&nbsp;&#39;c</span>
+<span style="color:blue;">let</span>&nbsp;bifoldBack&nbsp;f&nbsp;g&nbsp;t&nbsp;z&nbsp;=&nbsp;cata&nbsp;(<span style="color:blue;">fun</span>&nbsp;x&nbsp;xs&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;List.foldBack&nbsp;(&lt;&lt;)&nbsp;xs&nbsp;id&nbsp;&gt;&gt;&nbsp;f&nbsp;x)&nbsp;g&nbsp;t&nbsp;z</pre>
+	</p>
+	<p>
+		In an attempt to emulate the F# naming conventions, I named the functions as I did. There are similar functions in the <code>List</code> and <code>Option</code> modules, for instance. If you're comparing the F# code with the Haskell code in the previous article, <code>Tree.bifold</code> corresponds to <code>bifoldl</code>, and <code>Tree.bifoldBack</code> corresponds to <code>bifoldr</code>.
+	</p>
+	<p>
+		These enable you to implement folds over leaves only:
+	</p>
+	<p>
+		<pre><span style="color:green;">//&nbsp;(&#39;c&nbsp;-&gt;&nbsp;&#39;b&nbsp;-&gt;&nbsp;&#39;c)&nbsp;-&gt;&nbsp;&#39;c&nbsp;-&gt;&nbsp;Tree&lt;&#39;a,&#39;b&gt;&nbsp;-&gt;&nbsp;&#39;c</span>
+<span style="color:blue;">let</span>&nbsp;fold&nbsp;f&nbsp;=&nbsp;bifold&nbsp;(<span style="color:blue;">fun</span>&nbsp;x&nbsp;_&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;x)&nbsp;f
+ 
+<span style="color:green;">//&nbsp;(&#39;b&nbsp;-&gt;&nbsp;&#39;c&nbsp;-&gt;&nbsp;&#39;c)&nbsp;-&gt;&nbsp;Tree&lt;&#39;a,&#39;b&gt;&nbsp;-&gt;&nbsp;&#39;c&nbsp;-&gt;&nbsp;&#39;c</span>
+<span style="color:blue;">let</span>&nbsp;foldBack&nbsp;f&nbsp;=&nbsp;bifoldBack&nbsp;(<span style="color:blue;">fun</span>&nbsp;_&nbsp;x&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;x)&nbsp;f</pre>
+	</p>
+	<p>
+		These, again, enable you to implement another function that'll turn out to be useful in this article:
+	</p>
+	<p>
+		<pre><span style="color:green;">//&nbsp;(&#39;b&nbsp;-&gt;&nbsp;unit)&nbsp;-&gt;&nbsp;Tree&lt;&#39;a,&#39;b&gt;&nbsp;-&gt;&nbsp;unit</span>
+<span style="color:blue;">let</span>&nbsp;iter&nbsp;f&nbsp;=&nbsp;fold&nbsp;(<span style="color:blue;">fun</span>&nbsp;()&nbsp;x&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;f&nbsp;x)&nbsp;()</pre>
+	</p>
+	<p>
+		The picture archivist program isn't going to explicitly need all of these, but transitively, it will.
+	</p>
+	<h3 id="8a9a50c69a2d461cac5bb87fa4cf3cd9">
+		Moving pictures <a href="#8a9a50c69a2d461cac5bb87fa4cf3cd9" title="permalink">#</a>
+	</h3>
+	<p>
+		So far, all the code shown here could be in a general-purpose reusable library, since it contains no functionality specifically related to image files. The rest of the code in this article, however, will be specific to the program. I'll put the domain model code in another module that I call <code>Archive</code>. Later in the article, we'll look at how to load a tree from the file system, but for now, we'll just pretend that we have such a tree.
+	</p>
+	<p>
+		The major logic of the program is to create a destination tree based on a source tree. The leaves of the tree will have to carry some extra information apart from a file path, so you can introduce a specific type to capture that information:
+	</p>
+	<p>
+		<pre><span style="color:blue;">type</span>&nbsp;PhotoFile&nbsp;=&nbsp;{&nbsp;File&nbsp;:&nbsp;FileInfo;&nbsp;TakenOn&nbsp;:&nbsp;DateTime&nbsp;}</pre>
+	</p>
+	<p>
+		A <code>PhotoFile</code> not only contains the file path for an image file, but also the date the photo was taken. This date can be extracted from the file's metadata, but that's an impure operation, so we'll delegate that work to the start of the program. We'll return to that later.
+	</p>
+	<p>
+		Given a source tree of <code>PhotoFile</code> leaves, though, the program must produce a destination tree of files:
+	</p>
+	<p>
+		<pre><span style="color:green;">//&nbsp;string&nbsp;-&gt;&nbsp;Tree&lt;&#39;a,PhotoFile&gt;&nbsp;-&gt;&nbsp;Tree&lt;string,FileInfo&gt;</span>
+<span style="color:blue;">let</span>&nbsp;moveTo&nbsp;destination&nbsp;t&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;dirNameOf&nbsp;(dt&nbsp;:&nbsp;DateTime)&nbsp;=&nbsp;sprintf&nbsp;<span style="color:#a31515;">&quot;%d-%02d&quot;</span>&nbsp;dt.Year&nbsp;dt.Month
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;groupByDir&nbsp;pf&nbsp;m&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;key&nbsp;=&nbsp;dirNameOf&nbsp;pf.TakenOn
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;dir&nbsp;=&nbsp;Map.tryFind&nbsp;key&nbsp;m&nbsp;|&gt;&nbsp;Option.defaultValue&nbsp;[]
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Map.add&nbsp;key&nbsp;(pf.File&nbsp;::&nbsp;dir)&nbsp;m
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;addDir&nbsp;name&nbsp;files&nbsp;dirs&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Tree.node&nbsp;name&nbsp;(List.map&nbsp;Leaf&nbsp;files)&nbsp;::&nbsp;dirs
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;m&nbsp;=&nbsp;Tree.foldBack&nbsp;groupByDir&nbsp;t&nbsp;Map.empty
+&nbsp;&nbsp;&nbsp;&nbsp;Map.foldBack&nbsp;addDir&nbsp;m&nbsp;[]&nbsp;|&gt;&nbsp;Tree.node&nbsp;destination</pre>
+	</p>
+	<p>
+		This <code>moveTo</code> function looks, perhaps, overwhelming, but it's composed of three conceptual steps:
+		<ol>
+			<li>Create a map of destination folders (<code>m</code>).</li>
+			<li>Create a list of branches from the map (<code>Map.foldBack addDir m []</code>).</li>
+			<li>Create a tree from the list (<code>Tree.node destination</code>).</li>
+		</ol>
+		The <code>moveTo</code> function starts by folding the input data into a map <code>m</code>. The map is keyed by the directory name, which is formatted by the <code>dirNameOf</code> function. This function takes a <code>DateTime</code> as input and formats it to a <code>YYYY-MM</code> format. For example, December 20, 2018 becomes <code>"2018-12"</code>.
+	</p>
+	<p>
+		The entire mapping step groups the <code>PhotoFile</code> values into a map of the type <code>Map&lt;string,FileInfo list&gt;</code>. All the image files taken in April 2014 are added to the list with the <code>"2014-04"</code> key, all the image files taken in July 2011 are added to the list with the <code>"2011-07"</code> key, and so on.
+	</p>
+	<p>
+		In the next step, the <code>moveTo</code> function converts the map to a list of trees. This will be the branches (or sub-directories) of the <code>destination</code> directory. Because of the desired structure of the destination tree, this is a list of shallow branches. Each node contains only leaves.
+	</p>
+	<p>
+		<img src="/content/binary/shallow-photo-destination-directories.png" alt="Shallow photo destination directories.">
+	</p>
+	<p>
+		The only remaining step is to add that list of branches to a <code>destination</code> node. This is done by piping (<code>|&gt;</code>) the list of sub-directories into <code>Tree.node destination</code>.
+	</p>
+	<p>
+		Since this is a <a href="https://en.wikipedia.org/wiki/Pure_function">pure function</a>, it's <a href="http://blog.ploeh.dk/2015/05/07/functional-design-is-intrinsically-testable">easy to unit test</a>. Just create some test cases and call the function. First, the test cases.
+	</p>
+	<p>
+		In this code base, I'm using <a href="https://xunit.github.io">xUnit.net</a> 2.4.1, so I'll first create a set of test cases as a test-specific class:
+	</p>
+	<p>
+		<pre><span style="color:blue;">type</span>&nbsp;MoveToDestinationTestData&nbsp;()&nbsp;<span style="color:blue;">as</span>&nbsp;this&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">inherit</span>&nbsp;TheoryData&lt;Tree&lt;string,&nbsp;PhotoFile&gt;,&nbsp;string,&nbsp;Tree&lt;string,&nbsp;string&gt;&gt;&nbsp;()
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;photoLeaf&nbsp;name&nbsp;(y,&nbsp;mth,&nbsp;d,&nbsp;h,&nbsp;m,&nbsp;s)&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Leaf&nbsp;{&nbsp;File&nbsp;=&nbsp;FileInfo&nbsp;name;&nbsp;TakenOn&nbsp;=&nbsp;DateTime&nbsp;(y,&nbsp;mth,&nbsp;d,&nbsp;h,&nbsp;m,&nbsp;s)&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">do</span>&nbsp;this.Add&nbsp;(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;photoLeaf&nbsp;<span style="color:#a31515;">&quot;1&quot;</span>&nbsp;(2018,&nbsp;11,&nbsp;9,&nbsp;11,&nbsp;47,&nbsp;17),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#a31515;">&quot;D&quot;</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Node&nbsp;(&nbsp;<span style="color:#a31515;">&quot;D&quot;</span>,&nbsp;[Node&nbsp;(<span style="color:#a31515;">&quot;2018-11&quot;</span>,&nbsp;[Leaf&nbsp;<span style="color:#a31515;">&quot;1&quot;</span>])]))
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">do</span>&nbsp;this.Add&nbsp;(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Node&nbsp;(<span style="color:#a31515;">&quot;S&quot;</span>,&nbsp;[photoLeaf&nbsp;<span style="color:#a31515;">&quot;4&quot;</span>&nbsp;(1972,&nbsp;6,&nbsp;6,&nbsp;16,&nbsp;15,&nbsp;0)]),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#a31515;">&quot;D&quot;</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Node&nbsp;(<span style="color:#a31515;">&quot;D&quot;</span>,&nbsp;[Node&nbsp;(<span style="color:#a31515;">&quot;1972-06&quot;</span>,&nbsp;[Leaf&nbsp;<span style="color:#a31515;">&quot;4&quot;</span>])]))
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">do</span>&nbsp;this.Add&nbsp;(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Node&nbsp;(<span style="color:#a31515;">&quot;S&quot;</span>,&nbsp;[
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;photoLeaf&nbsp;<span style="color:#a31515;">&quot;L&quot;</span>&nbsp;(2002,&nbsp;10,&nbsp;12,&nbsp;17,&nbsp;16,&nbsp;15);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;photoLeaf&nbsp;<span style="color:#a31515;">&quot;J&quot;</span>&nbsp;(2007,&nbsp;4,&nbsp;21,&nbsp;17,&nbsp;18,&nbsp;19)]),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#a31515;">&quot;D&quot;</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Node&nbsp;(<span style="color:#a31515;">&quot;D&quot;</span>,&nbsp;[
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Node&nbsp;(<span style="color:#a31515;">&quot;2002-10&quot;</span>,&nbsp;[Leaf&nbsp;<span style="color:#a31515;">&quot;L&quot;</span>]);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Node&nbsp;(<span style="color:#a31515;">&quot;2007-04&quot;</span>,&nbsp;[Leaf&nbsp;<span style="color:#a31515;">&quot;J&quot;</span>])]))
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">do</span>&nbsp;this.Add&nbsp;(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Node&nbsp;(<span style="color:#a31515;">&quot;1&quot;</span>,&nbsp;[
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;photoLeaf&nbsp;<span style="color:#a31515;">&quot;a&quot;</span>&nbsp;(2010,&nbsp;1,&nbsp;12,&nbsp;17,&nbsp;16,&nbsp;15);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;photoLeaf&nbsp;<span style="color:#a31515;">&quot;b&quot;</span>&nbsp;(2010,&nbsp;3,&nbsp;12,&nbsp;17,&nbsp;16,&nbsp;15);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;photoLeaf&nbsp;<span style="color:#a31515;">&quot;c&quot;</span>&nbsp;(2010,&nbsp;1,&nbsp;21,&nbsp;17,&nbsp;18,&nbsp;19)]),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#a31515;">&quot;2&quot;</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Node&nbsp;(<span style="color:#a31515;">&quot;2&quot;</span>,&nbsp;[
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Node&nbsp;(<span style="color:#a31515;">&quot;2010-01&quot;</span>,&nbsp;[Leaf&nbsp;<span style="color:#a31515;">&quot;a&quot;</span>;&nbsp;Leaf&nbsp;<span style="color:#a31515;">&quot;c&quot;</span>]);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Node&nbsp;(<span style="color:#a31515;">&quot;2010-03&quot;</span>,&nbsp;[Leaf&nbsp;<span style="color:#a31515;">&quot;b&quot;</span>])]))
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">do</span>&nbsp;this.Add&nbsp;(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Node&nbsp;(<span style="color:#a31515;">&quot;foo&quot;</span>,&nbsp;[
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Node&nbsp;(<span style="color:#a31515;">&quot;bar&quot;</span>,&nbsp;[
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;photoLeaf&nbsp;<span style="color:#a31515;">&quot;a&quot;</span>&nbsp;(2010,&nbsp;1,&nbsp;12,&nbsp;17,&nbsp;16,&nbsp;15);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;photoLeaf&nbsp;<span style="color:#a31515;">&quot;b&quot;</span>&nbsp;(2010,&nbsp;3,&nbsp;12,&nbsp;17,&nbsp;16,&nbsp;15);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;photoLeaf&nbsp;<span style="color:#a31515;">&quot;c&quot;</span>&nbsp;(2010,&nbsp;1,&nbsp;21,&nbsp;17,&nbsp;18,&nbsp;19)]);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Node&nbsp;(<span style="color:#a31515;">&quot;baz&quot;</span>,&nbsp;[
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;photoLeaf&nbsp;<span style="color:#a31515;">&quot;d&quot;</span>&nbsp;(2010,&nbsp;3,&nbsp;1,&nbsp;2,&nbsp;3,&nbsp;4);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;photoLeaf&nbsp;<span style="color:#a31515;">&quot;e&quot;</span>&nbsp;(2011,&nbsp;3,&nbsp;4,&nbsp;3,&nbsp;2,&nbsp;1)])]),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#a31515;">&quot;qux&quot;</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Node&nbsp;(<span style="color:#a31515;">&quot;qux&quot;</span>,&nbsp;[
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Node&nbsp;(<span style="color:#a31515;">&quot;2010-01&quot;</span>,&nbsp;[Leaf&nbsp;<span style="color:#a31515;">&quot;a&quot;</span>;&nbsp;Leaf&nbsp;<span style="color:#a31515;">&quot;c&quot;</span>]);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Node&nbsp;(<span style="color:#a31515;">&quot;2010-03&quot;</span>,&nbsp;[Leaf&nbsp;<span style="color:#a31515;">&quot;b&quot;</span>;&nbsp;Leaf&nbsp;<span style="color:#a31515;">&quot;d&quot;</span>]);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Node&nbsp;(<span style="color:#a31515;">&quot;2011-03&quot;</span>,&nbsp;[Leaf&nbsp;<span style="color:#a31515;">&quot;e&quot;</span>])]))</pre>
+	</p>
+	<p>
+		That looks like a lot of code, but is really just a list of test cases. Each test case is a triple of a source tree, a destination directory name, and an expected result (another tree).
+	</p>
+	<p>
+		The test itself, on the other hand, is compact:
+	</p>
+	<p>
+		<pre>[&lt;Theory;&nbsp;ClassData(typeof&lt;MoveToDestinationTestData&gt;)&gt;]
+<span style="color:blue;">let</span>&nbsp;``Move&nbsp;to&nbsp;destination``&nbsp;source&nbsp;destination&nbsp;expected&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;actual&nbsp;=&nbsp;Archive.moveTo&nbsp;destination&nbsp;source
+&nbsp;&nbsp;&nbsp;&nbsp;expected&nbsp;=!&nbsp;Tree.map&nbsp;string&nbsp;actual</pre>
+	</p>
+	<p>
+		The <code>=!</code> operator comes from <a href="https://github.com/SwensenSoftware/unquote">Unquote</a> and means something like <em>must equal</em>. It's an assertion that will throw an exception if <code>expected</code> isn't equal to <code>Tree.map string actual</code>.
+	</p>
+	<p>
+		The reason that the assertion maps <code>actual</code> to a tree of strings is that <code>actual</code> is a <code>Tree&lt;string,FileInfo&gt;</code>, but <code>FileInfo</code> doesn't have structural equality. So either I had to implement a test-specific equality comparer for <code>FileInfo</code> (and for <code>Tree&lt;string,FileInfo&gt;</code>), or map the tree to something with proper equality, such as a <code>string</code>. I chose the latter.
+	</p>
+	<h3 id="abe95ba6865745bc9df8004079d8a250">
+		Calculating moves <a href="#abe95ba6865745bc9df8004079d8a250" title="permalink">#</a>
+	</h3>
+	<p>
+		One pure step remains. The result of calling the <code>moveTo</code> function is a tree with the desired structure. In order to actually move the files, though, for each file you'll need to keep track of both the source path and the destination path. To make that explicit, you can define a type for that purpose:
+	</p>
+	<p>
+		<pre><span style="color:blue;">type</span>&nbsp;Move&nbsp;=&nbsp;{&nbsp;Source&nbsp;:&nbsp;FileInfo;&nbsp;Destination&nbsp;:&nbsp;FileInfo&nbsp;}</pre>
+	</p>
+	<p>
+		A <code>Move</code> is simply a data structure. Contrast this with typical object-oriented design, where it would be a (possibly polymorphic) method on an object. In functional programming, you'll regularly model <em>intent</em> with a data structure. As long as intents remain data, you can easily manipulate it, and once you're done with that, you can run an interpreter over your data structure to perform the work you want accomplished.
+	</p>
+	<p>
+		The unit test cases for the <code>moveTo</code> function suggest that file names are local file names like <code>"L"</code>, <code>"J"</code>, <code>"a"</code>, and so on. That was only to make the tests as compact as possible, since the function actually doesn't manipulate the specific <code>FileInfo</code> objects.
+	</p>
+	<p>
+		In reality, the file names will most likely be longer, and they could also contain the full path, instead of the local path: <code>"C:\foo\bar\a.jpg"</code>.
+	</p>
+	<p>
+		If you call <code>moveTo</code> with a tree where each leaf has a fully qualified path, the output tree will have the desired structure of the destination tree, but the leaves will still contain the full path to each source file. That means that you can calculate a <code>Move</code> for each file:
+	</p>
+	<p>
+		<pre><span style="color:green;">//&nbsp;Tree&lt;string,FileInfo&gt;&nbsp;-&gt;&nbsp;Tree&lt;string,Move&gt;</span>
+<span style="color:blue;">let</span>&nbsp;calculateMoves&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;replaceDirectory&nbsp;(f&nbsp;:&nbsp;FileInfo)&nbsp;d&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;FileInfo&nbsp;(Path.Combine&nbsp;(d,&nbsp;f.Name))
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;<span style="color:blue;">rec</span>&nbsp;imp&nbsp;path&nbsp;=&nbsp;<span style="color:blue;">function</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;Leaf&nbsp;x&nbsp;<span style="color:blue;">-&gt;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Leaf&nbsp;{&nbsp;Source&nbsp;=&nbsp;x;&nbsp;Destination&nbsp;=&nbsp;replaceDirectory&nbsp;x&nbsp;path&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;Node&nbsp;(x,&nbsp;xs)&nbsp;<span style="color:blue;">-&gt;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;newNPath&nbsp;=&nbsp;Path.Combine&nbsp;(path,&nbsp;x)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Tree.node&nbsp;newNPath&nbsp;(List.map&nbsp;(imp&nbsp;newNPath)&nbsp;xs)
+&nbsp;&nbsp;&nbsp;&nbsp;imp&nbsp;<span style="color:#a31515;">&quot;&quot;</span></pre>
+	</p>
+	<p>
+		This function takes as input a <code>Tree&lt;string,FileInfo&gt;</code>, which is compatible with the output of <code>moveTo</code>. It returns a <code>Tree&lt;string,Move&gt;</code>, i.e. a tree where the leaves are <code>Move</code> values.
+	</p>
+	<p>
+		Earlier, I wrote that you can implement desired <code>Tree</code> functionality with the <code>cata</code> function, but that was a simplification. If you can implement the functionality of <code>calculateMoves</code> with <code>cata</code>, I don't know how. You can, however, implement it using explicit pattern matching and simple recursion.
+	</p>
+	<p>
+		The <code>imp</code> function builds up a file path as it recursively negotiates the tree. All <code>Leaf</code> nodes are converted to a <code>Move</code> value using the leaf node's current <code>FileInfo</code> value as the <code>Source</code>, and the <code>path</code> to figure out the desired <code>Destination</code>.
+	</p>
+	<p>
+		This code is still easy to unit test. First, test cases:
+	</p>
+	<p>
+		<pre><span style="color:blue;">type</span>&nbsp;CalculateMovesTestData&nbsp;()&nbsp;<span style="color:blue;">as</span>&nbsp;this&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">inherit</span>&nbsp;TheoryData&lt;Tree&lt;string,&nbsp;FileInfo&gt;,&nbsp;Tree&lt;string,&nbsp;(string&nbsp;*&nbsp;string)&gt;&gt;&nbsp;()
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">do</span>&nbsp;this.Add&nbsp;(Leaf&nbsp;(FileInfo&nbsp;<span style="color:#a31515;">&quot;1&quot;</span>),&nbsp;Leaf&nbsp;(<span style="color:#a31515;">&quot;1&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;1&quot;</span>))
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">do</span>&nbsp;this.Add&nbsp;(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Node&nbsp;(<span style="color:#a31515;">&quot;a&quot;</span>,&nbsp;[Leaf&nbsp;(FileInfo&nbsp;<span style="color:#a31515;">&quot;1&quot;</span>)]),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Node&nbsp;(<span style="color:#a31515;">&quot;a&quot;</span>,&nbsp;[Leaf&nbsp;(<span style="color:#a31515;">&quot;1&quot;</span>,&nbsp;Path.Combine&nbsp;(<span style="color:#a31515;">&quot;a&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;1&quot;</span>))]))
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">do</span>&nbsp;this.Add&nbsp;(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Node&nbsp;(<span style="color:#a31515;">&quot;a&quot;</span>,&nbsp;[Leaf&nbsp;(FileInfo&nbsp;<span style="color:#a31515;">&quot;1&quot;</span>);&nbsp;Leaf&nbsp;(FileInfo&nbsp;<span style="color:#a31515;">&quot;2&quot;</span>)]),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Node&nbsp;(<span style="color:#a31515;">&quot;a&quot;</span>,&nbsp;[
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Leaf&nbsp;(<span style="color:#a31515;">&quot;1&quot;</span>,&nbsp;Path.Combine&nbsp;(<span style="color:#a31515;">&quot;a&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;1&quot;</span>));
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Leaf&nbsp;(<span style="color:#a31515;">&quot;2&quot;</span>,&nbsp;Path.Combine&nbsp;(<span style="color:#a31515;">&quot;a&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;2&quot;</span>))]))
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">do</span>&nbsp;this.Add&nbsp;(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Node&nbsp;(<span style="color:#a31515;">&quot;a&quot;</span>,&nbsp;[
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Node&nbsp;(<span style="color:#a31515;">&quot;b&quot;</span>,&nbsp;[
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Leaf&nbsp;(FileInfo&nbsp;<span style="color:#a31515;">&quot;1&quot;</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Leaf&nbsp;(FileInfo&nbsp;<span style="color:#a31515;">&quot;2&quot;</span>)]);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Node&nbsp;(<span style="color:#a31515;">&quot;c&quot;</span>,&nbsp;[
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Leaf&nbsp;(FileInfo&nbsp;<span style="color:#a31515;">&quot;3&quot;</span>)])]),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Node&nbsp;(<span style="color:#a31515;">&quot;a&quot;</span>,&nbsp;[
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Node&nbsp;(Path.Combine&nbsp;(<span style="color:#a31515;">&quot;a&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;b&quot;</span>),&nbsp;[
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Leaf&nbsp;(<span style="color:#a31515;">&quot;1&quot;</span>,&nbsp;Path.Combine&nbsp;(<span style="color:#a31515;">&quot;a&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;b&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;1&quot;</span>));
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Leaf&nbsp;(<span style="color:#a31515;">&quot;2&quot;</span>,&nbsp;Path.Combine&nbsp;(<span style="color:#a31515;">&quot;a&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;b&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;2&quot;</span>))]);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Node&nbsp;(Path.Combine&nbsp;(<span style="color:#a31515;">&quot;a&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;c&quot;</span>),&nbsp;[
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Leaf&nbsp;(<span style="color:#a31515;">&quot;3&quot;</span>,&nbsp;Path.Combine&nbsp;(<span style="color:#a31515;">&quot;a&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;c&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;3&quot;</span>))])]))</pre>
+	</p>
+	<p>
+		The test cases in this parametrised test are tuples of an input tree and the expected tree. For each test case, the test calls the <code>Archive.calculateMoves</code> function with <code>tree</code> and asserts that the <code>actual</code> tree is equal to the <code>expected</code> tree:
+	</p>
+	<p>
+		<pre>[&lt;Theory;&nbsp;ClassData(typeof&lt;CalculateMovesTestData&gt;)&gt;]
+<span style="color:blue;">let</span>&nbsp;``Calculate&nbsp;moves``&nbsp;tree&nbsp;expected&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;actual&nbsp;=&nbsp;Archive.calculateMoves&nbsp;tree
+&nbsp;&nbsp;&nbsp;&nbsp;expected&nbsp;=!&nbsp;Tree.map&nbsp;(<span style="color:blue;">fun</span>&nbsp;m&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;(m.Source.ToString&nbsp;(),&nbsp;m.Destination.ToString&nbsp;()))&nbsp;actual</pre>
+	</p>
+	<p>
+		Again, the test maps <code>FileInfo</code> objects to <code>strings</code> to support easy comparison.
+	</p>
+	<p>
+		That's all the pure code you need in order to implement the desired functionality. Now you only need to write some code that loads a tree from disk, and imprints a destination tree to disk, as well as the code that composes it all.
+	</p>
+	<h3 id="bac6be79cf8c44a7b47923e2ec90d99f">
+		Loading a tree from disk <a href="#bac6be79cf8c44a7b47923e2ec90d99f" title="permalink">#</a>
+	</h3>
+	<p>
+		The remaining code in this article is impure. You could put it in dedicated modules, but for this program, you're only going to need three functions and a bit of composition code, so you could also just put it all in the <code>Program</code> module. That's what I did.
+	</p>
+	<p>
+		To load a tree from disk, you'll need a root directory, under which you load the entire tree. Given a directory path, you read a tree using a recursive function like this:
+	</p>
+	<p>
+		<pre><span style="color:green;">//&nbsp;string&nbsp;-&gt;&nbsp;Tree&lt;string,string&gt;</span>
+<span style="color:blue;">let</span>&nbsp;<span style="color:blue;">rec</span>&nbsp;readTree&nbsp;path&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;File.Exists&nbsp;path
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">then</span>&nbsp;Leaf&nbsp;path
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">else</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;dirsAndFiles&nbsp;=&nbsp;Directory.EnumerateFileSystemEntries&nbsp;path
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;branches&nbsp;=&nbsp;Seq.map&nbsp;readTree&nbsp;dirsAndFiles&nbsp;|&gt;&nbsp;Seq.toList
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Node&nbsp;(path,&nbsp;branches)</pre>
+	</p>
+	<p>
+		This recursive function starts by checking whether the <code>path</code> is a file that exists. If it does, the path is a file, so it creates a new <code>Leaf</code> with that path.
+	</p>
+	<p>
+		If <code>path</code> isn't a file, it's a directory. In that case, use <code>Directory.EnumerateFileSystemEntries</code> to enumerate all the directories and files in that directory, and map all those directory entries recursively. That produces all the <code>branches</code> for the current node. Finally, return a new <code>Node</code> with the <code>path</code> and the <code>branches</code>.
+	</p>
+	<h3 id="7f5e06eb61024264ad214d41b63a8a74">
+		Loading metadata <a href="#7f5e06eb61024264ad214d41b63a8a74" title="permalink">#</a>
+	</h3>
+	<p>
+		The <code>readTree</code> function only produces a tree with <code>string</code> leaves, while the program requires a tree with <code>PhotoFile</code> leaves. You'll need to read the <a href="https://en.wikipedia.org/wiki/Exif">Exif</a> metadata from each file and enrich the tree with the <em>date-taken</em> data.
+	</p>
+	<p>
+		In this code base, I've written a little <code>Photo</code> module to extract the desired metadata from an image file. I'm not going to list all the code here; if you're interested, the code is <a href="">available on GitHub</a>. The <code>Photo</code> module enables you to write an impure operation like this:
+	</p>
+	<p>
+		<pre><span style="color:green;">//&nbsp;FileInfo&nbsp;-&gt;&nbsp;PhotoFile&nbsp;option</span>
+<span style="color:blue;">let</span>&nbsp;readPhoto&nbsp;file&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;Photo.extractDateTaken&nbsp;file
+&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;Option.map&nbsp;(<span style="color:blue;">fun</span>&nbsp;dateTaken&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;{&nbsp;File&nbsp;=&nbsp;file;&nbsp;TakenOn&nbsp;=&nbsp;dateTaken&nbsp;})</pre>
+	</p>
+	<p>
+		This operation can fail for various reasons:
+		<ul>
+			<li>The file may not exist.</li>
+			<li>The file exists, but has no metadata.</li>
+			<li>The file has metadata, but no <em>date-taken</em> metadata.</li>
+			<li>The <em>date-taken</em> metadata string is malformed.</li>
+		</ul>
+		When you traverse a <code>Tree&lt;string,string&gt;</code> with <code>readPhoto</code>, you'll get a <code>Tree&lt;string,PhotoFile option&gt;</code>. That's when you'll need <code>Tree.choose</code>. You'll see this soon.
+	</p>
+	<h3 id="59159ef499884e10ae92e5ef6e666c36">
+		Writing a tree to disk <a href="#59159ef499884e10ae92e5ef6e666c36" title="permalink">#</a>
+	</h3>
+	<p>
+		The above <code>calculateMoves</code> function creates a <code>Tree&lt;string,Move&gt;</code>. The final piece of impure code you'll need to write is an operation that traverses such a tree and executes each <code>Move</code>.
+	</p>
+	<p>
+		<pre><span style="color:green;">//&nbsp;Tree&lt;&#39;a,Move&gt;&nbsp;-&gt;&nbsp;unit</span>
+<span style="color:blue;">let</span>&nbsp;writeTree&nbsp;t&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;copy&nbsp;m&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Directory.CreateDirectory&nbsp;m.Destination.DirectoryName&nbsp;|&gt;&nbsp;ignore
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;m.Source.CopyTo&nbsp;m.Destination.FullName&nbsp;|&gt;&nbsp;ignore
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;printfn&nbsp;<span style="color:#a31515;">&quot;Copied&nbsp;to&nbsp;%s&quot;</span>&nbsp;m.Destination.FullName
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;compareFiles&nbsp;m&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;sourceStream&nbsp;=&nbsp;File.ReadAllBytes&nbsp;m.Source.FullName
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;destinationStream&nbsp;=&nbsp;File.ReadAllBytes&nbsp;m.Destination.FullName
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;sourceStream&nbsp;=&nbsp;destinationStream
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;move&nbsp;m&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;copy&nbsp;m
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;compareFiles&nbsp;m&nbsp;<span style="color:blue;">then</span>&nbsp;m.Source.Delete&nbsp;()
+&nbsp;&nbsp;&nbsp;&nbsp;Tree.iter&nbsp;move&nbsp;t</pre>
+	</p>
+	<p>
+		The <code>writeTree</code> function traverses the input tree, and for each <code>Move</code>, it first copies the file, then it verifies that the copy was successful, and finally, if that's the case, it deletes the source file.
+	</p>
+	<h3 id="f30093164b184bbf877f307fa4cf4c63">
+		Composition <a href="#f30093164b184bbf877f307fa4cf4c63" title="permalink">#</a>
+	</h3>
+	<p>
+		You can now compose an <em>impure-pure-impure sandwich</em> from all the Lego pieces:
+	</p>
+	<p>
+		<pre><span style="color:green;">//&nbsp;string&nbsp;-&gt;&nbsp;string&nbsp;-&gt;&nbsp;unit</span>
+<span style="color:blue;">let</span>&nbsp;movePhotos&nbsp;source&nbsp;destination&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;sourceTree&nbsp;=&nbsp;readTree&nbsp;source&nbsp;|&gt;&nbsp;Tree.map&nbsp;FileInfo
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;photoTree&nbsp;=&nbsp;Tree.choose&nbsp;readPhoto&nbsp;sourceTree
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;destinationTree&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Option.map&nbsp;(Archive.moveTo&nbsp;destination&nbsp;&gt;&gt;&nbsp;Archive.calculateMoves)&nbsp;photoTree
+&nbsp;&nbsp;&nbsp;&nbsp;Option.iter&nbsp;writeTree&nbsp;destinationTree</pre>
+	</p>
+	<p>
+		First, you load the <code>sourceTree</code> using the <code>readTree</code> operation. This returns a <code>Tree&lt;string,string&gt;</code>, so map the leaves to <code>FileInfo</code> objects. You then load the image metatadata by traversing <code>sourceTree</code> with <code>Tree.choose readPhoto</code>. Each call to <code>readPhoto</code> produces a <code>PhotoFile option</code>, so this is where you want to use <code>Tree.choose</code> to throw all the <code>None</code> values away.
+	</p>
+	<p>
+		Those two lines of code is the initial impure step of the sandwich (yes: mixed metaphors, I know).
+	</p>
+	<p>
+		The pure part of the sandwich is the composition of the pure functions <code>moveTo</code> and <code>calculateMoves</code>. Since <code>photoTree</code> is a <code>Tree&lt;string,PhotoFile&gt; option</code>, you'll need to perform that transformation inside of <code>Option.map</code>. The resulting <code>destinationTree</code> is a <code>Tree&lt;string,Move&gt; option</code>.
+	</p>
+	<p>
+		The final, impure step of the sandwich, then, is to apply all the moves with <code>writeTree</code>.
+	</p>
+	<h3 id="ab0013f79c184586a10aa014db496bef">
+		Execution <a href="#ab0013f79c184586a10aa014db496bef" title="permalink">#</a>
+	</h3>
+	<p>
+		The <code>movePhotos</code> operation takes <code>source</code> and <code>destination</code> arguments. You could hypothetically call it from a rich client or a background process, but here I'll just call if from a command-line program. The <code>main</code> operation will have to parse the input arguments and call <code>movePhotos</code>:
+	</p>
+	<p>
+		<pre>[&lt;EntryPoint&gt;]
+<span style="color:blue;">let</span>&nbsp;main&nbsp;argv&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">match</span>&nbsp;argv&nbsp;<span style="color:blue;">with</span>
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;[|source;&nbsp;destination|]&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;movePhotos&nbsp;source&nbsp;destination
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;_&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;printfn&nbsp;<span style="color:#a31515;">&quot;Please&nbsp;provide&nbsp;source&nbsp;and&nbsp;destination&nbsp;directories&nbsp;as&nbsp;arguments.&quot;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;0&nbsp;<span style="color:green;">//&nbsp;return&nbsp;an&nbsp;integer&nbsp;exit&nbsp;code</span></pre>
+	</p>
+	<p>
+		You could write more sophisticated parsing of the program arguments, but that's not the topic of this article, so I only wrote the bare minimum required to get the program working.
+	</p>
+	<p>
+		You can now compile and run the program:
+	</p>
+	<p>
+		<pre>$ ./ArchivePictures "C:\Users\mark\Desktop\Test" "C:\Users\mark\Desktop\Test-Out"
+Copied to C:\Users\mark\Desktop\Test-Out\2003-04\2003-04-29 15.11.50.jpg
+Copied to C:\Users\mark\Desktop\Test-Out\2011-07\2011-07-10 13.09.36.jpg
+Copied to C:\Users\mark\Desktop\Test-Out\2014-04\2014-04-18 14.05.02.jpg
+Copied to C:\Users\mark\Desktop\Test-Out\2014-04\2014-04-17 17.11.40.jpg
+Copied to C:\Users\mark\Desktop\Test-Out\2014-05\2014-05-23 16.07.20.jpg
+Copied to C:\Users\mark\Desktop\Test-Out\2014-06\2014-06-21 16.48.40.jpg
+Copied to C:\Users\mark\Desktop\Test-Out\2014-06\2014-06-30 15.44.52.jpg
+Copied to C:\Users\mark\Desktop\Test-Out\2016-05\2016-05-01 09.25.23.jpg
+Copied to C:\Users\mark\Desktop\Test-Out\2017-08\2017-08-22 19.53.28.jpg</pre>
+	</p>
+	<p>
+		This does indeed produce the expected destination directory structure.
+	</p>
+	<p>
+		<img src="/content/binary/picture-archivist-destination-directory.png" alt="Seven example directories with pictures.">
+	</p>
+	<p>
+		It's always nice when something turns out to work in practice, as well as in theory.
+	</p>
+	<h3 id="3e4503b89d8f4b81b8b9cac9d1f39021">
+		Summary <a href="#3e4503b89d8f4b81b8b9cac9d1f39021" title="permalink">#</a>
+	</h3>
+	<p>
+		Functional software architecture involves separating pure from impure code so that no pure functions invoke impure operations. Often, you can achieve that with what I call the <em>impure-pure-impure sandwich</em> architecture. In this example, you saw how to model the file system as a tree. This enables you to separate the impure file interactions from the pure program logic.
+	</p>
+</div>
