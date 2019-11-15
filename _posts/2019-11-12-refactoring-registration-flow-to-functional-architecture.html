@@ -1,0 +1,899 @@
+---
+layout: post
+title: "Refactoring registration flow to functional architecture"
+description: "An example showing a refactoring from F# partial application 'dependency injection' to an impure/pure/impure sandwich."
+date: 2019-11-12 16:53 UTC
+tags: [F#, Functional Programming]
+image: "/content/binary/complete-registration-workflow-with-2fa-difficult-to-sandwich.png"
+image_alt: "A flowchart describing the workflow for completing a registration."
+---
+{% include JB/setup %}
+
+<div id="post">
+	<p>
+		<em>{{ page.description }}</em>
+	</p>
+	<p>
+		In <a href="/2017/02/02/dependency-rejection#36c724b49f614104842c47909cd9c916">a comment</a> to <a href="/2017/02/02/dependency-rejection">Dependency rejection</a>, I wrote:
+		<blockquote>
+			"I'd welcome a simplified, but still concrete example where the impure/pure/impure sandwich described here isn't going to be possible."
+		</blockquote>
+		<a href="https://www.relativisticramblings.com">Christer van der Meeren</a> kindly <a href="/2017/02/02/dependency-rejection#ade3787e6e3c4e569854e2c2bd038e29">replied with a suggestion.</a>
+	</p>
+	<p>
+		The code in question relates to validation of user accounts. You can read the complete description in the linked comment, but I'll try to summarise it here. I'll then show a refactoring to a <a href="/2018/11/19/functional-architecture-a-definition">functional architecture</a> - specifically, to an impure/pure/impure sandwich.
+	</p>
+	<p>
+		The code is <a href="">available on GitHub</a>.
+	</p>
+	<h3 id="53c0b4111cf640e0b6fd13066e24f3bd">
+		Registration flow <a href="#53c0b4111cf640e0b6fd13066e24f3bd" title="permalink">#</a>
+	</h3>
+	<p>
+		The system in question uses two-factor authentication with mobile phones. When you sign up for the service, you give your phone number. You then receive an SMS, and must use whatever is in that SMS to prove ownership of the phone number. Christer van der Meeren illustrates the flow like this:
+	</p>
+	<p>
+		<img src="/content/binary/complete-registration-workflow-with-2fa-difficult-to-sandwich.png" alt="A flowchart describing the workflow for completing a registration.">
+	</p>
+	<p>
+		He also supplies sample code:
+	</p>
+	<p>
+		<pre><span style="color:blue;">let</span>&nbsp;completeRegistrationWorkflow
+&nbsp;&nbsp;&nbsp;&nbsp;(createProof:&nbsp;Mobile&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;Async&lt;ProofId&gt;)
+&nbsp;&nbsp;&nbsp;&nbsp;(verifyProof:&nbsp;Mobile&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;ProofId&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;Async&lt;bool&gt;)
+&nbsp;&nbsp;&nbsp;&nbsp;(completeRegistration:&nbsp;Registration&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;Async&lt;unit&gt;)
+&nbsp;&nbsp;&nbsp;&nbsp;(proofId:&nbsp;ProofId&nbsp;option)
+&nbsp;&nbsp;&nbsp;&nbsp;(registration:&nbsp;Registration)
+&nbsp;&nbsp;&nbsp;&nbsp;:&nbsp;Async&lt;CompleteRegistrationResult&gt;&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;async&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">match</span>&nbsp;proofId&nbsp;<span style="color:blue;">with</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;None&nbsp;<span style="color:blue;">-&gt;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;proofId&nbsp;=&nbsp;createProof&nbsp;registration.Mobile
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;ProofRequired&nbsp;proofId
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;Some&nbsp;proofId&nbsp;<span style="color:blue;">-&gt;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;isValid&nbsp;=&nbsp;verifyProof&nbsp;registration.Mobile&nbsp;proofId
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;isValid&nbsp;<span style="color:blue;">then</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">do!</span>&nbsp;completeRegistration&nbsp;registration
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;RegistrationCompleted
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">else</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;proofId&nbsp;=&nbsp;createProof&nbsp;registration.Mobile
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;ProofRequired&nbsp;proofId
+&nbsp;&nbsp;&nbsp;&nbsp;}</pre>
+	</p>
+	<p>
+		While this is <a href="https://fsharp.org">F#</a>, it's not functional, since it uses <a href="/2017/01/30/partial-application-is-dependency-injection">partial application for dependency injection</a>. From the description, I find it safe to assume that we can consider <a href="/2016/04/11/async-as-surrogate-io">Async as a surrogate for IO</a>.
+	</p>
+	<p>
+		The code implies the existence of other types. I decided to define them like this:
+	</p>
+	<p>
+		<pre><span style="color:blue;">type</span>&nbsp;Mobile&nbsp;=&nbsp;Mobile&nbsp;<span style="color:blue;">of</span>&nbsp;int
+<span style="color:blue;">type</span>&nbsp;ProofId&nbsp;=&nbsp;ProofId&nbsp;<span style="color:blue;">of</span>&nbsp;Guid
+<span style="color:blue;">type</span>&nbsp;Registration&nbsp;=&nbsp;{&nbsp;Mobile&nbsp;:&nbsp;Mobile&nbsp;}
+<span style="color:blue;">type</span>&nbsp;CompleteRegistrationResult&nbsp;=&nbsp;ProofRequired&nbsp;<span style="color:blue;">of</span>&nbsp;ProofId&nbsp;|&nbsp;RegistrationCompleted</pre>
+	</p>
+	<p>
+		In reality, they're probably more complicated, but this is enough to make the code compile.
+	</p>
+	<p>
+		Is it possible to refactor <code>completeRegistrationWorkflow</code> to an impure/pure/impure sandwich?
+	</p>
+	<h3 id="3266f23516dc4d9e98f3a8c87d072f89">
+		Applicability <a href="#3266f23516dc4d9e98f3a8c87d072f89" title="permalink">#</a>
+	</h3>
+	<p>
+		It <em>is</em> possible to refactor <code>completeRegistrationWorkflow</code> to an impure/pure/impure sandwich. You'll see how to do that soon. Before we start that work, however, I'd like to warn against jumping to conclusions. It's possible that the problem statement doesn't capture some subtleties that one would have to deal with in the real world. It's also possible that I've misunderstood the essence of Christer van der Meeren's problem description.
+	</p>
+	<p>
+		It's (relatively) easy to teach the basics of programming. You teach a beginner about keywords, programming constructs, how to compile or interpret a program, and so on.
+	</p>
+	<p>
+		On the other hand, it's hard to write about dealing with complicated code. There are ways to make legacy code better, but the moves you have to make depend on myriad details. Complicated code is, by definition, something that's hard to learn. This means that truly complicated legacy code is rarely suitable for instructive examples. One has to strike a delicate balance and produce an example that looks complicated enough to warrant improvement, but on the other hand still be simple enough to be understood.
+	</p>
+	<p>
+		I think that Christer van der Meeren has struck that balance. With three dependencies, the sample code looks just complicated enough to warrant refactoring. On the other hand, you can understand what it's supposed to do in a few minutes. There's a risk, however, that the example is <em>too</em> simplified. That could weaken the result of the refactoring that follows. Could you still apply that refactoring if the problem was more complicated?
+	</p>
+	<p>
+		It's my experience that it's conspicuously often possible to implement an impure/pure/impure sandwich.
+	</p>
+	<h3 id="fedd0146b0a84ab3b768f3adcf4f684f">
+		Fakes <a href="#fedd0146b0a84ab3b768f3adcf4f684f" title="permalink">#</a>
+	</h3>
+	<p>
+		In the rest of this article, I want to show how to refactor <code>completeRegistrationWorkflow</code> to an impure/pure/impure sandwich. As <a href="http://amzn.to/YPdQDf">Refactoring</a> admonishes:
+		<blockquote>
+			<p>
+				"to refactor, the essential precondition is [...] solid tests"
+			</p>
+			<footer><cite>Martin Fowler</cite></footer>
+		</blockquote>
+		Right now, however, there's no tests, so I'm going to add some.
+	</p>
+	<p>
+		The tests will need some <a href="https://en.wikipedia.org/wiki/Test_double">Test Doubles</a> to stand in for the three dependency functions. If possible, <a href="/2019/03/25/an-example-of-state-based-testing-in-f">I prefer state-based testing</a> over <a href="/2019/02/25/an-example-of-interaction-based-testing-in-c">interaction-based testing</a>. First, then, we need some Fakes.
+	</p>
+	<p>
+		While <code>completeRegistrationWorkflow</code> takes three dependency functions, it looks as though there's only two architectural dependencies:
+		<ul>
+			<li>A two-factor authentication service</li>
+			<li>A registration database (or service)</li>
+		</ul>
+		Defining a Fake two-factor authentication object is the most complicated of the two, but still manageable:
+	</p>
+	<p>
+		<pre><span style="color:blue;">type</span>&nbsp;Fake2FA&nbsp;()&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;<span style="color:blue;">mutable</span>&nbsp;proofs&nbsp;=&nbsp;Map.empty
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">member</span>&nbsp;_.CreateProof&nbsp;mobile&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">match</span>&nbsp;Map.tryFind&nbsp;mobile&nbsp;proofs&nbsp;<span style="color:blue;">with</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;Some&nbsp;(proofId,&nbsp;_)&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;proofId
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;None&nbsp;<span style="color:blue;">-&gt;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;proofId&nbsp;=&nbsp;ProofId&nbsp;(Guid.NewGuid&nbsp;())
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;proofs&nbsp;<span style="color:blue;">&lt;-</span>&nbsp;Map.add&nbsp;mobile&nbsp;(proofId,&nbsp;<span style="color:blue;">false</span>)&nbsp;proofs
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;proofId
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:blue;">fun</span>&nbsp;proofId&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;async&nbsp;{&nbsp;<span style="color:blue;">return</span>&nbsp;proofId&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">member</span>&nbsp;_.VerifyProof&nbsp;mobile&nbsp;proofId&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">match</span>&nbsp;Map.tryFind&nbsp;mobile&nbsp;proofs&nbsp;<span style="color:blue;">with</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;Some&nbsp;(_,&nbsp;<span style="color:blue;">true</span>)&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">true</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;_&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">false</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:blue;">fun</span>&nbsp;b&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;async&nbsp;{&nbsp;<span style="color:blue;">return</span>&nbsp;b&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">member</span>&nbsp;_.VerifyMobile&nbsp;mobile&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">match</span>&nbsp;Map.tryFind&nbsp;mobile&nbsp;proofs&nbsp;<span style="color:blue;">with</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;Some&nbsp;(proofId,&nbsp;_)&nbsp;<span style="color:blue;">-&gt;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;proofs&nbsp;<span style="color:blue;">&lt;-</span>&nbsp;Map.add&nbsp;mobile&nbsp;(proofId,&nbsp;<span style="color:blue;">true</span>)&nbsp;proofs
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;_&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;()</pre>
+	</p>
+	<p>
+		In F#, I find that the easiest way to model a mutable resource is to use an object. This one just keeps track of a collection of proofs. The <code>CreateProof</code> method fits the function signature of <code>completeRegistrationWorkflow</code>'s <code>createProof</code> function argument. It looks for an existing proof for the mobile number so that it can reuse the same proof multiple times. If there's no proof for <code>mobile</code>, it creates a new <code>Guid</code> and returns it after having first added it to the collection.
+	</p>
+	<p>
+		Likewise, the <code>VerifyProof</code> method fits the type of the <code>verifyProof</code> function argument. Proofs are actually tuples of IDs and a flag that keeps track of whether or not they've been verified. The method returns the flag if it's there, and <code>false</code> otherwise.
+	</p>
+	<p>
+		The third <code>VerifyMobile</code> method is a test-specific functionality that enables a test to mark a proof as having been verified via two-factor authentication.
+	</p>
+	<p>
+		Compared to <code>Fake2FA</code>, the Fake registration database is simple:
+	</p>
+	<p>
+		<pre><span style="color:blue;">type</span>&nbsp;FakeRegistrationDB&nbsp;()&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">inherit</span>&nbsp;Collection&lt;Registration&gt;&nbsp;()
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">member</span>&nbsp;this.CompleteRegistration&nbsp;r&nbsp;=&nbsp;async&nbsp;{&nbsp;this.Add&nbsp;r&nbsp;}</pre>
+	</p>
+	<p>
+		Again, the <code>CompleteRegistration</code> method fits the <code>completeRegistration</code> function argument to <code>completeRegistrationWorkflow</code>. It just makes the inherited <code>Add</code> method <code>Async</code>.
+	</p>
+	<h3 id="8dbbe25d331f4517b3fe8ace6e95ffa9">
+		Fixture creation <a href="#8dbbe25d331f4517b3fe8ace6e95ffa9" title="permalink">#</a>
+	</h3>
+	<p>
+		My plan is to add <a href="https://en.wikipedia.org/wiki/Characterization_test">Characterisation Tests</a> so that I can refactor. I do, however, plan to change the API of the System Under Test (SUT). This could break the tests, which would defy their purpose. To protect against this, I'll test against a <a href="https://en.wikipedia.org/wiki/Facade_pattern">Facade</a>. Initially, this Facade will be equivalent to the <code>completeRegistrationWorkflow</code> function, but this will change as I refactor.
+	</p>
+	<p>
+		In addition to the SUT Facade, the tests will also need access to the 'injected' dependencies. You can address this by creating a <a href="/2009/03/16/FixtureObject">Fixture Object</a>:
+	</p>
+	<p>
+		<pre><span style="color:blue;">let</span>&nbsp;createFixture&nbsp;()&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;twoFA&nbsp;=&nbsp;Fake2FA&nbsp;()
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;db&nbsp;=&nbsp;FakeRegistrationDB&nbsp;()
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;sut&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;completeRegistrationWorkflow
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;twoFA.CreateProof
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;twoFA.VerifyProof
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;db.CompleteRegistration
+&nbsp;&nbsp;&nbsp;&nbsp;sut,&nbsp;twoFA,&nbsp;db</pre>
+	</p>
+	<p>
+		This function return a triple of values: the SUT Facade and the two Fakes.
+	</p>
+	<p>
+		The SUT Facade is a partially applied function of the type <code>ProofId option -&gt; Registration -&gt; Async&lt;CompleteRegistrationResult&gt;</code>. In other words, it abstracts away the specifics about how impure actions are executed. It seems reasonable to imagine that the two remaining input arguments, <code>ProofId option</code> and <code> Registration</code>, are run-time values. Regardless of refactoring, the resulting function should be able to receive those arguments and produce the desired outcome.
+	</p>
+	<h3 id="a6dbde952b53422992ae006bdc305053">
+		Characterising the missing proof ID case <a href="#a6dbde952b53422992ae006bdc305053" title="permalink">#</a>
+	</h3>
+	<p>
+		It looks like the <a href="https://en.wikipedia.org/wiki/Cyclomatic_complexity">cyclomatic complexity</a> of <code>completeRegistrationWorkflow</code> is <em>three</em>, so you're going to need three Characterisation Tests. You can add them in any order you like, but in this case I found it natural to follow the order the branches are laid out in the SUT.
+	</p>
+	<p>
+		This test case verifies what happens if the proof ID is missing:
+	</p>
+	<p>
+		<pre>[&lt;Theory&gt;]
+[&lt;InlineData&nbsp;123&gt;]
+[&lt;InlineData&nbsp;432&gt;]
+<span style="color:blue;">let</span>&nbsp;``Missing&nbsp;proof&nbsp;ID``&nbsp;mobile&nbsp;=&nbsp;async&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;sut,&nbsp;twoFA,&nbsp;db&nbsp;=&nbsp;createFixture&nbsp;()
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;r&nbsp;=&nbsp;{&nbsp;Mobile&nbsp;=&nbsp;Mobile&nbsp;mobile&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;actual&nbsp;=&nbsp;sut&nbsp;None&nbsp;r
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;expectedProofId&nbsp;=&nbsp;twoFA.CreateProof&nbsp;r.Mobile
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;expected&nbsp;=&nbsp;ProofRequired&nbsp;expectedProofId
+&nbsp;&nbsp;&nbsp;&nbsp;expected&nbsp;=!&nbsp;actual
+&nbsp;&nbsp;&nbsp;&nbsp;test&nbsp;&lt;@&nbsp;Seq.isEmpty&nbsp;db&nbsp;@&gt;&nbsp;}</pre>
+	</p>
+	<p>
+		All the tests in this article use <a href="https://xunit.net">xUnit.net</a> 2.4.0 with <a href="https://github.com/SwensenSoftware/unquote">Unquote</a> 5.0.0.
+	</p>
+	<p>
+		This test calls the <code>sut</code> Facade with a <code>None</code> proof ID and an arbitrary <code>Registration</code> <code>r</code>. Had I used a <a href="/property-based-testing-intro">property-based testing</a> framework such as <a href="https://fscheck.github.io/FsCheck">FsCheck</a> or <a href="https://github.com/hedgehogqa/fsharp-hedgehog">Hedgehog</a>, I could have made the <code>Registration</code> value itself an arbitrary test argument, but I thought that this was overkill for this situation.
+	</p>
+	<p>
+		In order to figure out the <code>expectedProofId</code>, the test relies on the behaviour of the <code>Fake2FA</code> class. The <code>CreateProof</code> method is <a href="https://en.wikipedia.org/wiki/Idempotence">idempotent</a>, so calling it several times with the same number should return the same proof. In this test case, we expect the <code>sut</code> to have done so already, so calling the method once more from the test should return the same value that the SUT received. The test then wraps the proof ID in the <code>ProofRequired</code> case and uses Unquote's <code>=!</code> (<em>must equal</em>) operator to verify that <code>expected</code> is equal to <code>actual</code>.
+	</p>
+	<p>
+		Finally, the test also verifies that the reservations database remains empty.
+	</p>
+	<p>
+		Since this is a Characterisation Test it already passes, <a href="/2013/04/02/why-trust-tests">which makes it untrustworthy</a>. How do I know that I didn't write a <a href="/2019/10/14/tautological-assertion">Tautological Assertion</a>?
+	</p>
+	<p>
+		When I write Characterisation Tests, I always try to change the SUT to verify that the test fails for the appropriate reason. In order to fail the first assertion, I can make this change to the <code>None</code> branch of the SUT:
+	</p>
+	<p>
+		<pre><span style="color:blue;">match</span>&nbsp;proofId&nbsp;<span style="color:blue;">with</span>
+|&nbsp;None&nbsp;<span style="color:blue;">-&gt;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//let!&nbsp;proofId&nbsp;=&nbsp;createProof&nbsp;registration.Mobile</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;proofId&nbsp;=&nbsp;ProofId&nbsp;(Guid.NewGuid&nbsp;())
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;ProofRequired&nbsp;proofId</pre>
+	</p>
+	<p>
+		This fails the <code>expected =! actual</code> assertion, as expected.
+	</p>
+	<p>
+		Likewise, you can fail the second assertion with this change:
+	</p>
+	<p>
+		<pre><span style="color:blue;">match</span>&nbsp;proofId&nbsp;<span style="color:blue;">with</span>
+|&nbsp;None&nbsp;<span style="color:blue;">-&gt;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">do!</span>&nbsp;completeRegistration&nbsp;registration
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;proofId&nbsp;=&nbsp;createProof&nbsp;registration.Mobile
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;ProofRequired&nbsp;proofId</pre>
+	</p>
+	<p>
+		The addition of the <code>completeRegistration</code> statement causes the <code>test &lt;@ Seq.isEmpty db @&gt;</code> assertion to fail, again as expected.
+	</p>
+	<p>
+		Now I trust that test.
+	</p>
+	<h3 id="a9dceb6d72af4d06bc46bae83464b201">
+		Characterising the valid proof ID case <a href="#a9dceb6d72af4d06bc46bae83464b201" title="permalink">#</a>
+	</h3>
+	<p>
+		Next, you have the case where all is good. The proof ID is present and valid. You can characterise the behaviour with this test:
+	</p>
+	<p>
+		<pre>[&lt;Theory&gt;]
+[&lt;InlineData&nbsp;987&gt;]
+[&lt;InlineData&nbsp;247&gt;]
+<span style="color:blue;">let</span>&nbsp;``Valid&nbsp;proof&nbsp;ID``&nbsp;mobile&nbsp;=&nbsp;async&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;sut,&nbsp;twoFA,&nbsp;db&nbsp;=&nbsp;createFixture&nbsp;()
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;r&nbsp;=&nbsp;{&nbsp;Mobile&nbsp;=&nbsp;Mobile&nbsp;mobile&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;p&nbsp;=&nbsp;twoFA.CreateProof&nbsp;r.Mobile
+&nbsp;&nbsp;&nbsp;&nbsp;twoFA.VerifyMobile&nbsp;r.Mobile
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;actual&nbsp;=&nbsp;sut&nbsp;(Some&nbsp;p)&nbsp;r
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;RegistrationCompleted&nbsp;=!&nbsp;actual
+&nbsp;&nbsp;&nbsp;&nbsp;test&nbsp;&lt;@&nbsp;Seq.contains&nbsp;r&nbsp;db&nbsp;@&gt;&nbsp;}</pre>
+	</p>
+	<p>
+		This test uses <code>CreateProof</code> to create a proof before the <code>sut</code> is exercised. It also uses the test-specific <code>VerifyMobile</code> method to mark the mobile number (and thereby the proof) as valid.
+	</p>
+	<p>
+		Again, there's two assertions: one against the return value <code>actual</code>, and one that verifies that the registration database <code>db</code> now contains the registration <code>r</code>.
+	</p>
+	<p>
+		As before, you can't trust a Characterisation Test before you've seen it fail, so first edit the <code>isValid</code> branch of the SUT like this:
+	</p>
+	<p>
+		<pre><span style="color:blue;">if</span>&nbsp;isValid&nbsp;<span style="color:blue;">then</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">do!</span>&nbsp;completeRegistration&nbsp;registration
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//return&nbsp;RegistrationCompleted</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;ProofRequired&nbsp;proofId</pre>
+	</p>
+	<p>
+		This fails the <code>RegistrationCompleted =! actual</code> assertion, as expected.
+	</p>
+	<p>
+		Now make this change:
+	</p>
+	<p>
+		<pre><span style="color:blue;">if</span>&nbsp;isValid&nbsp;<span style="color:blue;">then</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//do!&nbsp;completeRegistration&nbsp;registration</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;RegistrationCompleted</pre>
+	</p>
+	<p>
+		Now the <code>test &lt;@ Seq.contains r db @&gt;</code> assertion fails, as expected.
+	</p>
+	<p>
+		This test also seems trustworthy.
+	</p>
+	<h3 id="a4f44c3575914d628931c88095df477e">
+		Characterising the invalid proof ID case <a href="#a4f44c3575914d628931c88095df477e" title="permalink">#</a>
+	</h3>
+	<p>
+		The final test case is when a proof ID exists, but it's invalid:
+	</p>
+	<p>
+		<pre>[&lt;Theory&gt;]
+[&lt;InlineData&nbsp;327&gt;]
+[&lt;InlineData&nbsp;666&gt;]
+<span style="color:blue;">let</span>&nbsp;``Invalid&nbsp;proof&nbsp;ID``&nbsp;mobile&nbsp;=&nbsp;async&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;sut,&nbsp;twoFA,&nbsp;db&nbsp;=&nbsp;createFixture&nbsp;()
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;r&nbsp;=&nbsp;{&nbsp;Mobile&nbsp;=&nbsp;Mobile&nbsp;mobile&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;p&nbsp;=&nbsp;twoFA.CreateProof&nbsp;r.Mobile
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;actual&nbsp;=&nbsp;sut&nbsp;(Some&nbsp;p)&nbsp;r
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;expectedProofId&nbsp;=&nbsp;twoFA.CreateProof&nbsp;r.Mobile
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;expected&nbsp;=&nbsp;ProofRequired&nbsp;expectedProofId
+&nbsp;&nbsp;&nbsp;&nbsp;expected&nbsp;=!&nbsp;actual
+&nbsp;&nbsp;&nbsp;&nbsp;test&nbsp;&lt;@&nbsp;Seq.isEmpty&nbsp;db&nbsp;@&gt;&nbsp;}</pre>
+	</p>
+	<p>
+		The <a href="/2013/06/24/a-heuristic-for-formatting-code-according-to-the-aaa-pattern">arrange phase</a> of the test is comparable to the previous test case. The only difference is that the new test <em>doesn't</em> invoke <code>twoFA.VerifyMobile r.Mobile</code>. This leaves the generated proof ID <code>p</code> invalid.
+	</p>
+	<p>
+		The assertions, on the other hand, are identical to those of the <code>Missing proof ID</code> test case, which means that you can make the same edits to the <code>else</code> branch as you can to the <code>None</code> branch, as described above. If you do that, the assertions fail as they're supposed to. You can also trust this Characterisation Test.
+	</p>
+	<h3 id="3f733ce502814d458395b3561c63b897">
+		Eta expansion <a href="#3f733ce502814d458395b3561c63b897" title="permalink">#</a>
+	</h3>
+	<p>
+		While I want to keep the SUT Facade's type unchanged, I do want change the way I compose it. The goal is an impure/pure/impure sandwich: Do something impure first, then call a pure function with the data obtained, and finally do something impure with the output of the pure function.
+	</p>
+	<p>
+		This means that the composition is going to manipulate the input values to the SUT Facade. To make that easier, I perform an <em>eta conversion</em> on the <code>sut</code>:
+	</p>
+	<p>
+		<pre><span style="color:blue;">let</span>&nbsp;createFixture&nbsp;()&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;twoFA&nbsp;=&nbsp;Fake2FA&nbsp;()
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;db&nbsp;=&nbsp;FakeRegistrationDB&nbsp;()
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;sut&nbsp;pid&nbsp;r&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;completeRegistrationWorkflow
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;twoFA.CreateProof
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;twoFA.VerifyProof
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;db.CompleteRegistration
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;pid
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;r
+&nbsp;&nbsp;&nbsp;&nbsp;sut,&nbsp;twoFA,&nbsp;db</pre>
+	</p>
+	<p>
+		This doesn't change the behaviour or how the SUT is composed. It only makes the <code>pid</code> and <code>r</code> arguments explicitly visible.
+	</p>
+	<h3 id="9afbddfce5e14b3c98435a9d2e3f6848">
+		Move proof verification <a href="#9afbddfce5e14b3c98435a9d2e3f6848" title="permalink">#</a>
+	</h3>
+	<p>
+		When you consider the current implementation of <code>completeRegistrationWorkflow</code>, it seems that the impure actions are interleaved with the decision-making code. How to separate them?
+	</p>
+	<p>
+		The first opportunity that I identified was that it always calls <code>verifyProof</code> in the <code>Some</code> case. Whenever you want to call a method only in the <code>Some</code> case, but not in the <code>None</code> case, it suggest <code>Option.map</code>.
+	</p>
+	<p>
+		It should be possible to run <code>Option.map (twoFA.VerifyProof r.Mobile) pid</code> as the initial impure action of the impure/pure/impure sandwich. If that's possible, we could pass the output of that pure function as an argument to <code>completeRegistrationWorkflow</code>. That would already make it simpler:
+	</p>
+	<p>
+		<pre><span style="color:blue;">let</span>&nbsp;completeRegistrationWorkflow
+&nbsp;&nbsp;&nbsp;&nbsp;(createProof:&nbsp;Mobile&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;Async&lt;ProofId&gt;)
+&nbsp;&nbsp;&nbsp;&nbsp;(completeRegistration:&nbsp;Registration&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;Async&lt;unit&gt;)
+&nbsp;&nbsp;&nbsp;&nbsp;(proof:&nbsp;bool&nbsp;option)
+&nbsp;&nbsp;&nbsp;&nbsp;(registration:&nbsp;Registration)
+&nbsp;&nbsp;&nbsp;&nbsp;:&nbsp;Async&lt;CompleteRegistrationResult&gt;&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;async&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">match</span>&nbsp;proof&nbsp;<span style="color:blue;">with</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;None&nbsp;<span style="color:blue;">-&gt;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;proofId&nbsp;=&nbsp;createProof&nbsp;registration.Mobile
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;ProofRequired&nbsp;proofId
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;Some&nbsp;isValid&nbsp;<span style="color:blue;">-&gt;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;isValid&nbsp;<span style="color:blue;">then</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">do!</span>&nbsp;completeRegistration&nbsp;registration
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;RegistrationCompleted
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">else</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;proofId&nbsp;=&nbsp;createProof&nbsp;registration.Mobile
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;ProofRequired&nbsp;proofId
+&nbsp;&nbsp;&nbsp;&nbsp;}</pre>
+	</p>
+	<p>
+		Notice that by changing the <code>proof</code> argument to a <code>bool option</code>, you no longer need to call <code>verifyProof</code>, so you can remove it.
+	</p>
+	<p>
+		There's just one problem. The result of <code>Option.map (twoFA.VerifyProof r.Mobile) pid</code> is an <code>Option&lt;Async&lt;bool&gt;&gt;</code>, but you need an <code>Option&lt;bool&gt;</code>.
+	</p>
+	<p>
+		You can compose the SUT Facade in an asynchronous workflow, and use a <code>let!</code> binding, but that's not going to solve the problem. A <code>let!</code> binding only works when the outer container is <code>Async</code>. Here, the outermost container is <code>Option</code>. You're going to need to flip the containers around so that you get an <code>Async&lt;Option&lt;bool&gt;&gt;</code> that you can <code>let!</code>-bind:
+	</p>
+	<p>
+		<pre><span style="color:blue;">let</span>&nbsp;sut&nbsp;pid&nbsp;r&nbsp;=&nbsp;async&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;p&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">match</span>&nbsp;Option.map&nbsp;(twoFA.VerifyProof&nbsp;r.Mobile)&nbsp;pid&nbsp;<span style="color:blue;">with</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;Some&nbsp;b&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;async&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;b&#39;&nbsp;=&nbsp;b
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;Some&nbsp;b&#39;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;None&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;async&nbsp;{&nbsp;<span style="color:blue;">return</span>&nbsp;None&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return!</span>&nbsp;completeRegistrationWorkflow
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;twoFA.CreateProof
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;db.CompleteRegistration
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;p
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;r
+&nbsp;&nbsp;&nbsp;&nbsp;}</pre>
+	</p>
+	<p>
+		By pattern-matching on <code>Option.map (twoFA.VerifyProof r.Mobile) pid</code>, you can return one of two alternative asynchronous workflows.
+	</p>
+	<p>
+		Due to the <code>let!</code> binding, <code>p</code> is a <code>bool option</code> that you can pass to <code>completeRegistrationWorkflow</code>.
+	</p>
+	<h3 id="a271fa42747a4271a5420951763d3559">
+		Traversal <a href="#a271fa42747a4271a5420951763d3559" title="permalink">#</a>
+	</h3>
+	<p>
+		I know what you're going to say. You'll protest that I just moved complex behaviour out of <code>completeRegistrationWorkflow</code>. The implied assumption here is that <code>completeRegistrationWorkflow</code> is the top-level behaviour that you'd compose in a <a href="/2011/07/28/CompositionRoot">Composition Root</a>. The <code>createFixture</code> function plays that role in this refactoring exercise.
+	</p>
+	<p>
+		You'd normally view the Composition Root as a <a href="http://xunitpatterns.com/Humble%20Object.html">Humble Object</a> - an object that we accept isn't covered by tests because it has a cyclomatic complexity of one. This is no longer the case.
+	</p>
+	<p>
+		The conversion of <code>Option&lt;Async&lt;bool&gt;&gt;</code> to <code>Async&lt;Option&lt;bool&gt;&gt;</code> is, however, a well-known operation. In <a href="https://www.haskell.org">Haskell</a> this is known as a <em>traversal</em>, and it's a completely generic operation:
+	</p>
+	<p>
+		<pre><span style="color:green;">//&nbsp;(&#39;a&nbsp;-&gt;&nbsp;Async&lt;&#39;b&gt;)&nbsp;-&gt;&nbsp;&#39;a&nbsp;option&nbsp;-&gt;&nbsp;Async&lt;&#39;b&nbsp;option&gt;</span>
+<span style="color:blue;">let</span>&nbsp;traverse&nbsp;f&nbsp;=&nbsp;<span style="color:blue;">function</span>
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;Some&nbsp;x&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;async&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;x&#39;&nbsp;=&nbsp;f&nbsp;x
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;Some&nbsp;x&#39;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;None&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;async&nbsp;{&nbsp;<span style="color:blue;">return</span>&nbsp;None&nbsp;}</pre>
+	</p>
+	<p>
+		You can put this function in a general-purpose module called <code>AsyncOption</code> and cover it by unit tests if you will. You can even put this module in a separate library; it's perfectly decoupled from the the specifics of the registration flow domain.
+	</p>
+	<p>
+		If you do that, <code>completeRegistrationWorkflow</code> doesn't change, but the composition does:
+	</p>
+	<p>
+		<pre><span style="color:blue;">let</span>&nbsp;sut&nbsp;pid&nbsp;r&nbsp;=&nbsp;async&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;p&nbsp;=&nbsp;AsyncOption.traverse&nbsp;(twoFA.VerifyProof&nbsp;r.Mobile)&nbsp;pid
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return!</span>&nbsp;completeRegistrationWorkflow
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;twoFA.CreateProof
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;db.CompleteRegistration
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;p
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;r
+&nbsp;&nbsp;&nbsp;&nbsp;}</pre>
+	</p>
+	<p>
+		You're now back where you'd like to be: One impure action produces a value that you can pass to another function. There's no explicit branching in the code. The cyclomatic complexity remains one.
+	</p>
+	<h3 id="58e1461e9e304afd8c491f94150ebd35">
+		Change return type <a href="#58e1461e9e304afd8c491f94150ebd35" title="permalink">#</a>
+	</h3>
+	<p>
+		That first refactoring takes care of one out of three impure dependencies. Next, you can get rid of <code>createProof</code>. This one seems to be more difficult to get rid of. It doesn't seem to be required only in the <code>Some</code> case, so a <code>map</code> or <code>traverse</code> can't work. In both cases, however, the result of calling <code>createProof</code> is handled in exactly the same way.
+	</p>
+	<p>
+		Here's another common trick in functional programming: <a href="/2016/09/26/decoupling-decisions-from-effects">Decouple decisions from effects</a>. Return a value that indicates the decision that the function reaches, and then let the second impure action of the impure/pure/impure sandwich act on the decision.
+	</p>
+	<p>
+		In this case, you can model your decision as a <code>Mobile option</code>. You might want to consider a more explicit type, in order to better communicate intent, but it's best to keep each refactoring step small:
+	</p>
+	<p>
+		<pre><span style="color:blue;">let</span>&nbsp;completeRegistrationWorkflow
+&nbsp;&nbsp;&nbsp;&nbsp;(completeRegistration:&nbsp;Registration&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;Async&lt;unit&gt;)
+&nbsp;&nbsp;&nbsp;&nbsp;(proof:&nbsp;bool&nbsp;option)
+&nbsp;&nbsp;&nbsp;&nbsp;(registration:&nbsp;Registration)
+&nbsp;&nbsp;&nbsp;&nbsp;:&nbsp;Async&lt;Mobile&nbsp;option&gt;&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;async&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">match</span>&nbsp;proof&nbsp;<span style="color:blue;">with</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;None&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">return</span>&nbsp;Some&nbsp;registration.Mobile
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;Some&nbsp;isValid&nbsp;<span style="color:blue;">-&gt;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;isValid&nbsp;<span style="color:blue;">then</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">do!</span>&nbsp;completeRegistration&nbsp;registration
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;None
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">else</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;Some&nbsp;registration.Mobile
+&nbsp;&nbsp;&nbsp;&nbsp;}</pre>
+	</p>
+	<p>
+		Notice that the <code>createProof</code> dependency is no longer required. I've removed it from the argument list of <code>completeRegistrationWorkflow</code>.
+	</p>
+	<p>
+		The composition now looks like this:
+	</p>
+	<p>
+		<pre><span style="color:blue;">let</span>&nbsp;createFixture&nbsp;()&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;twoFA&nbsp;=&nbsp;Fake2FA&nbsp;()
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;db&nbsp;=&nbsp;FakeRegistrationDB&nbsp;()
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;sut&nbsp;pid&nbsp;r&nbsp;=&nbsp;async&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;p&nbsp;=&nbsp;AsyncOption.traverse&nbsp;(twoFA.VerifyProof&nbsp;r.Mobile)&nbsp;pid
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;res&nbsp;=&nbsp;completeRegistrationWorkflow&nbsp;db.CompleteRegistration&nbsp;p&nbsp;r
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;pidr&nbsp;=&nbsp;AsyncOption.traverse&nbsp;twoFA.CreateProof&nbsp;res
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;pidr
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;Option.map&nbsp;ProofRequired
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;Option.defaultValue&nbsp;RegistrationCompleted&nbsp;}</pre>
+	</p>
+	<p>
+		Thanks to the <code>let!</code> binding, the result <code>res</code> is a <code>Mobile option</code>. You can now let the <code>twoFA.CreateProof</code> method <code>traverse</code> over <code>res</code>. This produces an <code>Async&lt;Option&lt;ProofId&gt;&gt;</code> that you can <code>let!</code>-bind to <code>pidr</code> - a <code>ProofId option</code>.
+	</p>
+	<p>
+		You can use <code>Option.map</code> to wrap the <code>ProofId</code> value in a <code>ProofRequired</code> case, if it's there. This step of the final pipeline produces a <code>CompleteRegistrationResult option</code>.
+	</p>
+	<p>
+		Finally, you can use <code>Option.defaultValue</code> to fold the <code>option</code> into a <code>CompleteRegistrationResult</code>. The default value is <code>RegistrationCompleted</code>. This is the case value that'll be used if the <code>option</code> is <code>None</code>.
+	</p>
+	<p>
+		Again, the composition has a cyclomatic complexity of one, and the type of the <code>sut</code> remains <code>ProofId option -&gt; Registration -&gt; Async&lt;CompleteRegistrationResult&gt;</code>. This is a true refactoring. The type of the SUT remains the same, and no behaviour changes. The tests still pass, even though I haven't had to edit them.
+	</p>
+	<h3 id="6550df202542434e85937da702901cd1">
+		Change return type to Result <a href="#6550df202542434e85937da702901cd1" title="permalink">#</a>
+	</h3>
+	<p>
+		Consider the intent of <code>completeRegistrationWorkflow</code>. The purpose of the operation is to <em>complete</em> a registration workflow. The name is quite explicit. Thus, the <em>happy path</em> is when the proof ID is valid and the function can call <code>completeRegistration</code>.
+	</p>
+	<p>
+		Usually, when you call a function that returns an <code>option</code>, the implied contract is that the <code>Some</code> case represents the happy path. That's not the case here. The <code>Some</code> case carries information about the error paths. This isn't <a href="/2015/08/03/idiomatic-or-idiosyncratic">idiomatic</a>.
+	</p>
+	<p>
+		It'd be more appropriate to use a <code>Result</code> return value:
+	</p>
+	<p>
+		<pre><span style="color:blue;">let</span>&nbsp;completeRegistrationWorkflow
+&nbsp;&nbsp;&nbsp;&nbsp;(completeRegistration:&nbsp;Registration&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;Async&lt;unit&gt;)
+&nbsp;&nbsp;&nbsp;&nbsp;(proof:&nbsp;bool&nbsp;option)
+&nbsp;&nbsp;&nbsp;&nbsp;(registration:&nbsp;Registration)
+&nbsp;&nbsp;&nbsp;&nbsp;:&nbsp;Async&lt;Result&lt;unit,&nbsp;Mobile&gt;&gt;&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;async&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">match</span>&nbsp;proof&nbsp;<span style="color:blue;">with</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;None&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">return</span>&nbsp;Error&nbsp;registration.Mobile
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;Some&nbsp;isValid&nbsp;<span style="color:blue;">-&gt;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;isValid&nbsp;<span style="color:blue;">then</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">do!</span>&nbsp;completeRegistration&nbsp;registration
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;Ok&nbsp;()
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">else</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;Error&nbsp;registration.Mobile
+&nbsp;&nbsp;&nbsp;&nbsp;}</pre>
+	</p>
+	<p>
+		This change is in itself small, but it does require some changes to the composition. Just as you had to add an <code>Option.traverse</code> function when the return type was an <code>option</code>, you'll now have to add similar functionality to <code>Result</code>. <em>Result</em> is also known as <a href="/2018/06/11/church-encoded-either">Either</a>. Not only <a href="/2019/01/07/either-bifunctor">is it a bifunctor</a>, you can also traverse both axes. Haskell calls this a <code>bitraversable</code> functor.
+	</p>
+	<p>
+		<pre><span style="color:green;">//&nbsp;(&#39;a&nbsp;-&gt;&nbsp;Async&lt;&#39;b&gt;)&nbsp;-&gt;&nbsp;(&#39;c&nbsp;-&gt;&nbsp;Async&lt;&#39;d&gt;)&nbsp;-&gt;&nbsp;Result&lt;&#39;a,&#39;c&gt;&nbsp;-&gt;&nbsp;Async&lt;Result&lt;&#39;b,&#39;d&gt;&gt;</span>
+<span style="color:blue;">let</span>&nbsp;traverseBoth&nbsp;f&nbsp;g&nbsp;=&nbsp;<span style="color:blue;">function</span>
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;Ok&nbsp;x&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;async&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;x&#39;&nbsp;=&nbsp;f&nbsp;x
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;Ok&nbsp;x&#39;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;Error&nbsp;e&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;async&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;e&#39;&nbsp;=&nbsp;g&nbsp;e
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;Error&nbsp;e&#39;&nbsp;}</pre>
+	</p>
+	<p>
+		Here I just decided to call the function <code>traverseBoth</code> and the module <code>AsyncResult</code>.
+	</p>
+	<p>
+		You're also going to need the equivalent of <code>Option.defaultValue</code> for <code>Result</code>. Something that translates both dimensions of <code>Result</code> into the same type. That's the <a href="/2019/06/03/either-catamorphism">Either catamorphism</a>, so you could, for example, introduce another general-purpose function called <code>cata</code>:
+	</p>
+	<p>
+		<pre><span style="color:green;">//&nbsp;(&#39;a&nbsp;-&gt;&nbsp;&#39;b)&nbsp;-&gt;&nbsp;(&#39;c&nbsp;-&gt;&nbsp;&#39;b)&nbsp;-&gt;&nbsp;Result&lt;&#39;a,&#39;c&gt;&nbsp;-&gt;&nbsp;&#39;b</span>
+<span style="color:blue;">let</span>&nbsp;cata&nbsp;f&nbsp;g&nbsp;=&nbsp;<span style="color:blue;">function</span>
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;Ok&nbsp;x&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;f&nbsp;x
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;Error&nbsp;e&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;g&nbsp;e</pre>
+	</p>
+	<p>
+		This is another entirely general-purpose function that you can put in a general-purpose module called <code>Result</code>, in a general-purpose library. You can also cover it by unit tests, if you like.
+	</p>
+	<p>
+		These two general-purpose functions enable you to compose the workflow:
+	</p>
+	<p>
+		<pre><span style="color:blue;">let</span>&nbsp;createFixture&nbsp;()&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;twoFA&nbsp;=&nbsp;Fake2FA&nbsp;()
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;db&nbsp;=&nbsp;FakeRegistrationDB&nbsp;()
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;sut&nbsp;pid&nbsp;r&nbsp;=&nbsp;async&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;p&nbsp;=&nbsp;AsyncOption.traverse&nbsp;(twoFA.VerifyProof&nbsp;r.Mobile)&nbsp;pid
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;res&nbsp;=&nbsp;completeRegistrationWorkflow&nbsp;db.CompleteRegistration&nbsp;p&nbsp;r
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;pidr&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;AsyncResult.traverseBoth
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(<span style="color:blue;">fun</span>&nbsp;()&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;async&nbsp;{&nbsp;<span style="color:blue;">return</span>&nbsp;()&nbsp;})
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;twoFA.CreateProof
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;res
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;pidr
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;Result.cata&nbsp;(<span style="color:blue;">fun</span>&nbsp;()&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;RegistrationCompleted)&nbsp;ProofRequired&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;sut,&nbsp;twoFA,&nbsp;db</pre>
+	</p>
+	<p>
+		This looks more confused than previous iterations. From here, though, it'll get better again. The first two lines of code are the same as before, but now <code>res</code> is a <code>Result&lt;unit, Mobile&gt;</code>. You still need to let <code>twoFA.CreateProof</code> traverse the 'error path', but now you also need to take care of the happy path.
+	</p>
+	<p>
+		In the <code>Ok</code> case you have a <code>unit</code> value (<code>()</code>), but <code>traverseBoth</code> expects its <code>f</code> and <code>g</code> functions to return <code>Async</code> values. I could have fixed that with a more specialised <code>traverseError</code> function, but we'll soon move on from here, so it's hardly worthwhile.
+	</p>
+	<p>
+		In Haskell, you can 'elevate' a value simply with the <code>pure</code> function, but in F#, you need the more cumbersome <code>(fun () -&gt; async { return () })</code> to achieve the same effect.
+	</p>
+	<p>
+		The traversal produces <code>pidr</code> (for <em>Proof ID Result</em>) - a <code>Result&lt;unit, ProofId&gt;</code> value.
+	</p>
+	<p>
+		Finally, it uses <code>Result.cata</code> to turn both the <code>Ok</code> and <code>Error</code> dimensions into a single <code>CompleteRegistrationResult</code> that can be returned.
+	</p>
+	<h3 id="d1c0adc81bc241c7a7a2ea9042356f24">
+		Removing the last dependency <a href="#d1c0adc81bc241c7a7a2ea9042356f24" title="permalink">#</a>
+	</h3>
+	<p>
+		There's still one dependency left: the <code>completeRegistration</code> function, but it's now trivial to remove. Instead of calling the dependency function from within <code>completeRegistrationWorkflow</code> you can use the same trick as before. Decouple the decision from the effect.
+	</p>
+	<p>
+		Return information about the decision the function made. In the above incarnation of the code, the <code>Ok</code> dimension is currently empty, since it only returns <code>unit</code>. You can use that 'channel' to communicate that you decided to complete a registration:
+	</p>
+	<p>
+		<pre><span style="color:blue;">let</span>&nbsp;completeRegistrationWorkflow
+&nbsp;&nbsp;&nbsp;&nbsp;(proof:&nbsp;bool&nbsp;option)
+&nbsp;&nbsp;&nbsp;&nbsp;(registration:&nbsp;Registration)
+&nbsp;&nbsp;&nbsp;&nbsp;:&nbsp;Async&lt;Result&lt;Registration,&nbsp;Mobile&gt;&gt;&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;async&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">match</span>&nbsp;proof&nbsp;<span style="color:blue;">with</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;None&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">return</span>&nbsp;Error&nbsp;registration.Mobile
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;Some&nbsp;isValid&nbsp;<span style="color:blue;">-&gt;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;isValid&nbsp;<span style="color:blue;">then</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;Ok&nbsp;registration
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">else</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;Error&nbsp;registration.Mobile
+&nbsp;&nbsp;&nbsp;&nbsp;}</pre>
+	</p>
+	<p>
+		This is another small change. When <code>isValid</code> is <code>true</code>, the function no longer calls <code>completeRegistration</code>. Instead, it returns <code>Ok registration</code>. This means that the return type is now <code>Async&lt;Result&lt;Registration, Mobile&gt;&gt;</code>. It also means that you can remove the <code>completeRegistration</code> function argument.
+	</p>
+	<p>
+		In order to compose this variation, you need one new general-purpose function. Perhaps you find this barrage of general-purpose functions exhausting, but it's an artefact of a design philosophy of the F# language. The F# base library contains only few general-purpose functions. Contrast this with <a href="https://en.wikipedia.org/wiki/Glasgow_Haskell_Compiler">GHC</a>'s <a href="http://hackage.haskell.org/package/base">base</a> library, which comes with all of these functions built in.
+	</p>
+	<p>
+		The new function is like <code>Result.cata</code>, but over <code>Async&lt;Result&lt;_&gt;&gt;</code>.
+	</p>
+	<p>
+		<pre><span style="color:green;">//&nbsp;(&#39;a&nbsp;-&gt;&nbsp;&#39;b)&nbsp;-&gt;&nbsp;(&#39;c&nbsp;-&gt;&nbsp;&#39;b)&nbsp;-&gt;&nbsp;Async&lt;Result&lt;&#39;a,&#39;c&gt;&gt;&nbsp;-&gt;&nbsp;Async&lt;&#39;b&gt;</span>
+<span style="color:blue;">let</span>&nbsp;cata&nbsp;f&nbsp;g&nbsp;r&nbsp;=&nbsp;async&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;r&#39;&nbsp;=&nbsp;r
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;Result.cata&nbsp;f&nbsp;g&nbsp;r&#39;&nbsp;}</pre>
+	</p>
+	<p>
+		Since this function does conceptually the same as <code>Result.cata</code> I decided to retain the name <code>cata</code> and just put it in the <code>AsyncResult</code> module. (This may not be strictly correct, as I haven't really given a lot of thought to what a catamorphism for <code>Async</code> would look like, if one exists. I'm open to suggestions about better naming. After all, <code>cata</code> is hardly an idiomatic F# name.)
+	</p>
+	<p>
+		With <code>AsyncResult.cata</code> you can now compose the system:
+	</p>
+	<p>
+		<pre><span style="color:blue;">let</span>&nbsp;sut&nbsp;pid&nbsp;r&nbsp;=&nbsp;async&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;p&nbsp;=&nbsp;AsyncOption.traverse&nbsp;(twoFA.VerifyProof&nbsp;r.Mobile)&nbsp;pid
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;res&nbsp;=&nbsp;completeRegistrationWorkflow&nbsp;p&nbsp;r
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return!</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;res
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;AsyncResult.traverseBoth&nbsp;db.CompleteRegistration&nbsp;twoFA.CreateProof
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;AsyncResult.cata&nbsp;(<span style="color:blue;">fun</span>&nbsp;()&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;RegistrationCompleted)&nbsp;ProofRequired
+&nbsp;&nbsp;&nbsp;&nbsp;}</pre>
+	</p>
+	<p>
+		Not only did the call to <code>completeRegistrationWorkflow</code> get even simpler, but you also now avoid the awkwardly named <code>pidr</code> value. Thanks to the <code>let!</code> binding, <code>res</code> has the type <code>Result&lt;Registration, Mobile&gt;</code>.
+	</p>
+	<p>
+		Note that you can now let both impure actions (<code>db.CompleteRegistration</code> and <code>twoFA.CreateProof</code>) traverse the result. This step produces an <code>Async&lt;Result&lt;unit, ProofId&gt;&gt;</code> that's immediately piped to <code>AsyncResult.cata</code>. This reduces the two alternative dimensions of the <code>Result</code> to a single <code>Async&lt;CompleteRegistrationResult&gt;</code> value.
+	</p>
+	<p>
+		The <code>completeRegistrationWorkflow</code> function now begs to be further simplified.
+	</p>
+	<h3 id="db6e044e55f749ba8794d7a8f74e02f4">
+		Pure registration workflow <a href="#db6e044e55f749ba8794d7a8f74e02f4" title="permalink">#</a>
+	</h3>
+	<p>
+		<a href="/2019/02/11/asynchronous-injection">Once you remove all dependencies, your domain logic doesn't have to be asynchronous</a>. Nothing asynchronous happens in <code>completeRegistrationWorkflow</code>, so simplify it:
+	</p>
+	<p>
+		<pre><span style="color:blue;">let</span>&nbsp;completeRegistrationWorkflow
+&nbsp;&nbsp;&nbsp;&nbsp;(proof:&nbsp;bool&nbsp;option)
+&nbsp;&nbsp;&nbsp;&nbsp;(registration:&nbsp;Registration)
+&nbsp;&nbsp;&nbsp;&nbsp;:&nbsp;Result&lt;Registration,&nbsp;Mobile&gt;&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">match</span>&nbsp;proof&nbsp;<span style="color:blue;">with</span>
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;None&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;Error&nbsp;registration.Mobile
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;Some&nbsp;isValid&nbsp;<span style="color:blue;">-&gt;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;isValid&nbsp;<span style="color:blue;">then</span>&nbsp;Ok&nbsp;registration
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">else</span>&nbsp;Error&nbsp;registration.Mobile</pre>
+	</p>
+	<p>
+		Gone is the <code>async</code> computation expression, including the <code>return</code> keyword. This is now a <a href="https://en.wikipedia.org/wiki/Pure_function">pure function</a>.
+	</p>
+	<p>
+		You'll have to adjust the composition once more, but it's only a minor change:
+	</p>
+	<p>
+		<pre><span style="color:blue;">let</span>&nbsp;sut&nbsp;pid&nbsp;r&nbsp;=&nbsp;async&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;p&nbsp;=&nbsp;AsyncOption.traverse&nbsp;(twoFA.VerifyProof&nbsp;r.Mobile)&nbsp;pid
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return!</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;completeRegistrationWorkflow&nbsp;p&nbsp;r
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;AsyncResult.traverseBoth&nbsp;db.CompleteRegistration&nbsp;twoFA.CreateProof
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;AsyncResult.cata&nbsp;(<span style="color:blue;">fun</span>&nbsp;()&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;RegistrationCompleted)&nbsp;ProofRequired
+&nbsp;&nbsp;&nbsp;&nbsp;}</pre>
+	</p>
+	<p>
+		The result of invoking <code>completeRegistrationWorkflow</code> is no longer an <code>Async</code> value, so there's no reason to <code>let!</code>-bind it. Instead, you can call it and immediately pipe its output to <code>AsyncResult.traverseBoth</code>.
+	</p>
+	<h3 id="9a4c3af0f30843c2816af97a08b2f99b">
+		DRY <a href="#9a4c3af0f30843c2816af97a08b2f99b" title="permalink">#</a>
+	</h3>
+	<p>
+		Consider <code>completeRegistrationWorkflow</code>. Can you make it simpler?
+	</p>
+	<p>
+		At this point it should be evident that two of the branches contain duplicate code. Applying the <a href="https://en.wikipedia.org/wiki/Don%27t_repeat_yourself">DRY principle</a> you can simplify it:
+	</p>
+	<p>
+		<pre><span style="color:blue;">let</span>&nbsp;completeRegistrationWorkflow
+&nbsp;&nbsp;&nbsp;&nbsp;(proof:&nbsp;bool&nbsp;option)
+&nbsp;&nbsp;&nbsp;&nbsp;(registration:&nbsp;Registration)
+&nbsp;&nbsp;&nbsp;&nbsp;:&nbsp;Result&lt;Registration,&nbsp;Mobile&gt;&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">match</span>&nbsp;proof&nbsp;<span style="color:blue;">with</span>
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;Some&nbsp;<span style="color:blue;">true</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;Ok&nbsp;registration
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;_&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;Error&nbsp;registration.Mobile</pre>
+	</p>
+	<p>
+		I'm not too fond of this style of type annotation for simple functions like this, so I'd like to remove it:
+	</p>
+	<p>
+		<pre><span style="color:blue;">let</span>&nbsp;completeRegistrationWorkflow&nbsp;proof&nbsp;registration&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">match</span>&nbsp;proof&nbsp;<span style="color:blue;">with</span>
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;Some&nbsp;<span style="color:blue;">true</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;Ok&nbsp;registration
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;_&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;Error&nbsp;registration.Mobile</pre>
+	</p>
+	<p>
+		These two steps are pure refactorings: they only reorganise the code that implements <code>completeRegistrationWorkflow</code>, so the composition doesn't change.
+	</p>
+	<h3 id="705c34900d6342f3a79356734a67b355">
+		Essential complexity <a href="#705c34900d6342f3a79356734a67b355" title="permalink">#</a>
+	</h3>
+	<p>
+		While reading this article, you may have felt frustration gather. <em>This is cheating! You took out all of the complexity. Now there's nothing left!</em> You're likely to feel that I've moved a lot of behaviour into untestable code. I've done nothing of the sort.
+	</p>
+	<p>
+		I'll remind you that while functions like <code>AsyncOption.traverse</code> and <code>AsyncResult.cata</code> do contain branching behaviour, they <em>can</em> be tested. In fact, <a href="/2015/05/07/functional-design-is-intrinsically-testable">since they're pure functions, they're intrinsically testable</a>.
+	</p>
+	<p>
+		It's true that a <em>composition</em> of a pure function with its impure dependencies may not be (unit) testable, but that's also true for a Dependency Injection-based object graph composed in a Composition Root.
+	</p>
+	<p>
+		Compositions of functions may look non-trivial, but to a degree, the type system will assist you. If your composition compiles, it's likely that you've composed the impure/pure/impure sandwich correctly.
+	</p>
+	<p>
+		Did I take out all the complexity? I didn't. There's a bit left; the function now has a cyclomatic complexity of <em>two</em>. If you look at the original function, you'll see that <em>the duplication was there all along</em>. Once you remove all the accidental complexity, you uncover the essential complexity. This happens to me so often when I apply functional programming principles that <a href="/2019/07/01/yes-silver-bullet">I fancy that functional programming is a silver bullet</a>.
+	</p>
+	<h3 id="0086592a037947e397169271eeaad627">
+		Pipeline composition <a href="#0086592a037947e397169271eeaad627" title="permalink">#</a>
+	</h3>
+	<p>
+		We're mostly done now. The problem now appears in all its simplicity, and you have an impure/pure/impure sandwich.
+	</p>
+	<p>
+		You can still improve the code, though.
+	</p>
+	<p>
+		If you consider the current composition, you may find that <code>p</code> isn't the best variable name. I admit that I struggled with naming that variable. <a href="/2016/10/25/when-variable-names-are-in-the-way">Sometimes, variable names are in the way</a> and the code might be clearer if you could elide them by compose a pipeline of functions.
+	</p>
+	<p>
+		That's always worth an attempt. This time, ultimately I find that it doesn't improve things, but even an attempt can be illustrative.
+	</p>
+	<p>
+		If you want to eliminate a named value, you can often do so by piping the output of the function that produced the variable directly to the next function. This does, however, require that the function argument is the right-most. Currently, that's not the case. <code>registration</code> is right-most, and <code>proof</code> is to the left.
+	</p>
+	<p>
+		There's no compelling reason that the arguments should come in that order, so flip them:
+	</p>
+	<p>
+		<pre><span style="color:blue;">let</span>&nbsp;completeRegistrationWorkflow&nbsp;registration&nbsp;proof&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">match</span>&nbsp;proof&nbsp;<span style="color:blue;">with</span>
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;Some&nbsp;<span style="color:blue;">true</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;Ok&nbsp;registration
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;_&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;Error&nbsp;registration.Mobile</pre>
+	</p>
+	<p>
+		This enables you to write the entire composition as a single pipeline:
+	</p>
+	<p>
+		<pre><span style="color:blue;">let</span>&nbsp;sut&nbsp;pid&nbsp;r&nbsp;=&nbsp;async&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return!</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;AsyncOption.traverse&nbsp;(twoFA.VerifyProof&nbsp;r.Mobile)&nbsp;pid
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;Async.map&nbsp;(completeRegistrationWorkflow&nbsp;r)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;Async.bind&nbsp;(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;AsyncResult.traverseBoth&nbsp;db.CompleteRegistration&nbsp;twoFA.CreateProof
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&gt;&gt;&nbsp;AsyncResult.cata&nbsp;(<span style="color:blue;">fun</span>&nbsp;()&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;RegistrationCompleted)&nbsp;ProofRequired)
+&nbsp;&nbsp;&nbsp;&nbsp;}</pre>
+	</p>
+	<p>
+		This does, however, call for two new general-purpose functions: <code>Async.map</code> and <code>Async.bind</code>:
+	</p>
+	<p>
+		<pre><span style="color:green;">//&nbsp;(&#39;a&nbsp;-&gt;&nbsp;&#39;b)&nbsp;-&gt;&nbsp;Async&lt;&#39;a&gt;&nbsp;-&gt;&nbsp;Async&lt;&#39;b&gt;</span>
+<span style="color:blue;">let</span>&nbsp;map&nbsp;f&nbsp;x&nbsp;=&nbsp;async&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;x&#39;&nbsp;=&nbsp;x
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;f&nbsp;x&#39;&nbsp;}
+ 
+<span style="color:green;">//&nbsp;(&#39;a&nbsp;-&gt;&nbsp;Async&lt;&#39;b&gt;)&nbsp;-&gt;&nbsp;Async&lt;&#39;a&gt;&nbsp;-&gt;&nbsp;Async&lt;&#39;b&gt;</span>
+<span style="color:blue;">let</span>&nbsp;bind&nbsp;f&nbsp;x&nbsp;=&nbsp;async&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;x&#39;&nbsp;=&nbsp;x
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return!</span>&nbsp;f&nbsp;x&#39;&nbsp;}</pre>
+	</p>
+	<p>
+		In my opinion, these functions ought to belong to F#'s <code>Async</code> module, but for <a href="https://github.com/fsharp/fslang-suggestions/issues/318">for reasons that aren't clear to me, they don't</a>. As you can see, though, they're easy to add.
+	</p>
+	<p>
+		While the this change gets rid of the <code>p</code> variable, I don't think it makes the overall composition easier to understand. The action of swapping the function arguments does, however, enable another simplification.
+	</p>
+	<h3 id="db99963569414669a865d4d10ad95b6e">
+		Eta reduction <a href="#db99963569414669a865d4d10ad95b6e" title="permalink">#</a>
+	</h3>
+	<p>
+		Now that <code>proof</code> is <code>completeRegistrationWorkflow</code>'s last function argument, you can perform an <em>eta reduction:</em>
+	</p>
+	<p>
+		<pre><span style="color:blue;">let</span>&nbsp;completeRegistrationWorkflow&nbsp;registration&nbsp;=&nbsp;<span style="color:blue;">function</span>
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;Some&nbsp;<span style="color:blue;">true</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;Ok&nbsp;registration
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;_&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;Error&nbsp;registration.Mobile</pre>
+	</p>
+	<p>
+		Not everyone is a fan of the <a href="https://en.wikipedia.org/wiki/Tacit_programming">point-free style</a>, but I like it. YMMV.
+	</p>
+	<h3 id="798d1bb566224090a676d386afc54ea4">
+		Sandwich <a href="#798d1bb566224090a676d386afc54ea4" title="permalink">#</a>
+	</h3>
+	<p>
+		Regardless of whether you prefer <code>completeRegistrationWorkflow</code> in point-free or pointed style, I think that the composition needs improvement. It should explicitly communicate that it's an impure/pure/impure sandwich. This makes it necessary to reintroduce some variables, so I'm also going to bite the bullet and devise some better names.
+	</p>
+	<p>
+		<pre><span style="color:blue;">let</span>&nbsp;sut&nbsp;pid&nbsp;r&nbsp;=&nbsp;async&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;validityOfProof&nbsp;=&nbsp;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;AsyncOption.traverse&nbsp;(twoFA.VerifyProof&nbsp;r.Mobile)&nbsp;pid
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;decision&nbsp;=&nbsp;completeRegistrationWorkflow&nbsp;r&nbsp;validityOfProof
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return!</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;decision
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;AsyncResult.traverseBoth&nbsp;db.CompleteRegistration&nbsp;twoFA.CreateProof
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;AsyncResult.cata&nbsp;(<span style="color:blue;">fun</span>&nbsp;()&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;RegistrationCompleted)&nbsp;ProofRequired
+&nbsp;&nbsp;&nbsp;&nbsp;}</pre>
+	</p>
+	<p>
+		Instead of <code>p</code>, I decided to call the first value <code>validityOfProof</code>. This is the result of the first impure action in the sandwich (the upper slice of bread).
+	</p>
+	<p>
+		While <code>validityOfProof</code> is the result of an impure action, the value itself is pure and can be used as input to <code>completeRegistrationWorkflow</code>. This is the pure part of the sandwich. I called the output <code>decision</code> because the workflow makes a decision based on its input, and it's up to the caller to act on that decision.
+	</p>
+	<p>
+		Notice that <code>decision</code> is bound with a <code>let</code> binding (instead of a <code>let!</code> binding), despite taking place inside an <code>async</code> workflow. This is because <code>completeRegistrationWorkflow</code> is pure. It doesn't return an <code>Async</code> value.
+	</p>
+	<p>
+		The second impure action acts on <code>decision</code> through a pipeline of <code>AsyncResult.traverseBoth</code> and <code>AsyncResult.cata</code>, as previously explained.
+	</p>
+	<p>
+		I think that the impure/pure/impure sandwich is more visible like this, so that was my final edit. I'm happy with how it looks now.
+	</p>
+	<h3 id="a4c98d81322e4010a0dfcb1c59955812">
+		Conclusion <a href="#a4c98d81322e4010a0dfcb1c59955812" title="permalink">#</a>
+	</h3>
+	<p>
+		I don't claim that you can always refactor code to an impure/pure/impure sandwich. In fact, <a href="/2017/07/10/pure-interactions">I can easily envision categories of software where such an architecture seems impossible</a>.
+	</p>
+	<p>
+		Still, I find it intriguing that when I find myself in the realm of web services or message-based applications, I can't recall a case where a sandwich has been impossible. Surely, there must cases where it is so. That's the reason that I solicit examples. This article was a response to such an example. I found it fruitful, because it enabled me to discuss several useful techniques for composing behaviour in a functional architecture. On the other hand, it failed to be a counter-example.
+	</p>
+	<p>
+		I'm sure that some readers are left with a nagging doubt. <em>That's all very impressive, but would you actually write code like that in a piece of production software?</em>
+	</p>
+	<p>
+		If it was up to me, then: <em>yes.</em> I find that when I can keep code pure, it's trivial to unit test and there's no test-induced damage. Functions also compose in a way objects don't easily do, so there's many advantages to functional programming. I'll take them when they're available.
+	</p>
+	<p>
+		As always, context matters. I've been in team settings where other team members would embrace this style of programming, and in other environments where team members wouldn't understand what was going on. In the latter case, I'd adjust my approach to challenge, not alienate, other team members.
+	</p>
+	<p>
+		My intention with this article was to show what's <em>possible</em>, not to dictate what you should do. That's up to you.
+	</p>
+	<p>
+		This article is the December 2 entry in the <a href="https://sergeytihon.com/2019/11/05/f-advent-calendar-in-english-2019">F# Advent Calendar in English 2019</a>.
+	</p>
+</div>
