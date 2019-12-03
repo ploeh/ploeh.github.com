@@ -897,3 +897,100 @@ image_alt: "A flowchart describing the workflow for completing a registration."
 		This article is the December 2 entry in the <a href="https://sergeytihon.com/2019/11/05/f-advent-calendar-in-english-2019">F# Advent Calendar in English 2019</a>.
 	</p>
 </div>
+<div id="comments">
+<hr>
+<h2 id="comments-header">Comments</h2>
+<div class="comment" id="b76e91ee831445549c6ca25358dda23a">
+	<div class="comment-author"><a href="https://dusted.codes/">Dustin Moris Gorski</a></div>
+	<div class="comment-content">
+		<p>Thank you so much for the comprehensive reply to my comment. It was very instructive to see refactoring process, from thought to code. The post is an excellent reply to the question I asked.</p>
+<h3>A slight modification</h3>
+<p>In my original comment, I made one simplification that, in hindsight, I perhaps should not have made. It is not critical, but it complicates things slightly. In reality, the <code>completeRegistration</code> function does not return <code>Async&lt;unit&gt;</code>, but <code>Async&lt;Result&lt;unit, CompleteRegistrationError&gt;&gt;</code> (where, currently, <code>CompleteRegistrationError</code> has the single case <code>UserExists</code>, returned if the DB throws a unique constraint error).</p>
+<p>As I see it, the impact of this to your refactoring is two-fold:</p>
+<ul>
+<li>You can&#39;t easily use <code>AsyncResult.traverseBoth</code>, since the signatures between the two cases aren&#39;t compatible (unless you want to mess around with nested <code>Result</code> values). You could write a custom <code>traverse</code> function just for the needed signature, but then we’ve traveled well into the lands of “generic does not imply general”.</li>
+<li>It might be better to model the registration result (completed vs. proof required) as its own DU, with <code>Result</code> being reserved for actual errors.</li>
+
+</ul>
+<h3>Evaluating the refactoring</h3>
+<p>My original comment ended in the following question (emphasis added):</p>
+<blockquote><p>Is it possible to refactor this to direct input/output, <strong>in a way that actually reduces complexity where it matters?</strong></p>
+</blockquote>
+<p>With this (vague) question and the above modifications in mind, let&#39;s look at the relevant code before/after. In both cases, there are two functions: The workflow/logic, and the composition.</p>
+<h4>Before</h4>
+<p>Before refactoring, we have a slightly complex impure workflow (which still is fairly easily testable using state-based testing, as you so aptly demonstrated) – note the <code>asyncResult</code> CE (I’m using the excellent FsToolkit.ErrorHandling, if anyone wonders) and the updated signatures; otherwise it’s the same:</p>
+<pre><code class='language-f#' lang='f#'>let completeRegistrationWorkflow
+    (createProof: Mobile -&gt; Async&lt;ProofId&gt;)
+    (verifyProof: Mobile -&gt; ProofId -&gt; Async&lt;bool&gt;)
+    (completeRegistration: Registration -&gt; Async&lt;Result&lt;unit, CompleteRegistrationError&gt;&gt;)
+    (proofId: ProofId option)
+    (registration: Registration)
+    : Async&lt;Result&lt;CompleteRegistrationResult, CompleteRegistrationError&gt;&gt; =
+  asyncResult {
+    match proofId with
+    | None -&gt;
+        let! proofId = createProof registration.Mobile
+        return ProofRequired proofId
+    | Some proofId -&gt;
+        let! isValid = verifyProof registration.Mobile proofId
+        if isValid then
+          do! completeRegistration registration
+          return RegistrationCompleted
+        else
+          let! proofId = createProof registration.Mobile
+          return ProofRequired proofId
+  }
+</code></pre>
+<p>Secondly, we have the trivial &quot;humble object&quot; composition, which looks like this:</p>
+<pre><code class='language-f#' lang='f#'>let complete proofId validReg =
+  Workflows.Registration.complete
+    Http.createMobileClaimProof
+    Http.verifyMobileClaimProof
+    Db.completeRegistration
+    proofId
+    validReg
+</code></pre>
+<p>The composition is, indeed, humble – the only thing it does is call the higher-order workflow function with the correct parameters. It has no cyclomatic complexity and is trivial to read, and I don&#39;t think anyone would consider it necessary to test.</p>
+<h4>After</h4>
+<p>After refactoring, we have the almost trivial pure function we extracted (for simplicity I let it return <code>Result</code> here, as you proposed):</p>
+<pre><code class='language-f#' lang='f#'>let completePure reg proofValidity =
+  match proofValidity with
+  | Some true -&gt; Ok reg
+  | Some false | None -&gt; Error reg.Mobile
+</code></pre>
+<p>Secondly, we have the composition function. Now, with the modification to <code>completeRegistration</code> (returning <code>Async&lt;Result&lt;_,_&gt;&gt;</code>), it can&#39;t as easily be written in point-free style. You might certainly be able to improve it, but here is my quick initial take.</p>
+<pre><code class='language-f#' lang='f#'>let complete proofId reg : Async&lt;Result&lt;CompleteRegistrationResult, CompleteRegistrationError&gt;&gt; =
+  asyncResult {
+    let! proofValidity =
+      proofId |&gt; Option.traverseAsync (Http.verifyMobileClaimProof reg.Mobile)
+
+    match completePure reg proofValidity with
+    | Ok reg -&gt;
+        do! Db.completeRegistration reg
+        return RegistrationCompleted
+    | Error mobile -&gt;
+        let! proofId = Http.createMobileClaimProof mobile
+        return ProofRequired proofId
+  }
+</code></pre>
+<h4>Evaluation</h4>
+<p>Now that we have presented the code before/after, let us take stock of what we have gained and lost by the refactoring.</p>
+<p>Pros:</p>
+<ul>
+<li>We have gotten rid of the &quot;DI workflow&quot; entirely</li>
+<li>More of the logic is pure</li>
+
+</ul>
+<p>Cons:</p>
+<ul>
+<li>The logic we extracted to a pure function is almost trivial. This is not in itself bad, but one can wonder whether it was worth it (apart from the purely instructive aspects).</li>
+<li>If the extracted logic is pure, where then did the rest of the complexity go? The only place it could – it ended up in the &quot;composition&quot;, i.e. the &quot;humble object&quot;. The composition function isn&#39;t just calling a higher-order function with the correct function arguments any more; it has higher cyclomatic complexity and is much harder to read, and can&#39;t be easily tested (since it&#39;s a composition function). The new composition is, so to say, quite a bit less humble than the original composition. This is particularly evident in my updated version, but personally I also have to look at your simpler(?), point-free version a couple of times to convince myself that it is, really, not doing anything wrong. (Though regardless of whether a function is written point-free or not, it does the exact same thing and has the same complexity.)</li>
+<li>To the point above: The composition function needs many &quot;complex&quot; helper functions that would likely confuse, if not outright alienate beginner F# devs (which could, for example, lead to worse onboarding). This is particularly relevant for non-standard functions like <code>AsyncOption.traverse</code>, <code>AsyncResult.traverseBoth</code>, <code>AsyncResult.cata</code>, etc.</li>
+
+</ul>
+<p>Returning to my initial question: Does the refactoring “reduce complexity where it matters?“ I’m not sure. This is (at least partly) “personal opinions” territory, of course, and my vague question doesn’t help. But personally I find the result of the refactoring more complex to understand than the original, DI workflow-based version.</p>
+<p>Based on Scott Wlaschin’s book Domain Modelling Made Functional, it’s possible he might agree. He seems very fond of the “DI workflow” approach there. I personally prefer a bit more dependency rejection than that, because I find “DR”/sandwiches often leads to simpler code, but in this particular case, I may prefer the impure DI workflow, tested using state-based testing. At least for the more complex code I described, but perhaps also for your original example.</p>
+<p>Still, I truly appreciate your taking the time to respond in this manner. It was very instructive, as always, which was after all the point. And you’re welcome to share any insights regarding this comment, too.</p>
+	</div>
+</div>
+</div>
