@@ -1180,4 +1180,131 @@ image_alt: "A flowchart describing the workflow for completing a registration."
 	    </div>
 	    <div class="comment-date">2019-12-10 11:29 UTC</div>
 	</div>
+
+	<div class="comment" id="fea1498fe43543f29a01eb6101dbdb9f">
+	    <div class="comment-author"><a href="{{ HOME_PATH }}">Mark Seemann</a></div>
+	    <div class="comment-content">
+	    	<p>
+	    		Christer, I'd hoped that I'd already addressed some of your concerns in the article itself, but I may not have done a good enough job of it. Overall, given a question like
+	    		<blockquote>
+	    			"Is it possible to refactor this to direct input/output, in a way that actually reduces complexity where it matters?"
+	    		</blockquote>
+	    		I tend to put emphasis on <em>is it possible</em>. Not that the rest of the question is unimportant, but it's more subjective. Perhaps you find that my article didn't answer your question, but I hope at least that I managed to establish that, yes, it's possible to refactor to an impure-pure-impure sandwich.
+	    	</p>
+	    	<p>
+	    		Does it matter? I think it does, but that's subjective. I do think, though, that I can objectively say that <a href="/2018/11/19/functional-architecture-a-definition">my refactoring is functional</a>, whereas <a href="/2017/01/30/partial-application-is-dependency-injection">passing impure functions as arguments isn't</a>. Whether or not an architecture ought to be functional is, again, subjective. No-one says that it has to be. That's up to you.
+	    	</p>
+	    	<p>
+	    		As I wrote in <a href="#e90332adb7d24e2b8aa1484c302b6f8c">my preliminary response</a>, I'm not going to address your modification. I don't see that it matters. Even when you return an <code>Async&lt;Result&lt;_,_&gt;&gt;</code> you can <code>map</code>, <code>bind</code>, or <code>traverse</code> over it. You may not be able to use <code>AsyncResult.traverseBoth</code>, but you can derive specialisations like <code>AsyncResult.traverseOk</code> and <code>AsyncResult.traverseError</code>.
+	    	</p>
+	    	<p>
+	    		First, like you did, I find it illustrative to juxtapose the alternatives. I'm going to use the original example first:
+	    	</p>
+	    	<p>
+	    		<pre><span style="color:blue;">let</span>&nbsp;completeRegistrationWorkflow
+&nbsp;&nbsp;&nbsp;&nbsp;(createProof:&nbsp;Mobile&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;Async&lt;ProofId&gt;)
+&nbsp;&nbsp;&nbsp;&nbsp;(verifyProof:&nbsp;Mobile&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;ProofId&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;Async&lt;bool&gt;)
+&nbsp;&nbsp;&nbsp;&nbsp;(completeRegistration:&nbsp;Registration&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;Async&lt;unit&gt;)
+&nbsp;&nbsp;&nbsp;&nbsp;(proofId:&nbsp;ProofId&nbsp;option)
+&nbsp;&nbsp;&nbsp;&nbsp;(registration:&nbsp;Registration)
+&nbsp;&nbsp;&nbsp;&nbsp;:&nbsp;Async&lt;CompleteRegistrationResult&gt;&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;async&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">match</span>&nbsp;proofId&nbsp;<span style="color:blue;">with</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;None&nbsp;<span style="color:blue;">-&gt;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;proofId&nbsp;=&nbsp;createProof&nbsp;registration.Mobile
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;ProofRequired&nbsp;proofId
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;Some&nbsp;proofId&nbsp;<span style="color:blue;">-&gt;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;isValid&nbsp;=&nbsp;verifyProof&nbsp;registration.Mobile&nbsp;proofId
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;isValid&nbsp;<span style="color:blue;">then</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">do!</span>&nbsp;completeRegistration&nbsp;registration
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;RegistrationCompleted
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">else</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;proofId&nbsp;=&nbsp;createProof&nbsp;registration.Mobile
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;ProofRequired&nbsp;proofId
+&nbsp;&nbsp;&nbsp;&nbsp;}
+
+<span style="color:blue;">let</span>&nbsp;sut&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;completeRegistrationWorkflow
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;twoFA.CreateProof
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;twoFA.VerifyProof
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;db.CompleteRegistration</pre>
+	    	</p>
+	    	<p>
+	    		In contrast, here's my refactoring:
+	    	</p>
+	    	<p>
+	    		<pre><span style="color:blue;">let</span>&nbsp;completeRegistrationWorkflow&nbsp;registration&nbsp;=&nbsp;<span style="color:blue;">function</span>
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;Some&nbsp;<span style="color:blue;">true</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;Ok&nbsp;registration
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;_&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;Error&nbsp;registration.Mobile
+
+<span style="color:blue;">let</span>&nbsp;sut&nbsp;pid&nbsp;r&nbsp;=&nbsp;async&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;validityOfProof&nbsp;=&nbsp;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;AsyncOption.traverse&nbsp;(twoFA.VerifyProof&nbsp;r.Mobile)&nbsp;pid
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;decision&nbsp;=&nbsp;completeRegistrationWorkflow&nbsp;r&nbsp;validityOfProof
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return!</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;decision
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;AsyncResult.traverseBoth&nbsp;db.CompleteRegistration&nbsp;twoFA.CreateProof
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;AsyncResult.cata&nbsp;(<span style="color:blue;">fun</span>&nbsp;()&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;RegistrationCompleted)&nbsp;ProofRequired
+&nbsp;&nbsp;&nbsp;&nbsp;}</pre>
+	    	</p>
+	    	<p>
+	    		It's true that my composition (<code>sut</code>) seems more involved than yours, but the overall trade-off looks good to me. In total, the code is simpler.
+	    	</p>
+	    	<p>
+	    		In your <em>evaluation</em>, you make some claims that I'd like to specifically address. Most are reasonable, but I think a few require special attention:
+	    		<blockquote>
+	    			"The logic we extracted to a pure function is almost trivial."
+	    		</blockquote>
+	    		Indeed. This should be listed as a <em>pro</em>, not a <em>con</em>. Whether or not it's worth it is a different discussion.
+	    	</p>
+	    	<p>
+	    		As I wrote in the article:
+	    		<blockquote>
+	    			"If you look at the original function, you'll see that <em>the duplication was there all along</em>. Once you remove all the accidental complexity, you uncover the essential complexity."
+	    		</blockquote>
+	    		(Emphasis from the original.) Isn't it always worth it to take away accidental complexity?
+	    		<blockquote>
+	    			"The composition function isn't just calling a higher-order function with the correct function arguments any more; it has higher cyclomatic complexity"
+	    		</blockquote>
+	    		<a href="/2019/12/09/put-cyclomatic-complexity-to-good-use/#de927bfcc95d410bbfcd0adf7a63926b">No, it doesn't</a>. I has a cyclomatic complexity of <em>1</em>, exactly like the original humble object.
+	    		<blockquote>
+	    			"can't be easily tested"
+	    		</blockquote>
+	    		True, but neither can the original humble object.
+	    		<blockquote>
+	    			"The new composition is, so to say, quite a bit less humble than the original composition."
+	    		</blockquote>
+	    		According to which criterion? It has the same cyclomatic complexity, but I admit that more characters went into typing it. On the other hand, the composition juxtaposed with the actual function has far fewer characters than the original example.
+	    	</p>
+	    	<p>
+	    		You also write that
+	    		<blockquote>
+	    			"The composition function needs many "complex" helper functions [...]. This is particularly relevant for non-standard functions like <code>AsyncOption.traverse</code>, <code>AsyncResult.traverseBoth</code>, <code>AsyncResult.cata</code>, etc."
+	    		</blockquote>
+	    		I don't like the epithet <em>non-standard</em>. It's true that these functions aren't in <code>FSharp.Core</code>, for reasons that aren't clear to me. In comparison, they're part of the standard <code>base</code> library in Haskell.
+	    	</p>
+	    	<p>
+	    		There's nothing non-standard about functions like these. Like <code>map</code> and <code>bind</code>, traversals and catamorphisms are <a href="/2017/10/04/from-design-patterns-to-category-theory">universal abstractions</a>. They exist independently of particular programming languages or library packages.
+	    	</p>
+	    	<p>
+	    		I think that it's fair criticism that they may not be friendly to absolute beginners, but they're still fairly basic ideas that address real needs. The same can be said for the <code>asyncResult</code> computation expression that you've decided to use. It's also 'non-standard' only in the sense that it's not part of <code>FSharp.Core</code>, but otherwise standard in that it's just a stack of monads, and plenty of libraries supply that functionality. You can also write that computation expression yourself in a dozen lines of code.
+	    	</p>
+	    	<p>
+	    		In the end, all of this is subjective. As I also wrote in my conclusion:
+	    		<blockquote>
+	    			<p>
+	    				"I've been in team settings where [...] team members wouldn't understand what was going on. In the latter case, I'd adjust my approach to challenge, not alienate, other team members.
+	    			</p>
+	    			<p>
+	    				"My intention with this article was to show what's possible, not to dictate what you should do."
+	    			</p>
+	    		</blockquote>
+	    		What I do, however, think is important to realise is that what I suggest is to learn a set of concepts <em>once</em>. Once you understand <a href="/2018/03/22/functors">functors</a>, monads, traversals etcetera, that's knowledge that applies to F#, Haskell, C#, JavaScript (I suppose) and so on.
+	    	</p>
+	    	<p>
+	    		Personally, I find it a better investment of my time to learn a general concept once, and then work with trivial code, rather than having to learn, over and over again, how to deal with each new code base's accidental complexity.
+	    	</p>
+	    </div>
+	    <div class="comment-date">2019-12-12 2:56 UTC</div>
+	</div>
 </div>
