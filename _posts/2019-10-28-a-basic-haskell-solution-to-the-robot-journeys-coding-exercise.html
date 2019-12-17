@@ -1,0 +1,303 @@
+---
+layout: post
+title: "A basic Haskell solution to the robot journeys coding exercise"
+description: "This article shows an idiomatic, yet beginner-friendly Haskell solution to a coding exercise."
+date: 2019-10-28 4:34 UTC
+tags: [Haskell]
+---
+{% include JB/setup %}
+
+<div id="post">
+	<p>
+		<em>{{ page.description }}</em>
+	</p>
+	<p>
+		<a href="https://twitter.com/mikehadlow/status/1186332184086495233">Mike Hadlow tweeted</a> a coding exercise that involves parsing and evaluating instruction sets. <a href="https://www.haskell.org">Haskell</a> excels at such problems, so I decided to give it a go. Since this was only an exercise for the fun of it, I didn't want to set up a complete Haskell project. Rather, I wanted to write one or two <code>.hs</code> files that I could interact with via <em>GHCi</em>. This means no lenses, monad transformers, or other fancy libraries.
+	</p>
+	<p>
+		Hopefully, this makes the code friendly to Haskell beginners. It shows what I consider <a href="/2015/08/03/idiomatic-or-idiosyncratic">idiomatic</a>, but basic Haskell, solving a problem of moderate difficulty.
+	</p>
+	<h3 id="79b308125b2d4bcc9df79f7c6569a6e9">
+		The problem <a href="#79b308125b2d4bcc9df79f7c6569a6e9" title="permalink">#</a>
+	</h3>
+	<p>
+		<a href="https://github.com/mikehadlow/Journeys">Mike Hadlow has a detailed description of the exercise</a>, but in short, you're given a file with a set of instructions that look like this:
+	</p>
+	<p>
+		<pre>1 1 E
+RFRFRFRF
+1 1 E</pre>
+	</p>
+	<p>
+		The first and last lines describe the position and orientation of a robot. The first line, for example, describes a robot at position (1, 1) facing east. A robot can face in one of the four normal directions of the map: north, east, south, and west.
+	</p>
+	<p>
+		The first line gives the robot's start position, and the last line the <em>expected</em> end position.
+	</p>
+	<p>
+		The middle line is a set of instructions to the robot. It can turn left or right, or move forward.
+	</p>
+	<p>
+		The exercise is to evaluate whether journeys are valid; that is, whether the robot's end position matches the expected end position if it follows the commands.
+	</p>
+	<h3 id="cf43d781d49545c38e30f487867e904f">
+		Imports <a href="#cf43d781d49545c38e30f487867e904f" title="permalink">#</a>
+	</h3>
+	<p>
+		I managed to solve the exercise with a single <code>Main.hs</code> file. Here's the module declaration and the required imports:
+	</p>
+	<p>
+		<pre><span style="color:blue;">module</span>&nbsp;Main&nbsp;<span style="color:blue;">where</span>
+ 
+<span style="color:blue;">import</span>&nbsp;Data.Foldable
+<span style="color:blue;">import</span>&nbsp;Data.Ord
+<span style="color:blue;">import</span>&nbsp;Text.Read&nbsp;(<span style="color:#2b91af;">readPrec</span>)
+<span style="color:blue;">import</span>&nbsp;Text.ParserCombinators.ReadP
+<span style="color:blue;">import</span>&nbsp;Text.ParserCombinators.ReadPrec&nbsp;(<span style="color:#2b91af;">readPrec_to_P</span>,&nbsp;<span style="color:#2b91af;">minPrec</span>)</pre>
+	</p>
+	<p>
+		These imports are only required to support parsing of input. Once parsed, you can evaluate each journey using nothing but the functions available in the standard <code>Prelude</code>.
+	</p>
+	<h3 id="8329bba327f54dbfb8474f9102ba8662">
+		Types <a href="#8329bba327f54dbfb8474f9102ba8662" title="permalink">#</a>
+	</h3>
+	<p>
+		Haskell is a statically typed language, so it often pays to define some types. Granted, the exercise hardly warrants all of these types, but as an example of idiomatic Haskell, I think that this is still good practice. After all, Haskell types are easy to declare. Often, they are one-liners:
+	</p>
+	<p>
+		<pre><span style="color:blue;">data</span>&nbsp;Direction&nbsp;=&nbsp;North&nbsp;|&nbsp;East&nbsp;|&nbsp;South&nbsp;|&nbsp;West&nbsp;<span style="color:blue;">deriving</span>&nbsp;(<span style="color:#2b91af;">Eq</span>,&nbsp;<span style="color:#2b91af;">Show</span>,&nbsp;<span style="color:#2b91af;">Read</span>)</pre>
+	</p>
+	<p>
+		The <code>Direction</code> type enumerates the four corners of the world.
+	</p>
+	<p>
+		<pre><span style="color:blue;">data</span>&nbsp;Robot&nbsp;=&nbsp;Robot&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;robotPosition&nbsp;::&nbsp;(Integer,&nbsp;Integer)
+&nbsp;&nbsp;,&nbsp;robotDirection&nbsp;::&nbsp;Direction&nbsp;}
+&nbsp;&nbsp;<span style="color:blue;">deriving</span>&nbsp;(<span style="color:#2b91af;">Eq</span>,&nbsp;<span style="color:#2b91af;">Show</span>,&nbsp;<span style="color:#2b91af;">Read</span>)</pre>
+	</p>
+	<p>
+		The <code>Robot</code> record type represents the state of a robot: its position and the direction it faces.
+	</p>
+	<p>
+		You'll also need to enumerate the commands that you can give a robot:
+	</p>
+	<p>
+		<pre><span style="color:blue;">data</span>&nbsp;Command&nbsp;=&nbsp;TurnLeft&nbsp;|&nbsp;TurnRight&nbsp;|&nbsp;MoveForward&nbsp;<span style="color:blue;">deriving</span>&nbsp;(<span style="color:#2b91af;">Eq</span>,&nbsp;<span style="color:#2b91af;">Show</span>,&nbsp;<span style="color:#2b91af;">Read</span>)</pre>
+	</p>
+	<p>
+		Finally, you can also define a type for a <code>Journey</code>:
+	</p>
+	<p>
+		<pre><span style="color:blue;">data</span>&nbsp;Journey&nbsp;=&nbsp;Journey&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;journeyStart&nbsp;::&nbsp;Robot
+&nbsp;&nbsp;,&nbsp;journeyCommands&nbsp;::&nbsp;[Command]
+&nbsp;&nbsp;,&nbsp;journeyEnd&nbsp;::&nbsp;Robot&nbsp;}
+&nbsp;&nbsp;<span style="color:blue;">deriving</span>&nbsp;(<span style="color:#2b91af;">Eq</span>,&nbsp;<span style="color:#2b91af;">Show</span>,&nbsp;<span style="color:#2b91af;">Read</span>)</pre>
+	</p>
+	<p>
+		These are all the types required for solving the exercise.
+	</p>
+	<h3 id="5ada3f24aa4e4858892855ae076f457b">
+		Parsing <a href="#5ada3f24aa4e4858892855ae076f457b" title="permalink">#</a>
+	</h3>
+	<p>
+		The format of the input file is simple enough that it could be done in an ad-hoc fashion using <code>lines</code>, <code>word</code>, <code>read</code>, and a few other low-level functions. While the format barely warrants the use of parser combinators, I'll still use some to showcase the power of that approach.
+	</p>
+	<p>
+		Since one of my goals is to implement the functionality using a single <code>.hs</code> file, I can't pull in external parser combinator libraries. Instead, I'll use the built-in <code>ReadP</code> module, which I've often found sufficient to parse files like the present exercise input file.
+	</p>
+	<p>
+		First, you're going to have to be able to parse numbers, which can be done using the <code>Read</code> type class. You'll need, however, to be able to compose <code>Integer</code> parsers with other <code>ReadP</code> parsers.
+	</p>
+	<p>
+		<pre><span style="color:#2b91af;">parseRead</span>&nbsp;::&nbsp;<span style="color:blue;">Read</span>&nbsp;a&nbsp;<span style="color:blue;">=&gt;</span>&nbsp;<span style="color:blue;">ReadP</span>&nbsp;a
+parseRead&nbsp;=&nbsp;readPrec_to_P&nbsp;readPrec&nbsp;minPrec</pre>
+	</p>
+	<p>
+		This turns every <code>Read</code> instance value into a <code>ReadP</code> value. (I admit that I wasn't sure which precedence number to use, but <code>minPrec</code> seems to work.)
+	</p>
+	<p>
+		Next, you need a parser for <code>Direction</code> values:
+	</p>
+	<p>
+		<pre><span style="color:#2b91af;">parseDirection</span>&nbsp;::&nbsp;<span style="color:blue;">ReadP</span>&nbsp;<span style="color:blue;">Direction</span>
+parseDirection&nbsp;=
+&nbsp;&nbsp;choice&nbsp;[
+&nbsp;&nbsp;&nbsp;&nbsp;char&nbsp;<span style="color:#a31515;">&#39;N&#39;</span>&nbsp;&gt;&gt;&nbsp;<span style="color:blue;">return</span>&nbsp;North,
+&nbsp;&nbsp;&nbsp;&nbsp;char&nbsp;<span style="color:#a31515;">&#39;E&#39;</span>&nbsp;&gt;&gt;&nbsp;<span style="color:blue;">return</span>&nbsp;East,
+&nbsp;&nbsp;&nbsp;&nbsp;char&nbsp;<span style="color:#a31515;">&#39;S&#39;</span>&nbsp;&gt;&gt;&nbsp;<span style="color:blue;">return</span>&nbsp;South,
+&nbsp;&nbsp;&nbsp;&nbsp;char&nbsp;<span style="color:#a31515;">&#39;W&#39;</span>&nbsp;&gt;&gt;&nbsp;<span style="color:blue;">return</span>&nbsp;West&nbsp;]</pre>
+	</p>
+	<p>
+		Notice how declarative this looks. The <code>choice</code> function combines a list of other parsers. When an individual parser in that list encounters the <code>'N'</code> character, it'll parse it as <code>North</code>, <code>'E'</code> as <code>East</code>, and so on.
+	</p>
+	<p>
+		You can now parse an entire <code>Robot</code> using the <code>Applicative</code> <code>&lt;*&gt;</code> and <code>&lt;*</code> operators.
+	</p>
+	<p>
+		<pre><span style="color:#2b91af;">parseRobot</span>&nbsp;::&nbsp;<span style="color:blue;">ReadP</span>&nbsp;<span style="color:blue;">Robot</span>
+parseRobot&nbsp;=
+&nbsp;&nbsp;(\x&nbsp;y&nbsp;d&nbsp;-&gt;&nbsp;Robot&nbsp;(x,&nbsp;y)&nbsp;d)&nbsp;&lt;$&gt;
+&nbsp;&nbsp;(parseRead&nbsp;&lt;*&nbsp;char&nbsp;<span style="color:#a31515;">&#39;&nbsp;&#39;</span>)&nbsp;&lt;*&gt;
+&nbsp;&nbsp;(parseRead&nbsp;&lt;*&nbsp;char&nbsp;<span style="color:#a31515;">&#39;&nbsp;&#39;</span>)&nbsp;&lt;*&gt;
+&nbsp;&nbsp;&nbsp;parseDirection</pre>
+	</p>
+	<p>
+		The <code>&lt;*&gt;</code> operator combines two parsers by using the output of both of them, whereas the <code>&lt;*</code> combines two parsers by running both of them, but discarding the output of the right-hand parser. A good mnemonic is that the operator points to the parser that produces an output. Here', the <code>parseRobot</code> function uses the <code>&lt;*</code> operator to require that each number is followed by a space. The space, however, is just a delimiter, so you throw it away.
+	</p>
+	<p>
+		<code>parseRead</code> parses any <code>Read</code> instance. Here, the <code>parseRobot</code> function uses it to parse each <code>Integer</code> in a robot's position. It also uses <code>parseDirection</code> to parse the robot's direction.
+	</p>
+	<p>
+		Similar to how you can parse directions, you can also parse the commands:
+	</p>
+	<p>
+		<pre><span style="color:#2b91af;">parseCommand</span>&nbsp;::&nbsp;<span style="color:blue;">ReadP</span>&nbsp;<span style="color:blue;">Command</span>
+parseCommand&nbsp;=
+&nbsp;&nbsp;choice&nbsp;[
+&nbsp;&nbsp;&nbsp;&nbsp;char&nbsp;<span style="color:#a31515;">&#39;L&#39;</span>&nbsp;&gt;&gt;&nbsp;<span style="color:blue;">return</span>&nbsp;TurnLeft,
+&nbsp;&nbsp;&nbsp;&nbsp;char&nbsp;<span style="color:#a31515;">&#39;R&#39;</span>&nbsp;&gt;&gt;&nbsp;<span style="color:blue;">return</span>&nbsp;TurnRight,
+&nbsp;&nbsp;&nbsp;&nbsp;char&nbsp;<span style="color:#a31515;">&#39;F&#39;</span>&nbsp;&gt;&gt;&nbsp;<span style="color:blue;">return</span>&nbsp;MoveForward]</pre>
+	</p>
+	<p>
+		Likewise, similar to how you parse a single robot, you can now parse a journey:
+	</p>
+	<p>
+		<pre><span style="color:#2b91af;">parseJourney</span>&nbsp;::&nbsp;<span style="color:blue;">ReadP</span>&nbsp;<span style="color:blue;">Journey</span>
+parseJourney&nbsp;=
+&nbsp;&nbsp;Journey&nbsp;&lt;$&gt;
+&nbsp;&nbsp;(parseRobot&nbsp;&lt;*&nbsp;string&nbsp;<span style="color:#a31515;">&quot;\n&quot;</span>)&nbsp;&lt;*&gt;
+&nbsp;&nbsp;(many&nbsp;parseCommand&nbsp;&lt;*&nbsp;string&nbsp;<span style="color:#a31515;">&quot;\n&quot;</span>)&nbsp;&lt;*&gt;
+&nbsp;&nbsp;&nbsp;parseRobot</pre>
+	</p>
+	<p>
+		The only new element compared to <code>parseRobot</code> is the use of the <code>many</code> parser combinator, which looks for zero, one, or many <code>Command</code> values.
+	</p>
+	<p>
+		This gives you a way to parse a complete journey, but the input file contains many of those, separated by newlines and other whitespace:
+	</p>
+	<p>
+		<pre><span style="color:#2b91af;">parseJourneys</span>&nbsp;::&nbsp;<span style="color:blue;">ReadP</span>&nbsp;[<span style="color:blue;">Journey</span>]
+parseJourneys&nbsp;=&nbsp;parseJourney&nbsp;`sepBy`&nbsp;skipSpaces</pre>
+	</p>
+	<p>
+		Finally, you can parse a multi-line string into a list of journeys:
+	</p>
+	<p>
+		<pre><span style="color:#2b91af;">parseInput</span>&nbsp;::&nbsp;<span style="color:#2b91af;">String</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;[<span style="color:blue;">Journey</span>]
+parseInput&nbsp;=&nbsp;<span style="color:blue;">fst</span>&nbsp;.&nbsp;minimumBy&nbsp;(comparing&nbsp;<span style="color:blue;">snd</span>)&nbsp;.&nbsp;readP_to_S&nbsp;parseJourneys</pre>
+	</p>
+	<p>
+		When you run <code>readP_to_S</code>, it'll produce a list of alternatives, as there's more than one way to interpret the file according to <code>parseJourneys</code>. Each alternative is presented as a tuple of the parse result and the remaining (or unconsumed) string. I'm after the alternative that consumes as much of the input file as possible (which turns out to be all of it), so I use <code>minimumBy</code> to find the tuple that has the smallest second element. Then I return the first element of that tuple.
+	</p>
+	<p>
+		Play around with <code>readP_to_S parseJourneys</code> in GHCi if you want all the details.
+	</p>
+	<h3 id="34135daae9634db2885e28382760d1fd">
+		Evaluation <a href="#34135daae9634db2885e28382760d1fd" title="permalink">#</a>
+	</h3>
+	<p>
+		Haskell beginners may still find operators like <code>&lt;*&gt;</code> cryptic, but they're essential to parser combinators. Evaluation of the journeys is, in comparison, simple.
+	</p>
+	<p>
+		You can start by defining a function to turn right:
+	</p>
+	<p>
+		<pre><span style="color:#2b91af;">turnRight</span>&nbsp;::&nbsp;<span style="color:blue;">Robot</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">Robot</span>
+turnRight&nbsp;r@(Robot&nbsp;_&nbsp;North)&nbsp;=&nbsp;r&nbsp;{&nbsp;robotDirection&nbsp;=&nbsp;East&nbsp;}
+turnRight&nbsp;r@(Robot&nbsp;_&nbsp;&nbsp;East)&nbsp;=&nbsp;r&nbsp;{&nbsp;robotDirection&nbsp;=&nbsp;South&nbsp;}
+turnRight&nbsp;r@(Robot&nbsp;_&nbsp;South)&nbsp;=&nbsp;r&nbsp;{&nbsp;robotDirection&nbsp;=&nbsp;West&nbsp;}
+turnRight&nbsp;r@(Robot&nbsp;_&nbsp;&nbsp;West)&nbsp;=&nbsp;r&nbsp;{&nbsp;robotDirection&nbsp;=&nbsp;North&nbsp;}</pre>
+	</p>
+	<p>
+		There's more than one way to write a function that rotates one direction to the right, but I chose one that I found most readable. It trades clarity for verbosity by relying on simple pattern matching. I hope that it's easy to understand for Haskell beginners, and perhaps even for people who haven't seen Haskell code before.
+	</p>
+	<p>
+		The function to turn left uses the same structure:
+	</p>
+	<p>
+		<pre><span style="color:#2b91af;">turnLeft</span>&nbsp;::&nbsp;<span style="color:blue;">Robot</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">Robot</span>
+turnLeft&nbsp;r@(Robot&nbsp;_&nbsp;North)&nbsp;=&nbsp;r&nbsp;{&nbsp;robotDirection&nbsp;=&nbsp;West&nbsp;}
+turnLeft&nbsp;r@(Robot&nbsp;_&nbsp;&nbsp;West)&nbsp;=&nbsp;r&nbsp;{&nbsp;robotDirection&nbsp;=&nbsp;South&nbsp;}
+turnLeft&nbsp;r@(Robot&nbsp;_&nbsp;South)&nbsp;=&nbsp;r&nbsp;{&nbsp;robotDirection&nbsp;=&nbsp;East&nbsp;}
+turnLeft&nbsp;r@(Robot&nbsp;_&nbsp;&nbsp;East)&nbsp;=&nbsp;r&nbsp;{&nbsp;robotDirection&nbsp;=&nbsp;North&nbsp;}</pre>
+	</p>
+	<p>
+		The last command you need to implement is moving forward:
+	</p>
+	<p>
+		<pre><span style="color:#2b91af;">moveForward</span>&nbsp;::&nbsp;<span style="color:blue;">Robot</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">Robot</span>
+moveForward&nbsp;(Robot&nbsp;(x,&nbsp;y)&nbsp;North)&nbsp;=&nbsp;Robot&nbsp;(x,&nbsp;y&nbsp;+&nbsp;1)&nbsp;North
+moveForward&nbsp;(Robot&nbsp;(x,&nbsp;y)&nbsp;&nbsp;East)&nbsp;=&nbsp;Robot&nbsp;(x&nbsp;+&nbsp;1,&nbsp;y)&nbsp;East
+moveForward&nbsp;(Robot&nbsp;(x,&nbsp;y)&nbsp;South)&nbsp;=&nbsp;Robot&nbsp;(x,&nbsp;y&nbsp;-&nbsp;1)&nbsp;South
+moveForward&nbsp;(Robot&nbsp;(x,&nbsp;y)&nbsp;&nbsp;West)&nbsp;=&nbsp;Robot&nbsp;(x&nbsp;-&nbsp;1,&nbsp;y)&nbsp;West</pre>
+	</p>
+	<p>
+		The <code>moveForward</code> function also pattern-matches on the direction the robot is facing, this time to increment or decrement the <code>x</code> or <code>y</code> coordinate as appropriate.
+	</p>
+	<p>
+		You can now evaluate all three commands:
+	</p>
+	<p>
+		<pre><span style="color:#2b91af;">evalCommand</span>&nbsp;::&nbsp;<span style="color:blue;">Command</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">Robot</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">Robot</span>
+evalCommand&nbsp;&nbsp;&nbsp;TurnRight&nbsp;=&nbsp;turnRight
+evalCommand&nbsp;&nbsp;&nbsp;&nbsp;TurnLeft&nbsp;=&nbsp;turnLeft
+evalCommand&nbsp;MoveForward&nbsp;=&nbsp;moveForward</pre>
+	</p>
+	<p>
+		The <code>evalCommand</code> pattern-matches on all three <code>Command</code> cases and returns the appropriate function for each.
+	</p>
+	<p>
+		You can now evaluate whether a <code>Journey</code> is valid:
+	</p>
+	<p>
+		<pre><span style="color:#2b91af;">isJourneyValid</span>&nbsp;::&nbsp;<span style="color:blue;">Journey</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:#2b91af;">Bool</span>
+isJourneyValid&nbsp;(Journey&nbsp;s&nbsp;cs&nbsp;e)&nbsp;=&nbsp;<span style="color:blue;">foldl</span>&nbsp;(<span style="color:blue;">flip</span>&nbsp;evalCommand)&nbsp;s&nbsp;cs&nbsp;==&nbsp;e</pre>
+	</p>
+	<p>
+		The <code>isJourneyValid</code> function pattern-matches the constituent values out of <code>Journey</code>. I named the <code>journeyStart</code> value <code>s</code> (for <em>start</em>), the <code>journeyCommands</code> value <code>cs</code> (for <em>commands</em>), and the <code>journeyEnd</code> value <code>e</code> (for <em>end</em>).
+	</p>
+	<p>
+		The <code>evalCommand</code> function evaluates a single <code>Command</code>, but a <code>Journey</code> contains many commands. You'll need to evaluate the first command to find the position from which you evaluate the second command, and so on. Imperative programmers would use a <em>for loop</em> for something like that, but in functional programming, a <em>fold</em>, in this case from the left, is how it's done.
+	</p>
+	<p>
+		<code>foldl</code> requires you to supply an initial state <code>s</code> as well as the list of commands <code>cs</code>. The entire <code>foldl</code> expression produces a final <code>Robot</code> state that you can compare against the expected end state <code>e</code>.
+	</p>
+	<h3 id="6267cc3a03594d0fb21cd7cc61430eb0">
+		Execution <a href="#6267cc3a03594d0fb21cd7cc61430eb0" title="permalink">#</a>
+	</h3>
+	<p>
+		Load the input file, parse it, and evaluate each journey in the <code>main</code> function:
+	</p>
+	<p>
+		<pre><span style="color:#2b91af;">main</span>&nbsp;::&nbsp;<span style="color:#2b91af;">IO</span>&nbsp;()
+main&nbsp;=&nbsp;<span style="color:blue;">do</span>
+&nbsp;&nbsp;input&nbsp;&lt;-&nbsp;parseInput&nbsp;&lt;$&gt;&nbsp;<span style="color:blue;">readFile</span>&nbsp;<span style="color:#a31515;">&quot;input.txt&quot;</span>
+&nbsp;&nbsp;<span style="color:blue;">mapM_</span>&nbsp;<span style="color:blue;">print</span>&nbsp;$&nbsp;isJourneyValid&nbsp;&lt;$&gt;&nbsp;input</pre>
+	</p>
+	<p>
+		I just load the <code>Main.hs</code> file in GHCi and run the <code>main</code> function:
+	</p>
+	<p>
+		<pre>Prelude&gt; :load Main.hs
+[1 of 1] Compiling Main             ( Main.hs, interpreted )
+Ok, one module loaded.
+*Main&gt; main
+True
+True
+True</pre>
+	</p>
+	<p>
+		I used the same input file as Mike Hadlow, and it turns out that all journeys are valid. That's not what I'd expected from an exercise like this, so I cloned and ran Mike's solution as well, and it seems that it arrives at the same result.
+	</p>
+	<h3 id="683ea9809a774338b16aed1ad41e1984">
+		Conclusion <a href="#683ea9809a774338b16aed1ad41e1984" title="permalink">#</a>
+	</h3>
+	<p>
+		Haskell is a great language for small coding exercises that require parsing and interpretation. In this article, I demonstrated one solution to the <em>robot journeys</em> coding exercise. My goal was to show some beginner-friendly, but still idiomatic Haskell code.
+	</p>
+	<p>
+		Granted, the use of parser combinators is on the verge of being overkill, but I wanted to show an example; Haskell examples are scarce, so I hope it's helpful.
+	</p>
+</div>
