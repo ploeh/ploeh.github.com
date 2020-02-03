@@ -1,0 +1,245 @@
+---
+layout: post
+title: "Non-exceptional averages"
+description: "How do you code without exceptions? Here's one example."
+date: 2020-01-28 7:19 UTC
+tags: [Software Design]
+---
+{% include JB/setup %}
+
+<div id="post">
+	<p>
+		<em>{{ page.description }}</em>
+	</p>
+	<p>
+		Encouraging object-oriented programmers to <a href="https://hackernoon.com/the-throw-keyword-was-a-mistake-l9e532di">avoid throwing exceptions</a> is as fun as telling them to renounce null references. To be fair, exception-throwing is such an ingrained feature of C#, Java, C++, etcetera that it can be hard to see how to do without it.
+	</p>
+	<p>
+		To be clear, I don't insist that you pretend that exceptions don't exist in languages that have them. I'm also <a href="https://eiriktsarpalis.wordpress.com/2017/02/19/youre-better-off-using-exceptions">not advocating that you catch all exceptions in order to resurface them as railway-oriented programming</a>. On the other hand, I do endorse the generally good advice that you shouldn't use exceptions for <a href="https://en.wikipedia.org/wiki/Control_flow">control flow</a>.
+	</p>
+	<p>
+		What can you do instead? Despite <a href="https://fsharpforfunandprofit.com/posts/against-railway-oriented-programming">all the warnings against railway-oriented programming</a> <a href="/2018/06/11/church-encoded-either">Either</a> is still a good choice for a certain kind of control flow. Exceptions are for <em>exceptional</em> situations, such as network partitions, running out of memory, disk failures, and so on. Many run-time errors are both foreseeable and preventable. Prefer code that prevents errors.
+	</p>
+	<p>
+		There's a few ways you can do that. One of them is to protect invariants by enforcing pre-conditions. If you have a static type system, you can use the type system to prevent errors.
+	</p>
+	<h3 id="ccb791521ac0417f870a2fe4dac946c7">
+		Average duration <a href="#ccb791521ac0417f870a2fe4dac946c7" title="permalink">#</a>
+	</h3>
+	<p>
+		How would you calculate the average of a set of durations? You might, for example, <a href="/2017/06/27/pure-times">need to calculate average duration of message handling for a polling consumer</a>. C# offers many built-in overloads of the <a href="https://docs.microsoft.com/dotnet/api/system.linq.enumerable.average">Average</a> extension method, but none that calculates the average of <a href="https://docs.microsoft.com/dotnet/api/system.timespan">TimeSpan</a> values.
+	</p>
+	<p>
+		How would you write that method yourself?
+	</p>
+	<p>
+		It's not a trick question.
+	</p>
+	<p>
+		Based on my experience coaching development teams, this is a representative example:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:#2b91af;">TimeSpan</span>&nbsp;<span style="color:#74531f;">Average</span>(<span style="color:blue;">this</span>&nbsp;<span style="color:#2b91af;">IEnumerable</span>&lt;<span style="color:#2b91af;">TimeSpan</span>&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">timeSpans</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">sum</span>&nbsp;=&nbsp;<span style="color:#2b91af;">TimeSpan</span>.Zero;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">count</span>&nbsp;=&nbsp;0;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">foreach</span>&nbsp;(<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">ts</span>&nbsp;<span style="font-weight:bold;color:#8f08c4;">in</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">timeSpans</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">sum</span>&nbsp;<span style="font-weight:bold;color:#74531f;">+=</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">ts</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">count</span>++;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">sum</span>&nbsp;<span style="font-weight:bold;color:#74531f;">/</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">count</span>;
+}</pre>
+	</p>
+	<p>
+		This gets the job done in most situations, but it has two error modes. It doesn't work if <code>timeSpans</code> is empty, and it doesn't work if its infinite.
+	</p>
+	<p>
+		When the input collection is empty, you'll be trying to divide by zero, which isn't allowed. How do you deal with that? Most programmers I've met just shrug and say: <em>don't call the method with an empty collection.</em> It's your responsibility as the caller. You have to memorise that this particular <code>Average</code> method has that particular precondition.
+	</p>
+	<p>
+		I don't think that's a professional position. This puts the burden on client developers. In a world like that, you have to learn by rote the preconditions of thousands of APIs.
+	</p>
+	<p>
+		What can you do? You could add a <a href="https://en.wikipedia.org/wiki/Guard_(computer_science)">Guard Clause</a> to the method.
+	</p>
+	<h3 id="38f629930c7845c0af1c50c586dfcb82">
+		Guard Clause <a href="#38f629930c7845c0af1c50c586dfcb82" title="permalink">#</a>
+	</h3>
+	<p>
+		Adding a Guard Clause doesn't really make the method much easier to reason about for client developers, but at least it protects an invariant.
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:#2b91af;">TimeSpan</span>&nbsp;<span style="color:#74531f;">Average</span>(<span style="color:blue;">this</span>&nbsp;<span style="color:#2b91af;">IEnumerable</span>&lt;<span style="color:#2b91af;">TimeSpan</span>&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">timeSpans</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">if</span>&nbsp;(!<span style="font-weight:bold;color:#1f377f;">timeSpans</span>.<span style="font-weight:bold;color:#74531f;">Any</span>())
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">throw</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">ArgumentOutOfRangeException</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">nameof</span>(<span style="font-weight:bold;color:#1f377f;">timeSpans</span>),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#a31515;">&quot;Can&#39;t&nbsp;calculate&nbsp;the&nbsp;average&nbsp;of&nbsp;an&nbsp;empty&nbsp;collection.&quot;</span>);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">sum</span>&nbsp;=&nbsp;<span style="color:#2b91af;">TimeSpan</span>.Zero;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">count</span>&nbsp;=&nbsp;0;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">foreach</span>&nbsp;(<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">ts</span>&nbsp;<span style="font-weight:bold;color:#8f08c4;">in</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">timeSpans</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">sum</span>&nbsp;<span style="font-weight:bold;color:#74531f;">+=</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">ts</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">count</span>++;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">sum</span>&nbsp;<span style="font-weight:bold;color:#74531f;">/</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">count</span>;
+}</pre>
+	</p>
+	<p>
+		Don't get me wrong. I often write code like this because it makes it easier for me as a library developer to reason about the rest of the method body. On the other hand, it basically just replaces one run-time exception with another. Before I added the Guard Clause, calling <code>Average</code> with an empty collection would cause it to throw an <code>OverflowException</code>; now it throws an <code>ArgumentOutOfRangeException</code>.
+	</p>
+	<p>
+		From client developers' perspective, this is only a marginal improvement. You're still getting no help from the type system, but at least the run-time error is a bit more informative. Sometimes, that's the best you can do.
+	</p>
+	<h3 id="3825bb6fb4db4cd28b9134763d202b3a">
+		Finite collections <a href="#3825bb6fb4db4cd28b9134763d202b3a" title="permalink">#</a>
+	</h3>
+	<p>
+		The <code>Average</code> method has two preconditions, but we've only addressed one. The other precondition is that the input <code>timeSpans</code> must be finite. Unfortunately, this compiles:
+	</p>
+	<p>
+		<pre><span style="color:blue;">static</span>&nbsp;<span style="color:#2b91af;">IEnumerable</span>&lt;<span style="color:#2b91af;">T</span>&gt;&nbsp;<span style="font-weight:bold;color:#74531f;">InfinitelyRepeat</span>&lt;<span style="color:#2b91af;">T</span>&gt;(<span style="color:#2b91af;">T</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">x</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">while</span>&nbsp;(<span style="color:blue;">true</span>)&nbsp;<span style="font-weight:bold;color:#8f08c4;">yield</span>&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">x</span>;
+}
+<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">ts</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">TimeSpan</span>(1,&nbsp;2,&nbsp;3,&nbsp;4);
+<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">tss</span>&nbsp;=&nbsp;<span style="font-weight:bold;color:#74531f;">InfinitelyRepeat</span>(<span style="font-weight:bold;color:#1f377f;">ts</span>);
+ 
+<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">avg</span>&nbsp;=&nbsp;<span style="font-weight:bold;color:#1f377f;">tss</span>.<span style="font-weight:bold;color:#74531f;">Average</span>();</pre>
+	</p>
+	<p>
+		Since <code>tss</code> infinitely repeats <code>ts</code>, the <code>Average</code> method call (theoretically) loops forever; in fact it quickly overflows because it keeps adding <code>TimeSpan</code> values together.
+	</p>
+	<p>
+		Infinite collections aren't allowed. Can you make that precondition explicit?
+	</p>
+	<p>
+		I don't know of a way to test that <code>timeSpans</code> is finite at run time, but I can change the input type:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:#2b91af;">TimeSpan</span>&nbsp;<span style="color:#74531f;">Average</span>(<span style="color:blue;">this</span>&nbsp;<span style="color:#2b91af;">IReadOnlyCollection</span>&lt;<span style="color:#2b91af;">TimeSpan</span>&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">timeSpans</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">if</span>&nbsp;(!<span style="font-weight:bold;color:#1f377f;">timeSpans</span>.<span style="font-weight:bold;color:#74531f;">Any</span>())
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">throw</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">ArgumentOutOfRangeException</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">nameof</span>(<span style="font-weight:bold;color:#1f377f;">timeSpans</span>),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#a31515;">&quot;Can&#39;t&nbsp;calculate&nbsp;the&nbsp;average&nbsp;of&nbsp;an&nbsp;empty&nbsp;collection.&quot;</span>);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">sum</span>&nbsp;=&nbsp;<span style="color:#2b91af;">TimeSpan</span>.Zero;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">foreach</span>&nbsp;(<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">ts</span>&nbsp;<span style="font-weight:bold;color:#8f08c4;">in</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">timeSpans</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">sum</span>&nbsp;<span style="font-weight:bold;color:#74531f;">+=</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">ts</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">sum</span>&nbsp;<span style="font-weight:bold;color:#74531f;">/</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">timeSpans</span>.Count;
+}</pre>
+	</p>
+	<p>
+		Instead of accepting any <code>IEnumerable&lt;TimeSpan&gt;</code> as an input argument, I've now constrained <code>timeSpans</code> to an <code>IReadOnlyCollection&lt;TimeSpan&gt;</code>. <a href="https://docs.microsoft.com/dotnet/api/system.collections.generic.ireadonlycollection-1">This interface</a> has been in .NET since .NET 4.5 (<a href="/2013/07/20/linq-versus-the-lsp">I think</a>), but it lives a quiet existence. Few people know of it.
+	</p>
+	<p>
+		It's just <code>IEnumerable&lt;T&gt;</code> with an extra constraint:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">interface</span>&nbsp;<span style="color:#2b91af;">IReadOnlyCollection</span>&lt;<span style="color:#2b91af;">T</span>&gt;&nbsp;:&nbsp;<span style="color:#2b91af;">IEnumerable</span>&lt;<span style="color:#2b91af;">T</span>&gt;
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">int</span>&nbsp;Count&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;}
+}</pre>
+	</p>
+	<p>
+		The <code>Count</code> property strongly implies that the <code>IEnumerable&lt;T&gt;</code> is finite. Also, that the value is an <code>int</code> implies that the maximum size of the collection is 2,147,483,647. That's probably going to be enough for most day-to-day use.
+	</p>
+	<p>
+		You can no longer pass an infinite stream of values to the <code>Average</code> method. It's simply not going to compile. That both communicates and protects the invariant that infinite collections aren't allowed. It also makes the implementation code simpler, since the method doesn't have to count the elements. That information is already available from <code>timeSpans.Count</code>.
+	</p>
+	<p>
+		If a type can address one invariant, can it also protect the other?
+	</p>
+	<h3 id="b1464fa0dafc42838b6f7db24d8356c8">
+		Non-empty collection <a href="#b1464fa0dafc42838b6f7db24d8356c8" title="permalink">#</a>
+	</h3>
+	<p>
+		You can change the input type again. Here I've used <a href="/2017/12/11/semigroups-accumulate">this NotEmptyCollection&lt;T&gt;</a>:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:#2b91af;">TimeSpan</span>&nbsp;<span style="color:#74531f;">Average</span>(<span style="color:blue;">this</span>&nbsp;<span style="color:#2b91af;">NotEmptyCollection</span>&lt;<span style="color:#2b91af;">TimeSpan</span>&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">timeSpans</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">sum</span>&nbsp;=&nbsp;<span style="font-weight:bold;color:#1f377f;">timeSpans</span>.Head;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">foreach</span>&nbsp;(<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">ts</span>&nbsp;<span style="font-weight:bold;color:#8f08c4;">in</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">timeSpans</span>.Tail)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">sum</span>&nbsp;<span style="font-weight:bold;color:#74531f;">+=</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">ts</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">sum</span>&nbsp;<span style="font-weight:bold;color:#74531f;">/</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">timeSpans</span>.Count;
+}</pre>
+	</p>
+	<p>
+		Now client code can no longer call the <code>Average</code> method with an empty collection. That's not going to compile.
+	</p>
+	<p>
+		You've replaced a run-time check with a compile-time check. It's now clear to client developers who want to call the method that they must supply a <code>NotEmptyCollection&lt;TimeSpan&gt;</code>, instead of just any <code>IEnumerable&lt;TimeSpan&gt;</code>.
+	</p>
+	<p>
+		You can also simplify the implementation code:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:#2b91af;">TimeSpan</span>&nbsp;<span style="color:#74531f;">Average</span>(<span style="color:blue;">this</span>&nbsp;<span style="color:#2b91af;">NotEmptyCollection</span>&lt;<span style="color:#2b91af;">TimeSpan</span>&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">timeSpans</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">sum</span>&nbsp;=&nbsp;<span style="font-weight:bold;color:#1f377f;">timeSpans</span>.<span style="font-weight:bold;color:#74531f;">Aggregate</span>((<span style="font-weight:bold;color:#1f377f;">x</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">y</span>)&nbsp;=&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">x</span>&nbsp;<span style="font-weight:bold;color:#74531f;">+</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">y</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">sum</span>&nbsp;<span style="font-weight:bold;color:#74531f;">/</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">timeSpans</span>.Count;
+}</pre>
+	</p>
+	<p>
+		How do we know that <code>NotEmptyCollection&lt;T&gt;</code> contains at least one element? The constructor enforces that constraint:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">NotEmptyCollection</span>(<span style="color:#2b91af;">T</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">head</span>,&nbsp;<span style="color:blue;">params</span>&nbsp;<span style="color:#2b91af;">T</span>[]&nbsp;<span style="font-weight:bold;color:#1f377f;">tail</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">if</span>&nbsp;(<span style="font-weight:bold;color:#1f377f;">head</span>&nbsp;==&nbsp;<span style="color:blue;">null</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">throw</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">ArgumentNullException</span>(<span style="color:blue;">nameof</span>(<span style="font-weight:bold;color:#1f377f;">head</span>));
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.Head&nbsp;=&nbsp;<span style="font-weight:bold;color:#1f377f;">head</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.Tail&nbsp;=&nbsp;<span style="font-weight:bold;color:#1f377f;">tail</span>;
+}</pre>
+	</p>
+	<p>
+		But wait, there's a Guard Clause and a <code>throw</code> there! Have we even accomplished anything, or did we just move the <code>throw</code> around?
+	</p>
+	<h3 id="ef73390937dc4f88997c7d42496b591e">
+		Parse, don't validate <a href="#ef73390937dc4f88997c7d42496b591e" title="permalink">#</a>
+	</h3>
+	<p>
+		A Guard Clause is a kind of validation. It validates that input fulfils preconditions. The problem with validation is that you have to repeat it in various different places. Every time you receive some data as an input argument, it may or may not have been validated. A receiving method can't tell. There's no flag on a string, or a number, or a collection, which is set when data has been validated. 
+	</p>
+	<p>
+		Every method that receives such an input will have to perform validation, just to be sure that the preconditions hold. This leads to validation code being duplicated over a code base. What often happens when you duplicate code, you later update it in most of the places, but forget to update it in a few places. Even if you're meticulous, a colleague may not know about the proper way of validating a piece of data. This leads to bugs.
+	</p>
+	<p>
+		As <a href="https://lexi-lambda.github.io">Alexis King</a> explains in her <a href="https://lexi-lambda.github.io/blog/2019/11/05/parse-don-t-validate">Parse, don’t validate</a> article, 'parsing' is the process of validating input of weaker type into a value of a stronger type. The stronger type indicates that validation has happened. It's like a Boolean flag that indicates that, yes, the data contained in the type has been through validation, and found to hold.
+	</p>
+	<p>
+		This is also the case of <code>NotEmptyCollection&lt;T&gt;</code>. If you have an object of that type, you know that it has already been validated. You know that the collection isn't empty. Even if you think that it looks like we've just replaced one exception with another, that's not the point. The point is that we've replaced scattered and unsystematic validation code with a single verification step.
+	</p>
+	<p>
+		You may still be left with the nagging doubt that I didn't really avoid throwing an exception. I think that the <code>NotEmptyCollection&lt;T&gt;</code> constructor strikes a pragmatic balance. If you look only at the information revealed by the type (i.e. what an <a href="https://en.wikipedia.org/wiki/Integrated_development_environment">IDE</a> would display), you'll see this when you program against the class:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">NotEmptyCollection</span>(<span style="color:#2b91af;">T</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">head</span>,&nbsp;<span style="color:blue;">params</span>&nbsp;<span style="color:#2b91af;">T</span>[]&nbsp;<span style="font-weight:bold;color:#1f377f;">tail</span>)</pre>
+	</p>
+	<p>
+		While you could, technically, pass <code>null</code> as the <code>head</code> parameter, it should be clear to you that you're trying to do something you're not supposed to do: <code>head</code> is <em>not</em> an optional argument. Had it been optional, the API designer should have provided an overload that you could call without any value. Such a constructor overload isn't available here, so if you try to cheat the compiler by passing <code>null</code>, don't be surprised to get a run-time exception.
+	</p>
+	<p>
+		For what it's worth, I believe that you can only be pragmatic if you know how to be dogmatic. Is it possible to protect <code>NotEmptyCollection&lt;T&gt;</code>'s invariants without throwing exceptions?
+	</p>
+	<p>
+		Yes, you could do that by making the constructor <code>private</code> and instead afford a static factory method that returns a <a href="/2018/03/26/the-maybe-functor">Maybe</a> or <a href="/2018/06/11/church-encoded-either">Either</a> value. In <a href="https://www.haskell.org">Haskell</a>, this is typically called a <em>smart constructor</em>. It's only a few lines of code, so I could easily show it here. I chose not to, though, because I'm concerned that readers will interpret this article the wrong way. I like Maybe and Either a lot, but I agree with the above critics that it may not be <a href="/2015/08/03/idiomatic-or-idiosyncratic">idiomatic</a> in object-oriented languages.
+	</p>
+	<h3 id="737101b053e847f08124d49659804bf6">
+		Summary <a href="#737101b053e847f08124d49659804bf6" title="permalink">#</a>
+	</h3>
+	<p>
+		<em>Encapsulation</em> is central to object-oriented design. It's the notion that it's an object's own responsibility to protect its invariants. In statically typed object-oriented programming languages, objects are instances of classes. Classes are types. Types encapsulate invariants; they carry with them guarantees.
+	</p>
+	<p>
+		You can sometimes model invariants by using types. Instead of performing a run-time check on input arguments, you can declare constructors and methods in such a way that they only take arguments that are already guaranteed to be valid.
+	</p>
+	<p>
+		That's one way to reduce the amount of exceptions that your code throws.
+	</p>
+</div>
