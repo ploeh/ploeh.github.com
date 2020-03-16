@@ -1,0 +1,193 @@
+---
+layout: post
+title: "Tautological assertion"
+description: "It's surprisingly easy to write a unit test assertion that never fails."
+date: 2019-10-14 18:39 UTC
+tags: [Unit Testing]
+---
+{% include JB/setup %}
+
+<div id="post">
+	<p>
+		<em>{{ page.description }}</em>
+	</p>
+	<p>
+		Recently I was mob programming with a pair of <a href="https://idq.dk">IDQ</a>'s programmers. We were starting a new code base, using test-driven development (TDD). This was the first test we wrote:
+	</p>
+	<p>
+		<pre>[<span style="color:#2b91af;">Fact</span>]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">async</span>&nbsp;<span style="color:#2b91af;">Task</span>&nbsp;<span style="font-weight:bold;color:#74531f;">HandleObserveUnitStatusStartsSaga</span>()
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">subscribers</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">List</span>&lt;<span style="color:#2b91af;">Guid</span>&gt;&nbsp;{&nbsp;<span style="color:#2b91af;">Guid</span>.<span style="color:#74531f;">Parse</span>(<span style="color:#a31515;">&quot;{4D093799-9CCC-4135-8CB3-8661985A5853}&quot;</span>)&nbsp;};
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">sut</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">StatusPolicy</span>
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Data&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">StatusPolicyData</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;UnitId&nbsp;=&nbsp;123,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Subscribers&nbsp;=&nbsp;<span style="font-weight:bold;color:#1f377f;">subscribers</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;};
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">subscriber</span>&nbsp;=&nbsp;<span style="color:#2b91af;">Guid</span>.<span style="color:#74531f;">Parse</span>(<span style="color:#a31515;">&quot;{003C5527-7747-4C7A-980E-67040DB738C3}&quot;</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">message</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">ObserveUnitStatus</span>(123,&nbsp;<span style="font-weight:bold;color:#1f377f;">subscriber</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">context</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">TestableMessageHandlerContext</span>();
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">await</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">sut</span>.<span style="font-weight:bold;color:#74531f;">Handle</span>(<span style="font-weight:bold;color:#1f377f;">message</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">context</span>);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Assert</span>.<span style="color:#74531f;">Contains</span>(<span style="font-weight:bold;color:#1f377f;">subscriber</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">sut</span>.Data.Subscribers);
+}</pre>
+	</p>
+	<p>
+		This unit test uses <a href="https://xunit.net">xUnit.net</a> 2.4.0 and <a href="https://particular.net/nservicebus">NServiceBus</a> 7.1.10 on .NET Core 2.2. The System Under Test (SUT) is intended to be an NServiceBus Saga that monitors a resource for status changes. If a <em>unit</em> changes status, the Saga will alert its subscribers.
+	</p>
+	<p>
+		The test verifies that when a new subscriber wishes to observe a unit, then its ID is added to the policy's list of subscribers.
+	</p>
+	<p>
+		The test induced us to implement <code>Handle</code> like this:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">Task</span>&nbsp;<span style="font-weight:bold;color:#74531f;">Handle</span>(<span style="color:#2b91af;">ObserveUnitStatus</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">message</span>,&nbsp;<span style="color:#2b91af;">IMessageHandlerContext</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">context</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;Data.Subscribers.<span style="font-weight:bold;color:#74531f;">Add</span>(<span style="font-weight:bold;color:#1f377f;">message</span>.SubscriberId);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="color:#2b91af;">Task</span>.CompletedTask;
+}</pre>
+	</p>
+	<p>
+		Following the <em>red-green-refactor</em> cycle of TDD, this seemed an appropriate implementation.
+	</p>
+	<h3 id="8182b3c72b2940b98195f41b7a1193e8">
+		Enter the Devil <a href="#8182b3c72b2940b98195f41b7a1193e8" title="permalink">#</a>
+	</h3>
+	<p>
+		I often use the <a href="/2019/10/07/devils-advocate">Devil's advocate</a> technique to figure out what to do next, so I made this change to the <code>Handle</code> method:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">Task</span>&nbsp;<span style="font-weight:bold;color:#74531f;">Handle</span>(<span style="color:#2b91af;">ObserveUnitStatus</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">message</span>,&nbsp;<span style="color:#2b91af;">IMessageHandlerContext</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">context</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;Data.Subscribers.<span style="font-weight:bold;color:#74531f;">Clear</span>();
+&nbsp;&nbsp;&nbsp;&nbsp;Data.Subscribers.<span style="font-weight:bold;color:#74531f;">Add</span>(<span style="font-weight:bold;color:#1f377f;">message</span>.SubscriberId);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="color:#2b91af;">Task</span>.CompletedTask;
+}</pre>
+	</p>
+	<p>
+		The change is that the method first deletes all existing subscribers. This is obviously wrong, but it passes all tests. That's no surprise, since I intentionally introduced the change to make us improve the test.
+	</p>
+	<h3 id="55331957e1de4691bb182c2aae614f4e">
+		False negative <a href="#55331957e1de4691bb182c2aae614f4e" title="permalink">#</a>
+	</h3>
+	<p>
+		We had to write a new test, or improve the existing test, so that the defect I just introduced would be caught. I suggested an improvement to the existing test:
+	</p>
+	<p>
+		<pre>[<span style="color:#2b91af;">Fact</span>]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">async</span>&nbsp;<span style="color:#2b91af;">Task</span>&nbsp;<span style="font-weight:bold;color:#74531f;">HandleObserveUnitStatusStartsSaga</span>()
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">subscribers</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">List</span>&lt;<span style="color:#2b91af;">Guid</span>&gt;&nbsp;{&nbsp;<span style="color:#2b91af;">Guid</span>.<span style="color:#74531f;">Parse</span>(<span style="color:#a31515;">&quot;{4D093799-9CCC-4135-8CB3-8661985A5853}&quot;</span>)&nbsp;};
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">sut</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">StatusPolicy</span>
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Data&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">StatusPolicyData</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;UnitId&nbsp;=&nbsp;123,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Subscribers&nbsp;=&nbsp;<span style="font-weight:bold;color:#1f377f;">subscribers</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;};
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">subscriber</span>&nbsp;=&nbsp;<span style="color:#2b91af;">Guid</span>.<span style="color:#74531f;">Parse</span>(<span style="color:#a31515;">&quot;{003C5527-7747-4C7A-980E-67040DB738C3}&quot;</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">message</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">ObserveUnitStatus</span>(123,&nbsp;<span style="font-weight:bold;color:#1f377f;">subscriber</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">context</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">TestableMessageHandlerContext</span>();
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">await</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">sut</span>.<span style="font-weight:bold;color:#74531f;">Handle</span>(<span style="font-weight:bold;color:#1f377f;">message</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">context</span>);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Assert</span>.<span style="color:#74531f;">Contains</span>(<span style="font-weight:bold;color:#1f377f;">subscriber</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">sut</span>.Data.Subscribers);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Assert</span>.<span style="color:#74531f;">Superset</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">expectedSubset</span>:&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">HashSet</span>&lt;<span style="color:#2b91af;">Guid</span>&gt;(<span style="font-weight:bold;color:#1f377f;">subscribers</span>),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">actual</span>:&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">HashSet</span>&lt;<span style="color:#2b91af;">Guid</span>&gt;(<span style="font-weight:bold;color:#1f377f;">sut</span>.Data.Subscribers));
+}</pre>
+	</p>
+	<p>
+		The only change is the addition of the last assertion.
+	</p>
+	<p>
+		Smugly I asked the keyboard driver to run the tests, anticipating that it would now fail.
+	</p>
+	<p>
+		It passed.
+	</p>
+	<p>
+		We'd just managed to write a <a href="http://xunitpatterns.com/false%20negative.html">false negative</a>. Even though there's a defect in the code, the test still passes. I was nonplussed. None of us expected the test to pass, yet it does.
+	</p>
+	<p>
+		It took us a minute to figure out what was wrong. Before you read on, try to figure it out for yourself. Perhaps it's immediately clear to you, but it took three people with decades of programming experience a few minutes to spot the problem.
+	</p>
+	<h3 id="6f985240963a40d8af913e251b3b86bf">
+		Aliasing <a href="#6f985240963a40d8af913e251b3b86bf" title="permalink">#</a>
+	</h3>
+	<p>
+		The problem is <a href="https://en.wikipedia.org/wiki/Aliasing_(computing)">aliasing</a>. While named differently, <code>subscribers</code> and <code>sut.Data.Subscribers</code> is the same object. Of course one is a subset of the other, since a set is considered to be a subset of itself.
+	</p>
+	<p>
+		The assertion is tautological. It can never fail.
+	</p>
+	<h3 id="9e8ec91f731e4f67aceefbebb76799d4">
+		Fixing the problem <a href="#9e8ec91f731e4f67aceefbebb76799d4" title="permalink">#</a>
+	</h3>
+	<p>
+		It's surprisingly easy to write tautological assertions when working with mutable state. This regularly happens to me, perhaps a few times a month. Once you've realised that this has happened, however, it's easy to address.
+	</p>
+	<p>
+		<code>subscribers</code> shouldn't change during the test, so make it immutable.
+	</p>
+	<p>
+		<pre>[<span style="color:#2b91af;">Fact</span>]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">async</span>&nbsp;<span style="color:#2b91af;">Task</span>&nbsp;<span style="font-weight:bold;color:#74531f;">HandleObserveUnitStatusStartsSaga</span>()
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">IEnumerable</span>&lt;<span style="color:#2b91af;">Guid</span>&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">subscribers</span>&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>[]&nbsp;{&nbsp;<span style="color:#2b91af;">Guid</span>.<span style="color:#74531f;">Parse</span>(<span style="color:#a31515;">&quot;{4D093799-9CCC-4135-8CB3-8661985A5853}&quot;</span>)&nbsp;};
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">sut</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">StatusPolicy</span>
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Data&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">StatusPolicyData</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;UnitId&nbsp;=&nbsp;123,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Subscribers&nbsp;=&nbsp;<span style="font-weight:bold;color:#1f377f;">subscribers</span>.<span style="font-weight:bold;color:#74531f;">ToList</span>()
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;};
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">subscriber</span>&nbsp;=&nbsp;<span style="color:#2b91af;">Guid</span>.<span style="color:#74531f;">Parse</span>(<span style="color:#a31515;">&quot;{003C5527-7747-4C7A-980E-67040DB738C3}&quot;</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">message</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">ObserveUnitStatus</span>(123,&nbsp;<span style="font-weight:bold;color:#1f377f;">subscriber</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">context</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">TestableMessageHandlerContext</span>();
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">await</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">sut</span>.<span style="font-weight:bold;color:#74531f;">Handle</span>(<span style="font-weight:bold;color:#1f377f;">message</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">context</span>);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Assert</span>.<span style="color:#74531f;">Contains</span>(<span style="font-weight:bold;color:#1f377f;">subscriber</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">sut</span>.Data.Subscribers);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Assert</span>.<span style="color:#74531f;">Superset</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">expectedSubset</span>:&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">HashSet</span>&lt;<span style="color:#2b91af;">Guid</span>&gt;(<span style="font-weight:bold;color:#1f377f;">subscribers</span>),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">actual</span>:&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">HashSet</span>&lt;<span style="color:#2b91af;">Guid</span>&gt;(<span style="font-weight:bold;color:#1f377f;">sut</span>.Data.Subscribers));
+}</pre>
+	</p>
+	<p>
+		An array strictly isn't immutable, but declaring it as <code>IEnumerable&lt;Guid&gt;</code> hides the mutation capabilities. The test now has to copy <code>subscribers</code> to a list before assigning it to the policy's data. This anti-aliases <code>subscribers</code> from <code>sut.Data.Subscribers</code>, and causes the test to fail. After all, there's a defect in the <code>Handle</code> method.
+	</p>
+	<p>
+		You now have to remove the offending line:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">Task</span>&nbsp;<span style="font-weight:bold;color:#74531f;">Handle</span>(<span style="color:#2b91af;">ObserveUnitStatus</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">message</span>,&nbsp;<span style="color:#2b91af;">IMessageHandlerContext</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">context</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;Data.Subscribers.<span style="font-weight:bold;color:#74531f;">Add</span>(<span style="font-weight:bold;color:#1f377f;">message</span>.SubscriberId);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="color:#2b91af;">Task</span>.CompletedTask;
+}</pre>
+	</p>
+	<p>
+		This makes the test pass.
+	</p>
+	<h3 id="fd8e8ab5e7314ebbadc4775741af11fa">
+		Summary <a href="#fd8e8ab5e7314ebbadc4775741af11fa" title="permalink">#</a>
+	</h3>
+	<p>
+		This article shows an example where I was surprised by aliasing. An assertion that I thought would fail turned out to be a false negative.
+	</p>
+	<p>
+		You can easily make the mistake of writing a test that always passes. If you haven't tried it, you may think that you're too smart to do that, but it regularly happens to me. Other TDD practitioners have told me that it also happens to them.
+	</p>
+	<p>
+		This is the reason that the <em>red-green-refactor</em> process encourages you to run each new test <em>and see it fail</em>. If you haven't seen it fail, you don't know if you've avoided a tautology.
+	</p>
+</div>

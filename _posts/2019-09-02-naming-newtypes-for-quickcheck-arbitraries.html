@@ -1,0 +1,133 @@
+---
+layout: post
+title: "Naming newtypes for QuickCheck Arbitraries"
+description: "A simple naming scheme for newtypes to add Arbitrary instances."
+date: 2019-09-02 13:07 UTC
+tags: [Unit Testing, Haskell]
+---
+{% include JB/setup %}
+
+<div id="post">
+	<p>
+		<em>{{ page.description }}</em>
+	</p>
+	<p>
+		Naming is one of those recurring difficult problems in software development. How do you come up with good names?
+	</p>
+	<p>
+		I'm not aware of any <em>general</em> heuristic for that, but sometimes, in specific contexts, a naming scheme presents itself. Here's one.
+	</p>
+	<h3 id="c7391ad662e943f1bbe2b52d6b8bde59">
+		Orphan instances <a href="#c7391ad662e943f1bbe2b52d6b8bde59" title="permalink">#</a>
+	</h3>
+	<p>
+		When you write <a href="http://hackage.haskell.org/package/QuickCheck">QuickCheck</a> properties that involve your own custom types, you'll have to add <code>Arbitrary</code> instances for those types. As an example, here's a restaurant reservation record type:
+	</p>
+	<p>
+		<pre><span style="color:blue;">data</span>&nbsp;Reservation&nbsp;=&nbsp;Reservation
+&nbsp;&nbsp;{&nbsp;reservationId&nbsp;::&nbsp;UUID
+&nbsp;&nbsp;,&nbsp;reservationDate&nbsp;::&nbsp;LocalTime
+&nbsp;&nbsp;,&nbsp;reservationName&nbsp;::&nbsp;String
+&nbsp;&nbsp;,&nbsp;reservationEmail&nbsp;::&nbsp;String
+&nbsp;&nbsp;,&nbsp;reservationQuantity&nbsp;::&nbsp;Int
+&nbsp;&nbsp;}&nbsp;<span style="color:blue;">deriving</span>&nbsp;(<span style="color:#2b91af;">Eq</span>,&nbsp;<span style="color:#2b91af;">Show</span>,&nbsp;<span style="color:#2b91af;">Read</span>,&nbsp;<span style="color:#2b91af;">Generic</span>)</pre>
+	</p>
+	<p>
+		You can easily add an Arbitrary instance to such a type:
+	</p>
+	<p>
+		<pre><span style="color:blue;">instance</span>&nbsp;<span style="color:blue;">Arbitrary</span>&nbsp;<span style="color:blue;">Reservation</span>&nbsp;<span style="color:blue;">where</span>
+&nbsp;&nbsp;arbitrary&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;liftM5&nbsp;Reservation&nbsp;arbitrary&nbsp;arbitrary&nbsp;arbitrary&nbsp;arbitrary&nbsp;arbitrary</pre>
+	</p>
+	<p>
+		The type itself is part of your domain model, while the <code>Arbitrary</code> instance only belongs to your test code. You shouldn't add the <code>Arbitrary</code> instance to the domain model, but that means that you'll have to define the instance apart from the type definition. That, however, is an orphan instance, and the compiler will complain:
+	</p>
+	<p>
+		<pre>test\ReservationAPISpec.hs:31:1: <span style="color:red;">warning:</span> [<span style="color:red;">-Worphans</span>]
+    Orphan instance: instance Arbitrary Reservation
+    To avoid this
+        move the instance declaration to the module of the class or of the type, or
+        wrap the type with a newtype and declare the instance on the new type.
+   <span style="color:blue;">|</span>
+<span style="color:blue;">31 |</span> <span style="color:red;">instance Arbitrary Reservation where</span>
+   <span style="color:blue;">|</span> <span style="color:red;">^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^...</span></pre>
+	</p>
+	<p>
+		Technically, this isn't a difficult problem to solve. The warning even suggests remedies. Moving the instance to the module that declares the type is, however, inappropriate, since test-specific instances don't belong in the domain model. Wrapping the type in a <code>newtype</code> is more appropriate, but what should you call the type?
+	</p>
+	<h3 id="c192d6524b4b4444a35121443f9a61a8">
+		Suppress the warning <a href="#c192d6524b4b4444a35121443f9a61a8" title="permalink">#</a>
+	</h3>
+	<p>
+		I had trouble coming up with good names for such <code>newtype</code> wrappers, so at first I decided to just suppress that particular compiler warning. I simply added the <code>-fno-warn-orphans</code> flag <em>exclusively to my test code</em>.
+	</p>
+	<p>
+		That solved the immediate problem, but I felt a little dirty. It's okay, though, because you're not supposed to reuse test libraries anyway, so the usual problems with orphan instances don't apply.
+	</p>
+	<p>
+		After having worked a little like this, however, it dawned on me that I needed more than one <code>Arbitrary</code> instance, and a naming scheme presented itself.
+	</p>
+	<h3 id="a946b2c622c6403cb69a3f224551514c">
+		Naming scheme <a href="#a946b2c622c6403cb69a3f224551514c" title="permalink">#</a>
+	</h3>
+	<p>
+		For some of the properties I wrote, I needed a <em>valid</em> <code>Reservation</code> value. In this case, <em>valid</em> means that the <code>reservationQuantity</code> is a positive number, and that the <code>reservationDate</code> is in the future. It seemed natural to signify these constraints with a <code>newtype</code>:
+	</p>
+	<p>
+		<pre><span style="color:blue;">newtype</span>&nbsp;ValidReservation&nbsp;=&nbsp;ValidReservation&nbsp;Reservation&nbsp;<span style="color:blue;">deriving</span>&nbsp;(<span style="color:#2b91af;">Eq</span>,&nbsp;<span style="color:#2b91af;">Show</span>)
+ 
+<span style="color:blue;">instance</span>&nbsp;<span style="color:blue;">Arbitrary</span>&nbsp;<span style="color:blue;">ValidReservation</span>&nbsp;<span style="color:blue;">where</span>
+&nbsp;&nbsp;arbitrary&nbsp;=&nbsp;<span style="color:blue;">do</span>
+&nbsp;&nbsp;&nbsp;&nbsp;rid&nbsp;&lt;-&nbsp;arbitrary
+&nbsp;&nbsp;&nbsp;&nbsp;d&nbsp;&lt;-&nbsp;(\dt&nbsp;-&gt;&nbsp;addLocalTime&nbsp;(getPositive&nbsp;dt)&nbsp;now2019)&nbsp;&lt;$&gt;&nbsp;arbitrary
+&nbsp;&nbsp;&nbsp;&nbsp;n&nbsp;&lt;-&nbsp;arbitrary
+&nbsp;&nbsp;&nbsp;&nbsp;e&nbsp;&lt;-&nbsp;arbitrary
+&nbsp;&nbsp;&nbsp;&nbsp;(Positive&nbsp;q)&nbsp;&lt;-&nbsp;arbitrary
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;$&nbsp;ValidReservation&nbsp;$&nbsp;Reservation&nbsp;rid&nbsp;d&nbsp;n&nbsp;e&nbsp;q</pre>
+	</p>
+	<p>
+		The <code>newtype</code> is, naturally, called <code>ValidReservation</code> and can, for example, be used like this:
+	</p>
+	<p>
+		<pre>it&nbsp;<span style="color:#a31515;">&quot;responds&nbsp;with&nbsp;200&nbsp;after&nbsp;reservation&nbsp;is&nbsp;added&quot;</span>&nbsp;$&nbsp;WQC.property&nbsp;$&nbsp;\
+&nbsp;&nbsp;(ValidReservation&nbsp;r)&nbsp;-&gt;&nbsp;<span style="color:blue;">do</span>
+&nbsp;&nbsp;_&nbsp;&lt;-&nbsp;postJSON&nbsp;<span style="color:#a31515;">&quot;/reservations&quot;</span>&nbsp;$&nbsp;encode&nbsp;r
+&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;actual&nbsp;=&nbsp;get&nbsp;$&nbsp;<span style="color:#a31515;">&quot;/reservations/&quot;</span>&nbsp;&lt;&gt;&nbsp;toASCIIBytes&nbsp;(reservationId&nbsp;r)
+&nbsp;&nbsp;actual&nbsp;`shouldRespondWith`&nbsp;200</pre>
+	</p>
+	<p>
+		For the few properties where <em>any</em> <code>Reservation</code> goes, a name for a <code>newtype</code> now also suggests itself:
+	</p>
+	<p>
+		<pre><span style="color:blue;">newtype</span>&nbsp;AnyReservation&nbsp;=&nbsp;AnyReservation&nbsp;Reservation&nbsp;<span style="color:blue;">deriving</span>&nbsp;(<span style="color:#2b91af;">Eq</span>,&nbsp;<span style="color:#2b91af;">Show</span>)
+ 
+<span style="color:blue;">instance</span>&nbsp;<span style="color:blue;">Arbitrary</span>&nbsp;<span style="color:blue;">AnyReservation</span>&nbsp;<span style="color:blue;">where</span>
+&nbsp;&nbsp;arbitrary&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;AnyReservation&nbsp;&lt;$&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;liftM5&nbsp;Reservation&nbsp;arbitrary&nbsp;arbitrary&nbsp;arbitrary&nbsp;arbitrary&nbsp;arbitrary</pre>
+	</p>
+	<p>
+		The only use I've had for that particular instance so far, though, is to ensure that any <code>Reservation</code> correctly serialises to, and deserialises from, JSON:
+	</p>
+	<p>
+		<pre>it&nbsp;<span style="color:#a31515;">&quot;round-trips&quot;</span>&nbsp;$&nbsp;property&nbsp;$&nbsp;\(AnyReservation&nbsp;r)&nbsp;-&gt;&nbsp;<span style="color:blue;">do</span>
+&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;json&nbsp;=&nbsp;encode&nbsp;r
+&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;actual&nbsp;=&nbsp;decode&nbsp;json
+&nbsp;&nbsp;actual&nbsp;`shouldBe`&nbsp;Just&nbsp;r</pre>
+	</p>
+	<p>
+		With those two <code>newtype</code> wrappers, I no longer have any orphan instances.
+	</p>
+	<h3 id="758fef8609784b998c3fad65b2fe6e2f">
+		Summary <a href="#758fef8609784b998c3fad65b2fe6e2f" title="permalink">#</a>
+	</h3>
+	<p>
+		A simple naming scheme for <code>newtype</code> wrappers for QuickCheck <code>Arbitrary</code> instances, then, is:
+		<ul>
+			<li>If the instance is truly unbounded, prefix the wrapper name with <em>Any</em></li>
+			<li>If the instance only produces valid values, prefix the wrapper name with <em>Valid</em></li>
+		</ul>
+		This strikes me as a practical naming scheme. Other variations seem natural. If, for example, you need an <em>invalid</em> value, you can prefix the wrapper name with <em>Invalid</em>. Why you'd need that, though, I'm not sure.
+	</p>
+</div>

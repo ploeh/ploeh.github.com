@@ -1,0 +1,195 @@
+---
+layout: post
+title: "Unit testing wai applications"
+description: "One way to unit test a wai application with the API provided by Network.Wai.Test."
+date: 2019-09-23 6:35 UTC
+tags: [Unit Testing, Haskell]
+---
+{% include JB/setup %}
+
+<div id="post">
+	<p>
+		<em>{{ page.description }}</em>
+	</p>
+	<p>
+		I'm currently developing a REST API in <a href="https://www.haskell.org">Haskell</a> using <a href="https://haskell-servant.readthedocs.io">Servant</a>, and I'd like to test the HTTP API as well as the functions that I use to compose it. The Servant documentation, as well as the <em>servant</em> <a href="https://haskellstack.org">Stack</a> template, uses <a href="http://hackage.haskell.org/package/hspec">hspec</a> to drive the tests.
+	</p>
+	<p>
+		I tried to develop my code with hspec, but I found it confusing and inflexible. It's possible that I only found it inflexible because I didn't understand it well enough, but I don't think you can argue with my experience of finding it confusing.
+	</p>
+	<p>
+		I prefer a combination of <a href="https://hackage.haskell.org/package/HUnit">HUnit</a> and <a href="http://hackage.haskell.org/package/QuickCheck">QuickCheck</a>. It turns out that it's possible to test a <a href="http://hackage.haskell.org/package/wai">wai</a> application (including Servant) using only those test libraries.
+	</p>
+	<h3 id="1c7a7365bd0c425e85691625d00adcd0">
+		Testable HTTP requests <a href="#1c7a7365bd0c425e85691625d00adcd0" title="permalink">#</a>
+	</h3>
+	<p>
+		When testing against the HTTP API itself, you want something that can simulate the HTTP traffic. That capability is provided by <a href="http://hackage.haskell.org/package/wai-extra/docs/Network-Wai-Test.html">Network.Wai.Test</a>. At first, however, it wasn't entirely clear to me how that library works, but I could see that the Servant-recommended <a href="http://hackage.haskell.org/package/hspec-wai/docs/Test-Hspec-Wai.html">Test.Hspec.Wai</a> is just a thin wrapper over <em>Network.Wai.Test</em> (notice how <a href="/2019/07/01/yes-silver-bullet">open source makes such research much easier</a>).
+	</p>
+	<p>
+		It turns out that <em>Network.Wai.Test</em> enables you to run your tests in a <code>Session</code> monad. You can, for example, define a simple HTTP GET request like this:
+	</p>
+	<p>
+		<pre><span style="color:blue;">import</span>&nbsp;<span style="color:blue;">qualified</span>&nbsp;Data.ByteString&nbsp;<span style="color:blue;">as</span>&nbsp;BS
+<span style="color:blue;">import</span>&nbsp;<span style="color:blue;">qualified</span>&nbsp;Data.ByteString.Lazy&nbsp;<span style="color:blue;">as</span>&nbsp;LBS
+<span style="color:blue;">import</span>&nbsp;Network.HTTP.Types
+<span style="color:blue;">import</span>&nbsp;Network.Wai
+<span style="color:blue;">import</span>&nbsp;Network.Wai.Test
+
+<span style="color:#2b91af;">get</span>&nbsp;::&nbsp;<span style="color:blue;">BS</span>.<span style="color:blue;">ByteString</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">Session</span>&nbsp;<span style="color:blue;">SResponse</span>
+get&nbsp;url&nbsp;=&nbsp;request&nbsp;$&nbsp;setPath&nbsp;defaultRequest&nbsp;{&nbsp;requestMethod&nbsp;=&nbsp;methodGet&nbsp;}&nbsp;url
+</pre>
+	</p>
+	<p>
+		This <code>get</code> function takes a <code>url</code> and returns a <code>Session SResponse</code>. It uses the <code>defaultRequest</code>, so it doesn't set any specific HTTP headers.
+	</p>
+	<p>
+		For HTTP POST requests, I needed a function that'd POST a JSON document to a particular URL. For that purpose, I had to do a little more work:
+	</p>
+	<p>
+		<pre><span style="color:#2b91af;">postJSON</span>&nbsp;::&nbsp;<span style="color:blue;">BS</span>.<span style="color:blue;">ByteString</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">LBS</span>.<span style="color:blue;">ByteString</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">Session</span>&nbsp;<span style="color:blue;">SResponse</span>
+postJSON&nbsp;url&nbsp;json&nbsp;=&nbsp;srequest&nbsp;$&nbsp;SRequest&nbsp;req&nbsp;json
+&nbsp;&nbsp;<span style="color:blue;">where</span>
+&nbsp;&nbsp;&nbsp;&nbsp;req&nbsp;=&nbsp;setPath&nbsp;defaultRequest
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{&nbsp;requestMethod&nbsp;=&nbsp;methodPost
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;,&nbsp;requestHeaders&nbsp;=&nbsp;[(hContentType,&nbsp;<span style="color:#a31515;">&quot;application/json&quot;</span>)]}&nbsp;url</pre>
+	</p>
+	<p>
+		This is a little more involved than the <code>get</code> function, because it also has to supply the <code>Content-Type</code> HTTP header. If you don't supply that header with the <code>application/json</code> value, your API is going to reject the request when you attempt to post a string with a JSON object.
+	</p>
+	<p>
+		Apart from that, it works the same way as the <code>get</code> function.
+	</p>
+	<h3 id="d726d432f53b4817b5dc9716a2fabc36">
+		Running a test session <a href="#d726d432f53b4817b5dc9716a2fabc36" title="permalink">#</a>
+	</h3>
+	<p>
+		The <code>get</code> and <code>postJSON</code> functions both return <code>Session</code> values, so a test must run in the <code>Session</code> monad. This is easily done with Haskell's <code>do</code> notation; you'll see an example of that later in the article.
+	</p>
+	<p>
+		First, however, you'll need a way to run a <code>Session</code>. <em>Network.Wai.Test</em> provides a function for that, called <code>runSession</code>. Besides a <code>Session a</code> value, though, it also requires an <code>Application</code> value.
+	</p>
+	<p>
+		In my test library, I already have an <code>Application</code>, although it's running in <code>IO</code> (for reasons that'll take another article to explain):
+	</p>
+	<p>
+		<pre><span style="color:#2b91af;">app</span>&nbsp;::&nbsp;<span style="color:#2b91af;">IO</span>&nbsp;<span style="color:blue;">Application</span></pre>
+	</p>
+	<p>
+		With this value, you can easily convert any <code>Session a</code> to <code>IO a</code>:
+	</p>
+	<p>
+		<pre><span style="color:#2b91af;">runSessionWithApp</span>&nbsp;::&nbsp;<span style="color:blue;">Session</span>&nbsp;a&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:#2b91af;">IO</span>&nbsp;a
+runSessionWithApp&nbsp;s&nbsp;=&nbsp;app&nbsp;&gt;&gt;=&nbsp;runSession&nbsp;s</pre>
+	</p>
+	<p>
+		The next step is to figure out how to turn an <code>IO a</code> into a test.
+	</p>
+	<h3 id="febab39aa10d4d78bfd0bc4d3d45ca8a">
+		Running a property <a href="#febab39aa10d4d78bfd0bc4d3d45ca8a" title="permalink">#</a>
+	</h3>
+	<p>
+		You can turn an <code>IO a</code> into a <code>Property</code> with either <code>ioProperty</code> or <code>idempotentIOProperty</code>. I admit that the documentation doesn't make the distinction between the two entirely clear, but <code>ioProperty</code> sounds like the safer choice, so that's what I went for here.
+	</p>
+	<p>
+		With <code>ioProperty</code> you now have a <code>Property</code> that you can turn into a <code>Test</code> using <code>testProperty</code> from <a href="http://hackage.haskell.org/package/test-framework-quickcheck2/docs/Test-Framework-Providers-QuickCheck2.html">Test.Framework.Providers.QuickCheck2</a>:
+	</p>
+	<p>
+		<pre><span style="color:#2b91af;">appProperty</span>&nbsp;::&nbsp;(<span style="color:blue;">Functor</span>&nbsp;f,&nbsp;<span style="color:blue;">Testable</span>&nbsp;prop,&nbsp;<span style="color:blue;">Testable</span>&nbsp;(f&nbsp;<span style="color:blue;">Property</span>))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;=&gt;&nbsp;TestName&nbsp;-&gt;&nbsp;f&nbsp;(Session&nbsp;prop)&nbsp;-&gt;&nbsp;Test
+appProperty&nbsp;name&nbsp;=
+&nbsp;&nbsp;testProperty&nbsp;name&nbsp;.&nbsp;<span style="color:blue;">fmap</span>&nbsp;(ioProperty&nbsp;.&nbsp;runSessionWithApp)</pre>
+	</p>
+	<p>
+		The type of this function seems more cryptic than strictly necessary. What's that <code>Functor f</code> doing there?
+	</p>
+	<p>
+		The way I've written the tests, each property receives input from QuickCheck in the form of function arguments. I could have given the <code>appProperty</code> function a more restricted type, to make it clearer what's going on:
+	</p>
+	<p>
+		<pre><span style="color:#2b91af;">appProperty</span>&nbsp;::&nbsp;(<span style="color:blue;">Arbitrary</span>&nbsp;a,&nbsp;<span style="color:blue;">Show</span>&nbsp;a,&nbsp;<span style="color:blue;">Testable</span>&nbsp;prop)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;=&gt;&nbsp;TestName&nbsp;-&gt;&nbsp;(a&nbsp;-&gt;&nbsp;Session&nbsp;prop)&nbsp;-&gt;&nbsp;Test
+appProperty&nbsp;name&nbsp;=
+&nbsp;&nbsp;testProperty&nbsp;name&nbsp;.&nbsp;<span style="color:blue;">fmap</span>&nbsp;(ioProperty&nbsp;.&nbsp;runSessionWithApp)</pre>
+	</p>
+	<p>
+		This is the same function, just with a more restricted type. It states that for any <code>Arbitrary a, Show a</code>, a test is a function that takes <code>a</code> as input and returns a <code>Session prop</code>. This restricts tests to take a single input value, which means that you'll have to write all those properties in tupled, uncurried form. You could relax that requirement by introducing a <code>newtype</code> and a type class with an instance that recursively enables curried functions. That's what <a href="http://hackage.haskell.org/package/hspec-wai/docs/Test-Hspec-Wai-QuickCheck.html">Test.Hspec.Wai.QuickCheck</a> does. I decided not to add that extra level of indirection, and instead living with having to write all my properties in tupled form.
+	</p>
+	<p>
+		The <code>Functor f</code> in the above, relaxed type, then, is in actual use the Reader functor. You'll see some examples next.
+	</p>
+	<h3 id="0ebc8724e39149e88e5e71763b03d499">
+		Properties <a href="#0ebc8724e39149e88e5e71763b03d499" title="permalink">#</a>
+	</h3>
+	<p>
+		You can now define some properties. Here's a simple example:
+	</p>
+	<p>
+		<pre>appProperty&nbsp;<span style="color:#a31515;">&quot;responds&nbsp;with&nbsp;404&nbsp;when&nbsp;no&nbsp;reservation&nbsp;exists&quot;</span>&nbsp;$&nbsp;\rid&nbsp;-&gt;&nbsp;<span style="color:blue;">do</span>
+&nbsp;&nbsp;actual&nbsp;&lt;-&nbsp;get&nbsp;$&nbsp;<span style="color:#a31515;">&quot;/reservations/&quot;</span>&nbsp;&lt;&gt;&nbsp;toASCIIBytes&nbsp;rid
+&nbsp;&nbsp;assertStatus&nbsp;404&nbsp;actual</pre>
+	</p>
+	<p>
+		This is an inlined property, similar to how <a href="/2018/05/07/inlined-hunit-test-lists">I inline HUnit tests in test lists</a>.
+	</p>
+	<p>
+		First, notice that the property is written as a lambda expression, which means that it fits the mould of <code>a -&gt; Session prop</code>. The input value <code>rid</code> (<em>reservationID</em>) is a <a href="http://hackage.haskell.org/package/uuid/docs/Data-UUID.html">UUID</a> value (for which an <code>Arbitrary</code> instance exists via <a href="http://hackage.haskell.org/package/quickcheck-instances">quickcheck-instances</a>).
+	</p>
+	<p>
+		While the test runs in the <code>Session</code> monad, the <code>do</code> notation makes <code>actual</code> an <code>SResponse</code> value that you can then assert with <code>assertStatus</code> (from <em>Network.Wai.Test</em>).
+	</p>
+	<p>
+		This property reproduces an interaction like this:
+	</p>
+	<p>
+		<pre>&amp; curl -v http://localhost:8080/reservations/db38ac75-9ccd-43cc-864a-ce13e90a71d8
+*   Trying ::1:8080...
+* TCP_NODELAY set
+*   Trying 127.0.0.1:8080...
+* TCP_NODELAY set
+* Connected to localhost (127.0.0.1) port 8080 (#0)
+&gt; GET /reservations/db38ac75-9ccd-43cc-864a-ce13e90a71d8 HTTP/1.1
+&gt; Host: localhost:8080
+&gt; User-Agent: curl/7.65.1
+&gt; Accept: */*
+&gt;
+* Mark bundle as not supporting multiuse
+&lt; HTTP/1.1 404 Not Found
+&lt; Transfer-Encoding: chunked
+&lt; Date: Tue, 02 Jul 2019 18:09:51 GMT
+&lt; Server: Warp/3.2.27
+&lt;
+* Connection #0 to host localhost left intact</pre>
+	</p>
+	<p>
+		The important result is that the status code is <code>404 Not Found</code>, which is also what the property asserts.
+	</p>
+	<p>
+		If you need more than one input value to your property, you have to write the property in tupled form:
+	</p>
+	<p>
+		<pre>appProperty&nbsp;<span style="color:#a31515;">&quot;fails&nbsp;when&nbsp;reservation&nbsp;is&nbsp;POSTed&nbsp;with&nbsp;invalid&nbsp;quantity&quot;</span>&nbsp;$&nbsp;\
+&nbsp;&nbsp;(ValidReservation&nbsp;r,&nbsp;NonNegative&nbsp;q)&nbsp;-&gt;&nbsp;<span style="color:blue;">do</span>
+&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;invalid&nbsp;=&nbsp;r&nbsp;{&nbsp;reservationQuantity&nbsp;=&nbsp;<span style="color:blue;">negate</span>&nbsp;q&nbsp;}
+&nbsp;&nbsp;actual&nbsp;&lt;-&nbsp;postJSON&nbsp;<span style="color:#a31515;">&quot;/reservations&quot;</span>&nbsp;$&nbsp;encode&nbsp;invalid
+&nbsp;&nbsp;assertStatus&nbsp;400&nbsp;actual</pre>
+	</p>
+	<p>
+		This property still takes a single input, but that input is a tuple where the first element is a <code>ValidReservation</code> and the second element a <code>NonNegative Int</code>. The <a href="/2019/09/02/naming-newtypes-for-quickcheck-arbitraries">ValidReservation newtype wrapper</a> ensures that <code>r</code> is a valid reservation record. This ensures that the property only exercises the path where the reservation quantity is zero or negative. It accomplishes this by negating <code>q</code> and replacing the <code>reservationQuantity</code> with that negative (or zero) number.
+	</p>
+	<p>
+		It then encodes (with <a href="http://hackage.haskell.org/package/aeson">aeson</a>) the <code>invalid</code> reservation and posts it using the <code>postJSON</code> function.
+	</p>
+	<p>
+		Finally it asserts that the HTTP status code is <code>400 Bad Request</code>.
+	</p>
+	<h3 id="ae5b3f7b07634799ad2af0d9a2ac668c">
+		Summary <a href="#ae5b3f7b07634799ad2af0d9a2ac668c" title="permalink">#</a>
+	</h3>
+	<p>
+		After having tried using <em>Test.Hspec.Wai</em> for some time, I decided to refactor my tests to QuickCheck and HUnit. Once I figured out how <em>Network.Wai.Test</em> works, the remaining work wasn't too difficult. While there's little written documentation for the modules, the types (as usual) act as documentation. Using the types, and looking a little at the underlying code, I was able to figure out how to use the test API.
+	</p>
+	<p>
+		You write tests against <em>wai</em> applications in the <code>Session</code> monad. You can then use <code>runSession</code> to turn the <code>Session</code> into an <code>IO</code> value.
+	</p>
+</div>
