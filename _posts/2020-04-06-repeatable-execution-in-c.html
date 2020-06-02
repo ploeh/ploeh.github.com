@@ -1,0 +1,454 @@
+---
+layout: post
+title: "Repeatable execution in C#"
+description: "A C# example of Goldilogs."
+date: 2020-04-06 7:46 UTC
+tags: [Architecture, Dependency Injection]
+---
+{% include JB/setup %}
+
+<div id="post">
+	<p>
+		<em>{{ page.description }}</em>
+	</p>
+	<p>
+		This article is part of <a href="/2020/03/23/repeatable-execution">a series of articles about repeatable execution</a>. The introductory article argued that if you've logged the impure actions that a system made, you have enough information to reproduce what happened. The <a href="/2020/03/30/repeatable-execution-in-haskell">previous article</a> verified that for the example scenario, the impure actions were limited to reading the current time and interacting with the application database.
+	</p>
+	<p>
+		This article shows how to implement equivalent functionality in C#. You should be able to extrapolate from this to other object-oriented programming languages.
+	</p>
+	<p>
+		The code is <a href="https://github.com/ploeh/reservation-api-slice-csharp">available on GitHub</a>.
+	</p>
+	<h3 id="338d728ddae0410dbb7fefccd6781f6f">
+		Impure actions <a href="#338d728ddae0410dbb7fefccd6781f6f" title="permalink">#</a>
+	</h3>
+	<p>
+		In the previous article I <a href="/2017/07/10/pure-interactions">modelled impure actions as free monads</a>. In C#, it'd be more <a href="/2015/08/03/idiomatic-or-idiosyncratic">idiomatic</a> to <a href="/2017/01/27/from-dependency-injection-to-dependency-rejection">use Dependency Injection</a>. Model each impure interaction as an interface.
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">interface</span>&nbsp;<span style="color:#2b91af;">IClock</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">DateTime</span>&nbsp;<span style="font-weight:bold;color:#74531f;">GetCurrentDateTime</span>();
+}</pre>
+	</p>
+	<p>
+		The demo code demonstrates a single feature of a REST API and it only requires a single method on this interface to work. Following the <a href="https://en.wikipedia.org/wiki/Dependency_inversion_principle">Dependency Inversion Principle</a>
+		<blockquote>
+			<p>
+				"clients [...] own the abstract interfaces"
+			</p>
+			<footer><cite><a href="http://amzn.to/19W4JHk">Agile Principles, Patterns, and Practices</a>, chapter 11</cite></footer>
+		</blockquote>
+		This interface only defines a single method, because that's all the client code requires.
+	</p>
+	<p>
+		Likewise, the client code only needs two methods to interact with the database:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">interface</span>&nbsp;<span style="color:#2b91af;">IReservationsRepository</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">IEnumerable</span>&lt;<span style="color:#2b91af;">Reservation</span>&gt;&nbsp;<span style="font-weight:bold;color:#74531f;">ReadReservations</span>(<span style="color:#2b91af;">DateTime</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">date</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">void</span>&nbsp;<span style="font-weight:bold;color:#74531f;">Create</span>(<span style="color:#2b91af;">Reservation</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">reservation</span>);
+}</pre>
+	</p>
+	<p>
+		In the Haskell example code base, I also implemented <code>GET</code> for <code>/reservations</code>, but I forgot to do that here. There's only two methods on the interface: one to query the database, and one to create a new row.
+	</p>
+	<h3 id="63f39b6964f74a9c847913f4e1b5359c">
+		Receive a reservation <a href="#63f39b6964f74a9c847913f4e1b5359c" title="permalink">#</a>
+	</h3>
+	<p>
+		The central feature of the service is to receive and handle an HTTP POST request, as described in the introductory article. When a document arrives it triggers a series of non-trivial work:
+		<ol>
+			<li>The service validates the input data. Among other things, it checks that the reservation is in the future. It uses <code>GetCurrentDateTime</code> for this.</li>
+			<li>It queries the database for existing reservations. It uses <code>ReadReservations</code> for this.</li>
+			<li>It uses complex business logic to determine whether to accept the reservation. This essentially implements the <a href="/2020/01/27/the-maitre-d-kata">Ma&icirc;tre d' kata</a>.</li>
+			<li>If it accepts the reservation, it stores it. It uses <code>Create</code> for this.</li>
+		</ol>
+		These steps manifest as this Controller method:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">ActionResult</span>&nbsp;<span style="font-weight:bold;color:#74531f;">Post</span>(<span style="color:#2b91af;">ReservationDto</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">dto</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">if</span>&nbsp;(!<span style="color:#2b91af;">DateTime</span>.<span style="color:#74531f;">TryParse</span>(<span style="font-weight:bold;color:#1f377f;">dto</span>.Date,&nbsp;<span style="color:blue;">out</span>&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="color:blue;">_</span>))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="font-weight:bold;color:#74531f;">BadRequest</span>(<span style="color:#a31515;">$&quot;Invalid&nbsp;date:&nbsp;</span>{<span style="font-weight:bold;color:#1f377f;">dto</span>.Date}<span style="color:#a31515;">.&quot;</span>);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Reservation</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">reservation</span>&nbsp;=&nbsp;<span style="color:#2b91af;">Mapper</span>.<span style="color:#74531f;">Map</span>(<span style="font-weight:bold;color:#1f377f;">dto</span>);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">if</span>&nbsp;(<span style="font-weight:bold;color:#1f377f;">reservation</span>.Date&nbsp;<span style="font-weight:bold;color:#74531f;">&lt;</span>&nbsp;Clock.<span style="font-weight:bold;color:#74531f;">GetCurrentDateTime</span>())
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="font-weight:bold;color:#74531f;">BadRequest</span>(<span style="color:#a31515;">$&quot;Invalid&nbsp;date:&nbsp;</span>{<span style="font-weight:bold;color:#1f377f;">reservation</span>.Date}<span style="color:#a31515;">.&quot;</span>);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">reservations</span>&nbsp;=&nbsp;Repository.<span style="font-weight:bold;color:#74531f;">ReadReservations</span>(<span style="font-weight:bold;color:#1f377f;">reservation</span>.Date);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">bool</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">accepted</span>&nbsp;=&nbsp;maîtreD.<span style="font-weight:bold;color:#74531f;">CanAccept</span>(<span style="font-weight:bold;color:#1f377f;">reservations</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">reservation</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">if</span>&nbsp;(!<span style="font-weight:bold;color:#1f377f;">accepted</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="font-weight:bold;color:#74531f;">StatusCode</span>(<span style="color:#2b91af;">StatusCodes</span>.Status500InternalServerError,&nbsp;<span style="color:#a31515;">&quot;Couldn&#39;t&nbsp;accept.&quot;</span>);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;Repository.<span style="font-weight:bold;color:#74531f;">Create</span>(<span style="font-weight:bold;color:#1f377f;">reservation</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="font-weight:bold;color:#74531f;">Ok</span>();
+}</pre>
+	</p>
+	<p>
+		<code>Clock</code> and <code>Repository</code> are injected dependencies, and <code>maîtreD</code> is an object that implements the decision logic as the <a href="https://en.wikipedia.org/wiki/Pure_function">pure</a> <code>CanAccept</code> function.
+	</p>
+	<h3 id="c7042ff0e8c246cc8a9f12e656a4bf54">
+		Composition <a href="#c7042ff0e8c246cc8a9f12e656a4bf54" title="permalink">#</a>
+	</h3>
+	<p>
+		The <code>Post</code> method is defined on a class called <code>ReservationsController</code> with these dependencies:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">ReservationsController</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">TimeSpan</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">seatingDuration</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">IReadOnlyCollection</span>&lt;<span style="color:#2b91af;">Table</span>&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">tables</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">IReservationsRepository</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">repository</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">IClock</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">clock</span>)</pre>
+	</p>
+	<p>
+		The <code>seatingDuration</code> and <code>tables</code> arguments are <a href="/2012/07/02/PrimitiveDependencies">primitive dependencies</a> used to configure the <code>maîtreD</code> object. I could also have injected <code>maîtreD</code> as a <a href="/2012/08/31/ConcreteDependencies">concrete dependency</a>, but I decided against that for no particular reason.
+	</p>
+	<p>
+		There's no logging dependency, but the system still logs. Like in the previous example, logging is a cross-cutting concern and exclusively addressed through composition:
+	</p>
+	<p>
+		<pre><span style="font-weight:bold;color:#8f08c4;">if</span>&nbsp;(<span style="font-weight:bold;color:#1f377f;">controllerType</span>&nbsp;<span style="font-weight:bold;color:#74531f;">==</span>&nbsp;<span style="color:blue;">typeof</span>(<span style="color:#2b91af;">ReservationsController</span>))
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">l</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">ScopedLog</span>(<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">FileLog</span>(LogFile));
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">controller</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">ReservationsController</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;SeatingDuration,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Tables,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">LogReservationsRepository</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">SqlReservationsRepository</span>(ConnectionString),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">l</span>),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">LogClock</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">SystemClock</span>(),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">l</span>));
+&nbsp;&nbsp;&nbsp;&nbsp;Logs.<span style="font-weight:bold;color:#74531f;">AddOrUpdate</span>(<span style="font-weight:bold;color:#1f377f;">controller</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">l</span>,&nbsp;(<span style="font-weight:bold;color:#1f377f;">_</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">x</span>)&nbsp;=&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">x</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">controller</span>;
+}</pre>
+	</p>
+	<p>
+		Each dependency is wrapped by a logger. We'll return to that in a minute, but consider first the actual implementations.
+	</p>
+	<h3 id="40cf79001f6f4982ba694efe324cb2b1">
+		Using the system clock <a href="#40cf79001f6f4982ba694efe324cb2b1" title="permalink">#</a>
+	</h3>
+	<p>
+		Using the system clock is easy:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">SystemClock</span>&nbsp;:&nbsp;<span style="color:#2b91af;">IClock</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">DateTime</span>&nbsp;<span style="font-weight:bold;color:#74531f;">GetCurrentDateTime</span>()
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="color:#2b91af;">DateTime</span>.Now;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+	</p>
+	<p>
+		This implementation of <code>IClock</code> simply delegates to <code>DateTime.Now</code>. Again, no logging service is injected.
+	</p>
+	<h3 id="392b67a393cc4deaad9b19901ea4c4c4">
+		Using the database <a href="#392b67a393cc4deaad9b19901ea4c4c4" title="permalink">#</a>
+	</h3>
+	<p>
+		Using the database isn't much harder. I don't find that <a href="https://en.wikipedia.org/wiki/Object-relational_mapping">ORMs</a> offer any benefits, so I prefer to implement database functionality using basic database APIs:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;<span style="font-weight:bold;color:#74531f;">Create</span>(<span style="color:#2b91af;">Reservation</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">reservation</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">using</span>&nbsp;(<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">conn</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">SqlConnection</span>(ConnectionString))
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">using</span>&nbsp;(<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">cmd</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">SqlCommand</span>(createReservationSql,&nbsp;<span style="font-weight:bold;color:#1f377f;">conn</span>))
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">cmd</span>.Parameters.<span style="font-weight:bold;color:#74531f;">Add</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">SqlParameter</span>(<span style="color:#a31515;">&quot;@Guid&quot;</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">reservation</span>.Id));
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">cmd</span>.Parameters.<span style="font-weight:bold;color:#74531f;">Add</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">SqlParameter</span>(<span style="color:#a31515;">&quot;@Date&quot;</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">reservation</span>.Date));
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">cmd</span>.Parameters.<span style="font-weight:bold;color:#74531f;">Add</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">SqlParameter</span>(<span style="color:#a31515;">&quot;@Name&quot;</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">reservation</span>.Name));
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">cmd</span>.Parameters.<span style="font-weight:bold;color:#74531f;">Add</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">SqlParameter</span>(<span style="color:#a31515;">&quot;@Email&quot;</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">reservation</span>.Email));
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">cmd</span>.Parameters.<span style="font-weight:bold;color:#74531f;">Add</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">SqlParameter</span>(<span style="color:#a31515;">&quot;@Quantity&quot;</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">reservation</span>.Quantity));
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">conn</span>.<span style="font-weight:bold;color:#74531f;">Open</span>();
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">cmd</span>.<span style="font-weight:bold;color:#74531f;">ExecuteNonQuery</span>();
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}
+ 
+<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">const</span>&nbsp;<span style="color:blue;">string</span>&nbsp;createReservationSql&nbsp;=&nbsp;<span style="color:maroon;">@&quot;
+&nbsp;&nbsp;&nbsp;&nbsp;INSERT&nbsp;INTO&nbsp;[dbo].[Reservations]&nbsp;([Guid],&nbsp;[Date],&nbsp;[Name],&nbsp;[Email],&nbsp;[Quantity])
+&nbsp;&nbsp;&nbsp;&nbsp;OUTPUT&nbsp;INSERTED.Id
+&nbsp;&nbsp;&nbsp;&nbsp;VALUES&nbsp;(@Guid,&nbsp;@Date,&nbsp;@Name,&nbsp;@Email,&nbsp;@Quantity)&quot;</span>;</pre>
+	</p>
+	<p>
+		The above code snippet implements the <code>Create</code> method of the <code>IReservationsRepository</code> interface. Please refer to the Git repository for the full code if you need more details.
+	</p>
+	<p>
+		If you prefer to implement your database functionality with an ORM, or in another way, you can do that. It doesn't change the architecture of the system. No logging service is required to interact with the database.
+	</p>
+	<h3 id="e70ddcfa03c04444931f0b3737e09101">
+		Compose with logging <a href="#e70ddcfa03c04444931f0b3737e09101" title="permalink">#</a>
+	</h3>
+	<p>
+		As the above composition code snippet suggests, logging is implemented with <a href="https://en.wikipedia.org/wiki/Decorator_pattern">Decorators</a>. The ultimate implementation of <code>IClock</code> is <code>SystemClock</code>, but the <a href="/2011/07/28/CompositionRoot">Composition Root</a> decorates it with <code>LogClock</code>:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">LogClock</span>&nbsp;:&nbsp;<span style="color:#2b91af;">IClock</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">LogClock</span>(<span style="color:#2b91af;">IClock</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">inner</span>,&nbsp;<span style="color:#2b91af;">ScopedLog</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">log</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Inner&nbsp;=&nbsp;<span style="font-weight:bold;color:#1f377f;">inner</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Log&nbsp;=&nbsp;<span style="font-weight:bold;color:#1f377f;">log</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">IClock</span>&nbsp;Inner&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">ScopedLog</span>&nbsp;Log&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">DateTime</span>&nbsp;<span style="font-weight:bold;color:#74531f;">GetCurrentDateTime</span>()
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">currentDateTime</span>&nbsp;=&nbsp;Inner.<span style="font-weight:bold;color:#74531f;">GetCurrentDateTime</span>();
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Log.<span style="font-weight:bold;color:#74531f;">Observe</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Interaction</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Operation&nbsp;=&nbsp;<span style="color:blue;">nameof</span>(<span style="font-weight:bold;color:#74531f;">GetCurrentDateTime</span>),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Output&nbsp;=&nbsp;<span style="font-weight:bold;color:#1f377f;">currentDateTime</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;});
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">currentDateTime</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+	</p>
+	<p>
+		<code>ScopedLog</code> is a Concrete Dependency that, among other members, affords the <code>Observe</code> method. Notice that <code>LogClock</code> implements <code>IClock</code> by decorating another polymorphic <code>IClock</code> instance. It delegates functionality to <code>inner</code>, logs the <code>currentDateTime</code> and returns it.
+	</p>
+	<p>
+		The <code>LogReservationsRepository</code> class implements the same pattern:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">LogReservationsRepository</span>&nbsp;:&nbsp;<span style="color:#2b91af;">IReservationsRepository</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">LogReservationsRepository</span>(<span style="color:#2b91af;">IReservationsRepository</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">inner</span>,&nbsp;<span style="color:#2b91af;">ScopedLog</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">log</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Inner&nbsp;=&nbsp;<span style="font-weight:bold;color:#1f377f;">inner</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Log&nbsp;=&nbsp;<span style="font-weight:bold;color:#1f377f;">log</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">IReservationsRepository</span>&nbsp;Inner&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">ScopedLog</span>&nbsp;Log&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;<span style="font-weight:bold;color:#74531f;">Create</span>(<span style="color:#2b91af;">Reservation</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">reservation</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Log.<span style="font-weight:bold;color:#74531f;">Observe</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Interaction</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Operation&nbsp;=&nbsp;<span style="color:blue;">nameof</span>(<span style="font-weight:bold;color:#74531f;">Create</span>),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Input&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;{&nbsp;<span style="font-weight:bold;color:#1f377f;">reservation</span>&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;});
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Inner.<span style="font-weight:bold;color:#74531f;">Create</span>(<span style="font-weight:bold;color:#1f377f;">reservation</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">IEnumerable</span>&lt;<span style="color:#2b91af;">Reservation</span>&gt;&nbsp;<span style="font-weight:bold;color:#74531f;">ReadReservations</span>(<span style="color:#2b91af;">DateTime</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">date</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">reservations</span>&nbsp;=&nbsp;Inner.<span style="font-weight:bold;color:#74531f;">ReadReservations</span>(<span style="font-weight:bold;color:#1f377f;">date</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Log.<span style="font-weight:bold;color:#74531f;">Observe</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Interaction</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Operation&nbsp;=&nbsp;<span style="color:blue;">nameof</span>(<span style="font-weight:bold;color:#74531f;">ReadReservations</span>),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Input&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;{&nbsp;<span style="font-weight:bold;color:#1f377f;">date</span>&nbsp;},
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Output&nbsp;=&nbsp;<span style="font-weight:bold;color:#1f377f;">reservations</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;});
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">reservations</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+	</p>
+	<p>
+		This architecture not only implements the desired functionality, but also <em>Goldilogs</em>: not too little, not too much, but just what you need. Notice that I didn't have to change any of my Domain Model or HTTP-specific code to enable logging. This cross-cutting concern is enabled entirely via composition.
+	</p>
+	<h3 id="59b912d918c9451e97e09b8274d7fb87">
+		Repeatability <a href="#59b912d918c9451e97e09b8274d7fb87" title="permalink">#</a>
+	</h3>
+	<p>
+		An HTTP request like this:
+	</p>
+	<p>
+		<pre>POST /reservations/ HTTP/1.1
+Content-Type: application/json
+
+{
+&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;id&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;7bc3fc93-a777-4138-8630-a805e7246335&quot;</span>,
+&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;date&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;2020-03-20&nbsp;18:45:00&quot;</span>,
+&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;name&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;Kozue Kaburagi&quot;</span>,
+&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;email&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;ninjette@example.net&quot;</span>,
+&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;quantity&quot;</span>:&nbsp;4
+}</pre>
+	</p>
+	<p>
+		produces a log entry like this:
+	</p>
+	<p>
+		<pre>{
+&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;entry&quot;</span>:&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;time&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;2020-01-02T09:50:34.2678703+01:00&quot;</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;operation&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;Post&quot;</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;input&quot;</span>:&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;dto&quot;</span>:&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;id&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;7bc3fc93-a777-4138-8630-a805e7246335&quot;</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;date&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;2020-03-20&nbsp;18:45:00&quot;</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;email&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;ninjette@example.net&quot;</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;name&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;Kozue Kaburagi&quot;</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;quantity&quot;</span>:&nbsp;4
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;},
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;output&quot;</span>:&nbsp;<span style="color:blue;">null</span>
+&nbsp;&nbsp;},
+&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;interactions&quot;</span>:&nbsp;[
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;time&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;2020-01-02T09:50:34.2726143+01:00&quot;</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;operation&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;GetCurrentDateTime&quot;</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;input&quot;</span>:&nbsp;<span style="color:blue;">null</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;output&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;2020-01-02T09:50:34.2724012+01:00&quot;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;},
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;time&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;2020-01-02T09:50:34.3571224+01:00&quot;</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;operation&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;ReadReservations&quot;</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;input&quot;</span>:&nbsp;{&nbsp;<span style="color:#2e75b6;">&quot;date&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;2020-03-20T18:45:00&quot;</span>&nbsp;},
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;output&quot;</span>:&nbsp;[
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;id&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;c3cbfbc7-6d64-4ead-84ef-7f89de5b7e1c&quot;</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;date&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;2020-03-20T19:00:00&quot;</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;email&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;emp@example.com&quot;</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;name&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;Elissa&nbsp;Megan&nbsp;Powers&quot;</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;quantity&quot;</span>:&nbsp;3
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;]
+&nbsp;&nbsp;&nbsp;&nbsp;},
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;time&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;2020-01-02T09:50:34.3587586+01:00&quot;</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;operation&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;Create&quot;</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;input&quot;</span>:&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;reservation&quot;</span>:&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;id&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;7bc3fc93-a777-4138-8630-a805e7246335&quot;</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;date&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;2020-03-20T18:45:00&quot;</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;email&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;ninjette@example.net&quot;</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;name&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;Kozue Kaburagi&quot;</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;quantity&quot;</span>:&nbsp;4
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;},
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;output&quot;</span>:&nbsp;<span style="color:blue;">null</span>
+&nbsp;&nbsp;&nbsp;&nbsp;}
+&nbsp;&nbsp;],
+&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;exit&quot;</span>:&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;time&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;2020-01-02T09:50:34.3645105+01:00&quot;</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;operation&quot;</span>:&nbsp;<span style="color:blue;">null</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;input&quot;</span>:&nbsp;<span style="color:blue;">null</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;output&quot;</span>:&nbsp;{&nbsp;<span style="color:#2e75b6;">&quot;statusCode&quot;</span>:&nbsp;200&nbsp;}
+&nbsp;&nbsp;}
+}</pre>
+	</p>
+	<p>
+		I chose to  gather all information regarding a single HTTP request into a single log entry and format it as JSON. I once worked with an organisation that used the ELK stack in that way, and it made it easy to identify and troubleshoot issues in production.
+	</p>
+	<p>
+		You can use such a log file to reproduce the observed behaviour, for example in a unit test:
+	</p>
+	<p>
+		<pre>[<span style="color:#2b91af;">Fact</span>]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;<span style="font-weight:bold;color:#74531f;">NinjetteRepro</span>()
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">string</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">log</span>&nbsp;=&nbsp;<span style="color:#2b91af;">Log</span>.<span style="color:#74531f;">LoadFile</span>(<span style="color:#a31515;">&quot;Ninjette.json&quot;</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;(<span style="color:#2b91af;">ReservationsController</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">sut</span>,&nbsp;<span style="color:#2b91af;">ReservationDto</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">dto</span>)&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Log</span>.<span style="color:#74531f;">LoadReservationsControllerPostScenario</span>(<span style="font-weight:bold;color:#1f377f;">log</span>);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">actual</span>&nbsp;=&nbsp;<span style="font-weight:bold;color:#1f377f;">sut</span>.<span style="font-weight:bold;color:#74531f;">Post</span>(<span style="font-weight:bold;color:#1f377f;">dto</span>);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Assert</span>.<span style="color:#74531f;">IsAssignableFrom</span>&lt;<span style="color:#2b91af;">OkResult</span>&gt;(<span style="font-weight:bold;color:#1f377f;">actual</span>);
+}</pre>
+	</p>
+	<p>
+		This test reproduces the behaviour that was recorded in the above JSON log. While there was already one existing reservation (returned from <code>ReadReservations</code>), the system had enough remaining capacity to accept the new reservation. Therefore, the expected result is an <code>OkResult</code>.
+	</p>
+	<h3 id="2e246dfafa7e49c58600a066adf3ed0d">
+		Replay <a href="#2e246dfafa7e49c58600a066adf3ed0d" title="permalink">#</a>
+	</h3>
+	<p>
+		You probably noticed the helper methods <code>Log.LoadFile</code> and <code>Log.LoadReservationsControllerPostScenario</code>. This API is just a prototype to get the point across. There's little to say about <code>LoadFile</code>, since it just reads the file. The <code>LoadReservationsControllerPostScenario</code> method performs the bulk of the work. It parses the JSON string into a collection of observations. It then feeds these observations to test-specific implementations of the dependencies required by <code>ReservationsController</code>.
+	</p>
+	<p>
+		For example, here's the test-specific implementation of <code>IClock</code>:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">ReplayClock</span>&nbsp;:&nbsp;<span style="color:#2b91af;">IClock</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;<span style="color:#2b91af;">Queue</span>&lt;<span style="color:#2b91af;">DateTime</span>&gt;&nbsp;times;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">ReplayClock</span>(<span style="color:#2b91af;">IEnumerable</span>&lt;<span style="color:#2b91af;">DateTime</span>&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">times</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.times&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Queue</span>&lt;<span style="color:#2b91af;">DateTime</span>&gt;(<span style="font-weight:bold;color:#1f377f;">times</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">DateTime</span>&nbsp;<span style="font-weight:bold;color:#74531f;">GetCurrentDateTime</span>()
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;times.<span style="font-weight:bold;color:#74531f;">Dequeue</span>();
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+	</p>
+	<p>
+		The above JSON log example only contains a single observation of <code>GetCurrentDateTime</code>, but an arbitrary log may contain zero, one, or several observations. The idea is to replay them, starting with the earliest. <code>ReplayClock</code> just creates a <code>Queue</code> of them and <code>Dequeue</code> every time <code>GetCurrentDateTime</code> executes.
+	</p>
+	<p>
+		The test-specific <code>ReplayReservationsRepository</code> class works the same way:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">ReplayReservationsRepository</span>&nbsp;:&nbsp;<span style="color:#2b91af;">IReservationsRepository</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;<span style="color:#2b91af;">IDictionary</span>&lt;<span style="color:#2b91af;">DateTime</span>,&nbsp;<span style="color:#2b91af;">Queue</span>&lt;<span style="color:#2b91af;">IEnumerable</span>&lt;<span style="color:#2b91af;">Reservation</span>&gt;&gt;&gt;&nbsp;reads;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">ReplayReservationsRepository</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">IDictionary</span>&lt;<span style="color:#2b91af;">DateTime</span>,&nbsp;<span style="color:#2b91af;">Queue</span>&lt;<span style="color:#2b91af;">IEnumerable</span>&lt;<span style="color:#2b91af;">Reservation</span>&gt;&gt;&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">reads</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.reads&nbsp;=&nbsp;<span style="font-weight:bold;color:#1f377f;">reads</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;<span style="font-weight:bold;color:#74531f;">Create</span>(<span style="color:#2b91af;">Reservation</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">reservation</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">IEnumerable</span>&lt;<span style="color:#2b91af;">Reservation</span>&gt;&nbsp;<span style="font-weight:bold;color:#74531f;">ReadReservations</span>(<span style="color:#2b91af;">DateTime</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">date</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;reads[<span style="font-weight:bold;color:#1f377f;">date</span>].<span style="font-weight:bold;color:#74531f;">Dequeue</span>();
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+	</p>
+	<p>
+		You'll notice that in order to implement <code>ReadReservations</code>, the <code>ReplayReservationsRepository</code> class needs a dictionary of queues. The <code>ReplayClock</code> class didn't need a dictionary, because <code>GetCurrentDateTime</code> takes no input. The <code>ReadReservations</code> method, on the other hand, takes a <code>date</code> as a method argument. You might have observations of <code>ReadReservations</code> for different dates, and multiple observations for each date. That's the reason that <code>ReplayReservationsRepository</code> needs a dictionary of queues.
+	</p>
+	<p>
+		The <code>Create</code> method doesn't return anything, so I decided that this methods should do nothing.
+	</p>
+	<p>
+		The <code>LoadReservationsControllerPostScenario</code> function parses the JSON log and creates instances of these <a href="https://en.wikipedia.org/wiki/Test_double">Test Doubles</a>.
+	</p>
+	<p>
+		<pre><span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">repository</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">ReplayReservationsRepository</span>(<span style="font-weight:bold;color:#1f377f;">reads</span>);
+<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">clock</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">ReplayClock</span>(<span style="font-weight:bold;color:#1f377f;">times</span>);
+<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">controller</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">ReservationsController</span>(<span style="font-weight:bold;color:#1f377f;">seatingDuration</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">tables</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">repository</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">clock</span>);</pre>
+	</p>
+	<p>
+		And that, together with the parsed HTTP input, is what <code>LoadReservationsControllerPostScenario</code> returns:
+	</p>
+	<p>
+		<pre><span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;(<span style="font-weight:bold;color:#1f377f;">controller</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">dto</span>);</pre>
+	</p>
+	<p>
+		This is only a prototype to illustrate the point that you can reproduce an interaction if you have all the impure inputs and outputs. The details are available in the source code repository.
+	</p>
+	<h3 id="cde93455d7354c3bb99b4e6fbb1b4792">
+		Summary <a href="#cde93455d7354c3bb99b4e6fbb1b4792" title="permalink">#</a>
+	</h3>
+	<p>
+		This article demonstrated how making the distinction between pure and impure code is useful in many situations. For logging purposes, you only need to log the impure inputs and outputs. That's neither too little logging, nor too much, but just right: <em>Goldilogs</em>.
+	</p>
+	<p>
+		Model any (potentially) impure interaction as a dependency and use Dependency Injection. This enables you to reproduce observed behaviour from logs. Don't inject logging services into your Controllers or Domain Models.
+	</p>
+</div>

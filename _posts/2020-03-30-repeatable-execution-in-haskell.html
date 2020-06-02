@@ -1,0 +1,536 @@
+---
+layout: post
+title: "Repeatable execution in Haskell"
+description: "A way to figure out what to log, and what not to log, using Haskell."
+date: 2020-03-30 8:02 UTC
+tags: [Architecture, Functional Programming, Haskell]
+---
+{% include JB/setup %}
+
+<div id="post">
+	<p>
+		<em>{{ page.description }}</em>
+	</p>
+	<p>
+		This article is part of <a href="/2020/03/23/repeatable-execution">a series of articles about repeatable execution</a>. The previous article argued that if you've logged the impure actions that a system made, you have enough information to reproduce what happened.
+	</p>
+	<p>
+		In most languages, <a href="/2020/02/24/discerning-and-maintaining-purity">it's difficult to discriminate between pure functions and impure actions</a>, but <a href="https://www.haskell.org">Haskell</a> explicitly makes that distinction. I often use it for proof of concepts for that reason. I'll do that here as well.
+	</p>
+	<p>
+		This proof of concept is mostly to verify what a decade of functional programming has already taught me. For the functionality that the previous article introduced, the impure actions involve a database and the system clock.
+	</p>
+	<p>
+		The code shown in this article is <a href="https://github.com/ploeh/reservation-api-slice-haskell">available on GitHub</a>.
+	</p>
+	<h3 id="1c5f6ac50111450c8cf9b6d064977bcc">
+		Pure interactions <a href="#1c5f6ac50111450c8cf9b6d064977bcc" title="permalink">#</a>
+	</h3>
+	<p>
+		I'll use <a href="/2017/07/10/pure-interactions">free monads to model impure interactions as pure functions</a>. For this particular example code base, an <a href="/2020/03/02/impureim-sandwich">impureim sandwich</a> would have been sufficient. I do, however, get the impression that many readers find it hard to extrapolate from impureim sandwiches to a general architecture. For the benefit of those readers, the example uses free monads.
+	</p>
+	<p>
+		The system clock interaction is the simplest:
+	</p>
+	<p>
+		<pre><span style="color:blue;">newtype</span>&nbsp;ClockInstruction&nbsp;next&nbsp;=&nbsp;CurrentTime&nbsp;(LocalTime&nbsp;-&gt;&nbsp;next)&nbsp;<span style="color:blue;">deriving</span>&nbsp;Functor</pre>
+	</p>
+	<p>
+		There's only one instruction. It takes no input, but returns the current time and date.
+	</p>
+	<p>
+		For database interactions, I went through a few iterations and arrived at this set of instructions:
+	</p>
+	<p>
+		<pre><span style="color:blue;">data</span>&nbsp;ReservationsInstruction&nbsp;next&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;ReadReservation&nbsp;UUID&nbsp;(Maybe&nbsp;Reservation&nbsp;-&gt;&nbsp;next)
+&nbsp;&nbsp;|&nbsp;ReadReservations&nbsp;LocalTime&nbsp;([Reservation]&nbsp;-&gt;&nbsp;next)
+&nbsp;&nbsp;|&nbsp;CreateReservation&nbsp;Reservation&nbsp;next
+&nbsp;&nbsp;<span style="color:blue;">deriving</span>&nbsp;Functor</pre>
+	</p>
+	<p>
+		There's two queries and a command. The intent with the <code>CreateReservation</code> command is to create a new reservation row in the database. The two queries fetch a single reservation based on ID, or a set of reservations based on a date. A central type for this instruction set is <code>Reservation</code>:
+	</p>
+	<p>
+		<pre><span style="color:blue;">data</span>&nbsp;Reservation&nbsp;=&nbsp;Reservation
+&nbsp;&nbsp;{&nbsp;reservationId&nbsp;::&nbsp;UUID
+&nbsp;&nbsp;,&nbsp;reservationDate&nbsp;::&nbsp;LocalTime
+&nbsp;&nbsp;,&nbsp;reservationName&nbsp;::&nbsp;String
+&nbsp;&nbsp;,&nbsp;reservationEmail&nbsp;::&nbsp;String
+&nbsp;&nbsp;,&nbsp;reservationQuantity&nbsp;::&nbsp;Int
+&nbsp;&nbsp;}&nbsp;<span style="color:blue;">deriving</span>&nbsp;(<span style="color:#2b91af;">Eq</span>,&nbsp;<span style="color:#2b91af;">Show</span>,&nbsp;<span style="color:#2b91af;">Read</span>,&nbsp;<span style="color:#2b91af;">Generic</span>)</pre>
+	</p>
+	<p>
+		The program has to interact both with the system clock and the database, so ultimately it turned out to be useful to combine these two instruction sets into one:
+	</p>
+	<p>
+		<pre><span style="color:blue;">type</span>&nbsp;ReservationsProgram&nbsp;=&nbsp;Free&nbsp;(Sum&nbsp;ReservationsInstruction&nbsp;ClockInstruction)</pre>
+	</p>
+	<p>
+		I used the <code>Sum</code> functor to combine the two instruction sets, and then turned them into a <code>Free</code> monad.
+	</p>
+	<p>
+		With free monads, I find that my code becomes more readable if I define helper functions for each instruction:
+	</p>
+	<p>
+		<pre><span style="color:#2b91af;">readReservation</span>&nbsp;::&nbsp;<span style="color:blue;">UUID</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">ReservationsProgram</span>&nbsp;(<span style="color:#2b91af;">Maybe</span>&nbsp;<span style="color:blue;">Reservation</span>)
+readReservation&nbsp;rid&nbsp;=&nbsp;liftF&nbsp;$&nbsp;InL&nbsp;$&nbsp;ReadReservation&nbsp;rid&nbsp;<span style="color:blue;">id</span>
+ 
+<span style="color:#2b91af;">readReservations</span>&nbsp;::&nbsp;<span style="color:blue;">LocalTime</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">ReservationsProgram</span>&nbsp;[<span style="color:blue;">Reservation</span>]
+readReservations&nbsp;t&nbsp;=&nbsp;liftF&nbsp;$&nbsp;InL&nbsp;$&nbsp;ReadReservations&nbsp;t&nbsp;<span style="color:blue;">id</span>
+ 
+<span style="color:#2b91af;">createReservation</span>&nbsp;::&nbsp;<span style="color:blue;">Reservation</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">ReservationsProgram</span>&nbsp;()
+createReservation&nbsp;r&nbsp;=&nbsp;liftF&nbsp;$&nbsp;InL&nbsp;$&nbsp;CreateReservation&nbsp;r&nbsp;<span style="color:blue;">()</span>
+ 
+<span style="color:#2b91af;">currentTime</span>&nbsp;::&nbsp;<span style="color:blue;">ReservationsProgram</span>&nbsp;<span style="color:blue;">LocalTime</span>
+currentTime&nbsp;=&nbsp;liftF&nbsp;$&nbsp;InR&nbsp;$&nbsp;CurrentTime&nbsp;<span style="color:blue;">id</span></pre>
+	</p>
+	<p>
+		There's much else going on in the code base, but that's how I model feature-specific impure actions.
+	</p>
+	<h3 id="46812b6dc4594937b0697ca09134af83">
+		Receive a reservation <a href="#46812b6dc4594937b0697ca09134af83" title="permalink">#</a>
+	</h3>
+	<p>
+		The central feature of the service is to receive and handle an HTTP POST request, as described in the introductory article. When a document arrives it triggers a series of non-trivial work:
+		<ol>
+			<li>The service validates the input data. Among other things, it checks that the reservation is in the future. It uses <code>currentTime</code> for this.</li>
+			<li>It queries the database for existing reservations. It uses <code>readReservations</code> for this.</li>
+			<li>It uses complex business logic to determine whether to accept the reservation. This essentially implements the <a href="/2020/01/27/the-maitre-d-kata">Ma&icirc;tre d' kata</a>.</li>
+			<li>If it accepts the reservation, it stores it. It uses <code>createReservation</code> for this.</li>
+		</ol>
+		These steps manifest as this function:
+	</p>
+	<p>
+		<pre><span style="color:#2b91af;">tryAccept</span>&nbsp;::&nbsp;<span style="color:blue;">NominalDiffTime</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;[<span style="color:blue;">Table</span>]
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">Reservation</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">ExceptT</span>&nbsp;(<span style="color:blue;">APIError</span>&nbsp;<span style="color:blue;">ByteString</span>)&nbsp;<span style="color:blue;">ReservationsProgram</span>&nbsp;()
+tryAccept&nbsp;seatingDuration&nbsp;tables&nbsp;r&nbsp;=&nbsp;<span style="color:blue;">do</span>
+&nbsp;&nbsp;now&nbsp;&lt;-&nbsp;lift&nbsp;currentTime
+&nbsp;&nbsp;_&nbsp;&lt;-&nbsp;liftEither&nbsp;$&nbsp;validateReservation&nbsp;now&nbsp;r
+&nbsp;&nbsp;reservations&nbsp;&lt;-
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">fmap</span>&nbsp;(removeNonOverlappingReservations&nbsp;seatingDuration&nbsp;r)&nbsp;&lt;$&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;lift&nbsp;$&nbsp;readReservations&nbsp;$&nbsp;reservationDate&nbsp;r
+ 
+&nbsp;&nbsp;_&nbsp;&lt;-&nbsp;liftEither&nbsp;$&nbsp;canAccommodateReservation&nbsp;tables&nbsp;reservations&nbsp;r
+ 
+&nbsp;&nbsp;lift&nbsp;$&nbsp;createReservation&nbsp;r</pre>
+	</p>
+	<p>
+		If you're interested in details, the code is available on GitHub. I may later write other articles about interesting details.
+	</p>
+	<p>
+		In the context of repeatable execution and logging, the key is that this is a <a href="https://en.wikipedia.org/wiki/Pure_function">pure function</a>. It does, however, return a <code>ReservationsProgram</code> (free monad), so it's not going to <em>do</em> anything until interpreted. The interpreters are impure, so this is where logging has to take place.
+	</p>
+	<h3 id="3cc3141ffcc644c78618f117c53f66ba">
+		HTTP API <a href="#3cc3141ffcc644c78618f117c53f66ba" title="permalink">#</a>
+	</h3>
+	<p>
+		The above <code>tryAccept</code> function is decoupled from boundary concerns. It has little HTTP-specific functionality.
+	</p>
+	<p>
+		I've written the actual HTTP API using <a href="https://www.servant.dev">Servant</a>. The following function translates the above Domain Model to an HTTP API:
+	</p>
+	<p>
+		<pre><span style="color:blue;">type</span>&nbsp;ReservationsProgramT&nbsp;=&nbsp;FreeT&nbsp;(Sum&nbsp;ReservationsInstruction&nbsp;ClockInstruction)
+ 
+<span style="color:#2b91af;">reservationServer</span>&nbsp;::&nbsp;<span style="color:blue;">NominalDiffTime</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;[<span style="color:blue;">Table</span>]
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">ServerT</span>&nbsp;<span style="color:blue;">ReservationAPI</span>&nbsp;(<span style="color:blue;">ReservationsProgramT</span>&nbsp;<span style="color:blue;">Handler</span>)
+reservationServer&nbsp;seatingDuration&nbsp;tables&nbsp;=&nbsp;getReservation&nbsp;:&lt;|&gt;&nbsp;postReservation
+&nbsp;&nbsp;<span style="color:blue;">where</span>
+&nbsp;&nbsp;&nbsp;&nbsp;getReservation&nbsp;rid&nbsp;=&nbsp;<span style="color:blue;">do</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;mr&nbsp;&lt;-&nbsp;toFreeT&nbsp;$&nbsp;readReservation&nbsp;rid
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">case</span>&nbsp;mr&nbsp;<span style="color:blue;">of</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Just&nbsp;r&nbsp;-&gt;&nbsp;<span style="color:blue;">return</span>&nbsp;r
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Nothing&nbsp;-&gt;&nbsp;throwError&nbsp;err404
+&nbsp;&nbsp;&nbsp;&nbsp;postReservation&nbsp;r&nbsp;=&nbsp;<span style="color:blue;">do</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;e&nbsp;&lt;-&nbsp;toFreeT&nbsp;$&nbsp;runExceptT&nbsp;$&nbsp;tryAccept&nbsp;seatingDuration&nbsp;tables&nbsp;r
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">case</span>&nbsp;e&nbsp;<span style="color:blue;">of</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Right&nbsp;<span style="color:blue;">()</span>&nbsp;-&gt;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:blue;">()</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Left&nbsp;(ValidationError&nbsp;err)&nbsp;-&gt;&nbsp;throwError&nbsp;$&nbsp;err400&nbsp;{&nbsp;errBody&nbsp;=&nbsp;err&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Left&nbsp;&nbsp;(ExecutionError&nbsp;err)&nbsp;-&gt;&nbsp;throwError&nbsp;$&nbsp;err500&nbsp;{&nbsp;errBody&nbsp;=&nbsp;err&nbsp;}</pre>
+	</p>
+	<p>
+		This API also exposes a reservation as a resource you can query with a <code>GET</code> request, but I'm not going to comment much on that. It uses the above <code>readReservation</code> helper function, but there's little logic involved in the implementation.
+	</p>
+	<p>
+		The above <code>reservationServer</code> function implements, by the way, only a <em>partial</em> API. It defines the <code>/reservations</code> resource, as explained in the overview article. Its type is defined as:
+	</p>
+	<p>
+		<pre><span style="color:blue;">type</span>&nbsp;ReservationAPI&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Capture&nbsp;<span style="color:#a31515;">&quot;reservationId&quot;</span>&nbsp;UUID&nbsp;:&gt;&nbsp;Get&nbsp;&#39;[JSON]&nbsp;Reservation
+&nbsp;&nbsp;:&lt;|&gt;&nbsp;ReqBody&nbsp;&#39;[JSON]&nbsp;Reservation&nbsp;:&gt;&nbsp;Post&nbsp;&#39;[JSON]&nbsp;<span style="color:blue;">()</span></pre>
+	</p>
+	<p>
+		That's just one resource. <em>Servant</em> enables you define many resources and combine them into a larger API. For this example, the <code>/reservations</code> resource is all there is, so I define the entire API like this:
+	</p>
+	<p>
+		<pre><span style="color:blue;">type</span>&nbsp;API&nbsp;=&nbsp;<span style="color:#a31515;">&quot;reservations&quot;</span>&nbsp;:&gt;&nbsp;ReservationAPI</pre>
+	</p>
+	<p>
+		You can also define your complete <code>server</code> from several partial services, but in this example, I only have one:
+	</p>
+	<p>
+		<pre>server&nbsp;=&nbsp;reservationServer</pre>
+	</p>
+	<p>
+		Had I had more resources, I could have combined several values with a combinator, but now that I have only <code>reservationServer</code> it seems redundant, I admit.
+	</p>
+	<h3 id="678638fe747f41c491994dc43be49d7b">
+		Hosting the API <a href="#678638fe747f41c491994dc43be49d7b" title="permalink">#</a>
+	</h3>
+	<p>
+		The <code>reservationServer</code> function, and thereby also <code>server</code>, returns a <code>ServerT</code> value. <em>Servant</em> ultimately demands a <code>Server</code> value to <code>serve</code> it. We need to transform the <code>ServerT</code> value into a <code>Server</code> value, which we can do with <code>hoistServer</code>:
+	</p>
+	<p>
+		<pre><span style="color:#2b91af;">runApp</span>&nbsp;::&nbsp;<span style="color:#2b91af;">String</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:#2b91af;">Int</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:#2b91af;">IO</span>&nbsp;()
+runApp&nbsp;connStr&nbsp;port&nbsp;=&nbsp;<span style="color:blue;">do</span>
+&nbsp;&nbsp;<span style="color:blue;">putStrLn</span>&nbsp;$&nbsp;<span style="color:#a31515;">&quot;Starting&nbsp;server&nbsp;on&nbsp;port&nbsp;&quot;</span>&nbsp;++&nbsp;<span style="color:blue;">show</span>&nbsp;port&nbsp;++&nbsp;<span style="color:#a31515;">&quot;.&quot;</span>
+&nbsp;&nbsp;<span style="color:blue;">putStrLn</span>&nbsp;<span style="color:#a31515;">&quot;Press&nbsp;Ctrl&nbsp;+&nbsp;C&nbsp;to&nbsp;stop&nbsp;the&nbsp;server.&quot;</span>
+&nbsp;&nbsp;ls&nbsp;&lt;-&nbsp;loggerSet
+&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;logLn&nbsp;s&nbsp;=&nbsp;pushLogStrLn&nbsp;ls&nbsp;$&nbsp;toLogStr&nbsp;s
+&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;hoistSQL&nbsp;=&nbsp;hoistServer&nbsp;api&nbsp;$&nbsp;runInSQLServerAndOnSystemClock&nbsp;logLn&nbsp;$&nbsp;pack&nbsp;connStr
+&nbsp;&nbsp;(seatingDuration,&nbsp;tables)&nbsp;&lt;-&nbsp;readConfig
+&nbsp;&nbsp;logHttp&nbsp;&lt;-&nbsp;logHttpMiddleware&nbsp;ls
+&nbsp;&nbsp;run&nbsp;port&nbsp;$&nbsp;logHttp&nbsp;$&nbsp;serve&nbsp;api&nbsp;$&nbsp;hoistSQL&nbsp;$&nbsp;server&nbsp;seatingDuration&nbsp;tables</pre>
+	</p>
+	<p>
+		The <code>hoistServer</code> function enables you to translate a <code>ServerT api m</code> into a <code>ServerT api n</code> value. Since <code>Server</code> is a type alias for <code>ServerT api Handler</code>, we need to translate the complicated monad returned from <code>server</code> into a <code>Handler</code>. The <code>runInSQLServerAndOnSystemClock</code> function does most of the heavy lifting.
+	</p>
+	<p>
+		You'll also notice that the <code>runApp</code> function configures some logging. Apart from some HTTP-level middleware, the <code>logLn</code> function logs a line to a text file. The <code>runApp</code> function passes it as an argument to the <code>runInSQLServerAndOnSystemClock</code> function. We'll return to logging later in this article, but first I find it instructive to outline what happens in <code>runInSQLServerAndOnSystemClock</code>.
+	</p>
+	<p>
+		As the name implies, two major actions take place. The function interprets database interactions by executing impure actions against SQL Server. It also interprets clock interactions by querying the system clock.
+	</p>
+	<h3 id="05b701cca27f44479c4c3bc1d169d935">
+		Using the system clock <a href="#05b701cca27f44479c4c3bc1d169d935" title="permalink">#</a>
+	</h3>
+	<p>
+		The system-clock-based interpreter is the simplest of the two interpreters. It interprets <code>ClockInstruction</code> values by querying the system clock for the current time:
+	</p>
+	<p>
+		<pre><span style="color:#2b91af;">runOnSystemClock</span>&nbsp;::&nbsp;<span style="color:blue;">MonadIO</span>&nbsp;m&nbsp;<span style="color:blue;">=&gt;</span>&nbsp;<span style="color:blue;">ClockInstruction</span>&nbsp;(m&nbsp;a)&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;m&nbsp;a
+runOnSystemClock&nbsp;(CurrentTime&nbsp;next)&nbsp;=&nbsp;liftIO&nbsp;(zonedTimeToLocalTime&nbsp;&lt;$&gt;&nbsp;getZonedTime)&nbsp;&gt;&gt;=&nbsp;next</pre>
+	</p>
+	<p>
+		This function translates a <code>ClockInstruction (m a)</code> to an <code>m a</code> value by executing the impure <code>getZonedTime</code> function. From the returned <code>ZonedTime</code> value, it then extracts the local time, which it passes to <code>next</code>.
+	</p>
+	<p>
+		You may have two questions:
+		<ul>
+			<li>Why map <code>ClockInstruction (m a)</code> instead of <code>ClockInstruction a</code>?</li>
+			<li>Why <code>MonadIO</code>?</li>			
+		</ul>
+		I'll address each in turn.
+	</p>
+	<p>
+		My ultimate goal with each of these interpreters is to compose them into <code>runInSQLServerAndOnSystemClock</code>. As described above, this function transforms <code>ServerT API (ReservationsProgramT Handler)</code> into a <code>ServerT API Handler</code> (also known as <code>Server API</code>). Another way to put this is that we need to collapse <code>ReservationsProgramT Handler</code> to <code>Handler</code> by, so to speak, removing <code>ReservationsProgramT</code>.
+	</p>
+	<p>
+		Recall that a type like <code>ReservationsProgramT Handler</code> is really in 'curried' form. This is actually the parametrically polymorphic type <code>ReservationsProgramT Handler a</code>. Likewise, <code>Handler</code> is also parametrically polymorphic: <code>Handler a</code>. What we need, then, is a function with the type <code>ReservationsProgramT Handler a -&gt; Handler a</code> or, more generally, <code>FreeT f m a -&gt; m a</code>. This follows because <code>ReservationsProgramT</code> is an alias for <code>FreeT ...</code>, and <code>Handler</code> is <a href="https://bartoszmilewski.com/2014/01/14/functors-are-containers">a container</a> of <code>a</code> values.
+	</p>
+	<p>
+		There's a function for that in <a href="http://hackage.haskell.org/package/free/docs/Control-Monad-Trans-Free.html">Control.Monad.Trans.Free</a> called <code>iterT</code>:
+	</p>
+	<p>
+		<pre><span style="color:#2b91af;">iterT</span>&nbsp;::&nbsp;(<span style="color:blue;">Functor</span>&nbsp;f,&nbsp;<span style="color:blue;">Monad</span>&nbsp;m)&nbsp;<span style="color:blue;">=&gt;</span>&nbsp;(f&nbsp;(m&nbsp;a)&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;m&nbsp;a)&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">FreeT</span>&nbsp;f&nbsp;m&nbsp;a&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;m&nbsp;a</pre>
+	</p>
+	<p>
+		This fits our need. For each of the functors in <code>ReservationsProgramT</code>, then, we need a function <code>f (m a) -&gt; m a</code>. Specifically, for <code>ClockInstruction</code>, we need to define a function with the type <code>ClockInstruction (Handler a) -&gt; Handler a</code>. Consider, however, the definition of <code>Handler</code>. It's a <code>newtype</code> over a <code>newtype</code>, so much wrapping is required. If I specifically wanted to return that explicit type, I'd have to take the <code>IO</code> vale produced by <code>getZonedTime</code> and wrap it in <code>Handler</code>, which would require me to first wrap it in <code>ExceptT</code>, which again would require me to wrap it in <code>Either</code>. That's a lot of bother, but <code>Handler</code> is also a <code>MonadIO</code> instance, and that elegantly sidesteps the issue. By implementing <code>runOnSystemClock</code> with <code>liftIO</code>, it works for all <code>MonadIO</code> instances, including <code>Handler</code>.
+	</p>
+	<p>
+		Hopefully, that explains why <code>runOnSystemClock</code> has the type that it has.
+	</p>
+	<h3 id="9f530f57c49549b6823c45859ee5890c">
+		Using the database <a href="#9f530f57c49549b6823c45859ee5890c" title="permalink">#</a>
+	</h3>
+	<p>
+		The database interpreter is more complex than <code>runOnSystemClock</code>, but it follows the same principles. The reasoning outlined above also apply here.
+	</p>
+	<p>
+		<pre><span style="color:#2b91af;">runInSQLServer</span>&nbsp;::&nbsp;<span style="color:blue;">MonadIO</span>&nbsp;m&nbsp;<span style="color:blue;">=&gt;</span>&nbsp;<span style="color:blue;">Text</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">ReservationsInstruction</span>&nbsp;(m&nbsp;a)&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;m&nbsp;a
+runInSQLServer&nbsp;connStr&nbsp;(ReadReservation&nbsp;rid&nbsp;next)&nbsp;=
+&nbsp;&nbsp;liftIO&nbsp;(readReservation&nbsp;connStr&nbsp;rid)&nbsp;&gt;&gt;=&nbsp;next
+runInSQLServer&nbsp;connStr&nbsp;(ReadReservations&nbsp;t&nbsp;next)&nbsp;=
+&nbsp;&nbsp;liftIO&nbsp;(readReservations&nbsp;connStr&nbsp;t)&nbsp;&gt;&gt;=&nbsp;next
+runInSQLServer&nbsp;connStr&nbsp;(CreateReservation&nbsp;r&nbsp;next)&nbsp;=
+&nbsp;&nbsp;liftIO&nbsp;(insertReservation&nbsp;connStr&nbsp;r)&nbsp;&gt;&gt;&nbsp;next</pre>
+	</p>
+	<p>
+		Since <code>ReservationsInstruction</code> is a sum type with three cases, the <code>runInSQLServer</code> action has to handle all three. Each case calls a dedicated helper function. I'll only show one of these to give you a sense for how they look.
+	</p>
+	<p>
+		<pre><span style="color:#2b91af;">readReservations</span>&nbsp;::&nbsp;<span style="color:blue;">Text</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">LocalTime</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:#2b91af;">IO</span>&nbsp;[<span style="color:blue;">Reservation</span>]
+readReservations&nbsp;connStr&nbsp;(LocalTime&nbsp;d&nbsp;_)&nbsp;=
+&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;sql&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#a31515;">&quot;SELECT&nbsp;[Guid],&nbsp;[Date],&nbsp;[Name],&nbsp;[Email],&nbsp;[Quantity]\
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;\FROM&nbsp;[dbo].[Reservations]\
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;\WHERE&nbsp;CONVERT(DATE,&nbsp;[Date])&nbsp;=&nbsp;&quot;</span>&nbsp;&lt;&gt;&nbsp;toSql&nbsp;d
+&nbsp;&nbsp;<span style="color:blue;">in</span>&nbsp;withConnection&nbsp;connStr&nbsp;$&nbsp;\conn&nbsp;-&gt;&nbsp;<span style="color:blue;">fmap</span>&nbsp;unDbReservation&nbsp;&lt;$&gt;&nbsp;query&nbsp;conn&nbsp;sql</pre>
+	</p>
+	<p>
+		You can see all the details about <code>withConnection</code>, <code>unDbReservation</code>, etcetera in the Git repository. The principal point is that these are just normal <code>IO</code> actions.
+	</p>
+	<h3 id="7dd30abf99b24ec6b13a1c22d0f6f150">
+		Basic composition <a href="#7dd30abf99b24ec6b13a1c22d0f6f150" title="permalink">#</a>
+	</h3>
+	<p>
+		The two interpreters are all we need to compose a working system:
+	</p>
+	<p>
+		<pre><span style="color:#2b91af;">runInSQLServerAndOnSystemClock</span>&nbsp;::&nbsp;<span style="color:blue;">MonadIO</span>&nbsp;m&nbsp;<span style="color:blue;">=&gt;</span>&nbsp;<span style="color:blue;">Text</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">ReservationsProgramT</span>&nbsp;m&nbsp;a&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;m&nbsp;a
+runInSQLServerAndOnSystemClock&nbsp;connStr&nbsp;=&nbsp;iterT&nbsp;go
+&nbsp;&nbsp;<span style="color:blue;">where</span>&nbsp;go&nbsp;(InL&nbsp;rins)&nbsp;=&nbsp;DB.runInSQLServer&nbsp;connStr&nbsp;rins
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;go&nbsp;(InR&nbsp;cins)&nbsp;=&nbsp;runOnSystemClock&nbsp;cins</pre>
+	</p>
+	<p>
+		The <code>iterT</code> function enables you to interpret a <code>FreeT</code> value, of which <code>ReservationsProgramT</code> is an alias. The <code>go</code> function just pattern-matches on the two cases of the <code>Sum</code> functor, and delegates to the corresponding interpreter.
+	</p>
+	<p>
+		This composition enables the system to run and do the intended work. You can start the server and make <code>GET</code> and <code>POST</code> requests against the <code>/reservations</code> resource, as outlined in the first article in this small series.
+	</p>
+	<p>
+		This verifies what I already hypothesized. This feature set requires two distinct sets of impure interactions:
+		<ul>
+			<li>Getting the current time</li>
+			<li>Querying and writing to a database</li>
+		</ul>
+		Once you've worked with Haskell for some time, you'll get good at predicting which actions are impure, and which functionality can be kept pure. The current result isn't surprising.
+	</p>
+	<p>
+		It does make it clear what ought to be logged. All the pure functionality can be reproduced if you have the inputs. You only need to log the impure interactions, and now you know what they are.
+	</p>
+	<h3 id="f29d957fcfe644e9a9efaf70bf58ad74">
+		Compose with logging <a href="#f29d957fcfe644e9a9efaf70bf58ad74" title="permalink">#</a>
+	</h3>
+	<p>
+		You need to log the impure operations, and you know that they're interacting with the system clock and the database. As usual, starting with the system clock is most accessible. You can write what's essentially a <a href="https://en.wikipedia.org/wiki/Decorator_pattern">Decorator</a> of any <code>ClockInstruction</code> interpreter:
+	</p>
+	<p>
+		<pre><span style="color:#2b91af;">logClock</span>&nbsp;::&nbsp;<span style="color:blue;">MonadIO</span>&nbsp;m
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">=&gt;</span>&nbsp;(<span style="color:#2b91af;">String</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:#2b91af;">IO</span>&nbsp;())
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;(forall&nbsp;x.&nbsp;<span style="color:blue;">ClockInstruction</span>&nbsp;(m&nbsp;x)&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;m&nbsp;x)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">ClockInstruction</span>&nbsp;(m&nbsp;a)&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;m&nbsp;a
+logClock&nbsp;logLn&nbsp;inner&nbsp;(CurrentTime&nbsp;next)&nbsp;=&nbsp;<span style="color:blue;">do</span>
+&nbsp;&nbsp;output&nbsp;&lt;-&nbsp;inner&nbsp;$&nbsp;CurrentTime&nbsp;<span style="color:blue;">return</span>
+&nbsp;&nbsp;liftIO&nbsp;$&nbsp;writeLogEntry&nbsp;logLn&nbsp;<span style="color:#a31515;">&quot;CurrentTime&quot;</span>&nbsp;<span style="color:blue;">()</span>&nbsp;output
+&nbsp;&nbsp;next&nbsp;output</pre>
+	</p>
+	<p>
+		The <code>logClock</code> action decorates any <code>inner</code> interpreter with the logging action <code>logLn</code>. It returns an action of the same type as it decorates.
+	</p>
+	<p>
+		It relies on a helper function called <code>writeLogEntry</code>, which handles some of the formalities of formatting and time-stamping each log entry.
+	</p>
+	<p>
+		You can decorate any database interpreter in the same way:
+	</p>
+	<p>
+		<pre><span style="color:#2b91af;">logReservations</span>&nbsp;::&nbsp;<span style="color:blue;">MonadIO</span>&nbsp;m
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">=&gt;</span>&nbsp;(<span style="color:#2b91af;">String</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:#2b91af;">IO</span>&nbsp;())
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;(forall&nbsp;x.&nbsp;<span style="color:blue;">ReservationsInstruction</span>&nbsp;(m&nbsp;x)&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;m&nbsp;x)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">ReservationsInstruction</span>&nbsp;(m&nbsp;a)&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;m&nbsp;a
+logReservations&nbsp;logLn&nbsp;inner&nbsp;(ReadReservation&nbsp;rid&nbsp;next)&nbsp;=&nbsp;<span style="color:blue;">do</span>
+&nbsp;&nbsp;output&nbsp;&lt;-&nbsp;inner&nbsp;$&nbsp;ReadReservation&nbsp;rid&nbsp;<span style="color:blue;">return</span>
+&nbsp;&nbsp;liftIO&nbsp;$&nbsp;writeLogEntry&nbsp;logLn&nbsp;<span style="color:#a31515;">&quot;ReadReservation&quot;</span>&nbsp;rid&nbsp;output
+&nbsp;&nbsp;next&nbsp;output
+logReservations&nbsp;logLn&nbsp;inner&nbsp;(ReadReservations&nbsp;t&nbsp;next)&nbsp;=&nbsp;<span style="color:blue;">do</span>
+&nbsp;&nbsp;output&nbsp;&lt;-&nbsp;inner&nbsp;$&nbsp;ReadReservations&nbsp;t&nbsp;<span style="color:blue;">return</span>
+&nbsp;&nbsp;liftIO&nbsp;$&nbsp;writeLogEntry&nbsp;logLn&nbsp;<span style="color:#a31515;">&quot;ReadReservations&quot;</span>&nbsp;t&nbsp;output
+&nbsp;&nbsp;next&nbsp;output
+logReservations&nbsp;logLn&nbsp;inner&nbsp;(CreateReservation&nbsp;r&nbsp;next)&nbsp;=&nbsp;<span style="color:blue;">do</span>
+&nbsp;&nbsp;output&nbsp;&lt;-&nbsp;inner&nbsp;$&nbsp;CreateReservation&nbsp;r&nbsp;(<span style="color:blue;">return</span>&nbsp;<span style="color:blue;">()</span>)
+&nbsp;&nbsp;liftIO&nbsp;$&nbsp;writeLogEntry&nbsp;logLn&nbsp;<span style="color:#a31515;">&quot;CreateReservation&quot;</span>&nbsp;r&nbsp;output
+&nbsp;&nbsp;next</pre>
+	</p>
+	<p>
+		The <code>logReservations</code> action follows the same template as <code>logClock</code>; only it has more lines of code because <code>ReservationsInstruction</code> is a discriminated union with three cases.
+	</p>
+	<p>
+		With these Decorator actions you can change the application composition so that it logs all impure inputs and outputs:
+	</p>
+	<p>
+		<pre><span style="color:#2b91af;">runInSQLServerAndOnSystemClock</span>&nbsp;::&nbsp;<span style="color:blue;">MonadIO</span>&nbsp;m
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">=&gt;</span>&nbsp;(<span style="color:#2b91af;">String</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:#2b91af;">IO</span>&nbsp;())
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">Text</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">ReservationsProgramT</span>&nbsp;m&nbsp;a&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;m&nbsp;a
+runInSQLServerAndOnSystemClock&nbsp;logLn&nbsp;connStr&nbsp;=&nbsp;iterT&nbsp;go
+&nbsp;&nbsp;<span style="color:blue;">where</span>&nbsp;go&nbsp;(InL&nbsp;rins)&nbsp;=&nbsp;logReservations&nbsp;logLn&nbsp;(DB.runInSQLServer&nbsp;connStr)&nbsp;rins
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;go&nbsp;(InR&nbsp;cins)&nbsp;=&nbsp;logClock&nbsp;logLn&nbsp;runOnSystemClock&nbsp;cins</pre>
+	</p>
+	<p>
+		This not only implements the desired functionality, but also <em>Goldilogs:</em> not too little, not too much, but just what you need. Notice that I didn't have to change any of my Domain Model or HTTP-specific code to enable logging. This cross-cutting concern is enabled entirely via composition.
+	</p>
+	<h3 id="3d37879949774c10a002ad7ff93ad571">
+		Repeatability <a href="#3d37879949774c10a002ad7ff93ad571" title="permalink">#</a>
+	</h3>
+	<p>
+		An HTTP request like this:
+	</p>
+	<p>
+		<pre>POST /reservations/ HTTP/1.1
+Content-Type: application/json
+
+{
+&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;id&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;c3cbfbc7-6d64-4ead-84ef-7f89de5b7e1c&quot;</span>,
+&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;date&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;2020-03-20&nbsp;19:00:00&quot;</span>,
+&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;name&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;Elissa&nbsp;Megan&nbsp;Powers&quot;</span>,
+&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;email&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;emp@example.com&quot;</span>,
+&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;quantity&quot;</span>:&nbsp;3
+}</pre>
+	</p>
+	<p>
+		produces a series of log entries like these:
+	</p>
+	<p>
+		<pre>LogEntry {logTime = 2019-12-29 20:21:53.0029235 UTC, logOperation = "CurrentTime", logInput = "()", logOutput = "2019-12-29 21:21:53.0029235"}
+LogEntry {logTime = 2019-12-29 20:21:54.0532677 UTC, logOperation = "ReadReservations", logInput = "2020-03-20 19:00:00", logOutput = "[]"}
+LogEntry {logTime = 2019-12-29 20:21:54.0809254 UTC, logOperation = "CreateReservation", logInput = "Reservation {reservationId = c3cbfbc7-6d64-4ead-84ef-7f89de5b7e1c, reservationDate = 2020-03-20 19:00:00, reservationName = \"Elissa Megan Powers\", reservationEmail = \"emp@example.com\", reservationQuantity = 3}", logOutput = "()"}
+LogEntry {logTime = 2019-12-29 20:21:54 UTC, logOperation = "PostReservation", logInput = "\"{ \\\"id\\\": \\\"c3cbfbc7-6d64-4ead-84ef-7f89de5b7e1c\\\", \\\"date\\\": \\\"2020-03-20 19:00:00\\\", \\\"name\\\": \\\"Elissa Megan Powers\\\", \\\"email\\\": \\\"emp@example.com\\\", \\\"quantity\\\": 3 }\"", logOutput = "()"}</pre>
+	</p>
+	<p>
+		This is only a prototype to demonstrate what's possible. In an attempt to make things simple for myself, I decided to just log data by using the <code>Show</code> instance of each value being logged. In order to reproduce behaviour, I'll rely on the corresponding <code>Read</code> instance for the type. This was probably naive, and not a decision I would employ in a production system, but it's good enough for a prototype.
+	</p>
+	<p>
+		For example, the above log entry states that the <code>CurrentTime</code> instruction was evaluated and that the output was <code>2019-12-29 21:21:53.0029235</code>. Second, the <code>ReadReservations</code> instruction was evaluated with the input <code>2020-03-20 19:00:00</code> and the output was the empty list (<code>[]</code>). The third line records that the <code>CreateReservation</code> instruction was evaluated with a particular input, and that the output was <code>()</code>.
+	</p>
+	<p>
+		The fourth and final record is the the actual values observed at the HTTP boundary.
+	</p>
+	<p>
+		You can load and parse the logged data into a unit test or an interactive session:
+	</p>
+	<p>
+		<pre>λ&gt; l &lt;- lines &lt;$&gt; readFile "the/path/to/the/log.txt"
+λ&gt; replayData = readReplayData l
+λ&gt; replayData
+ReplayData {
+&nbsp;&nbsp;observationsOfPostReservation =
+&nbsp;&nbsp;&nbsp;&nbsp;[Reservation {
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;reservationId = c3cbfbc7-6d64-4ead-84ef-7f89de5b7e1c,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;reservationDate = 2020-03-20 19:00:00,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;reservationName = "Elissa Megan Powers",
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;reservationEmail = "emp@example.com",
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;reservationQuantity = 3}],
+&nbsp;&nbsp;observationsOfRead = fromList [],
+&nbsp;&nbsp;observationsOfReads = fromList [(2020-03-20 19:00:00,[[]])],
+&nbsp;&nbsp;observationsOfCurrentTime = [2019-12-29 21:21:53.0029235]}
+λ&gt; r = head $ observationsOfPostReservation replayData
+λ&gt; r
+Reservation {
+&nbsp;&nbsp;reservationId = c3cbfbc7-6d64-4ead-84ef-7f89de5b7e1c,
+&nbsp;&nbsp;reservationDate = 2020-03-20 19:00:00,
+&nbsp;&nbsp;reservationName = "Elissa Megan Powers",
+&nbsp;&nbsp;reservationEmail = "emp@example.com",
+&nbsp;&nbsp;reservationQuantity = 3}</pre>
+	</p>
+	<p>
+		(I've added line breaks and indentation to some of the output to make it more readable, compared to what GHCi produces.)
+	</p>
+	<p>
+		The most important thing to notice is the <code>readReplayData</code> function that parses the log file into Haskell data. I've also written a prototype of a function that can <code>replay</code> the actions as they happened:
+	</p>
+	<p>
+		<pre>λ&gt; (seatingDuration, tables) &lt;- readConfig
+λ&gt; replay replayData $ tryAccept seatingDuration tables r
+Right ()</pre>
+	</p>
+	<p>
+		The original HTTP request returned <code>200 OK</code> and that's exactly how <code>reservationServer</code> translates a <code>Right ()</code> result. So the above interaction is a faithful reproduction of what actually happened.
+	</p>
+	<h3 id="5d94afef4145456abe86ae6f2dd9445a">
+		Replay <a href="#5d94afef4145456abe86ae6f2dd9445a" title="permalink">#</a>
+	</h3>
+	<p>
+		You may have noticed that I used a <code>replay</code> function above. This is only a prototype to get the point across. It's just another interpreter of <code>ReservationsProgram</code> (or, rather an <code>ExceptT</code> wrapper of <code>ReservationsProgram</code>):
+	</p>
+	<p>
+		<pre><span style="color:#2b91af;">replay</span>&nbsp;::&nbsp;<span style="color:blue;">ReplayData</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">ExceptT</span>&nbsp;e&nbsp;<span style="color:blue;">ReservationsProgram</span>&nbsp;a&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:#2b91af;">Either</span>&nbsp;e&nbsp;a
+replay&nbsp;d&nbsp;=&nbsp;replayImp&nbsp;d&nbsp;.&nbsp;runExceptT
+&nbsp;&nbsp;<span style="color:blue;">where</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">replayImp</span>&nbsp;::&nbsp;<span style="color:blue;">ReplayData</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">ReservationsProgram</span>&nbsp;a&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;a
+&nbsp;&nbsp;&nbsp;&nbsp;replayImp&nbsp;rd&nbsp;p&nbsp;=&nbsp;State.evalState&nbsp;(iterM&nbsp;go&nbsp;p)&nbsp;rd
+&nbsp;&nbsp;&nbsp;&nbsp;go&nbsp;(InL&nbsp;(ReadReservation&nbsp;rid&nbsp;next))&nbsp;=&nbsp;replayReadReservation&nbsp;rid&nbsp;&gt;&gt;=&nbsp;next
+&nbsp;&nbsp;&nbsp;&nbsp;go&nbsp;(InL&nbsp;(ReadReservations&nbsp;t&nbsp;next))&nbsp;=&nbsp;replayReadReservations&nbsp;t&nbsp;&gt;&gt;=&nbsp;next
+&nbsp;&nbsp;&nbsp;&nbsp;go&nbsp;(InL&nbsp;(CreateReservation&nbsp;_&nbsp;next))&nbsp;=&nbsp;next
+&nbsp;&nbsp;&nbsp;&nbsp;go&nbsp;(InR&nbsp;(CurrentTime&nbsp;next))&nbsp;=&nbsp;replayCurrentTime&nbsp;&gt;&gt;=&nbsp;next</pre>
+	</p>
+	<p>
+		While this is compact Haskell code that <em>I</em> wrote, I still found it so abstruse that I decided to add a type annotation to a local function. It's not required, but I find that it helps me understand what <code>replayImp</code> does. It uses <code>iterM</code> (a cousin to <code>iterT</code>) to interpret the <code>ReservationsProgram</code>. The entire interpretation is stateful, so runs in the <code>State</code> monad. Here's an example:
+	</p>
+	<p>
+		<pre><span style="color:#2b91af;">replayCurrentTime</span>&nbsp;::&nbsp;<span style="color:blue;">State</span>&nbsp;<span style="color:blue;">ReplayData</span>&nbsp;<span style="color:blue;">LocalTime</span>
+replayCurrentTime&nbsp;=&nbsp;<span style="color:blue;">do</span>
+&nbsp;&nbsp;xs&nbsp;&lt;-&nbsp;State.gets&nbsp;observationsOfCurrentTime
+&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;(observation:rest)&nbsp;=&nbsp;xs
+&nbsp;&nbsp;State.modify&nbsp;(\s&nbsp;-&gt;&nbsp;s&nbsp;{&nbsp;observationsOfCurrentTime&nbsp;=&nbsp;rest&nbsp;})
+&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;observation</pre>
+	</p>
+	<p>
+		The <code>replayCurrentTime</code> function replays log observations of <code>CurrentTime</code> instructions. The <code>observationsOfCurrentTime</code> field is a list of observed values, parsed from a log. A <code>ReservationsProgram</code> might query the <code>CurrentTime</code> multiple times, so there could conceivably be several such observations. The idea is to replay them, starting with the earliest.
+	</p>
+	<p>
+		Each time the function replays an observation, it should remove it from the log. It does that by first retrieving all observations from the state. It then pattern-matches the <code>observation</code> from the <code>rest</code> of the observations. I execute my code with the <code>-Wall</code> option, so I'm puzzled that I don't get a warning from the compiler about that line. After all, the <code>xs</code> list could be empty. This is, however, prototype code, so I decided to ignore that issue.
+	</p>
+	<p>
+		Before the function returns the <code>observation</code> it updates the replay data by effectively removing the <code>observation</code>, but without touching anything else.
+	</p>
+	<p>
+		The <code>replayReadReservation</code> and <code>replayReadReservations</code> functions follow the same template. You can consult the source code repository if you're curious about the details. You may also notice that the <code>go</code> function doesn't do anything when it encounters a <code>CreateReservation</code> instruction. This is because that instruction has no return value, so there's no reason to consult a log to figure out what to return.
+	</p>
+	<h3 id="fa5477f706a143d59c0006e52af2fe2d">
+		Summary <a href="#fa5477f706a143d59c0006e52af2fe2d" title="permalink">#</a>
+	</h3>
+	<p>
+		The point of this article was to flesh out a fully functional feature (a vertical slice, if you're so inclined) in Haskell, in order to verify that the only impure actions involved are:
+		<ul>
+			<li>Getting the current time</li>
+			<li>Interacting with the application database</li>
+		</ul>
+		This turns out to be the case.
+	</p>
+	<p>
+		Furthermore, prototype code demonstrates that based on a log of impure interactions, you can repeat the logged execution.
+	</p>
+	<p>
+		Now that we know what is impure and what can be pure, we can reproduce the same architecture in C# (or another mainstream programming language).
+	</p>
+	<p>
+		<strong>Next:</strong> <a href="/2020/04/06/repeatable-execution-in-c">Repeatable execution in C#</a>.
+	</p>
+</div>
+<div id="comments">
+<hr>
+	<h2 id="comments-header">
+	  Comments
+	</h2>
+
+	<div class="comment" id="4d71311250a54b1ca558a8469acdf545">
+	  <div class="comment-author"><a href="https://majiehong.com/">Jiehong</a></div>
+	  <div class="comment-content">
+		<p>The Free Monad, as any monad, enforces sequential operations.</p>
+
+	   	<p>
+		  How would you deal with having to sent multiple transactions (let's say to the db and via http),
+	      	  while also retrying <em>n</em> times if it fails?
+	    	</p>
+	  </div>
+	  <div class="comment-date">2020-04-06 9:38 UTC</div>
+	</div>
+
+	<div class="comment" id="8f689c5cb98d42ad8e4d8eb02ef81cc3">
+		<div class="comment-author"><a href="{{ HOME_PATH }}">Mark Seemann</a></div>
+		<div class="comment-content">
+			<p>
+				Jiehong, thank you for writing. I'm not sure that I can give you a complete answer, as this is something that I haven't experimented with in Haskell.
+			</p>
+			<p>
+				In C#, on the other hand, you can implement stability patterns like <a href="https://en.wikipedia.org/wiki/Circuit_breaker_design_pattern">Circuit Breaker</a> and retries with <a href="https://en.wikipedia.org/wiki/Decorator_pattern">Decorators</a>. I don't see why you can't do that in Haskell as well.
+			</p>
+		</div>
+		<div class="comment-date">2020-04-10 10:15 UTC</div>
+	</div>
+</div>

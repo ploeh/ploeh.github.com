@@ -1,0 +1,1068 @@
+---
+layout: post
+title: "An F# implementation of the Maître d' kata"
+description: "This article walks you through the Ma&icirc;tre d' kata done in F#."
+date: 2020-04-27 14:41 UTC
+tags: [F#, Unit Testing, Functional Programming]
+---
+{% include JB/setup %}
+
+<div id="post">
+	<p>
+		<em>{{ page.description }}</em>
+	</p>
+	<p>
+		In a previous article, I presented <a href="/2020/01/27/the-maitre-d-kata">the Ma&icirc;tre d' kata</a> and promised to publish a walkthrough. Here it is.
+	</p>
+	<h3 id="f7bc269790014e9d9510c4c034e9a1bb">
+		Preparation <a href="#f7bc269790014e9d9510c4c034e9a1bb" title="permalink">#</a>
+	</h3>
+	<p>
+		I used <a href="/2019/10/21/a-red-green-refactor-checklist">test-driven development</a> and <a href="https://fsharp.org">F#</a> for both unit tests and implementation. As usual, my test framework was <a href="https://xunit.net">xUnit.net</a> (2.4.0) with <a href="https://github.com/SwensenSoftware/unquote">Unquote</a> (5.0.0) as the assertion library.
+	</p>
+	<p>
+		I could have done the exercise with a <a href="/property-based-testing-intro">property-based testing</a> framework like <a href="https://fscheck.github.io/FsCheck">FsCheck</a> or <a href="https://github.com/hedgehogqa/fsharp-hedgehog">Hedgehog</a>, but I chose instead to take my own medicine. In the kata description, I suggested some test cases, so I wanted to try and see if they made sense.
+	</p>
+	<p>
+		The entire code base is <a href="https://github.com/ploeh/maitred-kata-in-fsharp-1">available on GitHub</a>.
+	</p>
+	<h3 id="adc8a50bbe72453c87853ae566b9a185">
+		Boutique restaurant <a href="#adc8a50bbe72453c87853ae566b9a185" title="permalink">#</a>
+	</h3>
+	<p>
+		I wrote the first suggested test case this way:
+	</p>
+	<p>
+		<pre>[&lt;Fact&gt;]
+<span style="color:blue;">let</span>&nbsp;``Boutique&nbsp;restaurant``&nbsp;()&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;test&nbsp;&lt;@&nbsp;canAccept&nbsp;12&nbsp;[]&nbsp;{&nbsp;Quantity&nbsp;=&nbsp;1&nbsp;}&nbsp;@&gt;</pre>
+	</p>
+	<p>
+		This uses Unquote's <code>test</code> function to verify that a Boolean expression is true. The expression is a function call to <code>canAccept</code> with the capacity <code>12</code>, no existing reservations, and a reservation with <code>Quantity = 1</code>.
+	</p>
+	<p>
+		The simplest thing that could possibly work was this:
+	</p>
+	<p>
+		<pre><span style="color:blue;">type</span>&nbsp;Reservation&nbsp;=&nbsp;{&nbsp;Quantity&nbsp;:&nbsp;int&nbsp;}
+ 
+<span style="color:blue;">let</span>&nbsp;canAccept&nbsp;_&nbsp;_&nbsp;_&nbsp;=&nbsp;<span style="color:blue;">true</span></pre>
+	</p>
+	<p>
+		The <code>Reservation</code> type was required to make the test compile, but the <code>canAccept</code> function didn't have to consider its arguments. It could simply return <code>true</code>.
+	</p>
+	<h3 id="d169683993034e3c86db04a1dfaca279">
+		Parametrisation <a href="#d169683993034e3c86db04a1dfaca279" title="permalink">#</a>
+	</h3>
+	<p>
+		The next test case made me turn the test function into a parametrised test:
+	</p>
+	<p>
+		<pre>[&lt;Theory&gt;]
+[&lt;InlineData(&nbsp;1,&nbsp;&nbsp;<span style="color:blue;">true</span>)&gt;]
+[&lt;InlineData(13,&nbsp;<span style="color:blue;">false</span>)&gt;]
+<span style="color:blue;">let</span>&nbsp;``Boutique&nbsp;restaurant``&nbsp;quantity&nbsp;expected&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;expected&nbsp;=!&nbsp;canAccept&nbsp;12&nbsp;[]&nbsp;{&nbsp;Quantity&nbsp;=&nbsp;quantity&nbsp;}</pre>
+	</p>
+	<p>
+		So far, the only test parameters were <code>quantity</code> and the <code>expected</code> result. I could no longer use <code>test</code> to verify the result of calling <code>canAccept</code>, since I added variation to the <code>expected</code> result. I changed <code>test</code> into Unquote's <code>=!</code> (<em>must equal</em>) operator.
+	</p>
+	<p>
+		The simplest passing implementation I could think of was:
+	</p>
+	<p>
+		<pre><span style="color:blue;">let</span>&nbsp;canAccept&nbsp;_&nbsp;_&nbsp;{&nbsp;Quantity&nbsp;=&nbsp;q&nbsp;}&nbsp;=&nbsp;q&nbsp;=&nbsp;1</pre>
+	</p>
+	<p>
+		It ignored the capacity and instead checked whether <code>q</code> is <code>1</code>. That passed both tests.
+	</p>
+	<h3 id="43fddd9f6ad845aa85b4f04357815659">
+		Test data API <a href="#43fddd9f6ad845aa85b4f04357815659" title="permalink">#</a>
+	</h3>
+	<p>
+		Before adding another test case, I decided to refactor my test code a bit. When working with a real domain model, you often have to furnish test data in order to make code compile - even if that data isn't relevant to the test. I wanted to demonstrate how to deal with this issue. My first step was to introduce an 'arbitrary' <code>Reservation</code> value in the spirit of <a href="/2017/09/11/test-data-without-builders">Test data without Builders</a>.
+	</p>
+	<p>
+		<pre><span style="color:blue;">let</span>&nbsp;aReservation&nbsp;=&nbsp;{&nbsp;Quantity&nbsp;=&nbsp;1&nbsp;}</pre>
+	</p>
+	<p>
+		This enabled me to rewrite the test:
+	</p>
+	<p>
+		<pre>[&lt;Theory&gt;]
+[&lt;InlineData(&nbsp;1,&nbsp;&nbsp;<span style="color:blue;">true</span>)&gt;]
+[&lt;InlineData(13,&nbsp;<span style="color:blue;">false</span>)&gt;]
+<span style="color:blue;">let</span>&nbsp;``Boutique&nbsp;restaurant``&nbsp;quantity&nbsp;expected&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;expected&nbsp;=!&nbsp;canAccept&nbsp;12&nbsp;[]&nbsp;{&nbsp;aReservation&nbsp;<span style="color:blue;">with</span>&nbsp;Quantity&nbsp;=&nbsp;quantity&nbsp;}</pre>
+	</p>
+	<p>
+		This doesn't look like an immediate improvement, but it made it possible to make the <code>Reservation</code> record type more realistic without damage to the test:
+	</p>
+	<p>
+		<pre><span style="color:blue;">type</span>&nbsp;Reservation&nbsp;=&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;Date&nbsp;:&nbsp;DateTime
+&nbsp;&nbsp;&nbsp;&nbsp;Name&nbsp;:&nbsp;string
+&nbsp;&nbsp;&nbsp;&nbsp;Email&nbsp;:&nbsp;string
+&nbsp;&nbsp;&nbsp;&nbsp;Quantity&nbsp;:&nbsp;int&nbsp;}</pre>
+	</p>
+	<p>
+		I added some fields that a real-world reservation would have. The <code>Quantity</code> field will be useful later on, but the <code>Name</code> and <code>Email</code> fields are irrelevant in the context of the kata.
+	</p>
+	<p>
+		This is the type of API change that often gives people grief. To create a <code>Reservation</code> value, you <em>must</em> supply all four fields. This often adds noise to tests.
+	</p>
+	<p>
+		Not here, though, because the only concession I had to make was to change <code>aReservation</code>:
+	</p>
+	<p>
+		<pre><span style="color:blue;">let</span>&nbsp;aReservation&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Date&nbsp;=&nbsp;DateTime&nbsp;(2019,&nbsp;11,&nbsp;29,&nbsp;12,&nbsp;0,&nbsp;0)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Name&nbsp;=&nbsp;<span style="color:#a31515;">&quot;&quot;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Email&nbsp;=&nbsp;<span style="color:#a31515;">&quot;&quot;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Quantity&nbsp;=&nbsp;1
+&nbsp;&nbsp;&nbsp;&nbsp;}</pre>
+	</p>
+	<p>
+		The test code remained unaltered.
+	</p>
+	<p>
+		With that in place, I could add the third test case:
+	</p>
+	<p>
+		<pre>[&lt;Theory&gt;]
+[&lt;InlineData(&nbsp;1,&nbsp;&nbsp;<span style="color:blue;">true</span>)&gt;]
+[&lt;InlineData(13,&nbsp;<span style="color:blue;">false</span>)&gt;]
+[&lt;InlineData(12,&nbsp;&nbsp;<span style="color:blue;">true</span>)&gt;]
+<span style="color:blue;">let</span>&nbsp;``Boutique&nbsp;restaurant``&nbsp;quantity&nbsp;expected&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;expected&nbsp;=!&nbsp;canAccept&nbsp;12&nbsp;[]&nbsp;{&nbsp;aReservation&nbsp;<span style="color:blue;">with</span>&nbsp;Quantity&nbsp;=&nbsp;quantity&nbsp;}</pre>
+	</p>
+	<p>
+		The simplest passing implementation I could think of was:
+	</p>
+	<p>
+		<pre><span style="color:blue;">let</span>&nbsp;canAccept&nbsp;_&nbsp;_&nbsp;{&nbsp;Quantity&nbsp;=&nbsp;q&nbsp;}&nbsp;=&nbsp;q&nbsp;&lt;&gt;&nbsp;13</pre>
+	</p>
+	<p>
+		This implementation still ignored the restaurant's capacity and simply checked that <code>q</code> was different from <code>13</code>. That was enough to pass all three tests.
+	</p>
+	<h3 id="b25e3ea455db4fc6a0a18ed84d3be679">
+		Refactor test case code <a href="#b25e3ea455db4fc6a0a18ed84d3be679" title="permalink">#</a>
+	</h3>
+	<p>
+		Adding the next suggested test case proved to be a problem. I wanted to write a single <code>[&lt;Theory&gt;]</code>-driven test function fed by all the <em>Boutique restaurant</em> test data. To do that, I'd have to supply arrays of test input, but unfortunately, <a href="https://github.com/dotnet/fsharp/issues/7916">that wasn't possible in F#</a>.
+	</p>
+	<p>
+		Instead I decided to refactor the test case code to use <code>ClassData</code>-driven test cases.
+	</p>
+	<p>
+		<pre><span style="color:blue;">type</span>&nbsp;BoutiqueTestCases&nbsp;()&nbsp;<span style="color:blue;">as</span>&nbsp;this&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">inherit</span>&nbsp;TheoryData&lt;int,&nbsp;bool&gt;&nbsp;()
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">do</span>&nbsp;this.Add&nbsp;(&nbsp;1,&nbsp;&nbsp;<span style="color:blue;">true</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;this.Add&nbsp;(13,&nbsp;<span style="color:blue;">false</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;this.Add&nbsp;(12,&nbsp;&nbsp;<span style="color:blue;">true</span>)
+ 
+[&lt;Theory;&nbsp;ClassData(typeof&lt;BoutiqueTestCases&gt;)&gt;]
+<span style="color:blue;">let</span>&nbsp;``Boutique&nbsp;restaurant``&nbsp;quantity&nbsp;expected&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;expected&nbsp;=!&nbsp;canAccept&nbsp;12&nbsp;[]&nbsp;{&nbsp;aReservation&nbsp;<span style="color:blue;">with</span>&nbsp;Quantity&nbsp;=&nbsp;quantity&nbsp;}</pre>
+	</p>
+	<p>
+		These are the same test cases as before, but now expressed by a class inheriting from <code>TheoryData&lt;int, bool&gt;</code>. The implementing code remains the same.
+	</p>
+	<h3 id="d1c356e19bd940cd8e37c24848b4f896">
+		Existing reservation <a href="#d1c356e19bd940cd8e37c24848b4f896" title="permalink">#</a>
+	</h3>
+	<p>
+		The next suggested test case includes an existing reservation. To support that, I changed the test case base class to <code>TheoryData&lt;int, int list, int, bool&gt;</code>, and passed empty lists for the first three test cases. For the new, fourth test case, I supplied a number of seats.
+	</p>
+	<p>
+		<pre><span style="color:blue;">type</span>&nbsp;BoutiqueTestCases&nbsp;()&nbsp;<span style="color:blue;">as</span>&nbsp;this&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">inherit</span>&nbsp;TheoryData&lt;int,&nbsp;int&nbsp;list,&nbsp;int,&nbsp;bool&gt;&nbsp;()
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">do</span>&nbsp;this.Add&nbsp;(12,&nbsp;&nbsp;[],&nbsp;&nbsp;1,&nbsp;&nbsp;<span style="color:blue;">true</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;this.Add&nbsp;(12,&nbsp;&nbsp;[],&nbsp;13,&nbsp;<span style="color:blue;">false</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;this.Add&nbsp;(12,&nbsp;&nbsp;[],&nbsp;12,&nbsp;&nbsp;<span style="color:blue;">true</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;this.Add&nbsp;(&nbsp;4,&nbsp;[2],&nbsp;&nbsp;3,&nbsp;<span style="color:blue;">false</span>)
+ 
+[&lt;Theory;&nbsp;ClassData(typeof&lt;BoutiqueTestCases&gt;)&gt;]
+<span style="color:blue;">let</span>&nbsp;``Boutique&nbsp;restaurant``&nbsp;capacity&nbsp;reservatedSeats&nbsp;quantity&nbsp;expected&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;rs&nbsp;=&nbsp;List.map&nbsp;(<span style="color:blue;">fun</span>&nbsp;s&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;{&nbsp;aReservation&nbsp;<span style="color:blue;">with</span>&nbsp;Quantity&nbsp;=&nbsp;s&nbsp;})&nbsp;reservatedSeats
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;actual&nbsp;=&nbsp;canAccept&nbsp;capacity&nbsp;rs&nbsp;{&nbsp;aReservation&nbsp;<span style="color:blue;">with</span>&nbsp;Quantity&nbsp;=&nbsp;quantity&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;expected&nbsp;=!&nbsp;actual</pre>
+	</p>
+	<p>
+		This also forced me to to change the body of the test function. At this stage, it could be prettier, but it got the job done. I soon after improved it.
+	</p>
+	<p>
+		My implementation, as usual, was <em>the simplest thing that could possibly work</em>.
+	</p>
+	<p>
+		<pre><span style="color:blue;">let</span>&nbsp;canAccept&nbsp;_&nbsp;reservations&nbsp;{&nbsp;Quantity&nbsp;=&nbsp;q&nbsp;}&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;q&nbsp;&lt;&gt;&nbsp;13&nbsp;&amp;&amp;&nbsp;Seq.isEmpty&nbsp;reservations</pre>
+	</p>
+	<p>
+		Notice that although the fourth test case varied the <code>capacity</code>, I still managed to pass all tests without looking at it.
+	</p>
+	<h3 id="b08aade19008419cab173c9ab720cfca">
+		Accept despite existing reservation <a href="#b08aade19008419cab173c9ab720cfca" title="permalink">#</a>
+	</h3>
+	<p>
+		The next test case introduced another existing reservation, but this time with enough capacity to accept a new reservation.
+	</p>
+	<p>
+		<pre><span style="color:blue;">type</span>&nbsp;BoutiqueTestCases&nbsp;()&nbsp;<span style="color:blue;">as</span>&nbsp;this&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">inherit</span>&nbsp;TheoryData&lt;int,&nbsp;int&nbsp;list,&nbsp;int,&nbsp;bool&gt;&nbsp;()
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">do</span>&nbsp;this.Add&nbsp;(12,&nbsp;&nbsp;[],&nbsp;&nbsp;1,&nbsp;&nbsp;<span style="color:blue;">true</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;this.Add&nbsp;(12,&nbsp;&nbsp;[],&nbsp;13,&nbsp;<span style="color:blue;">false</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;this.Add&nbsp;(12,&nbsp;&nbsp;[],&nbsp;12,&nbsp;&nbsp;<span style="color:blue;">true</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;this.Add&nbsp;(&nbsp;4,&nbsp;[2],&nbsp;&nbsp;3,&nbsp;<span style="color:blue;">false</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;this.Add&nbsp;(10,&nbsp;[2],&nbsp;&nbsp;3,&nbsp;&nbsp;<span style="color:blue;">true</span>)</pre>
+	</p>
+	<p>
+		The test function remained unchanged.
+	</p>
+	<p>
+		In the spirit of the <a href="/2019/10/07/devils-advocate">Devil's advocate technique</a>, I actively sought to avoid a correct implementation. I came up with this:
+	</p>
+	<p>
+		<pre><span style="color:blue;">let</span>&nbsp;canAccept&nbsp;capacity&nbsp;reservations&nbsp;{&nbsp;Quantity&nbsp;=&nbsp;q&nbsp;}&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;reservedSeats&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">match</span>&nbsp;Seq.tryHead&nbsp;reservations&nbsp;<span style="color:blue;">with</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;Some&nbsp;r&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;r.Quantity
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;None&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;0
+&nbsp;&nbsp;&nbsp;&nbsp;reservedSeats&nbsp;+&nbsp;q&nbsp;&lt;=&nbsp;capacity</pre>
+	</p>
+	<p>
+		Since all test cases supplied at most one existing reservation, it was enough to consider the first reservation, if present.
+	</p>
+	<p>
+		To many people, it may seem strange to actively seek out incorrect implementations like this. An incorrect implementation that passes all tests does, however, demonstrate the need for more tests.
+	</p>
+	<h3 id="587afbd29a9d41879994d2663c26f8bb">
+		The sum of all reservations <a href="#587afbd29a9d41879994d2663c26f8bb" title="permalink">#</a>
+	</h3>
+	<p>
+		I then added another test case, this time with three existing reservations:
+	</p>
+	<p>
+		<pre><span style="color:blue;">type</span>&nbsp;BoutiqueTestCases&nbsp;()&nbsp;<span style="color:blue;">as</span>&nbsp;this&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">inherit</span>&nbsp;TheoryData&lt;int,&nbsp;int&nbsp;list,&nbsp;int,&nbsp;bool&gt;&nbsp;()
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">do</span>&nbsp;this.Add&nbsp;(12,&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;[],&nbsp;&nbsp;1,&nbsp;&nbsp;<span style="color:blue;">true</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;this.Add&nbsp;(12,&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;[],&nbsp;13,&nbsp;<span style="color:blue;">false</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;this.Add&nbsp;(12,&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;[],&nbsp;12,&nbsp;&nbsp;<span style="color:blue;">true</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;this.Add&nbsp;(&nbsp;4,&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;[2],&nbsp;&nbsp;3,&nbsp;<span style="color:blue;">false</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;this.Add&nbsp;(10,&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;[2],&nbsp;&nbsp;3,&nbsp;&nbsp;<span style="color:blue;">true</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;this.Add&nbsp;(10,&nbsp;[3;2;3],&nbsp;&nbsp;3,&nbsp;<span style="color:blue;">false</span>)</pre>
+	</p>
+	<p>
+		Again, I left the test function untouched.
+	</p>
+	<p>
+		On the side of the implementation, I couldn't think of more hoops to jump through, so I finally gave in and provided a 'proper' implementation:
+	</p>
+	<p>
+		<pre><span style="color:blue;">let</span>&nbsp;canAccept&nbsp;capacity&nbsp;reservations&nbsp;{&nbsp;Quantity&nbsp;=&nbsp;q&nbsp;}&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;reservedSeats&nbsp;=&nbsp;Seq.sumBy&nbsp;(<span style="color:blue;">fun</span>&nbsp;r&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;r.Quantity)&nbsp;reservations
+&nbsp;&nbsp;&nbsp;&nbsp;reservedSeats&nbsp;+&nbsp;q&nbsp;&lt;=&nbsp;capacity</pre>
+	</p>
+	<p>
+		Not only does it look simpler that before, but I also felt that the implementation was warranted.
+		<blockquote>
+			<p>
+				“As the tests get more specific, the code gets more generic.”
+			</p>
+			<footer><cite><a href="https://blog.cleancoder.com/uncle-bob/2013/05/27/TheTransformationPriorityPremise.html">Robert C. Martin</a></cite></footer>
+		</blockquote>
+		Although I'd only tested <code>canAccept</code> with lists, I decided to implement it with <code>Seq</code>. This was a decision I later regretted.
+	</p>
+	<h3 id="987a4fc4119a4ab29bc968712659bdc2">
+		Another date <a href="#987a4fc4119a4ab29bc968712659bdc2" title="permalink">#</a>
+	</h3>
+	<p>
+		The last <em>Boutique restaurant</em> test case was to supply an existing reservation on another date. The <code>canAccept</code> function should only consider existing reservations on the date in question.
+	</p>
+	<p>
+		First, I decided to model the two separate dates as two values:
+	</p>
+	<p>
+		<pre><span style="color:blue;">let</span>&nbsp;d1&nbsp;=&nbsp;DateTime&nbsp;(2023,&nbsp;9,&nbsp;14)
+<span style="color:blue;">let</span>&nbsp;d2&nbsp;=&nbsp;DateTime&nbsp;(2023,&nbsp;9,&nbsp;15)</pre>
+	</p>
+	<p>
+		I hoped that it would make my test cases more readable, because the dates would have a denser representation.
+	</p>
+	<p>
+		<pre><span style="color:blue;">type</span>&nbsp;BoutiqueTestCases&nbsp;()&nbsp;<span style="color:blue;">as</span>&nbsp;this&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">inherit</span>&nbsp;TheoryData&lt;int,&nbsp;(int&nbsp;*&nbsp;DateTime)&nbsp;list,&nbsp;(int&nbsp;*&nbsp;DateTime),&nbsp;bool&gt;&nbsp;()
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">do</span>&nbsp;this.Add&nbsp;(12,&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;[],&nbsp;(&nbsp;1,&nbsp;d1),&nbsp;&nbsp;<span style="color:blue;">true</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;this.Add&nbsp;(12,&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;[],&nbsp;(13,&nbsp;d1),&nbsp;<span style="color:blue;">false</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;this.Add&nbsp;(12,&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;[],&nbsp;(12,&nbsp;d1),&nbsp;&nbsp;<span style="color:blue;">true</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;this.Add&nbsp;(&nbsp;4,&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;[(2,&nbsp;d1)],&nbsp;(&nbsp;3,&nbsp;d1),&nbsp;<span style="color:blue;">false</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;this.Add&nbsp;(10,&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;[(2,&nbsp;d1)],&nbsp;(&nbsp;3,&nbsp;d1),&nbsp;&nbsp;<span style="color:blue;">true</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;this.Add&nbsp;(10,&nbsp;[(3,&nbsp;d1);(2,&nbsp;d1);(3,&nbsp;d1)],&nbsp;(&nbsp;3,&nbsp;d1),&nbsp;<span style="color:blue;">false</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;this.Add&nbsp;(&nbsp;4,&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;[(2,&nbsp;d2)],&nbsp;(&nbsp;3,&nbsp;d1),&nbsp;&nbsp;<span style="color:blue;">true</span>)</pre>
+	</p>
+	<p>
+		I changed the representation of a reservation from just an <code>int</code> to a tuple of a number and a date. I also got tired of looking at that noisy unit test, so I introduced a test-specific helper function:
+	</p>
+	<p>
+		<pre><span style="color:blue;">let</span>&nbsp;reserve&nbsp;(q,&nbsp;d)&nbsp;=&nbsp;{&nbsp;aReservation&nbsp;<span style="color:blue;">with</span>&nbsp;Quantity&nbsp;=&nbsp;q;&nbsp;Date&nbsp;=&nbsp;d&nbsp;}</pre>
+	</p>
+	<p>
+		Since it takes a tuple of a number and a date, I could use it to simplify the test function:
+	</p>
+	<p>
+		<pre>[&lt;Theory;&nbsp;ClassData(typeof&lt;BoutiqueTestCases&gt;)&gt;]
+<span style="color:blue;">let</span>&nbsp;``Boutique&nbsp;restaurant``&nbsp;(capacity,&nbsp;rs,&nbsp;r,&nbsp;expected)&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;reservations&nbsp;=&nbsp;List.map&nbsp;reserve&nbsp;rs
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;actual&nbsp;=&nbsp;canAccept&nbsp;capacity&nbsp;reservations&nbsp;(reserve&nbsp;r)
+&nbsp;&nbsp;&nbsp;&nbsp;expected&nbsp;=!&nbsp;actual</pre>
+	</p>
+	<p>
+		The <code>canAccept</code> function now had to filter the <code>reservations</code> on <code>Date</code>:
+	</p>
+	<p>
+		<pre><span style="color:blue;">let</span>&nbsp;canAccept&nbsp;capacity&nbsp;reservations&nbsp;{&nbsp;Quantity&nbsp;=&nbsp;q;&nbsp;Date&nbsp;=&nbsp;d&nbsp;}&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;relevantReservations&nbsp;=&nbsp;Seq.filter&nbsp;(<span style="color:blue;">fun</span>&nbsp;r&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;r.Date&nbsp;=&nbsp;d)&nbsp;reservations
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;reservedSeats&nbsp;=&nbsp;Seq.sumBy&nbsp;(<span style="color:blue;">fun</span>&nbsp;r&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;r.Quantity)&nbsp;relevantReservations
+&nbsp;&nbsp;&nbsp;&nbsp;reservedSeats&nbsp;+&nbsp;q&nbsp;&lt;=&nbsp;capacity</pre>
+	</p>
+	<p>
+		This implementation specifically compared dates, though, so while it passed all tests, it'd behave incorrectly if the dates were as much as nanosecond off. That implied that another test case was required.
+	</p>
+	<h3 id="535fc318a9b74ffda89e4e02992efe41">
+		Same date, different time <a href="#535fc318a9b74ffda89e4e02992efe41" title="permalink">#</a>
+	</h3>
+	<p>
+		The final test case for the <em>Boutique restaurant</em>, then, was to use two <code>DateTime</code> values on the same date, but with different times.
+	</p>
+	<p>
+		<pre><span style="color:blue;">type</span>&nbsp;BoutiqueTestCases&nbsp;()&nbsp;<span style="color:blue;">as</span>&nbsp;this&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">inherit</span>&nbsp;TheoryData&lt;int,&nbsp;(int&nbsp;*&nbsp;DateTime)&nbsp;list,&nbsp;(int&nbsp;*&nbsp;DateTime),&nbsp;bool&gt;&nbsp;()
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">do</span>&nbsp;this.Add&nbsp;(12,&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;[],&nbsp;(&nbsp;1,&nbsp;d1&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;),&nbsp;&nbsp;<span style="color:blue;">true</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;this.Add&nbsp;(12,&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;[],&nbsp;(13,&nbsp;d1&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;),&nbsp;<span style="color:blue;">false</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;this.Add&nbsp;(12,&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;[],&nbsp;(12,&nbsp;d1&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;),&nbsp;&nbsp;<span style="color:blue;">true</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;this.Add&nbsp;(&nbsp;4,&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;[(2,&nbsp;d1)],&nbsp;(&nbsp;3,&nbsp;d1&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;),&nbsp;<span style="color:blue;">false</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;this.Add&nbsp;(10,&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;[(2,&nbsp;d1)],&nbsp;(&nbsp;3,&nbsp;d1&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;),&nbsp;&nbsp;<span style="color:blue;">true</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;this.Add&nbsp;(10,&nbsp;[(3,&nbsp;d1);(2,&nbsp;d1);(3,&nbsp;d1)],&nbsp;(&nbsp;3,&nbsp;d1&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;),&nbsp;<span style="color:blue;">false</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;this.Add&nbsp;(&nbsp;4,&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;[(2,&nbsp;d2)],&nbsp;(&nbsp;3,&nbsp;d1&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;),&nbsp;&nbsp;<span style="color:blue;">true</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;this.Add&nbsp;(&nbsp;4,&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;[(2,&nbsp;d1)],&nbsp;(&nbsp;3,&nbsp;d1.AddHours&nbsp;1.),&nbsp;<span style="color:blue;">false</span>)</pre>
+	</p>
+	<p>
+		I just added a new test case as a new line and lined up the data. The test function, again, didn't change.
+	</p>
+	<p>
+		To address the new test case, I generalised the first filter.
+	</p>
+	<p>
+		<pre><span style="color:blue;">let</span>&nbsp;canAccept&nbsp;capacity&nbsp;reservations&nbsp;{&nbsp;Quantity&nbsp;=&nbsp;q;&nbsp;Date&nbsp;=&nbsp;d&nbsp;}&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;relevantReservations&nbsp;=&nbsp;Seq.filter&nbsp;(<span style="color:blue;">fun</span>&nbsp;r&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;r.Date.Date&nbsp;=&nbsp;d.Date)&nbsp;reservations
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;reservedSeats&nbsp;=&nbsp;Seq.sumBy&nbsp;(<span style="color:blue;">fun</span>&nbsp;r&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;r.Quantity)&nbsp;relevantReservations
+&nbsp;&nbsp;&nbsp;&nbsp;reservedSeats&nbsp;+&nbsp;q&nbsp;&lt;=&nbsp;capacity</pre>
+	</p>
+	<p>
+		An expression like <code>r.Date.Date</code> looks a little odd. <code>DateTime</code> values have a <code>Date</code> property that represents its date part. The first <code>Date</code> is the <code>Reservation</code> field, and the second is the date part.
+	</p>
+	<p>
+		I was now content with the <em>Boutique restaurant</em> implementation.
+	</p>
+	<h3 id="ea07bcad3ac8429194c55edddb7187d7">
+		Haute cuisine <a href="#ea07bcad3ac8429194c55edddb7187d7" title="permalink">#</a>
+	</h3>
+	<p>
+		In the next phase of the kata, I now had to deal with a configuration of more than one table, so I introduced a type:
+	</p>
+	<p>
+		<pre><span style="color:blue;">type</span>&nbsp;Table&nbsp;=&nbsp;{&nbsp;Seats&nbsp;:&nbsp;int&nbsp;}</pre>
+	</p>
+	<p>
+		It's really only a glorified wrapper around an <code>int</code>, but with a real domain model in place, I could make its constructor private and instead afford a smart constructor that only accepts positive integers.
+	</p>
+	<p>
+		I changed the <code>canAccept</code> function to take a list of tables, instead of <code>capacity</code>. This also required me to change the existing test function to take a singleton list of tables:
+	</p>
+	<p>
+		<pre><span style="color:blue;">let</span>&nbsp;actual&nbsp;=&nbsp;canAccept&nbsp;[table&nbsp;capacity]&nbsp;reservations&nbsp;(reserve&nbsp;r)</pre>
+	</p>
+	<p>
+		where <code>table</code> is a test-specific helper function:
+	</p>
+	<p>
+		<pre><span style="color:blue;">let</span>&nbsp;table&nbsp;s&nbsp;=&nbsp;{&nbsp;Seats&nbsp;=&nbsp;s&nbsp;}</pre>
+	</p>
+	<p>
+		I also added a new test function and a single test case:
+	</p>
+	<p>
+		<pre><span style="color:blue;">let</span>&nbsp;d3&nbsp;=&nbsp;DateTime&nbsp;(2024,&nbsp;6,&nbsp;&nbsp;7)
+ 
+<span style="color:blue;">type</span>&nbsp;HauteCuisineTestCases&nbsp;()&nbsp;<span style="color:blue;">as</span>&nbsp;this&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">inherit</span>&nbsp;TheoryData&lt;int&nbsp;list,&nbsp;(int&nbsp;*&nbsp;DateTime)&nbsp;list,&nbsp;(int&nbsp;*&nbsp;DateTime),&nbsp;bool&gt;&nbsp;()
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">do</span>&nbsp;this.Add&nbsp;([2;2;4;4],&nbsp;[],&nbsp;(4,&nbsp;d3),&nbsp;<span style="color:blue;">true</span>)
+ 
+[&lt;Theory;&nbsp;ClassData(typeof&lt;HauteCuisineTestCases&gt;)&gt;]
+<span style="color:blue;">let</span>&nbsp;``Haute&nbsp;cuisine``&nbsp;(tableSeats,&nbsp;rs,&nbsp;r,&nbsp;expected)&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;tables&nbsp;=&nbsp;List.map&nbsp;table&nbsp;tableSeats
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;reservations&nbsp;=&nbsp;List.map&nbsp;reserve&nbsp;rs
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;actual&nbsp;=&nbsp;canAccept&nbsp;tables&nbsp;reservations&nbsp;(reserve&nbsp;r)
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;expected&nbsp;=!&nbsp;actual</pre>
+	</p>
+	<p>
+		The change to <code>canAccept</code> is modest:
+	</p>
+	<p>
+		<pre><span style="color:blue;">let</span>&nbsp;canAccept&nbsp;tables&nbsp;reservations&nbsp;{&nbsp;Quantity&nbsp;=&nbsp;q;&nbsp;Date&nbsp;=&nbsp;d&nbsp;}&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;capacity&nbsp;=&nbsp;Seq.sumBy&nbsp;(<span style="color:blue;">fun</span>&nbsp;t&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;t.Seats)&nbsp;tables
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;relevantReservations&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Seq.filter&nbsp;(<span style="color:blue;">fun</span>&nbsp;r&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;r.Date.Date&nbsp;=&nbsp;d.Date)&nbsp;reservations
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;reservedSeats&nbsp;=&nbsp;Seq.sumBy&nbsp;(<span style="color:blue;">fun</span>&nbsp;r&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;r.Quantity)&nbsp;relevantReservations
+&nbsp;&nbsp;&nbsp;&nbsp;reservedSeats&nbsp;+&nbsp;q&nbsp;&lt;=&nbsp;capacity</pre>
+	</p>
+	<p>
+		It still works by looking at a total capacity as if there was just a single communal table. Now it just calculates <code>capacity</code> from the sequence of <code>tables</code>.
+	</p>
+	<h3 id="334eab19b5864f72a92290cfe5031b66">
+		Reject reservation that doesn't fit largest table <a href="#334eab19b5864f72a92290cfe5031b66" title="permalink">#</a>
+	</h3>
+	<p>
+		Then I added the next test case to the new test function:
+	</p>
+	<p>
+		<pre><span style="color:blue;">type</span>&nbsp;HauteCuisineTestCases&nbsp;()&nbsp;<span style="color:blue;">as</span>&nbsp;this&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">inherit</span>&nbsp;TheoryData&lt;int&nbsp;list,&nbsp;(int&nbsp;*&nbsp;DateTime)&nbsp;list,&nbsp;(int&nbsp;*&nbsp;DateTime),&nbsp;bool&gt;&nbsp;()
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">do</span>&nbsp;this.Add&nbsp;([2;2;4;4],&nbsp;[],&nbsp;(4,&nbsp;d3),&nbsp;&nbsp;<span style="color:blue;">true</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;this.Add&nbsp;([2;2;4;4],&nbsp;[],&nbsp;(5,&nbsp;d3),&nbsp;<span style="color:blue;">false</span>)</pre>
+	</p>
+	<p>
+		This one attempts to make a reservation for five people. The largest table only fits four people, so this reservation should be rejected. The current implementation just considered the total capacity of all tables, to it accepted the reservation, and thereby failed the test.
+	</p>
+	<p>
+		This change to <code>canAccept</code> passes all tests:
+	</p>
+	<p>
+		<pre><span style="color:blue;">let</span>&nbsp;canAccept&nbsp;tables&nbsp;reservations&nbsp;{&nbsp;Quantity&nbsp;=&nbsp;q;&nbsp;Date&nbsp;=&nbsp;d&nbsp;}&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;capacity&nbsp;=&nbsp;tables&nbsp;|&gt;&nbsp;Seq.map&nbsp;(<span style="color:blue;">fun</span>&nbsp;t&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;t.Seats)&nbsp;|&gt;&nbsp;Seq.max
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;relevantReservations&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Seq.filter&nbsp;(<span style="color:blue;">fun</span>&nbsp;r&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;r.Date.Date&nbsp;=&nbsp;d.Date)&nbsp;reservations
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;reservedSeats&nbsp;=&nbsp;Seq.sumBy&nbsp;(<span style="color:blue;">fun</span>&nbsp;r&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;r.Quantity)&nbsp;relevantReservations
+&nbsp;&nbsp;&nbsp;&nbsp;reservedSeats&nbsp;+&nbsp;q&nbsp;&lt;=&nbsp;capacity</pre>
+	</p>
+	<p>
+		The function now only considered the largest table in the restaurant. While it's incorrect to ignore all other tables, all tests passed.
+	</p>
+	<h3 id="54e03a3eeb744db3bc82b75aace9556f">
+		Accept when there's still a remaining table <a href="#54e03a3eeb744db3bc82b75aace9556f" title="permalink">#</a>
+	</h3>
+	<p>
+		Only considering the largest table is obviously wrong, so I added another test case where there's an existing reservation.
+	</p>
+	<p>
+		<pre><span style="color:blue;">type</span>&nbsp;HauteCuisineTestCases&nbsp;()&nbsp;<span style="color:blue;">as</span>&nbsp;this&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">inherit</span>&nbsp;TheoryData&lt;int&nbsp;list,&nbsp;(int&nbsp;*&nbsp;DateTime)&nbsp;list,&nbsp;(int&nbsp;*&nbsp;DateTime),&nbsp;bool&gt;&nbsp;()
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">do</span>&nbsp;this.Add&nbsp;([2;2;4;4],&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;[],&nbsp;(4,&nbsp;d3),&nbsp;&nbsp;<span style="color:blue;">true</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;this.Add&nbsp;([2;2;4;4],&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;[],&nbsp;(5,&nbsp;d3),&nbsp;<span style="color:blue;">false</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;this.Add&nbsp;(&nbsp;&nbsp;[2;2;4],&nbsp;[(2,&nbsp;d3)],&nbsp;(4,&nbsp;d3),&nbsp;&nbsp;<span style="color:blue;">true</span>)</pre>
+	</p>
+	<p>
+		While <code>canAccept</code> should accept the reservation, it didn't when I added the test case. In a variation of the <a href="/2019/10/07/devils-advocate">Devil's Advocate</a> technique, I came up with this implementation to pass all tests:
+	</p>
+	<p>
+		<pre><span style="color:blue;">let</span>&nbsp;canAccept&nbsp;tables&nbsp;reservations&nbsp;{&nbsp;Quantity&nbsp;=&nbsp;q;&nbsp;Date&nbsp;=&nbsp;d&nbsp;}&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;largestTable&nbsp;=&nbsp;tables&nbsp;|&gt;&nbsp;Seq.map&nbsp;(<span style="color:blue;">fun</span>&nbsp;t&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;t.Seats)&nbsp;|&gt;&nbsp;Seq.max
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;capacity&nbsp;=&nbsp;tables&nbsp;|&gt;&nbsp;Seq.sumBy&nbsp;(<span style="color:blue;">fun</span>&nbsp;t&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;t.Seats)
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;relevantReservations&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Seq.filter&nbsp;(<span style="color:blue;">fun</span>&nbsp;r&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;r.Date.Date&nbsp;=&nbsp;d.Date)&nbsp;reservations
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;reservedSeats&nbsp;=&nbsp;Seq.sumBy&nbsp;(<span style="color:blue;">fun</span>&nbsp;r&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;r.Quantity)&nbsp;relevantReservations
+&nbsp;&nbsp;&nbsp;&nbsp;q&nbsp;&lt;=&nbsp;largestTable&nbsp;&amp;&amp;&nbsp;reservedSeats&nbsp;+&nbsp;q&nbsp;&lt;=&nbsp;capacity</pre>
+	</p>
+	<p>
+		This still wasn't the correct implementation. It represented a return to looking at the total capacity of all tables, with the extra rule that you couldn't make a reservation larger than the largest table. At least one more test case was needed.
+	</p>
+	<h3 id="d900c55b4ebc4bcbba572cd8cbca33ed">
+		Accept when remaining table is available <a href="#d900c55b4ebc4bcbba572cd8cbca33ed" title="permalink">#</a>
+	</h3>
+	<p>
+		I added another test case to the <em>haute cuisine</em> test cases. This one came with one existing reservation for three people, effectively reserving the four-person table. While the remaining tables have an aggregate capacity of four, it's two separate tables. Therefore, a reservation for four people should be rejected.
+	</p>
+	<p>
+		<pre><span style="color:blue;">type</span>&nbsp;HauteCuisineTestCases&nbsp;()&nbsp;<span style="color:blue;">as</span>&nbsp;this&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">inherit</span>&nbsp;TheoryData&lt;int&nbsp;list,&nbsp;(int&nbsp;*&nbsp;DateTime)&nbsp;list,&nbsp;(int&nbsp;*&nbsp;DateTime),&nbsp;bool&gt;&nbsp;()
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">do</span>&nbsp;this.Add&nbsp;([2;2;4;4],&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;[],&nbsp;(4,&nbsp;d3),&nbsp;&nbsp;<span style="color:blue;">true</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;this.Add&nbsp;([2;2;4;4],&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;[],&nbsp;(5,&nbsp;d3),&nbsp;<span style="color:blue;">false</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;this.Add&nbsp;(&nbsp;&nbsp;[2;2;4],&nbsp;[(2,&nbsp;d3)],&nbsp;(4,&nbsp;d3),&nbsp;&nbsp;<span style="color:blue;">true</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;this.Add&nbsp;(&nbsp;&nbsp;[2;2;4],&nbsp;[(3,&nbsp;d3)],&nbsp;(4,&nbsp;d3),&nbsp;<span style="color:blue;">false</span>)</pre>
+	</p>
+	<p>
+		It then dawned on me that I had to explicitly distinguish between a communal table configuration, and individual tables that aren't communal, regardless of size. This triggered quite a refactoring.
+	</p>
+	<p>
+		I defined a new type to distinguish between these two types of table layout:
+	</p>
+	<p>
+		<pre><span style="color:blue;">type</span>&nbsp;TableConfiguration&nbsp;=&nbsp;Communal&nbsp;<span style="color:blue;">of</span>&nbsp;int&nbsp;|&nbsp;Tables&nbsp;<span style="color:blue;">of</span>&nbsp;Table&nbsp;list</pre>
+	</p>
+	<p>
+		I also had to change the existing test functions, including the <em>boutique restaurant</em> test
+	</p>
+	<p>
+		<pre>[&lt;Theory;&nbsp;ClassData(typeof&lt;BoutiqueTestCases&gt;)&gt;]
+<span style="color:blue;">let</span>&nbsp;``Boutique&nbsp;restaurant``&nbsp;(capacity,&nbsp;rs,&nbsp;r,&nbsp;expected)&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;reservations&nbsp;=&nbsp;List.map&nbsp;reserve&nbsp;rs
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;actual&nbsp;=&nbsp;canAccept&nbsp;(Communal&nbsp;capacity)&nbsp;reservations&nbsp;(reserve&nbsp;r)
+&nbsp;&nbsp;&nbsp;&nbsp;expected&nbsp;=!&nbsp;actual</pre></pre>
+	</p>
+	<p>
+		and the <em>haute cuisine</em> test
+	</p>
+	<p>
+		<pre>[&lt;Theory;&nbsp;ClassData(typeof&lt;HauteCuisineTestCases&gt;)&gt;]
+<span style="color:blue;">let</span>&nbsp;``Haute&nbsp;cuisine``&nbsp;(tableSeats,&nbsp;rs,&nbsp;r,&nbsp;expected)&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;tables&nbsp;=&nbsp;List.map&nbsp;table&nbsp;tableSeats
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;reservations&nbsp;=&nbsp;List.map&nbsp;reserve&nbsp;rs
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;actual&nbsp;=&nbsp;canAccept&nbsp;(Tables&nbsp;tables)&nbsp;reservations&nbsp;(reserve&nbsp;r)
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;expected&nbsp;=!&nbsp;actual</pre>
+	</p>
+	<p>
+		In both cases I had to change the call to <code>canAccept</code> to pass either a <code>Communal</code> or a <code>Tables</code> value.
+	</p>
+	<h3 id="c3c6acc07a0f4e129fc7159247a7058a">
+		Delete first <a href="#c3c6acc07a0f4e129fc7159247a7058a" title="permalink">#</a>
+	</h3>
+	<p>
+		I'd previously done the kata in <a href="https://www.haskell.org">Haskell</a> and was able to solve this phase of the kata using the built-in <code>deleteFirstsBy</code> function. This function doesn't exist in the F# core library, so I decided to add it. I created a new module named <code>Seq</code> and first defined a function that deletes the first element that satisfies a predicate:
+	</p>
+	<p>
+		<pre><span style="color:green;">//&nbsp;(&#39;a&nbsp;-&gt;&nbsp;bool)&nbsp;-&gt;&nbsp;seq&lt;&#39;a&gt;&nbsp;-&gt;&nbsp;seq&lt;&#39;a&gt;</span>
+<span style="color:blue;">let</span>&nbsp;deleteFirstBy&nbsp;pred&nbsp;(xs&nbsp;:&nbsp;_&nbsp;seq)&nbsp;=&nbsp;seq&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;<span style="color:blue;">mutable</span>&nbsp;found&nbsp;=&nbsp;<span style="color:blue;">false</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">use</span>&nbsp;e&nbsp;=&nbsp;xs.GetEnumerator&nbsp;()
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">while</span>&nbsp;e.MoveNext&nbsp;()&nbsp;<span style="color:blue;">do</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;found
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">then</span>&nbsp;<span style="color:blue;">yield</span>&nbsp;e.Current
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">else</span>&nbsp;<span style="color:blue;">if</span>&nbsp;pred&nbsp;e.Current
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">then</span>&nbsp;found&nbsp;<span style="color:blue;">&lt;-</span>&nbsp;<span style="color:blue;">true</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">else</span>&nbsp;<span style="color:blue;">yield</span>&nbsp;e.Current
+&nbsp;&nbsp;&nbsp;&nbsp;}</pre>
+	</p>
+	<p>
+		It moves over a sequence of elements and looks for an element that satisfies <code>pred</code>. If such an element is found, it's omitted from the output sequence. The function only deletes the first occurrence from the sequence, so any other elements that satisfy the predicate are still included.
+	</p>
+	<p>
+		This function corresponds to Haskell's <code>deleteBy</code> function and can be used to implement <code>deleteFirstsBy</code>:
+	</p>
+	<p>
+		<pre><span style="color:green;">//&nbsp;(&#39;a&nbsp;-&gt;&nbsp;&#39;b&nbsp;-&gt;&nbsp;bool)&nbsp;-&gt;&nbsp;seq&lt;&#39;b&gt;&nbsp;-&gt;&nbsp;seq&lt;&#39;a&gt;&nbsp;-&gt;&nbsp;seq&lt;&#39;b&gt;</span>
+<span style="color:blue;">let</span>&nbsp;deleteFirstsBy&nbsp;pred&nbsp;=&nbsp;Seq.fold&nbsp;(<span style="color:blue;">fun</span>&nbsp;xs&nbsp;x&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;deleteFirstBy&nbsp;(pred&nbsp;x)&nbsp;xs)</pre>
+	</p>
+	<p>
+		As <a href="https://hackage.haskell.org/package/base/docs/Data-List.html#v:deleteFirstsBy">the Haskell documentation</a> explains, the "<code>deleteFirstsBy</code> function takes a predicate and two lists and returns the first list with the first occurrence of each element of the second list removed." My F# function does the same, but works on sequences instead of linked lists.
+	</p>
+	<p>
+		I could use it to find and remove tables that were already reserved.
+	</p>
+	<h3 id="f2c9fa5bfc6642378cf0d8edb2a637d5">
+		Find remaining tables <a href="#f2c9fa5bfc6642378cf0d8edb2a637d5" title="permalink">#</a>
+	</h3>
+	<p>
+		I first defined a little helper function to determine whether a table can accommodate a reservation:
+	</p>
+	<p>
+		<pre><span style="color:green;">//&nbsp;Reservation&nbsp;-&gt;&nbsp;Table&nbsp;-&gt;&nbsp;bool</span>
+<span style="color:blue;">let</span>&nbsp;<span style="color:blue;">private</span>&nbsp;fits&nbsp;r&nbsp;t&nbsp;=&nbsp;r.Quantity&nbsp;&lt;=&nbsp;t.Seats</pre>
+	</p>
+	<p>
+		The rule is simply that the table's number of <code>Seats</code> must be greater than or equal to the reservation's <code>Quantity</code>. I could use this function for the predicate for <code>Seq.deleteFirstsBy</code>:
+	</p>
+	<p>
+		<pre><span style="color:blue;">let</span>&nbsp;canAccept&nbsp;config&nbsp;reservations&nbsp;({&nbsp;Quantity&nbsp;=&nbsp;q;&nbsp;Date&nbsp;=&nbsp;d&nbsp;}&nbsp;<span style="color:blue;">as</span>&nbsp;r)&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;contemporaneousReservations&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Seq.filter&nbsp;(<span style="color:blue;">fun</span>&nbsp;r&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;r.Date.Date&nbsp;=&nbsp;d.Date)&nbsp;reservations
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">match</span>&nbsp;config&nbsp;<span style="color:blue;">with</span>
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;Communal&nbsp;capacity&nbsp;<span style="color:blue;">-&gt;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;reservedSeats&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Seq.sumBy&nbsp;(<span style="color:blue;">fun</span>&nbsp;r&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;r.Quantity)&nbsp;contemporaneousReservations
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;reservedSeats&nbsp;+&nbsp;q&nbsp;&lt;=&nbsp;capacity
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;Tables&nbsp;tables&nbsp;<span style="color:blue;">-&gt;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;rs&nbsp;=&nbsp;Seq.sort&nbsp;contemporaneousReservations
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;remainingTables&nbsp;=&nbsp;Seq.deleteFirstsBy&nbsp;fits&nbsp;(Seq.sort&nbsp;tables)&nbsp;rs
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Seq.exists&nbsp;(fits&nbsp;r)&nbsp;remainingTables</pre>
+	</p>
+	<p>
+		The <code>canAccept</code> function now branched on <code>Communal</code> versus <code>Tables</code> configurations. In the <code>Communal</code> configuration, it simply compared the <code>reservedSeats</code> and reservation quantity to the communal table's <code>capacity</code>.
+	</p>
+	<p>
+		In the <code>Tables</code> case, the function used <code>Seq.deleteFirstsBy fits</code> to remove all the tables that are already reserved. The result is the <code>remainingTables</code>. If there exists a remaining table that <code>fits</code> the reservation, then the function accepts the reservation.
+	</p>
+	<p>
+		This seemed to me an appropriate implementation of the <em>haute cuisine</em> phase of the kata.
+	</p>
+	<h3 id="5a4a8061a2324ceab96e22a10a5ff445">
+		Second seatings <a href="#5a4a8061a2324ceab96e22a10a5ff445" title="permalink">#</a>
+	</h3>
+	<p>
+		Now it was time to take seating duration into account. While I could have written my test cases directly against the <a href="https://docs.microsoft.com/dotnet/api/system.timespan">TimeSpan API</a>, I didn't want to write <code>TimeSpan.FromHours 2.5</code>, <code>TimeSpan.FromDays 1.</code>, and so on. I found that it made my test cases harder to read, so I added some literal extensions:
+	</p>
+	<p>
+		<pre><span style="color:blue;">type</span>&nbsp;Int32&nbsp;<span style="color:blue;">with</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">member</span>&nbsp;x.hours&nbsp;=&nbsp;TimeSpan.FromHours&nbsp;(float&nbsp;x)
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">member</span>&nbsp;x.days&nbsp;=&nbsp;TimeSpan.FromDays&nbsp;(float&nbsp;x)</pre>
+	</p>
+	<p>
+		This enabled me to write expressions like <code>1 .days</code> and <code>2 .hours</code>, as shown in the first test case:
+	</p>
+	<p>
+		<pre><span style="color:blue;">let</span>&nbsp;d4&nbsp;=&nbsp;DateTime&nbsp;(2023,&nbsp;10,&nbsp;22,&nbsp;18,&nbsp;0,&nbsp;0)
+ 
+<span style="color:blue;">type</span>&nbsp;SecondSeatingsTestCases&nbsp;()&nbsp;<span style="color:blue;">as</span>&nbsp;this&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">inherit</span>&nbsp;TheoryData&lt;TimeSpan,&nbsp;int&nbsp;list,&nbsp;(int&nbsp;*&nbsp;DateTime)&nbsp;list,&nbsp;(int&nbsp;*&nbsp;DateTime),&nbsp;bool&gt;&nbsp;()
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">do</span>&nbsp;this.Add&nbsp;(2&nbsp;.hours,&nbsp;[2;2;4],&nbsp;[(4,&nbsp;d4)],&nbsp;(3,&nbsp;d4.Add&nbsp;(2&nbsp;.hours)),&nbsp;<span style="color:blue;">true</span>)</pre>
+	</p>
+	<p>
+		I used this initial parametrised test case for a new test function:
+	</p>
+	<p>
+		<pre>[&lt;Theory;&nbsp;ClassData(typeof&lt;SecondSeatingsTestCases&gt;)&gt;]
+<span style="color:blue;">let</span>&nbsp;``Second&nbsp;seatings``&nbsp;(dur,&nbsp;tableSeats,&nbsp;rs,&nbsp;r,&nbsp;expected)&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;tables&nbsp;=&nbsp;List.map&nbsp;table&nbsp;tableSeats
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;reservations&nbsp;=&nbsp;List.map&nbsp;reserve&nbsp;rs
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;actual&nbsp;=&nbsp;canAccept&nbsp;dur&nbsp;(Tables&nbsp;tables)&nbsp;reservations&nbsp;(reserve&nbsp;r)
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;expected&nbsp;=!&nbsp;actual</pre>
+	</p>
+	<p>
+		My motivation for this test case was mostly to introduce an API change to <code>canAccept</code>. I didn't want to rock the boat too much, so I picked a test case that wouldn't trigger a big change to the implementation. I prefer incremental changes. The only change is the introduction of the <code>seatingDur</code> argument:
+	</p>
+	<p>
+		<pre><span style="color:blue;">let</span>&nbsp;canAccept&nbsp;(seatingDur&nbsp;:&nbsp;TimeSpan)&nbsp;config&nbsp;reservations&nbsp;({&nbsp;Date&nbsp;=&nbsp;d&nbsp;}&nbsp;<span style="color:blue;">as</span>&nbsp;r)&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;contemporaneousReservations&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Seq.filter&nbsp;(<span style="color:blue;">fun</span>&nbsp;x&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;x.Date.Subtract&nbsp;seatingDur&nbsp;&lt;&nbsp;d.Date)&nbsp;reservations
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">match</span>&nbsp;config&nbsp;<span style="color:blue;">with</span>
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;Communal&nbsp;capacity&nbsp;<span style="color:blue;">-&gt;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;reservedSeats&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Seq.sumBy&nbsp;(<span style="color:blue;">fun</span>&nbsp;r&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;r.Quantity)&nbsp;contemporaneousReservations
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;reservedSeats&nbsp;+&nbsp;r.Quantity&nbsp;&lt;=&nbsp;capacity
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;Tables&nbsp;tables&nbsp;<span style="color:blue;">-&gt;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;rs&nbsp;=&nbsp;Seq.sort&nbsp;contemporaneousReservations
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;remainingTables&nbsp;=&nbsp;Seq.deleteFirstsBy&nbsp;fits&nbsp;(Seq.sort&nbsp;tables)&nbsp;rs
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Seq.exists&nbsp;(fits&nbsp;r)&nbsp;remainingTables</pre>
+	</p>
+	<p>
+		While the function already considered <code>seatingDur</code>, the way it filtered <code>reservation</code> wasn't entirely correct. It passed all tests, though.
+	</p>
+	<h3 id="2411805a41764ba3b166612ffa392246">
+		Filter reservations based on seating duration <a href="#2411805a41764ba3b166612ffa392246" title="permalink">#</a>
+	</h3>
+	<p>
+		The next test case I added made me write what I consider the right implementation, but I subsequently decided to add two more test cases just for confidence. Here's all of them:
+	</p>
+	<p>
+		<pre><span style="color:blue;">type</span>&nbsp;SecondSeatingsTestCases&nbsp;()&nbsp;<span style="color:blue;">as</span>&nbsp;this&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">inherit</span>&nbsp;TheoryData&lt;TimeSpan,&nbsp;int&nbsp;list,&nbsp;(int&nbsp;*&nbsp;DateTime)&nbsp;list,&nbsp;(int&nbsp;*&nbsp;DateTime),&nbsp;bool&gt;&nbsp;()
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">do</span>&nbsp;this.Add&nbsp;(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;2&nbsp;.hours,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;[2;2;4],
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;[(4,&nbsp;d4)],
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(3,&nbsp;d4.Add&nbsp;(2&nbsp;.hours)),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">true</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;this.Add&nbsp;(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;2.5&nbsp;.hours,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;[2;4;4],
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;[(2,&nbsp;d4);(1,&nbsp;d4.AddMinutes&nbsp;15.);(2,&nbsp;d4.Subtract&nbsp;(15&nbsp;.minutes))],
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(3,&nbsp;d4.AddHours&nbsp;2.),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">false</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;this.Add&nbsp;(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;2.5&nbsp;.hours,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;[2;4;4],
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;[(2,&nbsp;d4);(2,&nbsp;d4.Subtract&nbsp;(15&nbsp;.minutes))],
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(3,&nbsp;d4.AddHours&nbsp;2.),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">true</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;this.Add&nbsp;(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;2.5&nbsp;.hours,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;[2;4;4],
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;[(2,&nbsp;d4);(1,&nbsp;d4.AddMinutes&nbsp;15.);(2,&nbsp;d4.Subtract&nbsp;(15&nbsp;.minutes))],
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(3,&nbsp;d4.AddHours&nbsp;2.25),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">true</span>)</pre>
+	</p>
+	<p>
+		The new test cases use some more literal extensions:
+	</p>
+	<p>
+		<pre><span style="color:blue;">type</span>&nbsp;Int32&nbsp;<span style="color:blue;">with</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">member</span>&nbsp;x.minutes&nbsp;=&nbsp;TimeSpan.FromMinutes&nbsp;(float&nbsp;x)
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">member</span>&nbsp;x.hours&nbsp;=&nbsp;TimeSpan.FromHours&nbsp;(float&nbsp;x)
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">member</span>&nbsp;x.days&nbsp;=&nbsp;TimeSpan.FromDays&nbsp;(float&nbsp;x)
+ 
+<span style="color:blue;">type</span>&nbsp;Double&nbsp;<span style="color:blue;">with</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">member</span>&nbsp;x.hours&nbsp;=&nbsp;TimeSpan.FromHours&nbsp;x</pre>
+	</p>
+	<p>
+		I added a private <code>isContemporaneous</code> function to the code base and used it to filter the reservation to pass the tests:
+	</p>
+	<p>
+		<pre><span style="color:blue;">let</span>&nbsp;<span style="color:blue;">private</span>&nbsp;isContemporaneous
+&nbsp;&nbsp;&nbsp;&nbsp;(seatingDur&nbsp;:&nbsp;TimeSpan)
+&nbsp;&nbsp;&nbsp;&nbsp;(candidate&nbsp;:&nbsp;Reservation)
+&nbsp;&nbsp;&nbsp;&nbsp;(existing&nbsp;:&nbsp;Reservation)&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;aSeatingBefore&nbsp;=&nbsp;candidate.Date.Subtract&nbsp;seatingDur
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;aSeatingAfter&nbsp;=&nbsp;candidate.Date.Add&nbsp;seatingDur
+&nbsp;&nbsp;&nbsp;&nbsp;aSeatingBefore&nbsp;&lt;&nbsp;existing.Date&nbsp;&amp;&amp;&nbsp;existing.Date&nbsp;&lt;&nbsp;aSeatingAfter
+ 
+<span style="color:blue;">let</span>&nbsp;canAccept&nbsp;(seatingDur&nbsp;:&nbsp;TimeSpan)&nbsp;config&nbsp;reservations&nbsp;r&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;contemporaneousReservations&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Seq.filter&nbsp;(isContemporaneous&nbsp;seatingDur&nbsp;r)&nbsp;reservations
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">match</span>&nbsp;config&nbsp;<span style="color:blue;">with</span>
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;Communal&nbsp;capacity&nbsp;<span style="color:blue;">-&gt;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;reservedSeats&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Seq.sumBy&nbsp;(<span style="color:blue;">fun</span>&nbsp;r&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;r.Quantity)&nbsp;contemporaneousReservations
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;reservedSeats&nbsp;+&nbsp;r.Quantity&nbsp;&lt;=&nbsp;capacity
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;Tables&nbsp;tables&nbsp;<span style="color:blue;">-&gt;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;rs&nbsp;=&nbsp;Seq.sort&nbsp;contemporaneousReservations
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;remainingTables&nbsp;=&nbsp;Seq.deleteFirstsBy&nbsp;fits&nbsp;(Seq.sort&nbsp;tables)&nbsp;rs
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Seq.exists&nbsp;(fits&nbsp;r)&nbsp;remainingTables</pre>
+	</p>
+	<p>
+		I could have left the functionality of <code>isContemporaneous</code> inside of <code>canAccept</code>, but I found it just hard enough to get my head around that I preferred to put it in a named helper function. Checking that a value is in a range is in itself trivial, but for some reason, figuring out the limits of the range didn't come naturally to me.
+	</p>
+	<p>
+		This version of <code>canAccept</code> only considered existing reservations if they in any way overlapped with the reservation in question. It passed all tests. It also seemed to me to be a satisfactory implementation of the <em>second seatings</em> scenario.
+	</p>
+	<h3 id="7b7ede53fafc4a25b6bbb3fe9bbb4f09">
+		Alternative table configurations <a href="#7b7ede53fafc4a25b6bbb3fe9bbb4f09" title="permalink">#</a>
+	</h3>
+	<p>
+		This state of the kata introduces groups of tables that can be reserved individually, or combined. To support that, I changed the definition of <code>Table</code>:
+	</p>
+	<p>
+		<pre><span style="color:blue;">type</span>&nbsp;Table&nbsp;=&nbsp;Discrete&nbsp;<span style="color:blue;">of</span>&nbsp;int&nbsp;|&nbsp;Group&nbsp;<span style="color:blue;">of</span>&nbsp;int&nbsp;list</pre>
+	</p>
+	<p>
+		A <code>Table</code> is now either a <code>Discrete</code> table that can't be combined, or a <code>Group</code> of tables that can either be reserved individually, or combined.
+	</p>
+	<p>
+		I had to change the test-specific <code>table</code> function to behave like before.
+	</p>
+	<p>
+		<pre><span style="color:blue;">let</span>&nbsp;table&nbsp;s&nbsp;=&nbsp;Discrete&nbsp;s</pre>
+	</p>
+	<p>
+		Before this change to the <code>Table</code> type, all tables were implicitly <code>Discrete</code> tables.
+	</p>
+	<p>
+		This enabled me to add the first test case:
+	</p>
+	<p>
+		<pre><span style="color:blue;">type</span>&nbsp;AlternativeTableConfigurationTestCases&nbsp;()&nbsp;<span style="color:blue;">as</span>&nbsp;this&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">inherit</span>&nbsp;TheoryData&lt;Table&nbsp;list,&nbsp;int&nbsp;list,&nbsp;int,&nbsp;bool&gt;&nbsp;()
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">do</span>&nbsp;this.Add&nbsp;(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;[Discrete&nbsp;4;&nbsp;Discrete&nbsp;1;&nbsp;Discrete&nbsp;2;&nbsp;Group&nbsp;[2;2;2]],
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;[3;1;2],
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;2,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">true</span>)
+ 
+[&lt;Theory;&nbsp;ClassData(typeof&lt;AlternativeTableConfigurationTestCases&gt;)&gt;]
+<span style="color:blue;">let</span>&nbsp;``Alternative&nbsp;table&nbsp;configurations``&nbsp;(tables,&nbsp;rs,&nbsp;r,&nbsp;expected)&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;res&nbsp;i&nbsp;=&nbsp;reserve&nbsp;(i,&nbsp;d4)
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;reservations&nbsp;=&nbsp;List.map&nbsp;res&nbsp;rs
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;actual&nbsp;=&nbsp;canAccept&nbsp;(1&nbsp;.days)&nbsp;(Tables&nbsp;tables)&nbsp;reservations&nbsp;(res&nbsp;r)
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;expected&nbsp;=!&nbsp;actual</pre>
+	</p>
+	<p>
+		Like I did when I introduced the <code>seatingDur</code> argument, I deliberately chose a test case that didn't otherwise rock the boat too much. The same was the case now, so the only other change I had to make to pass all tests was to adjust the <code>fits</code> function:
+	</p>
+	<p>
+		<pre><span style="color:green;">//&nbsp;Reservation&nbsp;-&gt;&nbsp;Table&nbsp;-&gt;&nbsp;bool</span>
+<span style="color:blue;">let</span>&nbsp;<span style="color:blue;">private</span>&nbsp;fits&nbsp;r&nbsp;=&nbsp;<span style="color:blue;">function</span>
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;Discrete&nbsp;seats&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;r.Quantity&nbsp;&lt;=&nbsp;seats
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;Group&nbsp;_&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">true</span></pre>
+	</p>
+	<p>
+		It's clearly not correct to return <code>true</code> for any <code>Group</code>, but it passed all tests.
+	</p>
+	<h3 id="413588fbf7524177a24171c3a25f4fe7">
+		Accept based on sum of table group <a href="#413588fbf7524177a24171c3a25f4fe7" title="permalink">#</a>
+	</h3>
+	<p>
+		I wanted to edge a little closer to correctly handling the <code>Group</code> case, so I added a test case:
+	</p>
+	<p>
+		<pre><span style="color:blue;">type</span>&nbsp;AlternativeTableConfigurationTestCases&nbsp;()&nbsp;<span style="color:blue;">as</span>&nbsp;this&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">inherit</span>&nbsp;TheoryData&lt;Table&nbsp;list,&nbsp;int&nbsp;list,&nbsp;int,&nbsp;bool&gt;&nbsp;()
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">do</span>&nbsp;this.Add&nbsp;(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;[Discrete&nbsp;4;&nbsp;Discrete&nbsp;1;&nbsp;Discrete&nbsp;2;&nbsp;Group&nbsp;[2;2;2]],
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;[3;1;2],
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;2,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">true</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;this.Add&nbsp;(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;[Discrete&nbsp;4;&nbsp;Discrete&nbsp;1;&nbsp;Discrete&nbsp;2;&nbsp;Group&nbsp;[2;2;2]],
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;[3;1;2],
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;7,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">false</span>)</pre>
+	</p>
+	<p>
+		A restaurant with this table configuration can't accept a reservation for seven people, but because <code>fits</code> returned <code>true</code> for any <code>Group</code>, <code>canAccept</code> would return <code>true</code>. Since the test expected the result to be <code>false</code>, this caused the test to fail.
+	</p>
+	<p>
+		Edging closer to correct behaviour, I adjusted <code>fits</code> again:
+	</p>
+	<p>
+		<pre><span style="color:green;">//&nbsp;Reservation&nbsp;-&gt;&nbsp;Table&nbsp;-&gt;&nbsp;bool</span>
+<span style="color:blue;">let</span>&nbsp;<span style="color:blue;">private</span>&nbsp;fits&nbsp;r&nbsp;=&nbsp;<span style="color:blue;">function</span>
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;Discrete&nbsp;seats&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;r.Quantity&nbsp;&lt;=&nbsp;seats
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;Group&nbsp;tables&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;r.Quantity&nbsp;&lt;=&nbsp;List.sum&nbsp;tables</pre>
+	</p>
+	<p>
+		This was still not correct, because it removed an entire group of tables when <code>fits</code> returned <code>true</code>, but it passed all tests so far.
+	</p>
+	<h3 id="86a27564f5b846ef8dc3afdeadd613a0">
+		Accept reservation by combining two tables <a href="#86a27564f5b846ef8dc3afdeadd613a0" title="permalink">#</a>
+	</h3>
+	<p>
+		I added another failing test:
+	</p>
+	<p>
+		<pre><span style="color:blue;">type</span>&nbsp;AlternativeTableConfigurationTestCases&nbsp;()&nbsp;<span style="color:blue;">as</span>&nbsp;this&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">inherit</span>&nbsp;TheoryData&lt;Table&nbsp;list,&nbsp;int&nbsp;list,&nbsp;int,&nbsp;bool&gt;&nbsp;()
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">do</span>&nbsp;this.Add&nbsp;(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;[Discrete&nbsp;4;&nbsp;Discrete&nbsp;1;&nbsp;Discrete&nbsp;2;&nbsp;Group&nbsp;[2;2;2]],
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;[3;1;2],
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;2,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">true</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;this.Add&nbsp;(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;[Discrete&nbsp;4;&nbsp;Discrete&nbsp;1;&nbsp;Discrete&nbsp;2;&nbsp;Group&nbsp;[2;2;2]],
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;[3;1;2],
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;7,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">false</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;this.Add&nbsp;(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;[Discrete&nbsp;4;&nbsp;Discrete&nbsp;1;&nbsp;Discrete&nbsp;2;&nbsp;Group&nbsp;[2;2;2]],
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;[3;1;2;1],
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;4,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">true</span>)</pre>
+	</p>
+	<p>
+		The last test case failed because the existing reservations should only have reserved one of the tables in the group, but because of the way <code>fits</code> worked, the entire group was deleted by <code>Seq.deleteFirstsBy fits</code>. This made <code>canAccept</code> reject the four-person reservation.
+	</p>
+	<p>
+		To be honest, this step was difficult for me. I should probably have found out how to make a smaller step.
+	</p>
+	<p>
+		I wanted a function that would compare a <code>Reservation</code> to a <code>Table</code>, but unlike <code>Fits</code> return <code>None</code> if it decided to 'use' the table, or a <code>Some</code> value if it decided that it didn't need to use the entire table. This would enable me to pick only some of the tables from a <code>Group</code>, but still return a <code>Some</code> value with the rest of tables.
+	</p>
+	<p>
+		I couldn't figure out an elegant way to do this with the existing <code>Seq</code> functionality, so I started to play around with something more specific. The implementation came accidentally as I was struggling to come up with something more general. As I was experimenting, all of a sudden, all tests passed!
+	</p>
+	<p>
+		<pre><span style="color:green;">//&nbsp;Reservation&nbsp;-&gt;&nbsp;Table&nbsp;-&gt;&nbsp;Table&nbsp;option</span>
+<span style="color:blue;">let</span>&nbsp;<span style="color:blue;">private</span>&nbsp;allot&nbsp;r&nbsp;=&nbsp;<span style="color:blue;">function</span>
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;Discrete&nbsp;seats&nbsp;<span style="color:blue;">-&gt;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;r.Quantity&nbsp;&lt;=&nbsp;seats
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">then</span>&nbsp;None
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">else</span>&nbsp;Some&nbsp;(Discrete&nbsp;seats)
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;Group&nbsp;tables&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;Some&nbsp;(Group&nbsp;tables)
+ 
+<span style="color:green;">//&nbsp;seq&lt;Table&gt;&nbsp;-&gt;&nbsp;Reservation&nbsp;-&gt;&nbsp;seq&lt;Table&gt;</span>
+<span style="color:blue;">let</span>&nbsp;<span style="color:blue;">private</span>&nbsp;allocate&nbsp;(tables&nbsp;:&nbsp;Table&nbsp;seq)&nbsp;r&nbsp;=&nbsp;seq&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;<span style="color:blue;">mutable</span>&nbsp;found&nbsp;=&nbsp;<span style="color:blue;">false</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">use</span>&nbsp;e&nbsp;=&nbsp;tables.GetEnumerator&nbsp;()
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">while</span>&nbsp;e.MoveNext&nbsp;()&nbsp;<span style="color:blue;">do</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;found
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">then</span>&nbsp;<span style="color:blue;">yield</span>&nbsp;e.Current
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">else</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">match</span>&nbsp;allot&nbsp;r&nbsp;e.Current&nbsp;<span style="color:blue;">with</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;None&nbsp;<span style="color:blue;">-&gt;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;found&nbsp;<span style="color:blue;">&lt;-</span>&nbsp;<span style="color:blue;">true</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;Some&nbsp;t&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">yield</span>&nbsp;t
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+<span style="color:blue;">let</span>&nbsp;canAccept&nbsp;(seatingDur&nbsp;:&nbsp;TimeSpan)&nbsp;config&nbsp;reservations&nbsp;r&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;contemporaneousReservations&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Seq.filter&nbsp;(isContemporaneous&nbsp;seatingDur&nbsp;r)&nbsp;reservations
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">match</span>&nbsp;config&nbsp;<span style="color:blue;">with</span>
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;Communal&nbsp;capacity&nbsp;<span style="color:blue;">-&gt;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;reservedSeats&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Seq.sumBy&nbsp;(<span style="color:blue;">fun</span>&nbsp;r&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;r.Quantity)&nbsp;contemporaneousReservations
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;reservedSeats&nbsp;+&nbsp;r.Quantity&nbsp;&lt;=&nbsp;capacity
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;Tables&nbsp;tables&nbsp;<span style="color:blue;">-&gt;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;rs&nbsp;=&nbsp;Seq.sort&nbsp;contemporaneousReservations
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;remainingTables&nbsp;=&nbsp;Seq.fold&nbsp;allocate&nbsp;(Seq.sort&nbsp;tables)&nbsp;rs
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Seq.exists&nbsp;(fits&nbsp;r)&nbsp;remainingTables</pre>
+	</p>
+	<p>
+		I wasn't too happy with the implementation, which I found (and still find) too complicated. This was, however, the first time I've done this part of the kata (in any language), so I wasn't sure where this was going.
+	</p>
+	<p>
+		The <code>allocate</code> function finds and allocates one of its input tables to a reservation. It does that by <em>not</em> yielding the first table it finds that can accommodate the reservation. Don't hurt your head too much with the code in this version, because there's plenty of cases that it incorrectly handles. It's full of bugs. Still, it passed all tests.
+	</p>
+	<h3 id="34ef030a71e24dfabc3bd2ff0d3bdf4c">
+		Reject when group has been reduced <a href="#34ef030a71e24dfabc3bd2ff0d3bdf4c" title="permalink">#</a>
+	</h3>
+	<p>
+		The implementation was wrong because the <code>allot</code> function would just keep returning a <code>Group</code> without consuming it. This would imply that <code>canAccept</code> would use it more than once, which was wrong, so I added a test case:
+	</p>
+	<p>
+		<pre><span style="color:blue;">type</span>&nbsp;AlternativeTableConfigurationTestCases&nbsp;()&nbsp;<span style="color:blue;">as</span>&nbsp;this&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">inherit</span>&nbsp;TheoryData&lt;Table&nbsp;list,&nbsp;int&nbsp;list,&nbsp;int,&nbsp;bool&gt;&nbsp;()
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">do</span>&nbsp;this.Add&nbsp;(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;[Discrete&nbsp;4;&nbsp;Discrete&nbsp;1;&nbsp;Discrete&nbsp;2;&nbsp;Group&nbsp;[2;2;2]],
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;[3;1;2],
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;2,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">true</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;this.Add&nbsp;(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;[Discrete&nbsp;4;&nbsp;Discrete&nbsp;1;&nbsp;Discrete&nbsp;2;&nbsp;Group&nbsp;[2;2;2]],
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;[3;1;2],
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;7,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">false</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;this.Add&nbsp;(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;[Discrete&nbsp;4;&nbsp;Discrete&nbsp;1;&nbsp;Discrete&nbsp;2;&nbsp;Group&nbsp;[2;2;2]],
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;[3;1;2;1],
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;4,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">true</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;this.Add&nbsp;(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;[Discrete&nbsp;4;&nbsp;Discrete&nbsp;1;&nbsp;Discrete&nbsp;2;&nbsp;Group&nbsp;[2;2;2]],
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;[3;1;2;1;4],
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;3,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">false</span>)</pre>
+	</p>
+	<p>
+		Given the existing reservations, this restaurant is effectively sold out that day. All the <code>Discrete</code> tables are reserved, and the last two reservations for one and four effectively consumes the <code>Group</code>. The latest test case expected <code>canAccept</code> to return <code>false</code>, but it returned <code>true</code>. Since I was following test-driven development, I expected that.
+	</p>
+	<h3 id="af5554a2e5b9430cb6ec5d1aaa10ec44">
+		Consume <a href="#af5554a2e5b9430cb6ec5d1aaa10ec44" title="permalink">#</a>
+	</h3>
+	<p>
+		I needed a function that would consume from a <code>Group</code> of tables and return the remaining tables from that group; that is, the tables not consumed. I've already <a href="/2019/12/16/zone-of-ceremony">discussed this function in a different context</a>.
+	</p>
+	<p>
+		<pre><span style="color:green;">//&nbsp;int&nbsp;-&gt;&nbsp;seq&lt;int&gt;&nbsp;-&gt;&nbsp;seq&lt;int&gt;</span>
+<span style="color:blue;">let</span>&nbsp;consume&nbsp;quantity&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;go&nbsp;(acc,&nbsp;xs)&nbsp;x&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;quantity&nbsp;&lt;=&nbsp;acc
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">then</span>&nbsp;(acc,&nbsp;Seq.append&nbsp;xs&nbsp;(Seq.singleton&nbsp;x))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">else</span>&nbsp;(acc&nbsp;+&nbsp;x,&nbsp;xs)
+&nbsp;&nbsp;&nbsp;&nbsp;Seq.fold&nbsp;go&nbsp;(0,&nbsp;Seq.empty)&nbsp;&gt;&gt;&nbsp;snd</pre>
+	</p>
+	<p>
+		I put this function in my own <code>Seq</code> module. It consumes values from the left until the sum is greater than or equal to the desired <code>quantity</code>. It then returns the rest of the sequence:
+	</p>
+	<p>
+		<pre>&gt; consume 1 [1;2;3];;
+val it : seq&lt;int&gt; = seq [2; 3]
+
+&gt; consume 2 [1;2;3];;
+val it : seq&lt;int&gt; = seq [3]
+
+&gt; consume 3 [1;2;3];;
+val it : seq&lt;int&gt; = seq [3]
+
+&gt; consume 4 [1;2;3];;
+val it : seq&lt;int&gt; = seq []</pre>
+	</p>
+	<p>
+		The first example consumes only the leading <code>1</code>, while both the second and the third example consumes both <code>1</code> and <code>2</code> because the sum of those values is <code>3</code>, and the requested quantity is <code>2</code> and <code>3</code>, respectively. The fourth example consumes all elements because the requested quantity is <code>4</code>, and you need both <code>1</code>, <code>2</code>, and <code>3</code> before the sum is large enough. You have to pick strictly from the left, so you can't decide to just take the elements <code>1</code> and <code>3</code>.
+	</p>
+	<h3 id="b9e29990b0fd4a5ab5e7c8812be6b07b">
+		Consuming tables from a group <a href="#b9e29990b0fd4a5ab5e7c8812be6b07b" title="permalink">#</a>
+	</h3>
+	<p>
+		I could now use my <code>Seq.consume</code> function to improve <code>allot</code>:
+	</p>
+	<p>
+		<pre><span style="color:green;">//&nbsp;Reservation&nbsp;-&gt;&nbsp;Table&nbsp;-&gt;&nbsp;Table&nbsp;option</span>
+<span style="color:blue;">let</span>&nbsp;<span style="color:blue;">private</span>&nbsp;allot&nbsp;r&nbsp;=&nbsp;<span style="color:blue;">function</span>
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;Discrete&nbsp;seats&nbsp;<span style="color:blue;">-&gt;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;r.Quantity&nbsp;&lt;=&nbsp;seats
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">then</span>&nbsp;None
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">else</span>&nbsp;Some&nbsp;(Discrete&nbsp;seats)
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;Group&nbsp;tables&nbsp;<span style="color:blue;">-&gt;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;tables&nbsp;|&gt;&nbsp;Seq.consume&nbsp;r.Quantity&nbsp;|&gt;&nbsp;Seq.toList&nbsp;|&gt;&nbsp;Group&nbsp;|&gt;&nbsp;Some</pre>
+	</p>
+	<p>
+		It handles the <code>Group</code> case by consuming the reservation <code>Quantity</code> and then returning a <code>Some Group</code> with the remaining tables.
+	</p>
+	<p>
+		It also turned out that sorting the reservations wasn't appropriate, mainly because it's not entirely clear how to sort a list with elements of a discriminated union. My final implementation of <code>canAccept</code> was this:
+	</p>
+	<p>
+		<pre><span style="color:green;">//&nbsp;TimeSpan&nbsp;-&gt;&nbsp;TableConfiguration&nbsp;-&gt;&nbsp;seq&lt;Reservation&gt;&nbsp;-&gt;&nbsp;Reservation&nbsp;-&gt;&nbsp;bool</span>
+<span style="color:blue;">let</span>&nbsp;canAccept&nbsp;seatingDur&nbsp;config&nbsp;reservations&nbsp;r&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;contemporaneousReservations&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Seq.filter&nbsp;(isContemporaneous&nbsp;seatingDur&nbsp;r)&nbsp;reservations
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">match</span>&nbsp;config&nbsp;<span style="color:blue;">with</span>
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;Communal&nbsp;capacity&nbsp;<span style="color:blue;">-&gt;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;reservedSeats&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Seq.sumBy&nbsp;(<span style="color:blue;">fun</span>&nbsp;r&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;r.Quantity)&nbsp;contemporaneousReservations
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;reservedSeats&nbsp;+&nbsp;r.Quantity&nbsp;&lt;=&nbsp;capacity
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;Tables&nbsp;tables&nbsp;<span style="color:blue;">-&gt;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;remainingTables&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Seq.fold&nbsp;allocate&nbsp;(Seq.ofList&nbsp;tables)&nbsp;contemporaneousReservations
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Seq.exists&nbsp;(fits&nbsp;r)&nbsp;remainingTables</pre>
+	</p>
+	<p>
+		Nothing much has changed - only that neither reservations nor tables are now sorted. It passes all tests.
+	</p>
+	<h3 id="fcba96687bac4cb3b35cbaef1b8232db">
+		Retrospective <a href="#fcba96687bac4cb3b35cbaef1b8232db" title="permalink">#</a>
+	</h3>
+	<p>
+		I must admit that I ran out of steam towards the end. It's possible that there's some edge cases I didn't think of. I'd probably feel more confident of the final implementation if I'd used property-based testing instead of <a href="https://twitter.com/tastapod/status/1157996947581652993">Example-Guided Development</a>.
+	</p>
+	<p>
+		I also took some unfortunate turns along the way. Early in the kata, I could easily implement <code>canAccept</code> with functionality from the <code>Seq</code> module. This meant that the function could take a <code>seq&lt;Reservation&gt;</code> as an input argument. I'm always inclined to follow <a href="https://en.wikipedia.org/wiki/Robustness_principle">Postel's law</a> and be liberal with what I accept. I thought that being able to accept any <code>seq&lt;Reservation&gt;</code> was a good design decision. It might have been if I'd been publishing a reusable library, but it made things more awkward.
+	</p>
+	<p>
+		I'm also not sure that I chose to model the table layouts in the best way. For example, I currently can't handle a scenario with both bar seating and individual tables. I think I should have made <code>Communal</code> a case of <code>Table</code>. This would have enabled me to model layouts with several communal tables combined with discrete tables, and even groups of tables.
+	</p>
+	<p>
+		In general, my solution seems too complicated, but I don't see an easy fix. Often, if I work some more with the problem, insight arrives. It usually arrives when you least need it, so I thought it better to let the problem rest for a while. I can always return to it when I feel that I have a fresh approach.
+	</p>
+	<h3 id="d19eccbe58924d8a96a1acab89f9bbaa">
+		Summary <a href="#d19eccbe58924d8a96a1acab89f9bbaa" title="permalink">#</a>
+	</h3>
+	<p>
+		This article walks you through my first F# attempt at the <em>Maître d' kata</em>. The repository is available on GitHub.
+	</p>
+	<p>
+		I'm not entirely happy with how it turned out, but I don't consider it an utter failure either.
+	</p>
+</div>
+<div id="comments">
+	<hr>
+	<h2 id="comments-header">
+		Comments
+	</h2>
+	<div class="comment" id="61ab9d61eb6346d39b4fcf94d094a6ef">
+		<div class="comment-author">Ghillie Dhu</div>
+		<div class="comment-content">
+			<p>
+				You could leverage library functions and avoid mutability like so:
+				<pre><span style="color:green;">//&nbsp;(&#39;a&nbsp;-&gt;&nbsp;bool)&nbsp;-&gt;&nbsp;seq&lt;&#39;a&gt;&nbsp;-&gt;&nbsp;seq&lt;&#39;a&gt;</span>
+<span style="color:blue;">let</span>&nbsp;deleteFirstBy&nbsp;pred&nbsp;(xs&nbsp;:&nbsp;_&nbsp;seq)&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">match</span>&nbsp;Seq.tryFindIndex pred xs&nbsp;<span style="color:blue;">with</span>
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;None&nbsp;<span style="color:blue;">-></span>&nbsp;xs
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;Some&nbsp;n&nbsp;<span style="color:blue;">-></span>&nbsp;Seq.concat&nbsp;(Seq.take&nbsp;(n-1)&nbsp;xs)&nbsp;(Seq.skip&nbsp;n&nbsp;xs)</pre>
+			</p>
+		</div>
+		<div class="comment-date">2020-04-28 19:02 UTC</div>
+	</div>
+
+	<div class="comment" id="6fe45d2631bf410285b5403b1da737df">
+		<div class="comment-author"><a href="{{ HOME_PATH }}">Mark Seemann</a></div>
+		<div class="comment-content">
+			<p>
+				Ghillie, thank you for writing. It looks like you're on the right track, but I think you have to write the function like this:
+			</p>
+			<p>
+				<pre><span style="color:blue;">let</span>&nbsp;deleteFirstBy&nbsp;pred&nbsp;(xs&nbsp;:&nbsp;_&nbsp;seq)&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">match</span>&nbsp;Seq.tryFindIndex&nbsp;pred&nbsp;xs&nbsp;<span style="color:blue;">with</span>
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;None&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;xs
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;Some&nbsp;n&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;Seq.append&nbsp;(Seq.take&nbsp;(n-1)&nbsp;xs)&nbsp;(Seq.skip&nbsp;n&nbsp;xs)</pre>
+			</p>
+		</div>
+		<div class="comment-date">2020-04-28 19:21 UTC</div>
+	</div>
+</div>
