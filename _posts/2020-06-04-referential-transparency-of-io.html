@@ -1,0 +1,177 @@
+---
+layout: post
+title: "Referential transparency of IO"
+description: "How the IO container guarantees referential integrity. An article for object-oriented programmers."
+date: 2020-06-04 13:59 UTC
+tags: [Functional Programming]
+image: "/content/binary/parallel-universe-fx-calling-unsafeperformio.png"
+image_alt: "Diagram showing that the parallel-universe framework executes the IO value after Main returns."
+---
+{% include JB/setup %}
+
+<div id="post">
+	<p>
+		<em>{{ page.description }}</em>
+	</p>
+	<p>
+		This article is part of <a href="">an article series about the IO container in C#</a>. In <a href="">a previous article</a> you got a basic introduction to the <code>IO&lt;T&gt;</code> <a href="https://bartoszmilewski.com/2014/01/14/functors-are-containers">container</a> I use to explain how a type system like <a href="https://www.haskell.org">Haskell</a>'s distinguishes between <a href="https://en.wikipedia.org/wiki/Pure_function">pure functions</a> and impure actions.
+	</p>
+	<p>
+		The whole point of the <code>IO</code> container is to effectuate the <a href="/2018/11/19/functional-architecture-a-definition">functional interaction law</a>: <em>a pure function mustn't be able to invoke an impure activity.</em> This rule follows from <a href="https://en.wikipedia.org/wiki/Referential_transparency">referential transparency</a>.
+	</p>
+	<p>
+		The practical way to think about it is to consider the two rules of pure functions:
+		<ul>
+			<li>Pure functions must be deterministic</li>
+			<li>Pure functions may have no side effects</li>
+		</ul>
+		In this article, you'll see how <code>IO&lt;T&gt;</code> imposes those rules.
+	</p>
+	<h3 id="3b648ec5b32a42e4b608dbc2e8861a86">
+		Determinism <a href="#3b648ec5b32a42e4b608dbc2e8861a86" title="permalink">#</a>
+	</h3>
+	<p>
+		Like in the previous articles in this series, you must imagine that you're living in a parallel universe where all impure library functions return <code>IO&lt;T&gt;</code> objects. By elimination, then, methods that return naked values must be pure functions.
+	</p>
+	<p>
+		Consider the <code>Greet</code> function from the <a href="">previous article</a>. Since it returns a plain <code>string</code>, you can infer that it must be a pure function. What prevents it from doing something impure?
+	</p>
+	<p>
+		What if you thought that passing <code>now</code> as an argument is a silly design. Couldn't you just call <code>Clock.GetLocalTime</code> from the method?
+	</p>
+	<p>
+		Well, yes, in fact you can:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:blue;">string</span>&nbsp;Greet(<span style="color:#2b91af;">DateTime</span>&nbsp;now,&nbsp;<span style="color:blue;">string</span>&nbsp;name)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">IO</span>&lt;<span style="color:#2b91af;">DateTime</span>&gt;&nbsp;now1&nbsp;=&nbsp;<span style="color:#2b91af;">Clock</span>.GetLocalTime();
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;greeting&nbsp;=&nbsp;<span style="color:#a31515;">&quot;Hello&quot;</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;(IsMorning(now))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;greeting&nbsp;=&nbsp;<span style="color:#a31515;">&quot;Good&nbsp;morning&quot;</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;(IsAfternoon(now))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;greeting&nbsp;=&nbsp;<span style="color:#a31515;">&quot;Good&nbsp;afternoon&quot;</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;(IsEvening(now))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;greeting&nbsp;=&nbsp;<span style="color:#a31515;">&quot;Good&nbsp;evening&quot;</span>;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;(<span style="color:blue;">string</span>.IsNullOrWhiteSpace(name))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:#a31515;">$&quot;</span>{greeting}<span style="color:#a31515;">.&quot;</span>;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:#a31515;">$&quot;</span>{greeting}<span style="color:#a31515;">,&nbsp;</span>{name.Trim()}<span style="color:#a31515;">.&quot;</span>;
+}</pre>
+	</p>
+	<p>
+		This compiles, but is only the first refactoring step you have in mind. Next, you want to extract the <code>DateTime</code> from <code>now1</code> so that you can get rid of the <code>now</code> parameter. Alas, you now run into an insuperable barrier. <a href="/2019/02/04/how-to-get-the-value-out-of-the-monad">How do you get the DateTime out of the IO?</a>
+	</p>
+	<p>
+		You can't. By design.
+	</p>
+	<p>
+		While you can call the <code>GetLocalTime</code> method, you can't <em>use</em> the return value. The only way you can use it is by composing it with <code>SelectMany</code>, but that still accomplishes nothing unless you return the resulting <code>IO</code> object. If you do that, though, you've now turned the entire <code>Greet</code> method into an impure action.
+	</p>
+	<p>
+		You can't perform any non-deterministic behaviour inside a pure function.
+	</p>
+	<h3 id="9f62e432e0c74fda93aff427774c0183">
+		Side effects <a href="#9f62e432e0c74fda93aff427774c0183" title="permalink">#</a>
+	</h3>
+	<p>
+		How does <code>IO&lt;T&gt;</code> protect against side effects? In the <code>Greet</code> method, couldn't you just write to the console, like the following?
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:blue;">string</span>&nbsp;Greet(<span style="color:#2b91af;">DateTime</span>&nbsp;now,&nbsp;<span style="color:blue;">string</span>&nbsp;name)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Console</span>.WriteLine(<span style="color:#a31515;">&quot;Side&nbsp;effect!&quot;</span>);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;greeting&nbsp;=&nbsp;<span style="color:#a31515;">&quot;Hello&quot;</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;(IsMorning(now))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;greeting&nbsp;=&nbsp;<span style="color:#a31515;">&quot;Good&nbsp;morning&quot;</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;(IsAfternoon(now))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;greeting&nbsp;=&nbsp;<span style="color:#a31515;">&quot;Good&nbsp;afternoon&quot;</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;(IsEvening(now))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;greeting&nbsp;=&nbsp;<span style="color:#a31515;">&quot;Good&nbsp;evening&quot;</span>;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;(<span style="color:blue;">string</span>.IsNullOrWhiteSpace(name))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:#a31515;">$&quot;</span>{greeting}<span style="color:#a31515;">.&quot;</span>;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:#a31515;">$&quot;</span>{greeting}<span style="color:#a31515;">,&nbsp;</span>{name.Trim()}<span style="color:#a31515;">.&quot;</span>;
+}</pre>
+	</p>
+	<p>
+		This also compiles, despite our best efforts. That's unfortunate, but, as you'll see in a moment, it doesn't violate referential transparency.
+	</p>
+	<p>
+		In Haskell or <a href="https://fsharp.org">F#</a> equivalent code would make the compiler complain. Those compilers don't have special knowledge about <code>IO</code>, but they can see that an action returns a value. F# generates a compiler warning if you ignore a return value. In Haskell the story is a bit different, but the result is the same. Those compilers complain because you try to ignore the return value.
+	</p>
+	<p>
+		You can get around the issue using the language's wildcard pattern. This tells the compiler that you're actively ignoring the result of the action. You can do the same in C#:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:blue;">string</span>&nbsp;Greet(<span style="color:#2b91af;">DateTime</span>&nbsp;now,&nbsp;<span style="color:blue;">string</span>&nbsp;name)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">IO</span>&lt;<span style="color:#2b91af;">Unit</span>&gt;&nbsp;_&nbsp;=&nbsp;<span style="color:#2b91af;">Console</span>.WriteLine(<span style="color:#a31515;">&quot;Side&nbsp;effect!&quot;</span>);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;greeting&nbsp;=&nbsp;<span style="color:#a31515;">&quot;Hello&quot;</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;(IsMorning(now))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;greeting&nbsp;=&nbsp;<span style="color:#a31515;">&quot;Good&nbsp;morning&quot;</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;(IsAfternoon(now))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;greeting&nbsp;=&nbsp;<span style="color:#a31515;">&quot;Good&nbsp;afternoon&quot;</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;(IsEvening(now))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;greeting&nbsp;=&nbsp;<span style="color:#a31515;">&quot;Good&nbsp;evening&quot;</span>;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;(<span style="color:blue;">string</span>.IsNullOrWhiteSpace(name))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:#a31515;">$&quot;</span>{greeting}<span style="color:#a31515;">.&quot;</span>;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:#a31515;">$&quot;</span>{greeting}<span style="color:#a31515;">,&nbsp;</span>{name.Trim()}<span style="color:#a31515;">.&quot;</span>;
+}</pre>
+	</p>
+	<p>
+		The situation is now similar to the above treatment of non-determinism. While there's no value of interest in an <code>IO&lt;Unit&gt;</code>, the fact that there's an object at all is a hint. Like <code>Lazy&lt;T&gt;</code>, that value isn't a result. It's a placeholder for a computation.
+	</p>
+	<p>
+		If there's a way to make the C# compiler complain about ignored return values, I'm not aware of it, so I don't know if we can get closer to how Haskell works than this. Regardless, keep in mind that I'm not trying to encourage you to write C# like this; I'm only trying to explain how Haskell enforces referential transparency at the type level.
+	</p>
+	<h3 id="4f40c1e1a7a142b693d050dcab466d90">
+		Referential transparency <a href="#4f40c1e1a7a142b693d050dcab466d90" title="permalink">#</a>
+	</h3>
+	<p>
+		While the above examples compile without warnings in C#, both are still referentially transparent!
+	</p>
+	<p>
+		This may surprise you. Particularly the second example that includes <code>Console.WriteLine</code> looks like it has a side effect, and thus violates referential transparency.
+	</p>
+	<p>
+		Keep in mind, though, what referential transparency means. It means that you can replace a particular function call with its value. For example, you should be able to replace the function call <code>Greeter.Greet(new DateTime(2020, 6, 4, 12, 10, 0), "Nearth")</code> with its return value <code>"Hello, Nearth."</code>, or the function call <code>Greeter.Greet(new DateTime(2020, 6, 4, 7, 30, 0), "Bru")</code> with <code>"Good morning, Bru."</code>, without changing the behaviour of the software. This property still holds.
+	</p>
+	<p>
+		Even when the <code>Greet</code> method includes the <code>Console.WriteLine</code> call, that side effect never happens.
+	</p>
+	<p>
+		The reason is that an <code>IO</code> object represents a potential computation that may take place (also known as a <em>thunk</em>). Notice that the <code>IO&lt;T&gt;</code> constructor takes a <code>Lazy</code> value as argument. It's basically just a <code>Lazy</code> container wrapped in such a way that you can't force evaluation.
+	</p>
+	<p>
+		Instead, you should imagine that <em>after</em> <code>Main</code> returns its <code>IO&lt;Unit&gt;</code> object, the parallel-universe .NET framework executes it.
+	</p>
+	<p>
+		<img src="/content/binary/parallel-universe-fx-calling-unsafeperformio.png" alt="Diagram showing that the parrallel-universe framework executes the IO value after Main returns.">
+	</p>
+	<p>
+		The framework supplies command-line arguments to the <code>Main</code> method. Once the method returns an <code>IO&lt;Unit&gt;</code> object, the framework executes it with a special method that only the framework can invoke. Any other <code>IO</code> values that may have been created (e.g. the above <code>Console.WriteLine</code>) never gets executed, because they're not include in the return value.
+	</p>
+	<h3 id="d5fe0e97d9ea4442b3b4fb13ad28aab6">
+		Conclusion <a href="#d5fe0e97d9ea4442b3b4fb13ad28aab6" title="permalink">#</a>
+	</h3>
+	<p>
+		The <code>IO</code> container makes sure that pure functions maintain referential transparency. The underlying assumption that makes all of this work is that <em>all</em> impure actions return <code>IO</code> objects. That's not how the .NET framework works, but that's how Haskell works. Since the <code>IO</code> container is opaque, pure functions can't see the contents of <code>IO</code> boxes.
+	</p>
+	<p>
+		Program <a href="https://en.wikipedia.org/wiki/Entry_point">entry points</a> are all impure. The return value of the entry point must be <code>IO&lt;Unit&gt;</code>. The hypothetical parallel-universe framework executes the <code>IO</code> value returned by <code>Main</code>.
+	</p>
+	<p>
+		Haskell is a lazily evaluated language. That's an important piece of the puzzle, so I've modelled the <code>IO&lt;T&gt;</code> example so that it only wraps <code>Lazy</code> values. That emulates Haskell's behaviour in C#. In the next article, you'll see how I wrote the C# code that supports these articles.
+	</p>
+	<p>
+		<strong>Next:</strong> Implementation of the C# IO container.
+	</p>
+</div>
