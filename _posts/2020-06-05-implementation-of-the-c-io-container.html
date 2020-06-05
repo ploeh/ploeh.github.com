@@ -1,0 +1,84 @@
+---
+layout: post
+title: "Implementation of the C# IO container"
+description: "Implementation details of the C# IO container."
+date: 2020-06-05 9:10 UTC
+tags: [Functional Programming]
+---
+{% include JB/setup %}
+
+<div id="post">
+	<p>
+		<em>{{ page.description }}</em>
+	</p>
+	<p>
+		This article is part of <a href="">an article series about the IO container in C#</a>. In the previous articles, you've seen how a type like <code>IO&lt;T&gt;</code> can be used to distinguish between <a href="https://en.wikipedia.org/wiki/Pure_function">pure functions</a> and impure actions.
+	</p>
+	<p>
+		The point of the article series is to illustrate the concept that <a href="https://www.haskell.org">Haskell</a> uses to impose the <a href="/2018/11/19/functional-architecture-a-definition">functional interaction law</a> at compile time. The implementation details really aren't important. Still, I believe that I know my readership well enough that a substantial fraction would be left unsatisfied if I didn't share the implementation details.
+	</p>
+	<p>
+		I consider this an appendix to the article series. It's not really what this is all about, but here it is, nonetheless.
+	</p>
+	<h3 id="dcf2521a1b8c40df9d45e97a43cfc546">
+		Constructor <a href="#dcf2521a1b8c40df9d45e97a43cfc546" title="permalink">#</a>
+	</h3>
+	<p>
+		Based on the public API <a href="">already published</a>, the constructor implementation hardly comes as a surprise.
+	</p>
+	<p>
+		<pre><span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;<span style="color:#2b91af;">Lazy</span>&lt;<span style="color:#2b91af;">T</span>&gt;&nbsp;item;
+ 
+<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">IO</span>(<span style="color:#2b91af;">Lazy</span>&lt;<span style="color:#2b91af;">T</span>&gt;&nbsp;item)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.item&nbsp;=&nbsp;item;
+}</pre>
+	</p>
+	<p>
+		The <code>IO&lt;T&gt;</code> class is little more than a wrapper around <code>Lazy&lt;T&gt;</code>, with the restriction that while you can put a <code>Lazy&lt;T&gt;</code> object into an <code>IO</code> object, you can never get it out again. Thus, the <code>item</code> is a <code>private</code> class field instead of a public property.
+	</p>
+	<h3 id="50d90cc423f04f5bb4e31a0d6c9b12c8">
+		SelectMany <a href="#50d90cc423f04f5bb4e31a0d6c9b12c8" title="permalink">#</a>
+	</h3>
+	<p>
+		The <code>SelectMany</code> method is a little more tricky:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">IO</span>&lt;<span style="color:#2b91af;">TResult</span>&gt;&nbsp;SelectMany&lt;<span style="color:#2b91af;">TResult</span>&gt;(<span style="color:#2b91af;">Func</span>&lt;<span style="color:#2b91af;">T</span>,&nbsp;<span style="color:#2b91af;">IO</span>&lt;<span style="color:#2b91af;">TResult</span>&gt;&gt;&nbsp;selector)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;res&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Lazy</span>&lt;<span style="color:#2b91af;">IO</span>&lt;<span style="color:#2b91af;">TResult</span>&gt;&gt;(()&nbsp;=&gt;&nbsp;selector(item.Value));
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">IO</span>&lt;<span style="color:#2b91af;">TResult</span>&gt;(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Lazy</span>&lt;<span style="color:#2b91af;">TResult</span>&gt;(()&nbsp;=&gt;&nbsp;res.Value.item.Value));
+}</pre>
+	</p>
+	<p>
+		To guarantee <a href="https://en.wikipedia.org/wiki/Referential_transparency">referential transparency</a>, we don't want the method to trigger evaluation of the lazy value, so the <code>selector</code> has to run inside a new lazy computation. This produces a lazy <code>IO</code> value that the method then has to unwrap inside another lazy computation. Such a translation from <code>Lazy&lt;IO&lt;TResult&gt;&gt;</code> to a new <code>IO</code> object with a <code>Lazy&lt;TResult&gt;</code> inside it is reminiscent of what in Haskell is known as a <em>traversal</em>.
+	</p>
+	<h3 id="b6c088710f6340689376b0ddf3b7df01">
+		UnsafePerformIO <a href="#b6c088710f6340689376b0ddf3b7df01" title="permalink">#</a>
+	</h3>
+	<p>
+		Finally, the <code>UnsafePerformIO</code> method isn't part of the API, but as explained in the <a href="">previous article</a>, this is the special method that the hypothetical parallel-world framework calls on the <code>IO&lt;Unit&gt;</code> returned by <code>Main</code> methods.
+	</p>
+	<p>
+		<pre><span style="color:blue;">internal</span>&nbsp;<span style="color:#2b91af;">T</span>&nbsp;UnsafePerformIO()
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;item.Value;
+}</pre>
+	</p>
+	<p>
+		Since only the framework is supposed to call this method, it's <code>internal</code> by design. The only thing it does is to force evaluation of the lazy <code>item</code>.
+	</p>
+	<h3 id="38830b00fbbf4911b8a7ebd723e138ea">
+		Conclusion <a href="#38830b00fbbf4911b8a7ebd723e138ea" title="permalink">#</a>
+	</h3>
+	<p>
+		Most of the implementation of <code>IO&lt;T&gt;</code> is straightforward, with the single exception of <code>SelectMany</code>, which has to jump through a few hoops to keep the behaviour lazy until it's activated.
+	</p>
+	<p>
+		Once more I want to point out that the purpose of this article series is to explain how a type system like Haskell's guarantees referential transparency. C# could do the same, but it'd require that all impure actions in all libraries in the entire .NET ecosystem were to return <code>IO</code> values. That's not going to happen, but something similar already has happened. Read on in the next article.
+	</p>
+	<p>
+		<strong>Next:</strong> Task asynchronous programming as an IO surrogate.
+	</p>
+</div>
