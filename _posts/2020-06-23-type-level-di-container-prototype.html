@@ -1,0 +1,343 @@
+---
+layout: post
+title: "Type-level DI Container prototype"
+description: "A fairly pointless Haskell exercise."
+date: 2020-06-23 7:39 UTC
+tags: [Haskell, Dependency Injection]
+---
+{% include JB/setup %}
+
+<div id="post">
+	<p>
+		<em>{{ page.description }}</em>
+	</p>
+	<p>
+		This article is part of a series called <a href="">Type-safe DI composition</a>.
+	</p>
+	<p>
+		People sometimes ask me how to do Dependency Injection (DI) in Functional Programming, and the short answer is that <a href="/2017/02/02/dependency-rejection">you don't</a>. DI makes everything impure, while the entire <a href="/2018/11/19/functional-architecture-a-definition">point of FP is to write as much referentially transparent code as possible</a>. Instead, you should aim for the <a href="https://www.destroyallsoftware.com/screencasts/catalog/functional-core-imperative-shell">Functional Core, Imperative Shell</a> style of architecture (AKA <a href="/2020/03/02/impureim-sandwich">impureim sandwich</a>).
+	</p>
+	<p>
+		Occasionally, someone might point out that you can use the <a href="/2021/10/04/reader-as-a-contravariant-functor">contravariant Reader functor</a> with a 'registry' of services to emulate a DI Container in FP.
+	</p>
+	<p>
+		Not really, because even if you make the dependencies implicitly available as the Reader 'environment', they're still impure. More on that in a future article, though.
+	</p>
+	<p>
+		Still, what's a DI Container but <a href="https://ayende.com/blog/2886/building-an-ioc-container-in-15-lines-of-code">a dictionary of objects, keyed by type</a>? After I read <a href="https://thinkingwithtypes.com/">Thinking with Types</a> I thought I'd do the exercise and write a type-level container of values in Haskell.
+	</p>
+	<h3 id="e60305d1f0914fd689209c6aa2da5f1e">
+		Module <a href="#e60305d1f0914fd689209c6aa2da5f1e" title="permalink">#</a>
+	</h3>
+	<p>
+		The <code>TLContainer</code> module requires a smorgasbord of extensions and a few imports:
+	</p>
+	<p>
+		<pre>{-#&nbsp;<span style="color:gray;">LANGUAGE</span>&nbsp;AllowAmbiguousTypes&nbsp;#-}
+{-#&nbsp;<span style="color:gray;">LANGUAGE</span>&nbsp;ConstraintKinds&nbsp;#-}
+{-#&nbsp;<span style="color:gray;">LANGUAGE</span>&nbsp;DataKinds&nbsp;#-}
+{-#&nbsp;<span style="color:gray;">LANGUAGE</span>&nbsp;PolyKinds&nbsp;#-}
+{-#&nbsp;<span style="color:gray;">LANGUAGE</span>&nbsp;GADTs&nbsp;#-}
+{-#&nbsp;<span style="color:gray;">LANGUAGE</span>&nbsp;ScopedTypeVariables&nbsp;#-}
+{-#&nbsp;<span style="color:gray;">LANGUAGE</span>&nbsp;TypeApplications&nbsp;#-}
+{-#&nbsp;<span style="color:gray;">LANGUAGE</span>&nbsp;TypeOperators&nbsp;#-}
+{-#&nbsp;<span style="color:gray;">LANGUAGE</span>&nbsp;TypeFamilies&nbsp;#-}
+{-#&nbsp;<span style="color:gray;">LANGUAGE</span>&nbsp;FlexibleContexts&nbsp;#-}
+{-#&nbsp;<span style="color:gray;">LANGUAGE</span>&nbsp;RankNTypes&nbsp;#-}
+{-#&nbsp;<span style="color:gray;">LANGUAGE</span>&nbsp;UndecidableInstances&nbsp;#-}
+<span style="color:blue;">module</span>&nbsp;TLContainer&nbsp;(<span style="color:blue;">Container</span>&nbsp;(),&nbsp;<span style="color:#2b91af;">nil</span>,&nbsp;<span style="color:#2b91af;">insert</span>,&nbsp;<span style="color:#2b91af;">get</span>)&nbsp;<span style="color:blue;">where</span>
+
+<span style="color:blue;">import</span>&nbsp;Data.Kind
+<span style="color:blue;">import</span>&nbsp;Data.Proxy
+<span style="color:blue;">import</span>&nbsp;GHC.TypeLits
+<span style="color:blue;">import</span>&nbsp;Fcf
+<span style="color:blue;">import</span>&nbsp;Unsafe.Coerce&nbsp;(<span style="color:#2b91af;">unsafeCoerce</span>)
+</pre>
+	</p>
+	<p>
+		Notice that the module only exports the <code>Container</code> type, but not its data constructor. You'll have to use <code>nil</code> and <code>insert</code> to create values of the type.
+	</p>
+	<h3 id="ff97b224b8e04299a8ee100fbc944adf">
+		Data types <a href="#ff97b224b8e04299a8ee100fbc944adf" title="permalink">#</a>
+	</h3>
+	<p>
+		The <code>Container</code> should be able to store an arbitrary number of services of arbitrary types. This doesn't sound like a good fit for a statically typed language like Haskell, but it's possible to do this with existential types. Define an existential type that models a container registration:
+	</p>
+	<p>
+		<pre><span style="color:blue;">data</span>&nbsp;Reg&nbsp;<span style="color:blue;">where</span>
+&nbsp;&nbsp;Reg&nbsp;::&nbsp;a&nbsp;-&gt;&nbsp;Reg
+</pre>
+	</p>
+	<p>
+		The problem with existential types is that the type argument <code>a</code> is lost at compile time. If you have a <code>Reg</code> value, it contains a value (e.g. a service) of a particular type, but you don't know what it is.
+	</p>
+	<p>
+		You can solve this by keeping track of the types at the type level of the container itself. The <code>Container</code> data type is basically just a wrapper around a list of <code>Reg</code> values:
+	</p>
+	<p>
+		<pre><span style="color:blue;">data</span>&nbsp;Container&nbsp;(ts&nbsp;::&nbsp;[k])&nbsp;<span style="color:blue;">where</span>
+&nbsp;&nbsp;UnsafeContainer&nbsp;::&nbsp;[Reg]&nbsp;-&gt;&nbsp;Container&nbsp;ts
+</pre>
+	</p>
+	<p>
+		The name of the data constructor is <code>UnsafeContainer</code> because it's unsafe. It would enable you to add multiple registrations of the same type. The container shouldn't allow that, so the module doesn't export <code>UnsafeContainer</code>. Instead, it defines sufficient type-level constraints to guarantee that if you try to add two registrations of the same type, your code isn't going to compile.
+	</p>
+	<p>
+		This is the principal feature that distinguishes <code>Container</code> from the set of tuples that Haskell already defines.
+	</p>
+	<h3 id="9299405418b44b7dbe35310f11543e7a">
+		Registration <a href="#9299405418b44b7dbe35310f11543e7a" title="permalink">#</a>
+	</h3>
+	<p>
+		The module exports an empty <code>Container</code>:
+	</p>
+	<p>
+		<pre><span style="color:#2b91af;">nil</span>&nbsp;::&nbsp;<span style="color:blue;">Container</span>&nbsp;&#39;[]
+nil&nbsp;=&nbsp;UnsafeContainer&nbsp;<span style="color:blue;">[]</span>
+</pre>
+	</p>
+	<p>
+		Not only is this container empty, it's also statically typed that way. The type <code>Container '[]</code> is isomorphic to <code>()</code>.
+	</p>
+	<p>
+		The <code>nil</code> container gives you a container so that you can get started. You can add a registration to <code>nil</code>, and that's going to return a new container. You can add another registration to that container, and so on.
+	</p>
+	<p>
+		The distinguishing feature of <code>Container</code>, however, is that you can only add one registration of a given type. If you want to register multiple services of the same type, register a list of them.
+	</p>
+	<p>
+		Code like <code>insert readReservations $ insert readReservations nil</code> shouldn't compile, because it tries to <code>insert</code> the same service (<code>readReservations</code>) twice. To enable that feature, the module must be able to detect type uniqueness at the type level. This is possible with the help from <a href="https://hackage.haskell.org/package/first-class-families">the first-class-families package</a>:
+	</p>
+	<p>
+		<pre><span style="color:blue;">type</span>&nbsp;UniqueType&nbsp;(t&nbsp;::&nbsp;k)&nbsp;(ts&nbsp;::&nbsp;[k])&nbsp;=&nbsp;Null&nbsp;=&lt;&lt;&nbsp;Filter&nbsp;(TyEq&nbsp;t)&nbsp;ts
+</pre>
+	</p>
+	<p>
+		This type models the condition that the type <code>t</code> must not be in the list of types <code>ts</code>. It almost looks like regular Haskell code at the term level, but it works at the type level. <code>Null</code> is a type that can be evaluated to Boolean types at compile-time, depending on whether a list is empty or not.
+	</p>
+	<p>
+		This enables you to define a closed type family that will produce a compile-time error if a candidate type isn't unique:
+	</p>
+	<p>
+		<pre><span style="color:blue;">type</span>&nbsp;family&nbsp;RequireUniqueType&nbsp;(result&nbsp;::&nbsp;Bool)&nbsp;(t&nbsp;::&nbsp;k)&nbsp;::&nbsp;Constraint&nbsp;<span style="color:blue;">where</span>
+&nbsp;&nbsp;RequireUniqueType&nbsp;&nbsp;&#39;True&nbsp;t&nbsp;=&nbsp;<span style="color:blue;">()</span>
+&nbsp;&nbsp;RequireUniqueType&nbsp;&#39;False&nbsp;t&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;TypeError&nbsp;(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&#39;Text&nbsp;<span style="color:#a31515;">&quot;Attempting&nbsp;to&nbsp;add&nbsp;the&nbsp;type&nbsp;&quot;</span>&nbsp;&#39;:&lt;&gt;:
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&#39;ShowType&nbsp;t&nbsp;&#39;:&lt;&gt;:
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&#39;Text&nbsp;<span style="color:#a31515;">&quot;&nbsp;to&nbsp;the&nbsp;container,&nbsp;but&nbsp;this&nbsp;container&nbsp;already&nbsp;contains&nbsp;that&nbsp;type.&quot;</span>)
+</pre>
+	</p>
+	<p>
+		Combined with the <code>UniqueType</code> alias, you can now define the <code>insert</code> function:
+	</p>
+	<p>
+		<pre><span style="color:#2b91af;">insert</span>&nbsp;::&nbsp;<span style="color:blue;">RequireUniqueType</span>&nbsp;(<span style="color:blue;">Eval</span>&nbsp;(<span style="color:blue;">UniqueType</span>&nbsp;t&nbsp;ts))&nbsp;t
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;=&gt;&nbsp;t&nbsp;-&gt;&nbsp;Container&nbsp;ts&nbsp;-&gt;&nbsp;Container&nbsp;(t&nbsp;&#39;:&nbsp;ts)
+insert&nbsp;x&nbsp;(UnsafeContainer&nbsp;xs)&nbsp;=&nbsp;UnsafeContainer&nbsp;(Reg&nbsp;x&nbsp;:&nbsp;xs)
+</pre>
+	</p>
+	<p>
+		This function enables you to register multiple services, like this:
+	</p>
+	<p>
+		<pre><span style="color:#2b91af;">container</span>&nbsp;::&nbsp;<span style="color:blue;">Container</span>&nbsp;&#39;[<span style="color:blue;">LocalTime</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:#2b91af;">IO</span>&nbsp;[<span style="color:blue;">Reservation</span>],&nbsp;<span style="color:blue;">Reservation</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:#2b91af;">IO</span>&nbsp;()]
+container&nbsp;=&nbsp;insert&nbsp;readReservations&nbsp;$&nbsp;insert&nbsp;createReservation&nbsp;nil</pre>
+	</p>
+	<p>
+		If, on the other hand, you attempt to register the same service multiple times, your code doesn't compile. You might, for example, attempt to do something like this:
+	</p>
+	<p>
+		<pre>container&#39;&nbsp;=&nbsp;insert&nbsp;readReservations&nbsp;container</pre>
+	</p>
+	<p>
+		When you try to compile your code, however, it doesn't:
+	</p>
+	<p>
+		<pre>    * Attempting to add the type LocalTime
+                                 -> IO
+                                      [Reservation] to the container,
+                                                    but this container already contains that type.
+    * In the expression: insert readReservations container
+      In an equation for container':
+          container' = insert readReservations container
+   <span style="color: blue">|</span>
+<span style="color: blue">36 |</span> container' = <span style="color: red">insert readReservations container</span>
+   <span style="color: blue">|</span>              <span style="color: red">^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^</span></pre>
+	</p>
+	<p>
+		As a proof of concept, that's good enough for me. A type-safe set of uniquely typed registrations.
+	</p>
+	<h3 id="fb31959c8c8545879c5266466de2ce1e">
+		Retrieval <a href="#fb31959c8c8545879c5266466de2ce1e" title="permalink">#</a>
+	</h3>
+	<p>
+		Given that <code>Container</code> is a wrapper over a list of existential types, it seems as though the type information is lost. It isn't, though. Consider the type of the above <code>container</code> value. At the type level, you can see that it contains two services: one with the type <code>LocalTime -&gt; IO [Reservation]</code>, and another with the type <code>Reservation -&gt; IO ()</code>. Not only that, but the compiler can see the position of each of those types. Due to the way <code>insert</code> is implemented, that order corresponds to the order of <code>Reg</code> values.
+	</p>
+	<p>
+		First, define a type alias to find the index of a type <code>t</code> in a list of types <code>ts</code>:
+	</p>
+	<p>
+		<pre><span style="color:blue;">type</span>&nbsp;FindElem&nbsp;(t&nbsp;::&nbsp;k)&nbsp;(ts&nbsp;::&nbsp;[k])&nbsp;=
+&nbsp;&nbsp;FromMaybe&nbsp;Stuck&nbsp;=&lt;&lt;&nbsp;FindIndex&nbsp;(TyEq&nbsp;t)&nbsp;ts
+</pre>
+	</p>
+	<p>
+		This is again the <em>first-class-families</em> package in action. <code>FindIndex</code> finds a <code>Nat</code> that represents the index if the type is there. If it isn't there, the type is equivalent to <code>Stuck</code>, which is the type-level equivalent of <code>undefined</code>. <code>Nat</code> is a <code>KnownNat</code> instance, whereas <code>Stuck</code> isn't, which now enables you to define a constraint:
+	</p>
+	<p>
+		<pre><span style="color:blue;">type</span>&nbsp;IsMember&nbsp;t&nbsp;ts&nbsp;=&nbsp;KnownNat&nbsp;(Eval&nbsp;(FindElem&nbsp;t&nbsp;ts))</pre>
+	</p>
+	<p>
+		The <code>IsMember</code> constraint limits <code>t</code> to belong to <code>ts</code>. With it, you can now define a helper function to find the index of a type <code>t</code> in a list of types <code>ts</code>:
+	</p>
+	<p>
+		<pre><span style="color:#2b91af;">findElem</span>&nbsp;::&nbsp;forall&nbsp;t&nbsp;ts.&nbsp;<span style="color:blue;">IsMember</span>&nbsp;t&nbsp;ts&nbsp;<span style="color:blue;">=&gt;</span>&nbsp;<span style="color:#2b91af;">Int</span>
+findElem&nbsp;=&nbsp;<span style="color:blue;">fromIntegral</span>&nbsp;.&nbsp;natVal&nbsp;$&nbsp;Proxy&nbsp;@(Eval&nbsp;(FindElem&nbsp;t&nbsp;ts))
+</pre>
+	</p>
+	<p>
+		Because of the <code>IsMember</code> constraint, we know that <code>t</code> must be a member of <code>ts</code>. You can't call <code>findElem</code> if that's not the case; your code wouldn't compile.
+	</p>
+	<p>
+		You can now define a function to retrieve a service from a <code>Container</code>:
+	</p>
+	<p>
+		<pre><span style="color:#2b91af;">get</span>&nbsp;::&nbsp;forall&nbsp;t&nbsp;ts.&nbsp;<span style="color:blue;">IsMember</span>&nbsp;t&nbsp;ts&nbsp;<span style="color:blue;">=&gt;</span>&nbsp;<span style="color:blue;">Container</span>&nbsp;ts&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;t
+get&nbsp;(UnsafeContainer&nbsp;xs)&nbsp;=&nbsp;unReg&nbsp;$&nbsp;xs&nbsp;!!&nbsp;findElem&nbsp;@t&nbsp;@ts
+&nbsp;&nbsp;<span style="color:blue;">where</span>&nbsp;unReg&nbsp;(Reg&nbsp;x)&nbsp;=&nbsp;unsafeCoerce&nbsp;x
+</pre>
+	</p>
+	<p>
+		The <code>get</code> function first finds the index of the type <code>t</code> in <code>ts</code>. It then uses the (unsafe) list index operator <code>!!</code> to get the correct <code>Reg</code> value out of <code>x</code>. While the use of <code>!!</code> is generally considered unsafe (or, at least, partial) in Haskell, we <em>know</em> that the element is there because of the <code>IsMember</code> constraint.
+	</p>
+	<p>
+		Furthermore, because of the way <code>insert</code> builds up the container, we know that the service inside the existential type <code>Reg</code> must be of the type <code>t</code>. Thus, it's safe to use <code>unsafeCoerce</code>.
+	</p>
+	<h3 id="243221d6a21442b78c2fe54c942d33e3">
+		Example <a href="#243221d6a21442b78c2fe54c942d33e3" title="permalink">#</a>
+	</h3>
+	<p>
+		Imagine that you've created the above <code>container</code>. You can now retrieve services from it as necessary.
+	</p>
+	<p>
+		For example, to implement a HTTP GET resource that returns a list of reservations for a given date, you could do something like this:
+	</p>
+	<p>
+		<pre><span style="color:#2b91af;">getReservations</span>&nbsp;::&nbsp;<span style="color:blue;">LocalTime</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:#2b91af;">IO</span>&nbsp;(<span style="color:blue;">HTTPResult</span>&nbsp;[<span style="color:blue;">Reservation</span>])
+getReservations&nbsp;date&nbsp;=&nbsp;<span style="color:blue;">do</span>
+&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;svc&nbsp;=&nbsp;get&nbsp;container&nbsp;::&nbsp;LocalTime&nbsp;-&gt;&nbsp;IO&nbsp;[Reservation]
+&nbsp;&nbsp;reservations&nbsp;&lt;-&nbsp;svc&nbsp;date
+&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;$&nbsp;OK&nbsp;reservations</pre>
+	</p>
+	<p>
+		Nothing much happens here. You could imagine that proper input validation of <code>date</code> is done before the service is invoked, or that some mapping operation is done on <code>reservations</code> before the function returns them. I omitted those steps, since they're not what matters. What matters is that that you can use <code>get</code> to safely get a service of the type <code>LocalTime -&gt; IO [Reservation]</code>.
+	</p>
+	<p>
+		Likewise, you could implement an HTTP POST resource that clients can use use to create new reservations:
+	</p>
+	<p>
+		<pre><span style="color:#2b91af;">postReservation</span>&nbsp;::&nbsp;<span style="color:blue;">Reservation</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:#2b91af;">IO</span>&nbsp;(<span style="color:blue;">HTTPResult</span>&nbsp;())
+postReservation&nbsp;dto&nbsp;=&nbsp;<span style="color:blue;">do</span>
+&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;svc&nbsp;=&nbsp;get&nbsp;container&nbsp;::&nbsp;Reservation&nbsp;-&gt;&nbsp;IO&nbsp;<span style="color:blue;">()</span>
+&nbsp;&nbsp;svc&nbsp;dto
+&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;$&nbsp;OK&nbsp;<span style="color:blue;">()</span></pre>
+	</p>
+	<p>
+		Since the compiler knows that <code>container</code> also contains a service of the type <code>Reservation -&gt; IO ()</code>, this still compiles.
+	</p>
+	<p>
+		If, on the other hand, you attempted to implement a single HTTP GET resource, the following wouldn't compile:
+	</p>
+	<p>
+		<pre><span style="color:#2b91af;">getSingleReservation</span>&nbsp;::&nbsp;<span style="color:blue;">LocalTime</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:#2b91af;">String</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:#2b91af;">IO</span>&nbsp;(<span style="color:blue;">HTTPResult</span>&nbsp;<span style="color:blue;">Reservation</span>)
+getSingleReservation&nbsp;date&nbsp;email&nbsp;=&nbsp;<span style="color:blue;">do</span>
+&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;svc&nbsp;=&nbsp;get&nbsp;container&nbsp;::&nbsp;LocalTime&nbsp;-&gt;&nbsp;String&nbsp;-&gt;&nbsp;IO&nbsp;(Maybe&nbsp;Reservation)
+&nbsp;&nbsp;mres&nbsp;&lt;-&nbsp;svc&nbsp;date&nbsp;email
+&nbsp;&nbsp;<span style="color:blue;">case</span>&nbsp;mres&nbsp;<span style="color:blue;">of</span>
+&nbsp;&nbsp;&nbsp;&nbsp;Just&nbsp;r&nbsp;-&gt;&nbsp;<span style="color:blue;">return</span>&nbsp;$&nbsp;OK&nbsp;r
+&nbsp;&nbsp;&nbsp;&nbsp;Nothing&nbsp;-&gt;&nbsp;<span style="color:blue;">return</span>&nbsp;$&nbsp;NotFound</pre>
+	</p>
+	<p>
+		The <code>get container</code> line doesn't compile because <code>container</code> doesn't contain a service of the type <code>LocalTime -&gt; String -&gt; IO (Maybe Reservation)</code>, and the compiler can tell.
+	</p>
+	<p>
+		If you truly want to add that feature, you'll have to first register that service with the container:
+	</p>
+	<p>
+		<pre><span style="color:#2b91af;">container</span>&nbsp;::&nbsp;<span style="color:blue;">Container</span>&nbsp;&#39;[
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;LocalTime&nbsp;-&gt;&nbsp;String&nbsp;-&gt;&nbsp;IO&nbsp;(Maybe&nbsp;Reservation),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;LocalTime&nbsp;-&gt;&nbsp;IO&nbsp;[Reservation],
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Reservation&nbsp;-&gt;&nbsp;IO&nbsp;<span style="color:blue;">()</span>]
+container&nbsp;=
+&nbsp;&nbsp;insert&nbsp;readReservation&nbsp;$
+&nbsp;&nbsp;insert&nbsp;readReservations&nbsp;$
+&nbsp;&nbsp;insert&nbsp;createReservation&nbsp;nil</pre>
+	</p>
+	<p>
+		Notice that the type of <code>container</code> has now changed. It now contains three services instead of two. The <code>getSingleReservation</code> action now compiles.
+	</p>
+	<h3 id="25a8d28be45a4ef1a5eb9732427c7ef0">
+		Uniqueness <a href="#25a8d28be45a4ef1a5eb9732427c7ef0" title="permalink">#</a>
+	</h3>
+	<p>
+		The <code>Container</code> shown here is essentially just a glorified tuple. The only distinguishing trait is that you can define a tuple where two or more elements have the same type, such as <code>(String, Bool, String)</code>, whereas this isn't possible with <code>Container</code>. You can define a <code>Container '[String, Bool]</code>, but not <code>Container '[String, Bool, String]</code>.
+	</p>
+	<p>
+		Why is this desirable?
+	</p>
+	<p>
+		This stems from <a href="https://twitter.com/bogdangaliceanu/status/1252151352119132160">a short and (friendly, I hope) Twitter discussion</a> initiated by <a href="https://twitter.com/bogdangaliceanu">Bogdan Galiceanu</a>. We were discussing whether it'd be more appropriate to use <a href="https://docs.microsoft.com/dotnet/api/system.linq.enumerable.singleordefault">SingleOrDefault</a> to manipulate a service in a DI Container, or <code>foreach</code>.
+	</p>
+	<blockquote>
+		<p>
+			"Yeah, I wasn't explicit and clarified in a second tweet. I didn't mean in the services example, but in general where it helps if the reader's mental model of the code has 1 item from the collection, because that's how it is in real life. SingleOrDefault would enforce this."
+		</p>
+		<footer><cite><a href="https://twitter.com/bogdangaliceanu/status/1252210213211582477">Bogdan Galiceanu</a></cite></footer>
+	</blockquote>
+	<p>
+		The point being made here is that while you have a dictionary of <em>collections</em>, you expect certain (if not all) of these collections to be <a href="https://en.wikipedia.org/wiki/Singleton_(mathematics)">singleton sets</a>.
+	</p>
+	<p>
+		I'm so happy that people like Bogdan Galiceanu share their thoughts with me, because it gives me a wider perspective on how programmers interact with APIs. If you take the API of <a href="https://docs.microsoft.com/dotnet/api/microsoft.extensions.dependencyinjection.iservicecollection">the .NET Core DI Container</a> as given, you almost <em>have</em> to think of its entries in this way.
+	</p>
+	<p>
+		I think, on the other hand, that this indicates a missed opportunity of API design. I replied:
+	</p>
+	<blockquote>
+		<p>
+			"Yes, this could be a requirement. I think, though, that if that's the case, you've unearthed another invariant. That's what object-oriented design is about.
+		</p>
+		<p>
+			"Different invariants imply a change of type. If there can only be one of each element, then a set is more appropriate."
+		</p>
+		<footer><cite><a href="https://twitter.com/ploeh/status/1252226486507110400">(me)</a></cite></footer>
+	</blockquote>
+	<p>
+		Twitter isn't a medium that makes it easy to elaborate on ideas, but what I meant was that if a container should contain only a single instance of, say, <code>IFoo</code>, it'd be clearer if the type system reflected that. Thus, when <a href="/2010/09/29/TheRegisterResolveReleasepattern">resolving</a> <code>IFoo</code>, the return type should be <code>IFoo</code>, and not <code>IEnumerable&lt;IFoo&gt;</code>.
+	</p>
+	<p>
+		On the other hand, if you meant to <a href="/2010/09/29/TheRegisterResolveReleasepattern">register</a> a collection of <code>IBar</code> services, when resolving <code>IBar</code>, the return type should be <code>IEnumerable&lt;IBar&gt;</code> (or, <a href="/2013/07/20/linq-versus-the-lsp">even better</a>, <code>IReadOnlyCollection&lt;IBar&gt;</code>).
+	</p>
+	<p>
+		The <code>Container</code> shown here has this desired property: You can't <code>insert</code> the same type more than once. If you want to <code>insert</code> multiple <code>IBar</code> values, you must <code>insert</code> a <code>[IBar]</code> (<em>list of <code>IBar</code></em>). Thus, you can't <code>get</code> a single <code>IBar</code>, but you can <code>get</code> a list: <code>[IBar]</code>.
+	</p>
+	<p>
+		That was my motivation for the rule that each type can only appear once. In Haskell it's possible to implement such a rule at the type level. I don't think it'd be possible in a language like C# or <a href="https://fsharp.org">F#</a>, but you <em>could</em> implement it as a run-time check.
+	</p>
+	<h3 id="64add25aee0444b086b10bbfe0d48db3">
+		Conclusion <a href="#64add25aee0444b086b10bbfe0d48db3" title="permalink">#</a>
+	</h3>
+	<p>
+		You can implement a type-level container of values in Haskell. The contents are completely parametrically polymorphic, so while you can insert pure values like <code>String</code>, <code>Bool</code>, or <code>Reservation</code> into it, you can also add functions and impure actions like <code>Reservation -&gt; IO ()</code>.
+	</p>
+	<p>
+		Why is this interesting? It really isn't, apart from that I found it an interesting exercise in type-level programming.
+	</p>
+	<p>
+		The idea of a type-safe DI Container is, however, marginally more compelling, so I'll return to that topic in a future article.
+	</p>
+	<p>
+		<strong>Next:</strong> A type-safe DI Container C# example.
+	</p>
+</div>
