@@ -1,0 +1,235 @@
+---
+layout: post
+title: "An ASP.NET Core URL Builder"
+description: "A use case for the Immutable Fluent Builder design pattern variant."
+date: 2020-07-07 5:45 UTC
+tags: [ASP.NET MVC, ASP.NET Web API, Design Patterns]
+---
+{% include JB/setup %}
+
+<div id="post">
+	<p>
+		<em>{{ page.description }}</em>
+	</p>
+	<p>
+		The <a href="/2020/02/10/builder-isomorphisms">Fluent Builder</a> design pattern is popular in object-oriented programming. Most programmers use the mutable variant, while I favour the immutable alternative. The advantages of Immutable Fluent Builders, however, may not be immediately clear.
+		<blockquote>
+			<p>
+				"I never thought of someone reusing a configured builder (soulds like too big class/SRP violation)."
+			</p>
+			<footer><cite><a href="https://twitter.com/ELuciusFTW/status/1226800015047348224">Guy Buss</a></cite></footer>
+		</blockquote>
+		It inspires me when I encounter a differing perspective. Could I be wrong? Or did I fail to produce a compelling example?
+	</p>
+	<p>
+		It's possible that I'm wrong, but in my <a href="/2020/02/10/builder-isomorphisms">my recent article on Builder isomorphisms</a> I focused on the pattern variations themselves, to the point where a convincing example wasn't my top priority.
+	</p>
+	<p>
+		I recently encountered a good use case for an Immutable Fluent Builder.
+	</p>
+	<h3 id="e2761ee2b9654ad982a2ec1a6264c76f">
+		Build links <a href="#e2761ee2b9654ad982a2ec1a6264c76f" title="permalink">#</a>
+	</h3>
+	<p>
+		I was developing a REST API and wanted to generate some links like these:
+	</p>
+	<p>
+		<pre>{
+  "links": [
+    {
+      "rel": "urn:reservations",
+      "href": "http://localhost:53568/reservations"
+    },
+    {
+      "rel": "urn:year",
+      "href": "http://localhost:53568/calendar/2020"
+    },
+    {
+      "rel": "urn:month",
+      "href": "http://localhost:53568/calendar/2020/7"
+    },
+    {
+      "rel": "urn:day",
+      "href": "http://localhost:53568/calendar/2020/7/7"
+    }
+  ]
+}</pre>
+	</p>
+	<p>
+		As I recently described, <a href="">the ASP.NET Core Action API is tricky</a>, and since there was some repetition, I was looking for a way to reduce the code duplication. At first I just thought I'd make a few private helper methods, but then it occurred to me that an Immutable Fluent Builder as an <a href="https://en.wikipedia.org/wiki/Adapter_pattern">Adapter</a> to the <a href="https://docs.microsoft.com/dotnet/api/microsoft.aspnetcore.mvc.urlhelperextensions.action">Action API</a> might offer a fertile alternative.
+	</p>
+	<h3 id="5adf09c648a54679b1b137776e4f1192">
+		UrlBuilder class <a href="#5adf09c648a54679b1b137776e4f1192" title="permalink">#</a>
+	</h3>
+	<p>
+		The various <code>Action</code> overloads all accept null arguments, so there's effectively no clear invariants to enforce on that dimension. While I wanted an Immutable Fluent Builder, I made all the fields nullable.
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">sealed</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">UrlBuilder</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;<span style="color:blue;">string</span>?&nbsp;action;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;<span style="color:blue;">string</span>?&nbsp;controller;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;<span style="color:blue;">object</span>?&nbsp;values;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">UrlBuilder</span>()
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:#2b91af;">UrlBuilder</span>(<span style="color:blue;">string</span>?&nbsp;action,&nbsp;<span style="color:blue;">string</span>?&nbsp;controller,&nbsp;<span style="color:blue;">object</span>?&nbsp;values)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.action&nbsp;=&nbsp;action;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.controller&nbsp;=&nbsp;controller;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.values&nbsp;=&nbsp;values;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;...</span></pre>
+	</p>
+	<p>
+		I also gave the <code>UrlBuilder</code> class a public constructor and a private copy constructor. That's the standard way I implement that pattern.
+	</p>
+	<p>
+		Most of the modification methods are straightforward:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">UrlBuilder</span>&nbsp;WithAction(<span style="color:blue;">string</span>&nbsp;newAction)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">UrlBuilder</span>(newAction,&nbsp;controller,&nbsp;values);
+}
+ 
+<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">UrlBuilder</span>&nbsp;WithValues(<span style="color:blue;">object</span>&nbsp;newValues)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">UrlBuilder</span>(action,&nbsp;controller,&nbsp;newValues);
+}</pre>
+	</p>
+	<p>
+		I wanted to encapsulate <a href="">the suffix-handling behaviour I recently described</a> in the appropriate method:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">UrlBuilder</span>&nbsp;WithController(<span style="color:blue;">string</span>&nbsp;newController)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;(newController&nbsp;<span style="color:blue;">is</span>&nbsp;<span style="color:blue;">null</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">throw</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">ArgumentNullException</span>(<span style="color:blue;">nameof</span>(newController));
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">const</span>&nbsp;<span style="color:blue;">string</span>&nbsp;controllerSuffix&nbsp;=&nbsp;<span style="color:#a31515;">&quot;controller&quot;</span>;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;index&nbsp;=&nbsp;newController.LastIndexOf(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;controllerSuffix,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">StringComparison</span>.OrdinalIgnoreCase);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;(0&nbsp;&lt;=&nbsp;index)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;newController&nbsp;=&nbsp;newController.Remove(index);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">UrlBuilder</span>(action,&nbsp;newController,&nbsp;values);
+}</pre>
+	</p>
+	<p>
+		The <code>WithController</code> method handles both the case where <code>newController</code> is suffixed by <code>"Controller"</code> and the case where it isn't. I also wrote unit tests to verify that the implementation works as intended.
+	</p>
+	<p>
+		Finally, a Builder should have a method to build the desired object:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">Uri</span>&nbsp;BuildAbsolute(<span style="color:#2b91af;">IUrlHelper</span>&nbsp;url)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;(url&nbsp;<span style="color:blue;">is</span>&nbsp;<span style="color:blue;">null</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">throw</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">ArgumentNullException</span>(<span style="color:blue;">nameof</span>(url));
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;actionUrl&nbsp;=&nbsp;url.Action(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;action,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;controller,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;values,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;url.ActionContext.HttpContext.Request.Scheme,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;url.ActionContext.HttpContext.Request.Host.ToUriComponent());
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Uri</span>(actionUrl);
+}</pre>
+	</p>
+	<p>
+		One could imagine also defining a <code>BuildRelative</code> method, but I didn't need it.
+	</p>
+	<h3 id="bec08c507ce7475eb0038723c6f6f8a8">
+		Generating links <a href="#bec08c507ce7475eb0038723c6f6f8a8" title="permalink">#</a>
+	</h3>
+	<p>
+		Each of the objects shown above are represented by a simple Data Transfer Object:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">LinkDto</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">string</span>?&nbsp;Rel&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;<span style="color:blue;">set</span>;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">string</span>?&nbsp;Href&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;<span style="color:blue;">set</span>;&nbsp;}
+}</pre>
+	</p>
+	<p>
+		My next step was to define an extension method on <code>Uri</code>, so that I could turn a URL into a link:
+	</p>
+	<p>
+		<pre><span style="color:blue;">internal</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:#2b91af;">LinkDto</span>&nbsp;Link(<span style="color:blue;">this</span>&nbsp;<span style="color:#2b91af;">Uri</span>&nbsp;uri,&nbsp;<span style="color:blue;">string</span>&nbsp;rel)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">LinkDto</span>&nbsp;{&nbsp;Rel&nbsp;=&nbsp;rel,&nbsp;Href&nbsp;=&nbsp;uri.ToString()&nbsp;};
+}</pre>
+	</p>
+	<p>
+		With that function I could now write code like this:
+	</p>
+	<p>
+		<pre><span style="color:blue;">private</span>&nbsp;<span style="color:#2b91af;">LinkDto</span>&nbsp;CreateYearLink()
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">UrlBuilder</span>()
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.WithAction(<span style="color:blue;">nameof</span>(<span style="color:#2b91af;">CalendarController</span>.Get))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.WithController(<span style="color:blue;">nameof</span>(<span style="color:#2b91af;">CalendarController</span>))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.WithValues(<span style="color:blue;">new</span>&nbsp;{&nbsp;year&nbsp;=&nbsp;<span style="color:#2b91af;">DateTime</span>.Now.Year&nbsp;})
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.BuildAbsolute(Url)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.Link(<span style="color:#a31515;">&quot;urn:year&quot;</span>);
+}</pre>
+	</p>
+	<p>
+		It's acceptable, but verbose. This only creates the <code>urn:year</code> link; to create the <code>urn:month</code> and <code>urn:day</code> links, I needed similar code. Only the <code>WithValues</code> method calls differed. The calls to <code>WithAction</code> and <code>WithController</code> were identical.
+	</p>
+	<h3 id="e003c737cf604f83bd61dfba8045754b">
+		Shared Immutable Builder <a href="#e003c737cf604f83bd61dfba8045754b" title="permalink">#</a>
+	</h3>
+	<p>
+		Since <code>UrlBuilder</code> is immutable, I can trivially define a shared instance:
+	</p>
+	<p>
+		<pre><span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:#2b91af;">UrlBuilder</span>&nbsp;calendar&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">UrlBuilder</span>()
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.WithAction(<span style="color:blue;">nameof</span>(<span style="color:#2b91af;">CalendarController</span>.Get))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.WithController(<span style="color:blue;">nameof</span>(<span style="color:#2b91af;">CalendarController</span>));</pre>
+	</p>
+	<p>
+		This enabled me to write more succinct methods for each of the relationship types:
+	</p>
+	<p>
+		<pre><span style="color:blue;">internal</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:#2b91af;">LinkDto</span>&nbsp;LinkToYear(<span style="color:blue;">this</span>&nbsp;<span style="color:#2b91af;">IUrlHelper</span>&nbsp;url,&nbsp;<span style="color:blue;">int</span>&nbsp;year)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;calendar.WithValues(<span style="color:blue;">new</span>&nbsp;{&nbsp;year&nbsp;}).BuildAbsolute(url).Link(<span style="color:#a31515;">&quot;urn:year&quot;</span>);
+}
+ 
+<span style="color:blue;">internal</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:#2b91af;">LinkDto</span>&nbsp;LinkToMonth(<span style="color:blue;">this</span>&nbsp;<span style="color:#2b91af;">IUrlHelper</span>&nbsp;url,&nbsp;<span style="color:blue;">int</span>&nbsp;year,&nbsp;<span style="color:blue;">int</span>&nbsp;month)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;calendar.WithValues(<span style="color:blue;">new</span>&nbsp;{&nbsp;year,&nbsp;month&nbsp;}).BuildAbsolute(url).Link(<span style="color:#a31515;">&quot;urn:month&quot;</span>);
+}
+ 
+<span style="color:blue;">internal</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:#2b91af;">LinkDto</span>&nbsp;LinkToDay(<span style="color:blue;">this</span>&nbsp;<span style="color:#2b91af;">IUrlHelper</span>&nbsp;url,&nbsp;<span style="color:blue;">int</span>&nbsp;year,&nbsp;<span style="color:blue;">int</span>&nbsp;month,&nbsp;<span style="color:blue;">int</span>&nbsp;day)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;calendar.WithValues(<span style="color:blue;">new</span>&nbsp;{&nbsp;year,&nbsp;month,&nbsp;day&nbsp;}).BuildAbsolute(url).Link(<span style="color:#a31515;">&quot;urn:day&quot;</span>);
+}</pre>
+	</p>
+	<p>
+		This is possible exactly because <code>UrlBuilder</code> is immutable. Had the Builder been mutable, such sharing would have created an <a href="https://en.wikipedia.org/wiki/Aliasing_(computing)">aliasing</a> bug, as I <a href="/2020/02/10/builder-isomorphisms">previously described</a>. Immutability enables reuse.
+	</p>
+	<h3 id="cc70ea76298547e893d883bcb9983f92">
+		Conclusion <a href="#cc70ea76298547e893d883bcb9983f92" title="permalink">#</a>
+	</h3>
+	<p>
+		I got my first taste of functional programming around 2010. Since then, when I'm not programming in <a href="https://fsharp.org">F#</a> or <a href="https://www.haskell.org">Haskell</a>, I've steadily worked on identifying good ways to enjoy the benefits of functional programming in C#.
+	</p>
+	<p>
+		Immutability is a fairly low-hanging fruit. It requires more boilerplate code, but apart from that, it's easy to make classes immutable in C#, and Visual Studio has plenty of refactorings that make it easier.
+	</p>
+	<p>
+		Immutability is one of those features you're unlikely to realise that you're missing. When it's not there, you work around it, but when it's there, it simplifies many tasks.
+	</p>
+	<p>
+		The example you've seen in this article relates to the Fluent Builder pattern. At first glance, it seems as though a mutable Fluent Builder has the same capabilities as a corresponding Immutable Fluent Builder. You can, however, build upon shared Immutable Fluent Builders, which you can't with mutable Fluent Builders.
+	</p>
+</div>
