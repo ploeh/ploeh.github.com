@@ -1,0 +1,90 @@
+---
+layout: post
+title: "Closing database connections during test teardown"
+description: "How to close database connections to SQL Server during integration testing teardown."
+date: 2020-07-06 13:31 UTC
+tags: [Unit Testing, xUnit.net]
+---
+{% include JB/setup %}
+
+<div id="post">
+	<p>
+		<em>{{ page.description }}</em>
+	</p>
+	<p>
+		Whenever I need to run integration tests that involve SQL Server, I have a standard approach that <a href="https://docs.microsoft.com/en-us/archive/blogs/ploeh/sqlexpressdatabaseinstaller">I've evolved since 2007</a>. It involves
+		<ol>
+			<li>setting up a SQL Server Express database before each test</li>
+			<li>running the test</li>
+			<li>tearing down the database</li>
+		</ol>
+		I've explained the basic process in details in my <a href="/outside-in-tdd">Outside-In Test-Driven Development</a> Pluralsight course. You can also see it in action in <a href="https://github.com/ploeh/dependency-injection-revisited">this GitHub repository</a>.
+	</p>
+	<p>
+		One problem with that approach is that SQL Server doesn't allow you to delete a database if it has existing connections.
+	</p>
+	<h3 id="7de0c4f8bd3d40e99740a39b11570593">
+		Turn off connection pooling <a href="#7de0c4f8bd3d40e99740a39b11570593" title="permalink">#</a>
+	</h3>
+	<p>
+		I usually solve the problem by turning off connection pooling. For an integration test suite, this is fine. I usually use integration testing to verify functionality - not performance.
+	</p>
+	<p>
+		Turning off connection pooling is easily done by setting the flag to <code>false</code> in the connection string:
+	</p>
+	<p>
+		<code>Server=(LocalDB)\MSSQLLocalDB;Database=Booking;Integrated Security=true;Pooling=false</code>
+	</p>
+	<p>
+		This means that when you get to the teardown phase of the test, you can issue a DDL statement to the <code>master</code> database:
+	</p>
+	<p>
+		<pre>IF EXISTS (SELECT name
+    FROM master.dbo.sysdatabases
+    WHERE name = N'Booking')
+DROP DATABASE [Booking]</pre>
+	</p>
+	<p>
+		When connection pooling is turned off, no other connections are open when you attempt to do that, and the database (here named <code>Booking</code>) is deleted.
+	</p>
+	<h3 id="b599a9242a7d44f1b23241341db054b8">
+		Forcibly close other connections <a href="#b599a9242a7d44f1b23241341db054b8" title="permalink">#</a>
+	</h3>
+	<p>
+		Recently, however, I ran into a testing scenario where connection pooling had to be turned on. When you turn on connection pooling, however, the above <code>DROP DATABASE</code> statement fails because at least one connection from the pool is still connected to the database.
+	</p>
+	<p>
+		To solve that issue, I forcibly close other connections during teardown:
+	</p>
+	<p>
+		<pre>IF EXISTS (SELECT name
+    FROM master.dbo.sysdatabases
+    WHERE name = N'Booking')
+
+BEGIN
+    -- This closes existing connections:
+    ALTER DATABASE [Booking]
+    SET SINGLE_USER WITH ROLLBACK IMMEDIATE
+
+    DROP DATABASE [Booking]
+END</pre>
+	</p>
+	<p>
+		Surprisingly, turning on connection pooling like this makes the integration tests slower. I suppose it's because throwing other connections off the database involves a bit of negotiation between the server and the clients, and that takes some time.
+	</p>
+	<p>
+		While slower, it does enable you to run the integration tests with connection pooling turned on. When you need it, you need it.
+	</p>
+	<h3 id="6a3cf6b38c0f49a3abb1aa8ccbf50644">
+		Conclusion <a href="#6a3cf6b38c0f49a3abb1aa8ccbf50644" title="permalink">#</a>
+	</h3>
+	<p>
+		You can run integration tests against a SQL Server Express database. People do it in various ways, but I've found that setting up and tearing down a pristine database for each test case is a robust and maintainable solution to the problem.
+	</p>
+	<p>
+		SQL Server will not, however, allow you to delete a database if other connections exist. The easiest and fastest solution to that problem is to turn off connection pooling.
+	</p>
+	<p>
+		Sometimes, you can't do that, so instead, you can expand your database teardown script so that it closes existing connections before it deletes the database.
+	</p>
+</div>
