@@ -1,0 +1,144 @@
+---
+layout: post
+title: "Task asynchronous programming as an IO surrogate"
+description: "Is task asynchronous programming a substitute for the IO container? An article for object-oriented programmers."
+date: 2020-06-06 10:45 UTC
+tags: [Functional Programming]
+---
+{% include JB/setup %}
+
+<div id="post">
+	<p>
+		<em>{{ page.description }}</em>
+	</p>
+	<p>
+		This article is part of <a href="">an article series about the IO container in C#</a>. In the previous articles, you've seen how a type like <code>IO&lt;T&gt;</code> can be used to distinguish between <a href="https://en.wikipedia.org/wiki/Pure_function">pure functions</a> and impure actions. While it's an effective and elegant solution to the problem, it depends on a convention: that all impure actions return <code>IO</code> objects, which are opaque to pure functions.
+	</p>
+	<p>
+		In reality, .NET base class library methods don't do that, and it's unrealistic that this is ever going to happen. It'd require a breaking reset of the entire .NET ecosystem to introduce this design.
+	</p>
+	<p>
+		A comparable reset did, however, happen a few years ago.
+	</p>
+	<h3 id="dce87c53f2fa4b1db4c05b48e8d65870">
+		TAP reset <a href="#dce87c53f2fa4b1db4c05b48e8d65870" title="permalink">#</a>
+	</h3>
+	<p>
+		Microsoft introduced the <a href="https://docs.microsoft.com/dotnet/csharp/programming-guide/concepts/async">task asynchronous programming</a> (TAP) model some years ago. Operations that involve <a href="https://en.wikipedia.org/wiki/Input/output">I/O</a> got a new return type. Not <code>IO&lt;T&gt;</code>, but <code>Task&lt;T&gt;</code>.
+	</p>
+	<p>
+		The .NET framework team began a long process of adding asynchronous alternatives to existing APIs that involve I/O. Not as breaking changes, but by adding new, asynchronous methods side-by-side with older methods. <a href="https://docs.microsoft.com/dotnet/api/system.data.sqlclient.sqlcommand.executereaderasync">ExecuteReaderAsync</a> as an alternative to <a href="https://docs.microsoft.com/dotnet/api/system.data.sqlclient.sqlcommand.executereader">ExecuteReader</a>, <a href="https://docs.microsoft.com/dotnet/api/system.io.file.readalllinesasync">ReadAllLinesAsync</a> side by side with <a href="https://docs.microsoft.com/dotnet/api/system.io.file.readalllines">ReadAllLines</a>, and so on.
+	</p>
+	<p>
+		Modern APIs exclusively with asynchronous methods appeared. For example, the <a href="https://docs.microsoft.com/dotnet/api/system.net.http.httpclient">HttpClient</a> class only affords asynchronous I/O-based operations.
+	</p>
+	<p>
+		The TAP reset was further strengthened by the move from .NET to .NET Core. Some frameworks, most notably ASP.NET, were redesigned on a fundamentally asynchronous core.
+	</p>
+	<p>
+		In 2020, most I/O operations in .NET are easily recognisable, because they return <code>Task&lt;T&gt;</code>.
+	</p>
+	<h3 id="3e84ba1d588a42689d7e8741315d22b5">
+		Task as a surrogate IO <a href="#3e84ba1d588a42689d7e8741315d22b5" title="permalink">#</a>
+	</h3>
+	<p>
+		I/O operations are impure. Either you're receiving input from outside the running process, which is consistently non-deterministic, or you're writing to an external resource, which implies a side effect. It might seem natural to think of <code>Task&lt;T&gt;</code> as a replacement for <code>IO&lt;T&gt;</code>. <a href="https://twitter.com/SzymonPobiega/status/713001580077965312">Szymon Pobiega had a similar idea in 2016</a>, and I <a href="/2016/04/11/async-as-surrogate-io">investigated his idea in an article</a>. This was based on <a href="https://fsharp.org">F#</a>'s <code>Async&lt;'a&gt;</code> <a href="https://bartoszmilewski.com/2014/01/14/functors-are-containers">container</a>, which is <a href="/2018/09/24/asynchronous-functors">equivalent to <code>Task&lt;T&gt;</code></a> - except when it comes to <a href="https://en.wikipedia.org/wiki/Referential_transparency">referential transparency</a>.
+	</p>
+	<p>
+		Unfortunately, <code>Task&lt;T&gt;</code> is far from a perfect replacement of <code>IO&lt;T&gt;</code>, because the .NET base class library (BCL) still contains plenty of impure actions that 'look' pure. Examples include <a href="https://docs.microsoft.com/dotnet/api/system.console.writeline">Console.WriteLine</a>, the parameterless <a href="https://docs.microsoft.com/dotnet/api/system.random.-ctor">Random constructor</a>, <a href="https://docs.microsoft.com/dotnet/api/system.guid.newguid">Guid.NewGuid</a>, and <a href="https://docs.microsoft.com/dotnet/api/system.datetime.now">DateTime.Now</a> (arguably a candidate for the worst-designed API in the BCL). None of those methods return tasks, which they ought to if tasks should serve as easily recognisable signifiers of impurity.
+	</p>
+	<p>
+		Still, you could write asynchronous <a href="https://en.wikipedia.org/wiki/Adapter_pattern">Adapters</a> over such APIs. Your <code>Console</code> Adapter might present this API:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">Console</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:#2b91af;">Task</span>&lt;<span style="color:blue;">string</span>&gt;&nbsp;ReadLine();
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:#2b91af;">Task</span>&nbsp;WriteLine(<span style="color:blue;">string</span>&nbsp;value);
+}</pre>
+	</p>
+	<p>
+		Moreover, the <code>Clock</code> API might look like this:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">Clock</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:#2b91af;">Task</span>&lt;<span style="color:#2b91af;">DateTime</span>&gt;&nbsp;GetLocalTime();
+}</pre>
+	</p>
+	<p>
+		Modern versions of C# enable you to write asynchronous <a href="https://en.wikipedia.org/wiki/Entry_point">entry points</a>, so the <a href="https://en.wikipedia.org/wiki/%22Hello,_World!%22_program">hello world</a> example shown in this article series becomes:
+	</p>
+	<p>
+		<pre><span style="color:blue;">static</span>&nbsp;<span style="color:blue;">async</span>&nbsp;<span style="color:#2b91af;">Task</span>&nbsp;Main(<span style="color:blue;">string</span>[]&nbsp;args)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">await</span>&nbsp;<span style="color:#2b91af;">Console</span>.WriteLine(<span style="color:#a31515;">&quot;What&#39;s&nbsp;your&nbsp;name?&quot;</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;name&nbsp;=&nbsp;<span style="color:blue;">await</span>&nbsp;<span style="color:#2b91af;">Console</span>.ReadLine();
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;now&nbsp;=&nbsp;<span style="color:blue;">await</span>&nbsp;<span style="color:#2b91af;">Clock</span>.GetLocalTime();
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;greeting&nbsp;=&nbsp;<span style="color:#2b91af;">Greeter</span>.Greet(now,&nbsp;name);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">await</span>&nbsp;<span style="color:#2b91af;">Console</span>.WriteLine(greeting);
+}</pre>
+	</p>
+	<p>
+		That's nice <a href="/2015/08/03/idiomatic-or-idiosyncratic">idiomatic</a> C# code, so what's not to like?
+	</p>
+	<h3 id="8a11bbfe9cbc4e72bd90ea6b787c0037">
+		No referential transparency <a href="#8a11bbfe9cbc4e72bd90ea6b787c0037" title="permalink">#</a>
+	</h3>
+	<p>
+		The above <code>Main</code> example is probably as good as it's going to get in C#. I've nothing against that style of C# programming, but you shouldn't believe that this gives you compile-time checking of referential transparency. It doesn't.
+	</p>
+	<p>
+		Consider a simple function like this, written using the <code>IO</code> container shown in previous articles:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:blue;">string</span>&nbsp;AmIEvil()
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Console</span>.WriteLine(<span style="color:#a31515;">&quot;Side&nbsp;effect!&quot;</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:#a31515;">&quot;No,&nbsp;I&#39;m&nbsp;not.&quot;</span>;
+}</pre>
+	</p>
+	<p>
+		Is this method referentially transparent? Surprisingly, despite the apparent side effect, it is. The reason becomes clearer if you write the code so that it explicitly ignores the return value:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:blue;">string</span>&nbsp;AmIEvil()
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">IO</span>&lt;<span style="color:#2b91af;">Unit</span>&gt;&nbsp;_&nbsp;=&nbsp;<span style="color:#2b91af;">Console</span>.WriteLine(<span style="color:#a31515;">&quot;Side&nbsp;effect!&quot;</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:#a31515;">&quot;No,&nbsp;I&#39;m&nbsp;not.&quot;</span>;
+}</pre>
+	</p>
+	<p>
+		The <code>Console.WriteLine</code> method returns an object that represents a computation that might take place. This <code>IO&lt;Unit&gt;</code> object, however, never escapes the method, and thus never runs. The side effect never takes place, which means that the method is referentially transparent. You can replace <code>AmIEvil()</code> with its return value <code>"No, I'm not."</code>, and your program would behave exactly the same.
+	</p>
+	<p>
+		Consider what happens when you replace <code>IO</code> with <code>Task</code>:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:blue;">string</span>&nbsp;AmIEvil()
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Task</span>&nbsp;_&nbsp;=&nbsp;<span style="color:#2b91af;">Console</span>.WriteLine(<span style="color:#a31515;">&quot;Side&nbsp;effect!&quot;</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:#a31515;">&quot;Yes,&nbsp;I&nbsp;am.&quot;</span>;
+}</pre>
+	</p>
+	<p>
+		Is this method a pure function? No, it's not. The problem is that the most common way that .NET libraries return tasks is that the task is already running when it's returned. This is also the case here. As soon as you call this version of <code>Console.WriteLine</code>, the task starts running on a background thread. Even though you ignore the task and return a plain <code>string</code>, the side effect sooner or later takes place. You can't replace a call to <code>AmIEvil()</code> with its return value. If you did, the side effect wouldn't happen, and that would change the behaviour of your program.
+	</p>
+	<p>
+		Contrary to <code>IO</code>, tasks don't guarantee referential transparency.
+	</p>
+	<h3 id="aff1e4cb382b494ea0624ef63311da81">
+		Conclusion <a href="#aff1e4cb382b494ea0624ef63311da81" title="permalink">#</a>
+	</h3>
+	<p>
+		While it'd be technically possible to make C# distinguish between pure and impure code at compile time, it'd require such a breaking reset to the entire .NET ecosystem that it's unrealistic to hope for. It seems, though, that there's enough overlap with the design of <code>IO&lt;T&gt;</code> and task asynchronous programming that the latter might fill that role.
+	</p>
+	<p>
+		Unfortunately it doesn't, because it fails to guarantee referential transparency. It's better than nothing, though. Most C# programmers have now learned that while <code>Task</code> objects come with a <a href="https://docs.microsoft.com/dotnet/api/system.threading.tasks.task-1.result">Result</a> property, you shouldn't use it. Instead, you should write your entire program using <code>async</code> and <code>await</code>. That, at least, takes you halfway towards where you want to be.
+	</p>
+	<p>
+		The compiler, on the other hand, doesn't help you when it comes to those impure actions that look pure. Neither does it protect you against asynchronous side effects. Diligence, code reviews, and programming discipline are still required if you want to separate pure functions form impure actions.
+	</p>
+</div>
