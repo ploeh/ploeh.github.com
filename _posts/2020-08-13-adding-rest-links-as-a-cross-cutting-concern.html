@@ -1,0 +1,373 @@
+---
+layout: post
+title: "Adding REST links as a cross-cutting concern"
+description: "Use a piece of middleware to enrich a Data Transfer Object. An ASP.NET Core example."
+date: 2020-08-13 16:58 UTC
+tags: [ASP.NET Web API, ASP.NET MVC, REST]
+---
+{% include JB/setup %}
+
+<div id="post">
+	<p>
+		<em>{{ page.description }}</em>
+	</p>
+	<p>
+		When developing true REST APIs, you should <a href="https://martinfowler.com/articles/richardsonMaturityModel.html">use hypermedia controls</a> (i.e. <em>links</em>) to guide clients to the resources they need. I've always felt that the code that generates these links tends to make otherwise readable Controller methods unreadable.
+	</p>
+	<p>
+		I'm currently experimenting with generating links as a cross-cutting concern. So far, I like it very much.
+	</p>
+	<h3 id="57785b860f604552b099e42b296f6fb6">
+		Links from home <a href="#57785b860f604552b099e42b296f6fb6" title="permalink">#</a>
+	</h3>
+	<p>
+		Consider an online restaurant reservation system. When you make a <code>GET</code> request against the home resource (which is the only published URL for the API), you should receive a representation like this:
+	</p>
+	<p>
+		<pre>{
+&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;links&quot;</span>:&nbsp;[
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;rel&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;urn:reservations&quot;</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;href&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;http://localhost:53568/reservations&quot;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;},
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;rel&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;urn:year&quot;</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;href&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;http://localhost:53568/calendar/2020&quot;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;},
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;rel&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;urn:month&quot;</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;href&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;http://localhost:53568/calendar/2020/8&quot;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;},
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;rel&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;urn:day&quot;</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;href&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;http://localhost:53568/calendar/2020/8/13&quot;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;}
+&nbsp;&nbsp;]
+}</pre>
+	</p>
+	<p>
+		As you can tell, my example just runs on my local development machine, but I'm sure that you can see past that. There's three calendar links that clients can use to <code>GET</code> the restaurant's calendar for the current day, month, or year. Clients can use these resources to present a user with a date picker or a similar user interface so that it's possible to pick a date for a reservation.
+	</p>
+	<p>
+		When a client wants to make a reservation, it can use the URL identified by the <code>rel</code> (<em>relationship type</em>) <code>"urn:reservations"</code> to make a <code>POST</code> request.
+	</p>
+	<h3 id="724d54b2bb4a4071b0f965105541c792">
+		Link generation as a Controller responsibility <a href="#724d54b2bb4a4071b0f965105541c792" title="permalink">#</a>
+	</h3>
+	<p>
+		I first wrote the code that generates these links directly in the Controller class that serves the home resource. It looked like this:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">IActionResult</span>&nbsp;Get()
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;links&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">List</span>&lt;<span style="color:#2b91af;">LinkDto</span>&gt;();
+&nbsp;&nbsp;&nbsp;&nbsp;links.Add(Url.LinkToReservations());
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;(enableCalendar)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;now&nbsp;=&nbsp;<span style="color:#2b91af;">DateTime</span>.Now;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;links.Add(Url.LinkToYear(now.Year));
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;links.Add(Url.LinkToMonth(now.Year,&nbsp;now.Month));
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;links.Add(Url.LinkToDay(now.Year,&nbsp;now.Month,&nbsp;now.Day));
+&nbsp;&nbsp;&nbsp;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;Ok(<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">HomeDto</span>&nbsp;{&nbsp;Links&nbsp;=&nbsp;links.ToArray()&nbsp;});
+}</pre>
+	</p>
+	<p>
+		That doesn't look too bad, but 90% of the code is exclusively concerned with generating links. (<code>enableCalendar</code>, by the way, is a <a href="https://en.wikipedia.org/wiki/Feature_toggle">feature flag</a>.) That seems acceptable in this special case, because there's really nothing else the home resource has to do. For other resources, the Controller code might contain some composition code as well, and then all the link code starts to look like noise that makes it harder to understand the actual purpose of the Controller method. You'll see an example of a non-trivial Controller method later in this article.
+	</p>
+	<p>
+		It seemed to me that enriching a Data Transfer Object (DTO) with links ought to be a cross-cutting concern.
+	</p>
+	<h3 id="1973741c11414414bcd0ca2748bf0f0d">
+		LinksFilter <a href="#1973741c11414414bcd0ca2748bf0f0d" title="permalink">#</a>
+	</h3>
+	<p>
+		In ASP.NET Core, you can implement cross-cutting concerns with a type of middleware called <a href="https://docs.microsoft.com/dotnet/api/microsoft.aspnetcore.mvc.filters.iasyncactionfilter">IAsyncActionFilter</a>. I added one called <code>LinksFilter</code>:
+	</p>
+	<p>
+		<pre><span style="color:blue;">internal</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">LinksFilter</span>&nbsp;:&nbsp;<span style="color:#2b91af;">IAsyncActionFilter</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;<span style="color:blue;">bool</span>&nbsp;enableCalendar;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">IUrlHelperFactory</span>&nbsp;UrlHelperFactory&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">LinksFilter</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">IUrlHelperFactory</span>&nbsp;urlHelperFactory,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">CalendarFlag</span>&nbsp;calendarFlag)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;UrlHelperFactory&nbsp;=&nbsp;urlHelperFactory;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;enableCalendar&nbsp;=&nbsp;calendarFlag.Enabled;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">async</span>&nbsp;<span style="color:#2b91af;">Task</span>&nbsp;OnActionExecutionAsync(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">ActionExecutingContext</span>&nbsp;context,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">ActionExecutionDelegate</span>&nbsp;next)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;ctxAfter&nbsp;=&nbsp;<span style="color:blue;">await</span>&nbsp;next().ConfigureAwait(<span style="color:blue;">false</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;(!(ctxAfter.Result&nbsp;<span style="color:blue;">is</span>&nbsp;<span style="color:#2b91af;">OkObjectResult</span>&nbsp;ok))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;url&nbsp;=&nbsp;UrlHelperFactory.GetUrlHelper(ctxAfter);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">switch</span>&nbsp;(ok.Value)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">case</span>&nbsp;<span style="color:#2b91af;">HomeDto</span>&nbsp;homeDto:
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;AddLinks(homeDto,&nbsp;url);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">break</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">case</span>&nbsp;<span style="color:#2b91af;">CalendarDto</span>&nbsp;calendarDto:
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;AddLinks(calendarDto,&nbsp;url);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">break</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">default</span>:
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">break</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;...</span></pre>
+	</p>
+	<p>
+		There's only one method to implement. If you want to run some code <em>after</em> the Controllers have had their chance, you invoke the <code>next</code> delegate to get the resulting context. It should contain the response to be returned. If <code>Result</code> isn't an <code>OkObjectResult</code> there's no content to enrich with links, so the method just returns.
+	</p>
+	<p>
+		Otherwise, it switches on the type of the <code>ok.Value</code> and passes the DTO to an appropriate helper method. Here's the <code>AddLinks</code> overload for <code>HomeDto</code>:
+	</p>
+	<p>
+		<pre><span style="color:blue;">private</span>&nbsp;<span style="color:blue;">void</span>&nbsp;AddLinks(<span style="color:#2b91af;">HomeDto</span>&nbsp;dto,&nbsp;<span style="color:#2b91af;">IUrlHelper</span>&nbsp;url)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;(enableCalendar)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;now&nbsp;=&nbsp;<span style="color:#2b91af;">DateTime</span>.Now;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;dto.Links&nbsp;=&nbsp;<span style="color:blue;">new</span>[]
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;url.LinkToReservations(),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;url.LinkToYear(now.Year),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;url.LinkToMonth(now.Year,&nbsp;now.Month),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;url.LinkToDay(now.Year,&nbsp;now.Month,&nbsp;now.Day)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;};
+&nbsp;&nbsp;&nbsp;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">else</span>
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;dto.Links&nbsp;=&nbsp;<span style="color:blue;">new</span>[]&nbsp;{&nbsp;url.LinkToReservations()&nbsp;};
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+	</p>
+	<p>
+		You can probably recognise the implemented behaviour from before, where it was implemented in the <code>Get</code> method. That method now looks like this:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">ActionResult</span>&nbsp;Get()
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">OkObjectResult</span>(<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">HomeDto</span>());
+}</pre>
+	</p>
+	<p>
+		That's clearly much simpler, but you probably think that little has been achieved. After all, doesn't this just move some code from one place to another?
+	</p>
+	<p>
+		Yes, that's the case in this particular example, but I wanted to start with an example that was so simple that it highlights how to move the code to a filter. Consider, then, the following example.
+	</p>
+	<h3 id="9156b0b69f4d485fa373a8c4b06547d5">
+		A calendar resource <a href="#9156b0b69f4d485fa373a8c4b06547d5" title="permalink">#</a>
+	</h3>
+	<p>
+		The online reservation system enables clients to navigate its calendar to look up dates and time slots. A representation might look like this:
+	</p>
+	<p>
+		<pre>{
+&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;links&quot;</span>:&nbsp;[
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;rel&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;previous&quot;</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;href&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;http://localhost:53568/calendar/2020/8/12&quot;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;},
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;rel&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;next&quot;</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;href&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;http://localhost:53568/calendar/2020/8/14&quot;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;}
+&nbsp;&nbsp;],
+&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;year&quot;</span>:&nbsp;2020,
+&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;month&quot;</span>:&nbsp;8,
+&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;day&quot;</span>:&nbsp;13,
+&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;days&quot;</span>:&nbsp;[
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;links&quot;</span>:&nbsp;[
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;rel&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;urn:year&quot;</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;href&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;http://localhost:53568/calendar/2020&quot;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;},
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;rel&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;urn:month&quot;</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;href&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;http://localhost:53568/calendar/2020/8&quot;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;},
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;rel&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;urn:day&quot;</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;href&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;http://localhost:53568/calendar/2020/8/13&quot;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;],
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;date&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;2020-08-13&quot;</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;entries&quot;</span>:&nbsp;[
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;time&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;18:00:00&quot;</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;maximumPartySize&quot;</span>:&nbsp;10
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;},
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;time&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;18:15:00&quot;</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;maximumPartySize&quot;</span>:&nbsp;10
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;},
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;time&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;18:30:00&quot;</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;maximumPartySize&quot;</span>:&nbsp;10
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;},
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;time&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;18:45:00&quot;</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;maximumPartySize&quot;</span>:&nbsp;10
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;},
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;time&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;19:00:00&quot;</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;maximumPartySize&quot;</span>:&nbsp;10
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;},
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;time&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;19:15:00&quot;</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;maximumPartySize&quot;</span>:&nbsp;10
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;},
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;time&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;19:30:00&quot;</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;maximumPartySize&quot;</span>:&nbsp;10
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;},
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;time&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;19:45:00&quot;</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;maximumPartySize&quot;</span>:&nbsp;10
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;},
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;time&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;20:00:00&quot;</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;maximumPartySize&quot;</span>:&nbsp;10
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;},
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;time&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;20:15:00&quot;</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;maximumPartySize&quot;</span>:&nbsp;10
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;},
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;time&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;20:30:00&quot;</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;maximumPartySize&quot;</span>:&nbsp;10
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;},
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;time&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;20:45:00&quot;</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;maximumPartySize&quot;</span>:&nbsp;10
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;},
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;time&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;21:00:00&quot;</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;maximumPartySize&quot;</span>:&nbsp;10
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;]
+&nbsp;&nbsp;&nbsp;&nbsp;}
+&nbsp;&nbsp;]
+}</pre>
+	</p>
+	<p>
+		This is a JSON representation of the calendar for August 13, 2020. The data it contains is the identification of the date, as well as a series of <code>entries</code> that lists the largest reservation the restaurant can accept for each time slot.
+	</p>
+	<p>
+		Apart from the data, the representation also contains links. There's a general collection of links that currently holds only <code>next</code> and <code>previous</code>. In addition to that, each day has its own array of links. In the above example, only a single day is represented, so the <code>days</code> array contains only a single object. For a month calendar (navigatable via the <code>urn:month</code> link), there'd be between 28 and 31 <code>days</code>, each with its own <code>links</code> array.
+	</p>
+	<p>
+		Generating all these links is a complex undertaking all by itself, so separation of concerns is a boon.
+	</p>
+	<h3 id="8f85a3a882164352aa57d600a21628be">
+		Calendar links <a href="#8f85a3a882164352aa57d600a21628be" title="permalink">#</a>
+	</h3>
+	<p>
+		As you can see in the above <code>LinksFilter</code>, it branches on the type of value wrapped in an <code>OkObjectResult</code>. If the type is <code>CalendarDto</code>, it calls the appropriate <code>AddLinks</code> overload:
+	</p>
+	<p>
+		<pre><span style="color:blue;">private</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:blue;">void</span>&nbsp;AddLinks(<span style="color:#2b91af;">CalendarDto</span>&nbsp;dto,&nbsp;<span style="color:#2b91af;">IUrlHelper</span>&nbsp;url)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;period&nbsp;=&nbsp;dto.ToPeriod();
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;previous&nbsp;=&nbsp;period.Accept(<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">PreviousPeriodVisitor</span>());
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;next&nbsp;=&nbsp;period.Accept(<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">NextPeriodVisitor</span>());
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;dto.Links&nbsp;=&nbsp;<span style="color:blue;">new</span>[]
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;url.LinkToPeriod(previous,&nbsp;<span style="color:#a31515;">&quot;previous&quot;</span>),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;url.LinkToPeriod(next,&nbsp;<span style="color:#a31515;">&quot;next&quot;</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;};
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;(dto.Days&nbsp;<span style="color:blue;">is</span>&nbsp;{&nbsp;})
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">foreach</span>&nbsp;(<span style="color:blue;">var</span>&nbsp;day&nbsp;<span style="color:blue;">in</span>&nbsp;dto.Days)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;AddLinks(day,&nbsp;url);
+}</pre>
+	</p>
+	<p>
+		It both generates the <code>previous</code> and <code>next</code> links on the <code>dto</code>, as well as the links for each day. While I'm not going to bore you with more of that code, you can tell, I hope, that the <code>AddLinks</code> method calls other helper methods and classes. The point is that link generation involves more than just a few lines of code.
+	</p>
+	<p>
+		You already saw that in the first example (related to <code>HomeDto</code>). The question is whether there's still some significant code left in the Controller class?
+	</p>
+	<h3 id="ab37807dfce0431b8308f86ec18a44aa">
+		Calendar resource <a href="#ab37807dfce0431b8308f86ec18a44aa" title="permalink">#</a>
+	</h3>
+	<p>
+		The <code>CalendarController</code> class defines three overloads of <code>Get</code> - one for a single day, one for a month, and one for an entire year. Each of them look like this:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">async</span>&nbsp;<span style="color:#2b91af;">Task</span>&lt;<span style="color:#2b91af;">ActionResult</span>&gt;&nbsp;Get(<span style="color:blue;">int</span>&nbsp;year,&nbsp;<span style="color:blue;">int</span>&nbsp;month)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;period&nbsp;=&nbsp;<span style="color:#2b91af;">Period</span>.Month(year,&nbsp;month);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;days&nbsp;=&nbsp;<span style="color:blue;">await</span>&nbsp;MakeDays(period).ConfigureAwait(<span style="color:blue;">false</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">OkObjectResult</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">CalendarDto</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Year&nbsp;=&nbsp;year,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Month&nbsp;=&nbsp;month,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Days&nbsp;=&nbsp;days
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;});
+}</pre>
+	</p>
+	<p>
+		It doesn't look as though much is going on, but at least you can see that it returns a <code>CalendarDto</code> object.
+	</p>
+	<p>
+		While the method looks simple, it's not. Significant work happens in the <code>MakeDays</code> helper method:
+	</p>
+	<p>
+		<pre><span style="color:blue;">private</span>&nbsp;<span style="color:blue;">async</span>&nbsp;<span style="color:#2b91af;">Task</span>&lt;<span style="color:#2b91af;">DayDto</span>[]&gt;&nbsp;MakeDays(<span style="color:#2b91af;">IPeriod</span>&nbsp;period)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;firstTick&nbsp;=&nbsp;period.Accept(<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">FirstTickVisitor</span>());
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;lastTick&nbsp;=&nbsp;period.Accept(<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">LastTickVisitor</span>());
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;reservations&nbsp;=&nbsp;<span style="color:blue;">await</span>&nbsp;Repository
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.ReadReservations(firstTick,&nbsp;lastTick).ConfigureAwait(<span style="color:blue;">false</span>);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;days&nbsp;=&nbsp;period.Accept(<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">DaysVisitor</span>())
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.Select(d&nbsp;=&gt;&nbsp;MakeDay(d,&nbsp;reservations))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.ToArray();
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;days;
+}</pre>
+	</p>
+	<p>
+		After having read relevant <code>reservations</code> from the database, it applies complex business logic to allocate them and thereby being able to report on remaining capacity for each time slot.
+	</p>
+	<p>
+		Not having to worry about link generation while doing all that work seems like a benefit.
+	</p>
+	<h3 id="87b164914be0450fbd523735946cf146">
+		Filter registration <a href="#87b164914be0450fbd523735946cf146" title="permalink">#</a>
+	</h3>
+	<p>
+		You must tell the ASP.NET Core framework about any filters that you add. You can do that in the <code>Startup</code> class' <code>ConfigureServices</code> method:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;ConfigureServices(<span style="color:#2b91af;">IServiceCollection</span>&nbsp;services)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;services.AddControllers(opts&nbsp;=&gt;&nbsp;opts.Filters.Add&lt;<span style="color:#2b91af;">LinksFilter</span>&gt;());
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;...</span></pre>
+	</p>
+	<p>
+		When registered, the filter executes for each HTTP request. When the object represents a <code>200 OK</code> result, the filter populates the DTOs with links.
+	</p>
+	<h3 id="ced9fd76d526420aa1a847da4398e904">
+		Conclusion <a href="#ced9fd76d526420aa1a847da4398e904" title="permalink">#</a>
+	</h3>
+	<p>
+		By treating RESTful link generation as a cross-cutting concern, you can separate if from the logic of generating the data structure that represents the resource. That's not the only way to do it. You could also write a simple function that populates DTOs, and call it directly from each Controller action.
+	</p>
+	<p>
+		What I like about using a filter is that I don't have to remember to do that. Once the filter is registered, it'll populate all the DTOs it knows about, regardless of which Controller generated them.
+	</p>
+</div>
