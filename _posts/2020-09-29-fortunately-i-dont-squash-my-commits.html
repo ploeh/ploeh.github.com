@@ -1,0 +1,444 @@
+---
+layout: post
+title: "Fortunately, I don't squash my commits"
+description: "The story of bug, and how I addressed it."
+date: 2020-09-29 15:46 UTC
+tags: [Productivity, ASP.NET MVC, ASP.NET Web API]
+---
+{% include JB/setup %}
+
+<div id="post">
+	<p>
+		<em>{{ page.description }}</em>
+	</p>
+	<p>
+		Okay, I admit it: I could have given this article all sorts of alternative titles, each of which would have made as much sense as the one I chose. I didn't want to go with some of the other titles I had in mind, because they would give it all away up front. I didn't want to spoil the surprise.
+	</p>
+	<p>
+		I recently ran into this bug, it took me hours to troubleshoot it, and I was appalled when I realised what the problem was.
+	</p>
+	<p>
+		This is the story of that bug.
+	</p>
+	<p>
+		There are several insights from this story, and I admit that I picked the most click-baity one for the title.
+	</p>
+	<h3 id="94bc204499df483897121bb0343f73f7">
+		Yak shaving <a href="#94bc204499df483897121bb0343f73f7" title="permalink">#</a>
+	</h3>
+	<p>
+		I was working on the umpteenth variation of an online restaurant reservations system, and one of the features I'd added was a schedule only visible to the <a href="https://en.wikipedia.org/wiki/Ma%C3%AEtre_d%27h%C3%B4tel">maître d'</a>. The schedule includes a list of all reservations for a day, including guests' email addresses and so on. For that reason, I'd protected that resource by requiring a valid <a href="https://en.wikipedia.org/wiki/JSON_Web_Token">JSON Web Token</a> (JWT) with an appropriate role.
+	</p>
+	<p>
+		I'd deployed a new version of the API and went for an ad-hoc test. To my surprise, that particular resource didn't work. When I tried to request it, I got a <code>403 Forbidden</code> response.
+	</p>
+	<p>
+		"That's odd," I though, "it worked the last time I tried this."
+	</p>
+	<p>
+		The system is set up with continuous deployment. I push <em>master</em> to a remote repository, and a build pipeline takes over from there. It only deploys the new version if all tests pass, so my first reaction was that I might have made a mistake with the JTWT.
+	</p>
+	<p>
+		I wasted significant time decoding the JWT and comparing its contents to what it was supposed to be. I couldn't find any problems.
+	</p>
+	<p>
+		I also meticulously compared the encryption key I'd used to sign the JWT with the key on the server. They were identical.
+	</p>
+	<p>
+		Incredulous, and running out of ideas, I tried running all tests on my development machine. Indeed, all 170 tests passed.
+	</p>
+	<p>
+		Finally, I gave up and ran the API on my development machine. It takes all of a 30 seconds to configure the code to run in that environment, so you're excused if you wonder why I didn't already do that. What can I say? I've almost two decades of experience with automated test suites. Usually, if all tests pass, the problem is environmental: a network topology issue, a bad or missing connection string, a misconfigured encryption key, an invalid JWT, things like that.
+	</p>
+	<p>
+		To my surprise, the problem also manifested on my machine.
+	</p>
+	<h3 id="b726532ae06844eb8aeaa2c27ca0d913">
+		Not my code <a href="#b726532ae06844eb8aeaa2c27ca0d913" title="permalink">#</a>
+	</h3>
+	<p>
+		Okay, even with hundreds of tests, perhaps some edge case went unnoticed. The only problem with that hypothesis was that this was hardly an edge case. I was only making a <code>GET</code> request with a <code>Bearer</code> token. I wasn't going through some convoluted sequence of steps.
+	</p>
+	<p>
+		<pre>GET /restaurants/1/schedule/2020/9/30 HTTP/1.1
+Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5c[...]</pre>
+	</p>
+	<p>
+		I expected a successful response containing some JSON, but the result was <code>403 Forbidden</code>. That was the same behaviour I saw in the production environment.
+	</p>
+	<p>
+		Now, to be clear, this is indeed a protected resource. If you present an invalid JWT, <code>403 Forbidden</code> is the expected response. That's why I wasted a few hours looking for problems with the the JWT.
+	</p>
+	<p>
+		I finally, hesitatingly, concluded that the problem might be somewhere else. The JWT looked okay. So, hours into my troubleshooting I reluctantly set a breakpoint in my code and started the debugger. It isn't rational, but I tend to see it as a small personal defeat if I have to use the debugger. Even so, if used judiciously, it can be an effective way to identify problems.
+	</p>
+	<p>
+		The debugger never hit my breakpoint.
+	</p>
+	<p>
+		To be clear, the beginning of my Controller method looked like this:
+	</p>
+	<p>
+		<pre>[<span style="color:#2b91af;">Authorize</span>(Roles&nbsp;=&nbsp;<span style="color:#a31515;">&quot;MaitreD&quot;</span>)]
+[<span style="color:#2b91af;">HttpGet</span>(<span style="color:#a31515;">&quot;restaurants/{restaurantId}/schedule/{year}/{month}/{day}&quot;</span>)]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">async</span>&nbsp;<span style="color:#2b91af;">Task</span>&lt;<span style="color:#2b91af;">ActionResult</span>&gt;&nbsp;Get(
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">int</span>&nbsp;restaurantId,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">int</span>&nbsp;year,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">int</span>&nbsp;month,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">int</span>&nbsp;day)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;(!AccessControlList.Authorize(restaurantId))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">ForbidResult</span>();</pre>
+	</p>
+	<p>
+		My breakpoint was on the first line (the <code>if</code> conditional), but the debugger didn't break into it. When I issued my <code>GET</code> request, I immediately got the <code>403 Forbidden</code> response. The breakpoint just sat there in the debugger, mocking me.
+	</p>
+	<p>
+		When that happens, it's natural to conclude that the problem occurs somewhere in the framework; in this case, ASP.NET. To test that hypothesis, I commented out the <code>[Authorize]</code> attribute and reissued the <code>GET</code> request. My hypothesis was that I'd get a <code>200 OK</code> response, since the attribute is what tells ASP.NET to check authorisation.
+	</p>
+	<p>
+		The hypothesis held. The response was <code>200 OK</code>.
+	</p>
+	<h3 id="fdff404f12644a898b6a3e695fb6533f">
+		Test interdependency <a href="#fdff404f12644a898b6a3e695fb6533f" title="permalink">#</a>
+	</h3>
+	<p>
+		I hate when that happens. It's up there with fixing other people's printers. The problem is in the framework, not in my code. I didn't have any authorisation callbacks registered, so I was fairly certain that the problem wasn't in my code.
+	</p>
+	<p>
+		I rarely jump to the conclusion that there's a bug in the framework. In my experience, <a href="https://blog.codinghorror.com/the-first-rule-of-programming-its-always-your-fault">select is rarely broken</a>. My new hypothesis had to be that I'd somehow managed to misconfigure the framework.
+	</p>
+	<p>
+		But where? There were automated tests that verified that a client could request that resource with a valid JWT. There were other automated tests that verified what happened if you presented an invalid JWT, or none at all. And all tests were passing.
+	</p>
+	<p>
+		While I was fiddling with the tests, I eventually ran a parametrised test by itself, instead of the entire test suite:
+	</p>
+	<p>
+		<pre>[<span style="color:#2b91af;">Theory</span>]
+[<span style="color:#2b91af;">InlineData</span>(&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#a31515;">&quot;Hipgnosta&quot;</span>,&nbsp;2024,&nbsp;11,&nbsp;&nbsp;2)]
+[<span style="color:#2b91af;">InlineData</span>(&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#a31515;">&quot;Nono&quot;</span>,&nbsp;2018,&nbsp;&nbsp;9,&nbsp;&nbsp;9)]
+[<span style="color:#2b91af;">InlineData</span>(<span style="color:#a31515;">&quot;The&nbsp;Vatican&nbsp;Cellar&quot;</span>,&nbsp;2021,&nbsp;10,&nbsp;10)]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">async</span>&nbsp;<span style="color:#2b91af;">Task</span>&nbsp;GetRestaurantScheduleWhileAuthorized(
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">string</span>&nbsp;name,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">int</span>&nbsp;year,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">int</span>&nbsp;month,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">int</span>&nbsp;day)</pre>
+	</p>
+	<p>
+		This parametrised test has three test cases. When I ran just that test method, two of the test cases passed, but one failed: the <em>Nono</em> case, for some reason I haven't yet figured out.
+	</p>
+	<p>
+		I didn't understand why that test case ought to fail while the others succeeded, but I had an inkling. I commented out the <em>Nono</em> test case and ran the test method again.
+	</p>
+	<p>
+		One passed and one failing test.
+	</p>
+	<p>
+		Now <em>The Vatican Cellar</em> test case was failing. I commented that out and ran the test method again. The remaining test case failed.
+	</p>
+	<p>
+		This reeks of some sort of test interdependency. Apparently, <em>something</em> happens during the first test run that makes succeeding tests pass, but it happens too late for the first one. But what?
+	</p>
+	<h3 id="c95c3e707f46467abbf8ff02a9594c4c">
+		Bisect <a href="#c95c3e707f46467abbf8ff02a9594c4c" title="permalink">#</a>
+	</h3>
+	<p>
+		Then something occurred to me that I should have thought of sooner. This feature used to work. Not only had the tests been passing, but I'd actually interacted with the deployed service, presenting a valid JWT and received a <code>200 OK</code> response.
+	</p>
+	<p>
+		Once than dawned on me, I realised that it was just a manner of performing a binary search. Since, of course, I use version control, I had a version I knew worked, and a version that didn't work. The task, then, was to find the commit that introduced the defect.
+	</p>
+	<p>
+		As I've already implied, the system in question is an example code base. While I have a cloud-based production environment, none but I use it. It had been four or five days since I'd actually interacted with the real service, and I'd been busy making changes, trusting exclusively in my test suite. I tend to make frequent, small commits instead of big, infrequent commits, so I had accumulated more than a hundred commits since the 'last known good' deployment.
+	</p>
+	<p>
+		Searching through hundreds of commits sounds overwhelming, but using binary search, it's actually not that bad. Pick the commit halfway between the 'last known good' commit and the most recent commit, and check it out. See if the defect is present there. If it is, you know that it was introduced somewhere between the commit you're looking at, and the 'last known good' commit. If it isn't present, it was introduced later. Regardless of the outcome, you know in which half to look. You now pick a new commit in the middle of that set and repeat the exercise. Even with, say, a hundred commits, the first bisection reduces the candidate set to 50, the next bisection to 25, then 13, then 7, 4, 2, and then you have it. If you do this systematically, you should find the exact commit in less than eight iterations.
+	</p>
+	<p>
+		This is, as far as I understand it, the algorithm used by <em>Git bisect</em>. You don't have to use the <code>bisect</code> command - the algorithm is easy enough to do by hand - but let's see how it works.
+	</p>
+	<p>
+		You start a <code>bisect</code> session with:
+	</p>
+	<p>
+		<pre><span style="color: green">mark@Vindemiatrix</span> <span style="color: purple">MINGW64</span> <span style="color: orange">~/Documents/Redacted/Restaurant</span> <span style="color: darkturquoise">((93c6c35...))</span>
+$ git bisect start
+
+<span style="color: green">mark@Vindemiatrix</span> <span style="color: purple">MINGW64</span> <span style="color: orange">~/Documents/Redacted/Restaurant</span> <span style="color: darkturquoise">((93c6c35...)|BISECTING)</span></pre>
+	</p>
+	<p>
+		This starts an interactive session, which you can tell from the Git integration in Git Bash (it says <code>BISECTING</code>). You now mark a commit as being bad:
+	</p>
+	<p>
+		<pre>$ git bisect bad
+
+<span style="color: green">mark@Vindemiatrix</span> <span style="color: purple">MINGW64</span> <span style="color: orange">~/Documents/Redacted/Restaurant</span> <span style="color: darkturquoise">((93c6c35...)|BISECTING)</span></pre>
+	</p>
+	<p>
+		If you don't provide a commit ID at that point, Git is going to assume that you meant that the current commit (in this case <code>93c6c35</code>) is bad. That's what I had in mind, so that's fine.
+	</p>
+	<p>
+		You now tell it about a commit ID that you know is good:
+	</p>
+	<p>
+		<pre>$ git bisect good 7dfdab2
+Bisecting: 75 revisions left to test after this (roughly 6 steps)
+[1f78c9a90c2088423ab4fc145b7b2ec3859d6a9a] Use InMemoryRestaurantDatabase in a test
+
+<span style="color: green">mark@Vindemiatrix</span> <span style="color: purple">MINGW64</span> <span style="color: orange">~/Documents/Redacted/Restaurant</span> <span style="color: darkturquoise">((1f78c9a...)|BISECTING)</span></pre>
+	</p>
+	<p>
+		Notice that Git is already telling us how many iterations we should expect. You can also see that it checked out a new commit (<code>1f78c9a</code>) for you. That's the half-way commit.
+	</p>
+	<p>
+		At this point, I manually ran the test method with the three test cases. All three passed, so I marked that commit as good:
+	</p>
+	<p>
+		<pre>$ git bisect good
+Bisecting: 37 revisions left to test after this (roughly 5 steps)
+[5abf65a72628efabbf05fccd1b79340bac4490bc] Delete Either API
+
+<span style="color: green">mark@Vindemiatrix</span> <span style="color: purple">MINGW64</span> <span style="color: orange">~/Documents/Redacted/Restaurant</span> <span style="color: darkturquoise">((5abf65a...)|BISECTING)</span></pre>
+	</p>
+	<p>
+		Again, Git estimates how many more steps are left and checks out a new commit (<code>5abf65a</code>).
+	</p>
+	<p>
+		I repeated the process for each step, marking the commit as either good or bad, depending on whether or not the test passed:
+	</p>
+	<p>
+		<pre>$ git bisect bad
+Bisecting: 18 revisions left to test after this (roughly 4 steps)
+[fc48292b0d654f4f20522710c14d7726e6eefa70] Delete redundant Test Data Builders
+
+<span style="color: green">mark@Vindemiatrix</span> <span style="color: purple">MINGW64</span> <span style="color: orange">~/Documents/Redacted/Restaurant</span> <span style="color: darkturquoise">((fc48292...)|BISECTING)</span>
+$ git bisect good
+Bisecting: 9 revisions left to test after this (roughly 3 steps)
+[b0cb1f5c1e9e40b1dabe035c41bfb4babfbe4585] Extract WillAcceptUpdate helper method
+
+<span style="color: green">mark@Vindemiatrix</span> <span style="color: purple">MINGW64</span> <span style="color: orange">~/Documents/Redacted/Restaurant</span> <span style="color: darkturquoise">((b0cb1f5...)|BISECTING)</span>
+$ git bisect good
+Bisecting: 4 revisions left to test after this (roughly 2 steps)
+[d160c57288455377f8b0ad05985b029146228445] Extract ConfigureClock helper method
+
+<span style="color: green">mark@Vindemiatrix</span> <span style="color: purple">MINGW64</span> <span style="color: orange">~/Documents/Redacted/Restaurant</span> <span style="color: darkturquoise">((d160c57...)|BISECTING)</span>
+$ git bisect good
+Bisecting: 2 revisions left to test after this (roughly 1 step)
+[4cb73c219565d8377aa67d79024d6836f9000935] Compact code
+
+<span style="color: green">mark@Vindemiatrix</span> <span style="color: purple">MINGW64</span> <span style="color: orange">~/Documents/Redacted/Restaurant</span> <span style="color: darkturquoise">((4cb73c2...)|BISECTING)</span>
+$ git bisect good
+Bisecting: 0 revisions left to test after this (roughly 1 step)
+[34238c7d2606e9007b96b54b43e678589723520c] Extract CreateTokenValidationParameters method
+
+<span style="color: green">mark@Vindemiatrix</span> <span style="color: purple">MINGW64</span> <span style="color: orange">~/Documents/Redacted/Restaurant</span> <span style="color: darkturquoise">((34238c7...)|BISECTING)</span>
+$ git bisect bad
+Bisecting: 0 revisions left to test after this (roughly 0 steps)
+[7d6583a97ff45fbd85878cecb5af11d93213a25d] Move Configure method up
+
+<span style="color: green">mark@Vindemiatrix</span> <span style="color: purple">MINGW64</span> <span style="color: orange">~/Documents/Redacted/Restaurant</span> <span style="color: darkturquoise">((7d6583a...)|BISECTING)</span>
+$ git bisect good
+34238c7d2606e9007b96b54b43e678589723520c is the first bad commit
+<span style="color: orange">commit 34238c7d2606e9007b96b54b43e678589723520c</span>
+Author: Mark Seemann &lt;mark@example.com&gt;
+Date:   Wed Sep 16 07:15:12 2020 +0200
+
+    Extract CreateTokenValidationParameters method
+
+ Restaurant.RestApi/Startup.cs | 32 <span style="color: green">+++++++++++++++++++</span><span style="color: red">-------------</span>
+ 1 file changed, 19 insertions(+), 13 deletions(-)
+
+<span style="color: green">mark@Vindemiatrix</span> <span style="color: purple">MINGW64</span> <span style="color: orange">~/Documents/Redacted/Restaurant</span> <span style="color: darkturquoise">((7d6583a...)|BISECTING)</span></pre>
+	</p>
+	<p>
+		Notice that the last step finds the culprit. It tells you which commit is the bad one, but surprisingly doesn't check it out for you. You can do that using a label Git has created for you:
+	</p>
+	<p>
+		<pre>$ git checkout refs/bisect/bad
+Previous HEAD position was 7d6583a Move Configure method up
+HEAD is now at 34238c7 Extract CreateTokenValidationParameters method
+
+<span style="color: green">mark@Vindemiatrix</span> <span style="color: purple">MINGW64</span> <span style="color: orange">~/Documents/Redacted/Restaurant</span> <span style="color: darkturquoise">((34238c7...)|BISECTING)</span></pre>
+	</p>
+	<p>
+		You've now found and checked out the offending commit. Hopefully, the changes in that commit should give you a clue about the problem.
+	</p>
+	<h3 id="2f3c813d0cbf47eabb52467cff0c7692">
+		The culprit <a href="#2f3c813d0cbf47eabb52467cff0c7692" title="permalink">#</a>
+	</h3>
+	<p>
+		What's in that commit? Take a gander:
+	</p>
+	<p>
+		<pre>$ git show
+<span style="color: orange">commit 34238c7d2606e9007b96b54b43e678589723520c (</span><span style="color: mediumturquoise">HEAD</span><span style="color: orange">,</span> refs/bisect/bad<span style="color: orange">)</span>
+Author: Mark Seemann &lt;mark@example.com&gt;
+Date:   Wed Sep 16 07:15:12 2020 +0200
+
+    Extract CreateTokenValidationParameters method
+
+<strong>diff --git a/Restaurant.RestApi/Startup.cs b/Restaurant.RestApi/Startup.cs
+index 6c161b5..bcde861 100644
+--- a/Restaurant.RestApi/Startup.cs
++++ b/Restaurant.RestApi/Startup.cs</strong>
+<span style="color: darkturquoise">@@ -79,10 +79,6 @@</span> namespace Ploeh.Samples.Restaurants.RestApi
+
+         private void ConfigureAuthorization(IServiceCollection services)
+         {
+<span style="color: red">-            JwtSecurityTokenHandler.DefaultMapInboundClaims = false;
+-
+-            var secret = Configuration["JwtIssuerSigningKey"];
+-</span>
+             services.AddAuthentication(opts =&gt;
+             {
+                 opts.DefaultAuthenticateScheme =
+<span style="color: darkturquoise">@@ -91,15 +87,8 @@</span> namespace Ploeh.Samples.Restaurants.RestApi
+                     JwtBearerDefaults.AuthenticationScheme;
+             }).AddJwtBearer(opts =&gt;
+             {
+<span style="color: red">-                opts.TokenValidationParameters = new TokenValidationParameters
+-                {
+-                    ValidateIssuerSigningKey = true,
+-                    IssuerSigningKey = new SymmetricSecurityKey(
+-                    IssuerSigningKey = new SymmetricSecurityKey(
+-                        Encoding.ASCII.GetBytes(secret)),
+-                    ValidateIssuer = false,
+-                    ValidateAudience = false,
+-                    RoleClaimType = "role"
+-                };</span>
+<span style="color: green">+                opts.TokenValidationParameters =
++                    CreateTokenValidationParameters();</span>
+                 opts.RequireHttpsMetadata = false;
+             });
+
+<span style="color: darkturquoise">@@ -108,6 +97,23 @@</span> namespace Ploeh.Samples.Restaurants.RestApi
+                 sp.GetService&lt;IHttpContextAccessor&gt;().HttpContext.User));
+         }
+
+<span style="color: green">+        private TokenValidationParameters CreateTokenValidationParameters()
++        {
++            JwtSecurityTokenHandler.DefaultMapInboundClaims = false;
++
++            var secret = Configuration["JwtIssuerSigningKey"];
++
++            return new TokenValidationParameters
++            {
++                ValidateIssuerSigningKey = true,
++                IssuerSigningKey = new SymmetricSecurityKey(
++                    Encoding.ASCII.GetBytes(secret)),
++                ValidateIssuer = false,
++                ValidateAudience = false,
++                RoleClaimType = "role"
++            };
++        }
++</span>
+         private void ConfigureRepository(IServiceCollection services)
+         {</pre>
+	</p>
+	<p>
+		Can you spot the problem?
+	</p>
+	<p>
+		As soon as I saw that diff, the problem almost jumped out at me. I'm so happy that I make small commits. What you see here is, I promise, the entire diff of that commit.
+	</p>
+	<p>
+		Clearly, you're not familiar with this code base, but even so, you might be able to intuit the problem from the above diff. You don't need domain-specific knowledge for it, or knowledge of the rest of the code base.
+	</p>
+	<p>
+		I'll give you a hint: I moved a line of code into a lambda expression.
+	</p>
+	<h3 id="1cfcd1adb0b24b6098aa250c73f5cba2">
+		Deferred execution <a href="#1cfcd1adb0b24b6098aa250c73f5cba2" title="permalink">#</a>
+	</h3>
+	<p>
+		In the above commit, I extracted a helper method that I called <code>CreateTokenValidationParameters</code>. As the name communicates, it creates JWT validation parameters. In other words, it supplies the configuration values that determine how ASP.NET figures out how authorise an HTTP request.
+	</p>
+	<p>
+		Among other things, it sets the <code>RoleClaimType</code> property to <code>"role"</code>. By default, the <code>[Authorize]</code> attribute is looking for a role claim with a rather complicated identifier. Setting the <code>RoleClaimType</code> enables you to change the identifier. By setting it to <code>"role"</code>, I'm telling the ASP.NET framework that it should look for claims named <code>role</code> in the JWT, and these should be translated to role claims.
+	</p>
+	<p>
+		Except that it doesn't work.
+	</p>
+	<p>
+		Ostensibly, this is for backwards compatibility reasons. You have to set <a href="https://docs.microsoft.com/dotnet/api/system.identitymodel.tokens.jwt.jwtsecuritytokenhandler.defaultmapinboundclaims">JwtSecurityTokenHandler.DefaultMapInboundClaims</a> to <code>false</code>. Notice that this is a global variable.
+	</p>
+	<p>
+		I thought that the line of code that does that conceptually belongs together with the other code that configures the JWT validation parameters, so I moved it in there. I didn't think much about it, and all my tests were still passing.
+	</p>
+	<p>
+		What happened, though, was that I moved mutation of a global variable into a helper method that was called from a lambda expression. Keep in mind that lambda expressions represent code that may run later; that execution is deferred.
+	</p>
+	<p>
+		By moving that mutation statement into the helper method, I inadvertently deferred its execution. When the application's <code>Startup</code> code runs, it configures the service. All the code that runs inside of <code>AddJwtBearer</code>, however, doesn't run immediately; it runs when needed.
+	</p>
+	<p>
+		This explains why all tests were passing. My test suite has plenty of self-hosted integration tests in the style of <a href="/outside-in-tdd">outside-in test-driven development</a>. When I ran all the tests, the deferred code block would run in some other test context, flipping that global bit as a side effect. When the test suite reaches the test that fails when run in isolation, the bit is already flipped, and then it works.
+	</p>
+	<p>
+		It took me hours to figure out what the problem was, and it turned out that the root cause was a global variable.
+	</p>
+	<p>
+		Global variables are evil. Who knew?
+	</p>
+	<h3 id="cbf70c019a264e8fa861e13536db688f">
+		Can't reproduce <a href="#cbf70c019a264e8fa861e13536db688f" title="permalink">#</a>
+	</h3>
+	<p>
+		Once you figure out what the problem is, you should reproduce it with an automated test.
+	</p>
+	<p>
+		Yes, and how do I do that here? I already had tests that verify that you can <code>GET</code> the desired resource if you present a valid JWT. And <em>that test passes!</em>
+	</p>
+	<p>
+		The only way I can think of to reproduce the issue with an automated test is to create a completely new, independent test library with only one test. I considered doing that, weighed the advantages against the disadvantages and decided, given the context, that it wasn't worth the effort.
+	</p>
+	<p>
+		That means, though, that I had to accept that within the confines of my existing testing strategy, I can't reproduce the defect. This doesn't happen to me often. In fact, I can't recall that it's ever happened to me before, like this.
+	</p>
+	<h3 id="2ae70aa4524e48bf9b0190aeaa158192">
+		Resolution <a href="#2ae70aa4524e48bf9b0190aeaa158192" title="permalink">#</a>
+	</h3>
+	<p>
+		It took me hours to find the bug, and ten seconds to fix it. I just moved the mutation of <code>JwtSecurityTokenHandler.DefaultMapInboundClaims</code> back to the <code>ConfigureAuthorization</code> method:
+	</p>
+	<p>
+		<pre><strong>diff --git a/Restaurant.RestApi/Startup.cs b/Restaurant.RestApi/Startup.cs
+index d4917f5..e40032f 100644
+--- a/Restaurant.RestApi/Startup.cs
++++ b/Restaurant.RestApi/Startup.cs</strong>
+<span style="color: darkturquoise">@@ -79,6 +79,7 @@</span> namespace Ploeh.Samples.Restaurants.RestApi
+
+         private void ConfigureAuthorization(IServiceCollection services)
+         {
+<span style="color: green">+            JwtSecurityTokenHandler.DefaultMapInboundClaims = false;</span>
+             services.AddAuthentication(opts =&gt;
+             {
+                 opts.DefaultAuthenticateScheme =
+<span style="color: darkturquoise">@@ -99,8 +100,6 @@</span> namespace Ploeh.Samples.Restaurants.RestApi
+
+         private TokenValidationParameters CreateTokenValidationParameters()
+         {
+<span style="color: red">-            JwtSecurityTokenHandler.DefaultMapInboundClaims = false;
+-</span>
+             var secret = Configuration["JwtIssuerSigningKey"];
+
+             return new TokenValidationParameters</pre>
+	</p>
+	<p>
+		An ad-hoc smoke test verified that this solved the problem.
+	</p>
+	<h3 id="55a0017f1aab47b6b9049e63d51d79ff">
+		Conclusion <a href="#55a0017f1aab47b6b9049e63d51d79ff" title="permalink">#</a>
+	</h3>
+	<p>
+		There are multiple insights to be had from this experience:
+		<ul>
+			<li>Global variables are evil</li>
+			<li>Binary search, or bisection, is useful when troubleshooting</li>
+			<li>Not all bugs can be reproduced by an automated test</li>
+			<li>Small commits make it easy to detect problems</li>
+		</ul>
+		I've always disliked Git's <em>squash</em> feature, and here's one of the many reasons to dislike it. Had this happened in a code base with a 'nice history' (as the <em>squash</em> proponents like to present it), that small commit would have been bundled with various other commits. The problem wouldn't have jumped at me if buried in dozens of other changes.
+	</p>
+</div>
