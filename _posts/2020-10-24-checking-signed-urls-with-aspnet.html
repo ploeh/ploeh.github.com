@@ -1,0 +1,167 @@
+---
+layout: post
+title: "Checking signed URLs with ASP.NET"
+description: "Use a filter to check all requested URL signatures."
+date: 2020-10-24 10:41 UTC
+tags: [REST, ASP.NET Web API]
+---
+{% include JB/setup %}
+
+<div id="post">
+	<p>
+		<em>{{ page.description }}</em>
+	</p>
+	<p>
+		This article is part of <a href="">a short series on fit URLs</a>. In the overview article, I argued that you should be signing URLs in order to prevent your REST APIs from becoming victims of <a href="https://www.hyrumslaw.com">Hyrum's law</a>. <a href="">In the previous article</a> you saw how to sign URLs with ASP.NET.
+	</p>
+	<p>
+		In this article you'll see how to check the URLs of all HTTP requests to the API and reject those that aren't up to snuff.
+	</p>
+	<h3 id="beb942e872e6470e94777e228967b58a">
+		Filter <a href="#beb942e872e6470e94777e228967b58a" title="permalink">#</a>
+	</h3>
+	<p>
+		If you want to intercept all incoming HTTP requests in ASP.NET Core, an <a href="https://docs.microsoft.com/dotnet/api/microsoft.aspnetcore.mvc.filters.iasyncactionfilter">IAsyncActionFilter</a> is a good option. This one should look at the URL of all incoming HTTP requests and detect if the client tried to tamper with it.
+	</p>
+	<p>
+		<pre><span style="color:blue;">internal</span>&nbsp;<span style="color:blue;">sealed</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">UrlIntegrityFilter</span>&nbsp;:&nbsp;<span style="color:#2b91af;">IAsyncActionFilter</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;<span style="color:blue;">byte</span>[]&nbsp;urlSigningKey;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">UrlIntegrityFilter</span>(<span style="color:blue;">byte</span>[]&nbsp;urlSigningKey)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.urlSigningKey&nbsp;=&nbsp;urlSigningKey;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;More&nbsp;code&nbsp;comes&nbsp;here...</span></pre>
+	</p>
+	<p>
+		The interface only defines a single method:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">async</span>&nbsp;<span style="color:#2b91af;">Task</span>&nbsp;OnActionExecutionAsync(
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">ActionExecutingContext</span>&nbsp;context,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">ActionExecutionDelegate</span>&nbsp;next)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;(IsGetHomeRequest(context))
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">await</span>&nbsp;next().ConfigureAwait(<span style="color:blue;">false</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;strippedUrl&nbsp;=&nbsp;GetUrlWithoutSignature(context);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;(SignatureIsValid(strippedUrl,&nbsp;context))
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">await</span>&nbsp;next().ConfigureAwait(<span style="color:blue;">false</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;context.Result&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">NotFoundResult</span>();
+}</pre>
+	</p>
+	<p>
+		While the rule is to reject requests with invalid signatures, there's one exception. The 'home' resource requires no signature, as this is the only publicly documented URL for the API. Thus, if <code>IsGetHomeRequest</code> returns <code>true</code>, the filter invokes the <code>next</code> delegate and returns.
+	</p>
+	<p>
+		Otherwise, it strips the signature off the URL and checks if the signature is valid. If it is, it again invokes the <code>next</code> delegate and returns.
+	</p>
+	<p>
+		If the signature is invalid, on the other hand, the filter stops further execution by <em>not</em> invoking <code>next</code>. Instead, it sets the response to a <code>404 Not Found</code> result.
+	</p>
+	<p>
+		It may seem odd to return <code>404 Not Found</code> if the signature is invalid. Wouldn't <code>401 Unauthorized</code> or <code>403 Forbidden</code> be more appropriate?
+	</p>
+	<p>
+		Not really. Keep in mind that while this behaviour may use encryption technology, it's not a security feature. The purpose is to make it impossible for clients to 'retro-engineer' an implied interface. This protects them from breaking changes in the future. Clients are supposed to follow links, and the URLs given by the API itself are proper, existing URLs. If you try to edit a URL, then that URL doesn't work. It represents a resource that doesn't exist. While it may seem surprising at first, I find that a <code>404 Not Found</code> result is the most appropriate status code to return.
+	</p>
+	<h3 id="3584198282b64c85ab5872493da8149d">
+		Detecting a home request <a href="#3584198282b64c85ab5872493da8149d" title="permalink">#</a>
+	</h3>
+	<p>
+		The <code>IsGetHomeRequest</code> helper method is straightforward:
+	</p>
+	<p>
+		<pre><span style="color:blue;">private</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:blue;">bool</span>&nbsp;IsGetHomeRequest(<span style="color:#2b91af;">ActionExecutingContext</span>&nbsp;context)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;context.HttpContext.Request.Path&nbsp;==&nbsp;<span style="color:#a31515;">&quot;/&quot;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&amp;&amp;&nbsp;context.HttpContext.Request.Method&nbsp;==&nbsp;<span style="color:#a31515;">&quot;GET&quot;</span>;
+}</pre>
+	</p>
+	<p>
+		This predicate only looks at the <code>Path</code> and <code>Method</code> of the incoming request. Perhaps it also ought to check that the URL has no query string parameters, but I'm not sure if that actually matters.
+	</p>
+	<h3 id="c5f674b301404a2f95177d4c1dc73cc0">
+		Stripping off the signature <a href="#c5f674b301404a2f95177d4c1dc73cc0" title="permalink">#</a>
+	</h3>
+	<p>
+		The <code>GetUrlWithoutSignature</code> method strips off the signature query string variable from the URL, but leaves everything else intact:
+	</p>
+	<p>
+		<pre><span style="color:blue;">private</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:blue;">string</span>&nbsp;GetUrlWithoutSignature(<span style="color:#2b91af;">ActionExecutingContext</span>&nbsp;context)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;restOfQuery&nbsp;=&nbsp;<span style="color:#2b91af;">QueryString</span>.Create(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;context.HttpContext.Request.Query.Where(x&nbsp;=&gt;&nbsp;x.Key&nbsp;!=&nbsp;<span style="color:#a31515;">&quot;sig&quot;</span>));
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;url&nbsp;=&nbsp;context.HttpContext.Request.GetEncodedUrl();
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;ub&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">UriBuilder</span>(url);
+&nbsp;&nbsp;&nbsp;&nbsp;ub.Query&nbsp;=&nbsp;restOfQuery.ToString();
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;ub.Uri.AbsoluteUri;
+}</pre>
+	</p>
+	<p>
+		The purpose of removing only the <code>sig</code> query string parameter is that it restores the rest of the URL to the value that it had when it was signed. This enables the <code>SignatureIsValid</code> method to recalculate the <a href="https://en.wikipedia.org/wiki/HMAC">HMAC</a>.
+	</p>
+	<h3 id="4fa6c27d6b504f2baf4b27b2f431851a">
+		Validating the signature <a href="#4fa6c27d6b504f2baf4b27b2f431851a" title="permalink">#</a>
+	</h3>
+	<p>
+		The <code>SignatureIsValid</code> method validates the signature:
+	</p>
+	<p>
+		<pre><span style="color:blue;">private</span>&nbsp;<span style="color:blue;">bool</span>&nbsp;SignatureIsValid(<span style="color:blue;">string</span>&nbsp;candidate,&nbsp;<span style="color:#2b91af;">ActionExecutingContext</span>&nbsp;context)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;sig&nbsp;=&nbsp;context.HttpContext.Request.Query[<span style="color:#a31515;">&quot;sig&quot;</span>];
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;receivedSignature&nbsp;=&nbsp;<span style="color:#2b91af;">Convert</span>.FromBase64String(sig.ToString());
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">using</span>&nbsp;<span style="color:blue;">var</span>&nbsp;hmac&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">HMACSHA256</span>(urlSigningKey);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;computedSignature&nbsp;=&nbsp;hmac.ComputeHash(<span style="color:#2b91af;">Encoding</span>.ASCII.GetBytes(candidate));
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;signaturesMatch&nbsp;=&nbsp;computedSignature.SequenceEqual(receivedSignature);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;signaturesMatch;
+}</pre>
+	</p>
+	<p>
+		If the <code>receivedSignature</code> equals the <code>computedSignature</code> the signature is valid.
+	</p>
+	<p>
+		This prevents clients from creating URLs based on implied templates. Since clients don't have the signing key, they can't compute a valid HMAC, and therefore the URLs they'll produce will fail the integrity test.
+	</p>
+	<h3 id="8c8d2409a9a647b6a4d9c2970a02a9c7">
+		Configuration <a href="#8c8d2409a9a647b6a4d9c2970a02a9c7" title="permalink">#</a>
+	</h3>
+	<p>
+		As is the case for the URL-signing feature, you'll first need to read the signing key from the configuration system. This is the same key used to sign URLs:
+	</p>
+	<p>
+		<pre><span style="color:blue;">var</span>&nbsp;urlSigningKey&nbsp;=&nbsp;<span style="color:#2b91af;">Encoding</span>.ASCII.GetBytes(
+&nbsp;&nbsp;&nbsp;&nbsp;Configuration.GetValue&lt;<span style="color:blue;">string</span>&gt;(<span style="color:#a31515;">&quot;UrlSigningKey&quot;</span>));</pre>
+	</p>
+	<p>
+		Next, you'll need to register the filter with the ASP.NET framework:
+	</p>
+	<p>
+		<pre>services.AddControllers(opts&nbsp;=&gt;&nbsp;opts.Filters.Add(<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">UrlIntegrityFilter</span>(urlSigningKey)));</pre>
+	</p>
+	<p>
+		This is typically done in the <code>ConfigureServices</code> method of the <code>Startup</code> class.
+	</p>
+	<h3 id="e032ab8e735b4e54a733ded5d086bee8">
+		Conclusion <a href="#e032ab8e735b4e54a733ded5d086bee8" title="permalink">#</a>
+	</h3>
+	<p>
+		With a filter like <code>UrlIntegrityFilter</code> you can check the integrity of URLs on all incoming requests to your REST API. This prevents clients from making up URLs based on an implied interface. This may seem restrictive, but is actually for their own benefit. When they can't assemble URLs from scratch, the only remaining option is to follow the links that the API provides.
+	</p>
+	<p>
+		This enables you to evolve the API without breaking existing clients. While client developers may not initially appreciate having to follow links instead of building URLs out of templates, they may value that their clients don't break as you evolve the API.
+	</p>
+</div>
