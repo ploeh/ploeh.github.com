@@ -1,0 +1,168 @@
+---
+layout: post
+title: "Signing URLs with ASP.NET"
+description: "A few Decorators is all it takes."
+date: 2020-10-24 9:40 UTC
+tags: [REST, ASP.NET Web API]
+---
+{% include JB/setup %}
+
+<div id="post">
+	<p>
+		<em>{{ page.description }}</em>
+	</p>
+	<p>
+		This article is part of <a href="">a short series on fit URLs</a>. In the overview article, I argued that you should be signing URLs in order to prevent your REST APIs from becoming victims of <a href="https://www.hyrumslaw.com">Hyrum's law</a>.
+	</p>
+	<p>
+		In this article, you'll see how to do this with ASP.NET Core 3.1, and in the next article you'll see how to check URL integrity.
+	</p>
+	<h3 id="8d83a9fd4dec48efa79455d6f3356726">
+		SigningUrlHelper <a href="#8d83a9fd4dec48efa79455d6f3356726" title="permalink">#</a>
+	</h3>
+	<p>
+		I wanted the URL-signing functionality to slot into the ASP.NET framework, which supplies the <a href="https://docs.microsoft.com/dotnet/api/microsoft.aspnetcore.mvc.iurlhelper">IUrlHelper</a> interface for the purpose of creating URLs. (For example, the <a href="/2020/08/10/an-aspnet-core-url-builder">UrlBuilder I recently described</a> relies on that interface.)
+	</p>
+	<p>
+		Since it's an interface, you can define a <a href="https://en.wikipedia.org/wiki/Decorator_pattern">Decorator</a> around it:
+	</p>
+	<p>
+		<pre><span style="color:blue;">internal</span>&nbsp;<span style="color:blue;">sealed</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">SigningUrlHelper</span>&nbsp;:&nbsp;<span style="color:#2b91af;">IUrlHelper</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;<span style="color:#2b91af;">IUrlHelper</span>&nbsp;inner;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;<span style="color:blue;">byte</span>[]&nbsp;urlSigningKey;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">SigningUrlHelper</span>(<span style="color:#2b91af;">IUrlHelper</span>&nbsp;inner,&nbsp;<span style="color:blue;">byte</span>[]&nbsp;urlSigningKey)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.inner&nbsp;=&nbsp;inner;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.urlSigningKey&nbsp;=&nbsp;urlSigningKey;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;More&nbsp;code&nbsp;comes&nbsp;here...</span></pre>
+	</p>
+	<p>
+		As you can tell, this Decorator requires an <code>inner</code> <code>IUrlHelper</code> and a <code>urlSigningKey</code>. Most of the members just delegate to the <code>inner</code> implementation:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">bool</span>&nbsp;IsLocalUrl(<span style="color:blue;">string</span>&nbsp;url)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;inner.IsLocalUrl(url);
+}</pre>
+	</p>
+	<p>
+		The <a href="https://docs.microsoft.com/dotnet/api/microsoft.aspnetcore.mvc.iurlhelper.action">Action</a> method creates URLs, so this is the method to modify:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">string</span>&nbsp;Action(<span style="color:#2b91af;">UrlActionContext</span>&nbsp;actionContext)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;url&nbsp;=&nbsp;inner.Action(actionContext);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;(IsLocalUrl(url))
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;b&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">UriBuilder</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;ActionContext.HttpContext.Request.Scheme,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;ActionContext.HttpContext.Request.Host.ToUriComponent());
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;url&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Uri</span>(b.Uri,&nbsp;url).AbsoluteUri;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;ub&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">UriBuilder</span>(url);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">using</span>&nbsp;<span style="color:blue;">var</span>&nbsp;hmac&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">HMACSHA256</span>(urlSigningKey);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;sig&nbsp;=&nbsp;<span style="color:#2b91af;">Convert</span>.ToBase64String(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;hmac.ComputeHash(<span style="color:#2b91af;">Encoding</span>.ASCII.GetBytes(url)));
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;ub.Query&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">QueryString</span>(ub.Query).Add(<span style="color:#a31515;">&quot;sig&quot;</span>,&nbsp;sig).ToString();
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;ub.ToString();
+}</pre>
+	</p>
+	<p>
+		The <code>actionContext</code> may sometimes indicate a local (relative) URL, in which case I wanted to convert it to an absolute URL. Once that's taken care of, the method calculates an <a href="https://en.wikipedia.org/wiki/HMAC">HMAC</a> and adds it as a query string variable.
+	</p>
+	<h3 id="37abf2a288444c9cab0541f6acafda8b">
+		SigningUrlHelperFactory <a href="#37abf2a288444c9cab0541f6acafda8b" title="permalink">#</a>
+	</h3>
+	<p>
+		While it's possible take ASP.NET's default <code>IUrlHelper</code> instance (e.g. from <a href="https://docs.microsoft.com/dotnet/api/microsoft.aspnetcore.mvc.controllerbase.url">ControllerBase.Url</a>) and manually decorate it with <code>SigningUrlHelper</code>, that doesn't slot seamlessly into the framework.
+	</p>
+	<p>
+		For example, to add the <code>Location</code> header that you saw in <a href="">the previous article</a>, the code is this:
+	</p>
+	<p>
+		<pre><span style="color:blue;">private</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:#2b91af;">ActionResult</span>&nbsp;Reservation201Created(
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">int</span>&nbsp;restaurantId,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Reservation</span>&nbsp;r)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">CreatedAtActionResult</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">nameof</span>(Get),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">null</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;{&nbsp;restaurantId,&nbsp;id&nbsp;=&nbsp;r.Id.ToString(<span style="color:#a31515;">&quot;N&quot;</span>)&nbsp;},
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;r.ToDto());
+}</pre>
+	</p>
+	<p>
+		The method just returns a new <a href="https://docs.microsoft.com/dotnet/api/microsoft.aspnetcore.mvc.createdatactionresult">CreatedAtActionResult</a> object, and the framework takes care of the rest. No explicit <code>IUrlHelper</code> object is used, so there's nothing to manually decorate. By default, then, the URLs created from such <code>CreatedAtActionResult</code> objects aren't signed.
+	</p>
+	<p>
+		It turns out that the ASP.NET framework uses an interface called <a href="https://docs.microsoft.com/dotnet/api/microsoft.aspnetcore.mvc.routing.iurlhelperfactory">IUrlHelperFactory</a> to create <code>IUrlHelper</code> objects. Decorate that as well:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">sealed</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">SigningUrlHelperFactory</span>&nbsp;:&nbsp;<span style="color:#2b91af;">IUrlHelperFactory</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;<span style="color:#2b91af;">IUrlHelperFactory</span>&nbsp;inner;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;<span style="color:blue;">byte</span>[]&nbsp;urlSigningKey;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">SigningUrlHelperFactory</span>(<span style="color:#2b91af;">IUrlHelperFactory</span>&nbsp;inner,&nbsp;<span style="color:blue;">byte</span>[]&nbsp;urlSigningKey)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.inner&nbsp;=&nbsp;inner;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.urlSigningKey&nbsp;=&nbsp;urlSigningKey;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">IUrlHelper</span>&nbsp;GetUrlHelper(<span style="color:#2b91af;">ActionContext</span>&nbsp;context)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;url&nbsp;=&nbsp;inner.GetUrlHelper(context);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">SigningUrlHelper</span>(url,&nbsp;urlSigningKey);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+	</p>
+	<p>
+		Straightforward: use the <code>inner</code> object to get an <code>IUrlHelper</code> object, and decorate it with <code>SigningUrlHelper</code>.
+	</p>
+	<h3 id="92c13952cd48418c81c6925d9af15635">
+		Configuration <a href="#92c13952cd48418c81c6925d9af15635" title="permalink">#</a>
+	</h3>
+	<p>
+		The final piece of the puzzle is to tell the framework about the <code>SigningUrlHelperFactory</code>. You can do this in the <code>Startup</code> class' <code>ConfigureServices</code> method.
+	</p>
+	<p>
+		First, read the signing key from the configuration system (e.g. a configuration file):
+	</p>
+	<p>
+		<pre><span style="color:blue;">var</span>&nbsp;urlSigningKey&nbsp;=&nbsp;<span style="color:#2b91af;">Encoding</span>.ASCII.GetBytes(
+&nbsp;&nbsp;&nbsp;&nbsp;Configuration.GetValue&lt;<span style="color:blue;">string</span>&gt;(<span style="color:#a31515;">&quot;UrlSigningKey&quot;</span>));</pre>
+	</p>
+	<p>
+		Then use the signing key to configure the <code>SigningUrlHelperFactory</code> service. Here, I wrapped that in a little helper method:
+	</p>
+	<p>
+		<pre><span style="color:blue;">private</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:blue;">void</span>&nbsp;ConfigureUrSigning(
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">IServiceCollection</span>&nbsp;services,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">byte</span>[]&nbsp;urlSigningKey)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;services.RemoveAll&lt;<span style="color:#2b91af;">IUrlHelperFactory</span>&gt;();
+&nbsp;&nbsp;&nbsp;&nbsp;services.AddSingleton&lt;<span style="color:#2b91af;">IUrlHelperFactory</span>&gt;(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">SigningUrlHelperFactory</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">UrlHelperFactory</span>(),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;urlSigningKey));
+}</pre>
+	</p>
+	<p>
+		This method first removes the default <code>IUrlHelperFactory</code> service and then adds the <code>SigningUrlHelperFactory</code> instead. It decorates <a href="https://docs.microsoft.com/dotnet/api/microsoft.aspnetcore.mvc.routing.urlhelperfactory">UrlHelperFactory</a>, which is the default built-in implementation of the interface.
+	</p>
+	<h3 id="2efe02caa55742679a953a398c235bc5">
+		Conclusion <a href="#2efe02caa55742679a953a398c235bc5" title="permalink">#</a>
+	</h3>
+	<p>
+		You can extend the ASP.NET framework to add a signature to all the URLs it generates. All it takes is two simple Decorators.
+	</p>
+	<p>
+		<strong>Next:</strong> Checking signed URLs with ASP.NET.
+	</p>
+</div>
