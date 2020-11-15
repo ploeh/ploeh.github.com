@@ -1,0 +1,126 @@
+---
+layout: post
+title: "Redirect legacy URLs"
+description: "Evolving REST API URLs when cool URIs don't change."
+date: 2020-11-15 9:11 UTC
+tags: [REST, ASP.NET Web API, Services]
+image: "/content/binary/reverse-proxy-based-redirect.png"
+image_alt: "Sequence diagram showing a reverse proxy returning a redirect response to a request for a legacy URL."
+---
+{% include JB/setup %}
+
+<div id="post">
+	<p>
+		<em>{{ page.description }}</em>
+	</p>
+	<p>
+		More than one reader reacted to my article on <a href="/2020/10/26/fit-urls">fit URLs</a> by asking about bookmarks and original URLs. <a href="/2020/10/26/fit-urls#b0fb43ff9aba4c14a075e7effc9fae25">Daniel Sklenitzka's question</a> is a good example:
+		<blockquote>
+			<p>
+				"I see how signing the URLs prevents clients from retro-engineering the URL templates, but how does it help preventing breaking changes? If the client stores the whole URL instead of just the ID and later the URL changes because a restaurant ID is added, the original URL is still broken, isn't it?"
+			</p>
+		</blockquote>
+		While I answered the question on the same page, I think that it's worthwhile to expand it.
+	</p>
+	<h3 id="3e1e7cd6b79e4e7b964a96a527312ab0">
+		The rules of HTTP <a href="#3e1e7cd6b79e4e7b964a96a527312ab0" title="permalink">#</a>
+	</h3>
+	<p>
+		I agree with the implicit assumption that clients are allowed to bookmark links. It seems, then, like a breaking change if you later change your internal URL scheme. That seems to imply that the bookmarked URL is gone, breaking a tenet of the HTTP protocol: <a href="https://www.w3.org/Provider/Style/URI">Cool URIs don't change</a>.
+	</p>
+	<p>
+		REST APIs are supposed to play by the rules of HTTP, so it'd seem that once you've published a URL, you can never retire it. You can, on the other hand, change its behaviour.
+	</p>
+	<p>
+		Let's call such URLs <em>legacy URLs</em>. Keep them around, but change them to return <code>301 Moved Permanently</code> responses.
+	</p>
+	<p>
+		The rules of REST go both ways. The API is expected to play by the rules of HTTP, and so are the clients. Clients are not only expected to follow links, but also redirects. If a legacy URL starts returning a <code>301 Moved Permanently</code> response, a well-behaved client doesn't break.
+	</p>
+	<h3 id="96913fb84fb344ccae75e1e2542ed51c">
+		Reverse proxy <a href="#96913fb84fb344ccae75e1e2542ed51c" title="permalink">#</a>
+	</h3>
+	<p>
+		As I've <a href="/2020/06/01/retiring-old-service-versions#bc73620aa71141b6a74f4a4aaf395d75">previously described</a>, one of the many benefits of HTTP-based services is that you can put a <a href="https://en.wikipedia.org/wiki/Reverse_proxy">reverse proxy</a> in front of your application servers. I've no idea how to configure or operate <a href="https://en.wikipedia.org/wiki/Nginx">NGINX</a> or <a href="https://en.wikipedia.org/wiki/Varnish_(software)">Varnish</a>, but from talking to people who do know, I get the impression that they're quite scriptable.
+	</p>
+	<p>
+		Since the above ideas are independent of actual service implementation or behaviour, it's a generic problem that you should seek to address with general-purpose software.
+	</p>
+	<p>
+		<img src="/content/binary/reverse-proxy-based-redirect.png" alt="Sequence diagram showing a reverse proxy returning a redirect response to a request for a legacy URL.">
+	</p>
+	<p>
+		Imagine that a reverse proxy is configured with a set of rules that detect legacy URLs and know how to format them. Clearly, the reverse proxy must know of the REST API's current URL scheme to be able to do that. You might think that this would entail leaking an implementation detail, but just as I consider any database used by the API as part of the overall system, I'd consider the reverse proxy as just another part.
+	</p>
+	<h3 id="410c6db0f3a54e969c1f54aa9f1ce59e">
+		Redirecting with ASP.NET <a href="#410c6db0f3a54e969c1f54aa9f1ce59e" title="permalink">#</a>
+	</h3>
+	<p>
+		If you don't have a reverse proxy, you can also implement redirects in code. It'd be better to use something like a reverse proxy, because that would mean that you get to delete code from your code base, but sometimes that's not possible.
+	</p>
+	<p>
+		In ASP.NET, you can return <code>301 Moved Permanently</code> responses just like any other kind of HTTP response:
+	</p>
+	<p>
+		<pre>[<span style="color:#2b91af;">Obsolete</span>(<span style="color:#a31515;">&quot;Use&nbsp;Get&nbsp;method&nbsp;with&nbsp;restaurant&nbsp;ID.&quot;</span>)]
+[<span style="color:#2b91af;">HttpGet</span>(<span style="color:#a31515;">&quot;calendar/{year}/{month}&quot;</span>)]
+<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">Task</span>&lt;<span style="color:#2b91af;">ActionResult</span>&gt;&nbsp;LegacyGet(<span style="color:blue;">int</span>&nbsp;year,&nbsp;<span style="color:blue;">int</span>&nbsp;month)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;result&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">RedirectToActionResult</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">nameof</span>(Get),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">null</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;{&nbsp;restaurantId&nbsp;=&nbsp;<span style="color:#2b91af;">Grandfather</span>.Id,&nbsp;year,&nbsp;month&nbsp;},
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;permanent:&nbsp;<span style="color:blue;">true</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:#2b91af;">Task</span>.FromResult&lt;<span style="color:#2b91af;">ActionResult</span>&gt;(result);
+}</pre>
+	</p>
+	<p>
+		This <code>LegacyGet</code> method redirects to the current method called <code>Get</code> by supplying the arguments that the new method requires. The <code>Get</code> method has this signature:
+	</p>
+	<p>
+		<pre>[<span style="color:#2b91af;">HttpGet</span>(<span style="color:#a31515;">&quot;restaurants/{restaurantId}/calendar/{year}/{month}&quot;</span>)]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">async</span>&nbsp;<span style="color:#2b91af;">Task</span>&lt;<span style="color:#2b91af;">ActionResult</span>&gt;&nbsp;Get(<span style="color:blue;">int</span>&nbsp;restaurantId,&nbsp;<span style="color:blue;">int</span>&nbsp;year,&nbsp;<span style="color:blue;">int</span>&nbsp;month)</pre>
+	</p>
+	<p>
+		When I expanded the API from a single restaurant to a multi-tenant system, I had to <a href="https://en.wikipedia.org/wiki/Grandfather_clause">grandfather in</a> the original restaurant. I gave it a <code>restaurantId</code>, but in order to not put <a href="https://en.wikipedia.org/wiki/Magic_number_(programming)">magic constants</a> in the code, I defined it as the named constant <code>Grandfather.Id</code>.
+	</p>
+	<p>
+		Notice that I also adorned the <code>LegacyGet</code> method with an <code>[Obsolete]</code> attribute to make it clear to maintenance programmers that this is legacy code.
+	</p>
+	<h3 id="69aad25084a5452b96e14bc81a28a53c">
+		Regression test <a href="#69aad25084a5452b96e14bc81a28a53c" title="permalink">#</a>
+	</h3>
+	<p>
+		While legacy URLs may be just that: legacy, that doesn't mean that it doesn't matter whether or not they work. You may want to add regression tests.
+	</p>
+	<p>
+		If you implement redirects in code (as opposed to a reverse proxy), you should also add automated tests that verify that the redirects work:
+	</p>
+	<p>
+		<pre>[<span style="color:#2b91af;">Theory</span>]
+[<span style="color:#2b91af;">InlineData</span>(<span style="color:#a31515;">&quot;http://localhost/calendar/2020?sig=ePBoUg5gDw2RKMVWz8KIVzF%2Fgq74RL6ynECiPpDwVks%3D&quot;</span>)]
+[<span style="color:#2b91af;">InlineData</span>(<span style="color:#a31515;">&quot;http://localhost/calendar/2020/9?sig=ZgxaZqg5ubDp0Z7IUx4dkqTzS%2Fyjv6veDUc2swdysDU%3D&quot;</span>)]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">async</span>&nbsp;<span style="color:#2b91af;">Task</span>&nbsp;BookmarksStillWork(<span style="color:blue;">string</span>&nbsp;bookmarkedAddress)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">using</span>&nbsp;<span style="color:blue;">var</span>&nbsp;api&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">LegacyApi</span>();
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;actual&nbsp;=&nbsp;<span style="color:blue;">await</span>&nbsp;api.CreateDefaultClient().GetAsync(<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Uri</span>(bookmarkedAddress));
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Assert</span>.Equal(<span style="color:#2b91af;">HttpStatusCode</span>.MovedPermanently,&nbsp;actual.StatusCode);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;follow&nbsp;=&nbsp;<span style="color:blue;">await</span>&nbsp;api.CreateClient().GetAsync(actual.Headers.Location);
+&nbsp;&nbsp;&nbsp;&nbsp;follow.EnsureSuccessStatusCode();
+}</pre>
+	</p>
+	<p>
+		This test interacts with a self-hosted service at the HTTP level. <code>LegacyApi</code> is a test-specific helper class that derives from <a href="https://docs.microsoft.com/dotnet/api/microsoft.aspnetcore.mvc.testing.webapplicationfactory-1">WebApplicationFactory&lt;Startup&gt;</a>.
+	</p>
+	<p>
+		The test uses URLs that I 'bookmarked' before I evolved the URLs to a multi-tenant system. As you can tell, these are bookmarks against the self-hosted service. The test first verifies that the response is <code>301 Moved Permanently</code>. It then requests the new address and <a href="/2020/09/28/ensuresuccessstatuscode-as-an-assertion">uses EnsureSuccessStatusCode as an assertion</a>.
+	</p>
+	<h3 id="f16f3cd819804e54add83ad32aaff188">
+		Conclusion <a href="#f16f3cd819804e54add83ad32aaff188" title="permalink">#</a>
+	</h3>
+	<p>
+		When you evolve fit URLs, it could break clients that may have bookmarked legacy URLs. Consider leaving <code>301 Moved Permanently</code> responses at those addresses.
+	</p>
+</div>
