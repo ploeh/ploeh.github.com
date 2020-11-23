@@ -1,0 +1,165 @@
+---
+layout: post
+title: "Validation, a solved problem?"
+description: "A validation problem with a twist."
+date: 2020-11-23 6:41 UTC
+tags: [Functional Programming, Software Design, Article Series]
+---
+{% include JB/setup %}
+
+<div id="post">
+	<p>
+		<em>{{ page.description }}</em>
+	</p>
+	<p>
+		Until recently, I thought that data validation was a solved problem. <a href="/2018/11/05/applicative-validation">Use an applicative functor</a>. I then encountered <a href="https://forums.fsharp.org/t/thoughts-on-input-validation-pattern-from-a-noob/1541">a forum question</a> that for a few minutes shook my faith.
+	</p>
+	<p>
+		After brief consideration, though, I realised that all is good. Validation, even with a twist, is successfully modelled with an <a href="/2018/10/01/applicative-functors">applicative functor</a>. Faith in computer science restored.
+	</p>
+	<h3 id="891801e3802f49d8a51b56bebaacecb9">
+		The twist <a href="#891801e3802f49d8a51b56bebaacecb9" title="permalink">#</a>
+	</h3>
+	<p>
+		Usually, when you see a demo of applicative validation, the result of validating is one of two: either <a href="https://lexi-lambda.github.io/blog/2019/11/05/parse-don-t-validate">a parsed result</a>, or a collection of error messages.
+	</p>
+	<p>
+		<pre>λ&gt; validateReservation $ ReservationJson "2017-06-30 19:00:00+02:00" 4 "Jane Doe" "j@example.com"
+Validation (Right (Reservation {
+&nbsp;&nbsp;&nbsp;&nbsp;reservationDate = 2017-06-30 19:00:00 +0200,
+&nbsp;&nbsp;&nbsp;&nbsp;reservationQuantity = 4,
+&nbsp;&nbsp;&nbsp;&nbsp;reservationName = "Jane Doe",
+&nbsp;&nbsp;&nbsp;&nbsp;reservationEmail = "j@example.com"}))
+
+λ&gt; validateReservation $ ReservationJson "2017/14/12 6pm" 4.1 "Jane Doe" "jane.example.com"
+Validation (Left ["Not a date.","Not a positive integer.","Not an email address."])
+
+λ&gt; validateReservation $ ReservationJson "2017-06-30 19:00:00+02:00" (-3) "Jane Doe" "j@example.com"
+Validation (Left ["Not a positive integer."])</pre>
+	</p>
+	<p>
+		(Example from <a href="/2018/11/05/applicative-validation">Applicative validation</a>.)
+	</p>
+	<p>
+		What if, instead, you're displaying an input form? When users enter data, you want to validate it. Imagine, for the rest of this short series of articles that the input form has three fields: <em>name</em>, <em>date of birth</em>, and <em>address</em>. Each piece of data has associated validation rules.
+	</p>
+	<p>
+		If you enter a valid name, but an invalid date of birth, you want to clear the input form's date of birth, but not the name. It's such a bother for a user having to retype valid data just because a single field turned out to be invalid.
+	</p>
+	<p>
+		Imagine, for example, that you want to bind the form to a data model like this <a href="https://fsharp.org">F#</a> record type:
+	</p>
+	<p>
+		<pre><span style="color:blue;">type</span>&nbsp;Input&nbsp;=&nbsp;{&nbsp;Name&nbsp;:&nbsp;string&nbsp;option;&nbsp;DoB&nbsp;:&nbsp;DateTime&nbsp;option;&nbsp;Address&nbsp;:&nbsp;string&nbsp;option}</pre>
+	</p>
+	<p>
+		Each of these three fields is optional. We'd like validation to work in the following way: If validation fails, the function should return <em>both</em> a list of error messages, and <em>also</em> the <code>Input</code> object, with valid data retained, but invalid data cleared.
+	</p>
+	<p>
+		One of the rules implied in the forum question is that names must be more than three characters long. Thus, input like this is invalid:
+	</p>
+	<p>
+		<pre>{&nbsp;Name&nbsp;=&nbsp;Some&nbsp;<span style="color:#a31515;">&quot;Tom&quot;</span>;&nbsp;DoB&nbsp;=&nbsp;Some&nbsp;eightYearsAgo;&nbsp;Address&nbsp;=&nbsp;Some&nbsp;<span style="color:#a31515;">&quot;x&quot;</span>&nbsp;}</pre>
+	</p>
+	<p>
+		Both the <code>DoB</code> and <code>Address</code> fields, however, are valid, so, along with error messages, we'd like our validation function to return a partially wiped <code>Input</code> value:
+	</p>
+	<p>
+		<pre>{&nbsp;Name&nbsp;=&nbsp;None;&nbsp;DoB&nbsp;=&nbsp;Some&nbsp;eightYearsAgo;&nbsp;Address&nbsp;=&nbsp;Some&nbsp;<span style="color:#a31515;">&quot;x&quot;</span>&nbsp;}</pre>
+	</p>
+	<p>
+		Notice that both <code>DoB</code> and <code>Address</code> field values are retained, while <code>Name</code> is cleared.
+	</p>
+	<p>
+		A final requirement: If validation succeeds, the return value should be a <a href="https://lexi-lambda.github.io/blog/2019/11/05/parse-don-t-validate">parsed value that captures that validation took place</a>:
+	</p>
+	<p>
+		<pre><span style="color:blue;">type</span>&nbsp;ValidInput&nbsp;=&nbsp;{&nbsp;Name&nbsp;:&nbsp;string;&nbsp;DoB&nbsp;:&nbsp;DateTime;&nbsp;Address&nbsp;:&nbsp;string&nbsp;}</pre>
+	</p>
+	<p>
+		That requirement is straightforward. That's how you'd usually implement application validation. It's the partial data round-trip that seems to throw a spanner in the works.
+	</p>
+	<p>
+		How should we model such validation?
+	</p>
+	<h3 id="534fcc2d66f242a0ba10a9aca7827276">
+		Theory, applied <a href="#534fcc2d66f242a0ba10a9aca7827276" title="permalink">#</a>
+	</h3>
+	<p>
+		There's a subculture of functional programming that draws heavily on <a href="https://en.wikipedia.org/wiki/Category_theory">category theory</a>. This is most prevalent in <a href="https://www.haskell.org">Haskell</a>. I've been studying category theory in an attempt to understand what it's all about. I even wrote <a href="/2017/10/04/from-design-patterns-to-category-theory">a substantial article series</a> about some design patterns and how they relate to theory.
+	</p>
+	<p>
+		One thing I learned <em>after</em> I'd names that article series is that most of the useful theoretical concepts come from <a href="https://en.wikipedia.org/wiki/Abstract_algebra">abstract algebra</a>, with the possible exception of monads.
+	</p>
+	<p>
+		People often ask me: does all that theory have any practical use?
+	</p>
+	<p>
+		Yes, it does, as it turns out. It did, for example, enable me to identify a solution to the above twist in five to ten minutes.
+	</p>
+	<p>
+		It's a discussion that I often have, particularly with the always friendly F# community. <em>Do you have to understand <a href="/2018/03/22/functors">functors</a>, monads, etcetera to be a productive F# developer?</em>
+	</p>
+	<p>
+		To anyone who wants to learn F# I'd respond: Don't worry about that at the gate. Find a good learning resource and dive right in. It's a friendly language that you can learn gradually.
+	</p>
+	<p>
+		Sooner later, though, you'll run into knotty problems that you may struggle to address. I've seen this enough times that it looks like a pattern. The present forum question is just one example. A beginner or intermediate F# programmer will typically attempt to solve the problem in an ad-hoc manner that may or may not be easy to maintain. (The solution proposed by the author of that forum question doesn't, by the way, look half bad.)
+	</p>
+	<p>
+		To be clear: there's nothing wrong with being a beginner. I was once a beginner programmer, and I'm <em>still</em> a beginner in multiple ways. What I'm trying to argue here is that there <em>is</em> value in knowing theory. With my knowledge of abstract algebra and how it applies to functional programming, it didn't take me long to identify a solution. I'll get to that later.
+	</p>
+	<p>
+		Before I outline a solution, I'd like to round off the discussion of applied theory. That question about monads comes up a lot. <em>Do I have to understand functors, monads, etcetera to be a good F# developer?</em>
+	</p>
+	<p>
+		I think it's like asking <em>Do I have to understand polymorphism, design patterns, the <a href="https://en.wikipedia.org/wiki/SOLID">SOLID principles</a>, etcetera to be a good object-oriented programmer?</em>
+	</p>
+	<p>
+		Those are typically not the first topics people are taught about OOD. I would assert, however, that understanding such topics do help. They may not be required to get started with OOP, but knowing them makes you a better programmer.
+	</p>
+	<p>
+		I think the same is true for functional programming. It's just a different skill set that makes you better in that paradigm.
+	</p>
+	<h3 id="78fdc446770a4ec48b556e0826a59ce9">
+		Solution outline <a href="#78fdc446770a4ec48b556e0826a59ce9" title="permalink">#</a>
+	</h3>
+	<p>
+		When you know a bit of theory, you may know that validation can be implemented with an applicative sum type like <a href="/2019/01/14/an-either-functor">Either</a> (AKA <em>Option</em>), with one extra requirement.
+	</p>
+	<p>
+		Either <a href="/2019/01/07/either-bifunctor">has two dimensions</a>, <em>left</em> or <em>right</em> (<em>success</em> or <em>failure</em>, <em>ok</em> or <em>error</em>, etcetera). The applicative nature of it already supplies a way to compose the successes, but what if there's more than one validation error?
+	</p>
+	<p>
+		In my <a href="/2018/11/05/applicative-validation">article about applicative validation</a> I showed how to collect multiple error messages in a list. Lists, however, <a href="/2017/10/10/strings-lists-and-sequences-as-a-monoid">form a monoid</a>, so I typed the validation API to be that flexible.
+	</p>
+	<p>
+		In fact, all you need is a <a href="/2017/11/27/semigroups">semigroup</a>. When I wrote the article on applicative validation, Haskell's <code>Semigroup</code> type class wasn't yet a supertype of <code>Monoid</code>, and I (perhaps without sufficient contemplation) just went with <code>Monoid</code>.
+	</p>
+	<p>
+		What remains is that applicative validation can collect errors for <em>any</em> semigroup of errors. All we need to solve the above validation problem with a twist, then, is to identify a suitable semigroup.
+	</p>
+	<p>
+		I don't want to give away everything in this article, so I'm going to leave you with this cliffhanger. Which semigroup solves the problem? Read on.
+		<ul>
+			<li>A Haskell proof of concept of validation with partial data round-trip</li>
+			<li>An F# demo of validation with partial data round-trip</li>
+		</ul>
+		As is often my modus operandi, I first did a proof of concept in Haskell. With its type classes and higher-kinded polymorphism, it's much faster to prototype solutions than even in F#. In the next article, I'll describe how that turned out.
+	</p>
+	<p>
+		After the Haskell article, I'll show how it translates to F#. You can skip the Haskell article if you'd like.
+	</p>
+	<h3 id="048492d078164a648dddf6c57dbaf490">
+		Conclusion <a href="#048492d078164a648dddf6c57dbaf490" title="permalink">#</a>
+	</h3>
+	<p>
+		I still think that validation is a solved problem. It's always interesting when such a belief for a moment is challenged, and satisfying to discover that it still holds.
+	</p>
+	<p>
+		This is, after all, not proof of anything. Perhaps tomorrow, someone will throw another curve ball that I can't catch. If that happens, I'll have to update my beliefs. Until then, I'll consider validation a solved problem.
+	</p>
+	<p>
+		<strong>Next:</strong> A Haskell proof of concept of validation with partial data round-trip.
+	</p>
+</div>
