@@ -1,0 +1,196 @@
+---
+layout: post
+title: "A Haskell proof of concept of validation with partial data round trip"
+description: "Which Semigroup best addresses the twist in the previous article?"
+date: 2020-11-23 12:17 UTC
+tags: [Functional Programming, Haskell]
+---
+{% include JB/setup %}
+
+<div id="post">
+	<p>
+		<em>{{ page.description }}</em>
+	</p>
+	<p>
+		This article is part of <a href="">a short article series</a> on applicative validation with a twist. The twist is that validation, when it fails, should return not only a list of error messages; it should also retain that part of the input that <em>was</em> valid.
+	</p>
+	<p>
+		In this article, I'll show how I did a quick proof of concept in <a href="https://www.haskell.org">Haskell</a>.
+	</p>
+	<h3 id="9417153ff45d4188a65470fa2d67ea2e">
+		Data definitions <a href="#9417153ff45d4188a65470fa2d67ea2e" title="permalink">#</a>
+	</h3>
+	<p>
+		You can't use the regular <code>Either</code> instance of <code>Applicative</code> for validation because it short-circuits on the first error. In other words, you can't collect multiple error messages, even if the input has multiple issues. Instead, you need a custom <code>Applicative</code> instance. You can <a href="/2018/11/05/applicative-validation">easily write such an instance</a> yourself, but there are a couple of libraries that already do this. For this prototype, I chose the <a href="https://hackage.haskell.org/package/validation">validation</a> package.
+	</p>
+	<p>
+		<pre><span style="color:blue;">import</span>&nbsp;Data.Bifunctor
+<span style="color:blue;">import</span>&nbsp;Data.Time
+<span style="color:blue;">import</span>&nbsp;Data.Semigroup
+<span style="color:blue;">import</span>&nbsp;Data.Validation
+</pre>
+	</p>
+	<p>
+		Apart from importing <code>Data.Validation</code>, I also need a few other imports for the proof of concept. All of them are well-known. I used no language extensions.
+	</p>
+	<p>
+		For the proof of concept, the input is a triple of a name, a date of birth, and an address:
+	</p>
+	<p>
+		<pre><span style="color:blue;">data</span>&nbsp;Input&nbsp;=&nbsp;Input&nbsp;{
+&nbsp;&nbsp;<span style="color:#2b91af;">inputName</span>&nbsp;::&nbsp;<span style="color:#2b91af;">Maybe</span>&nbsp;<span style="color:#2b91af;">String</span>,
+&nbsp;&nbsp;<span style="color:#2b91af;">inputDoB</span>&nbsp;::&nbsp;<span style="color:#2b91af;">Maybe</span>&nbsp;<span style="color:blue;">Day</span>,
+&nbsp;&nbsp;<span style="color:#2b91af;">inputAddress</span>&nbsp;::&nbsp;<span style="color:#2b91af;">Maybe</span>&nbsp;<span style="color:#2b91af;">String</span>&nbsp;}
+&nbsp;&nbsp;<span style="color:blue;">deriving</span>&nbsp;(<span style="color:#2b91af;">Eq</span>,&nbsp;<span style="color:#2b91af;">Show</span>)
+</pre>
+	</p>
+	<p>
+		The goal is actually to <a href="https://lexi-lambda.github.io/blog/2019/11/05/parse-don-t-validate">parse (not validate)</a> <code>Input</code> into a safer data type:
+	</p>
+	<p>
+		<pre><span style="color:blue;">data</span>&nbsp;ValidInput&nbsp;=&nbsp;ValidInput&nbsp;{
+&nbsp;&nbsp;<span style="color:#2b91af;">validName</span>&nbsp;::&nbsp;<span style="color:#2b91af;">String</span>,
+&nbsp;&nbsp;<span style="color:#2b91af;">validDoB</span>&nbsp;::&nbsp;<span style="color:blue;">Day</span>,
+&nbsp;&nbsp;<span style="color:#2b91af;">validAddress</span>&nbsp;::&nbsp;<span style="color:#2b91af;">String</span>&nbsp;}
+&nbsp;&nbsp;<span style="color:blue;">deriving</span>&nbsp;(<span style="color:#2b91af;">Eq</span>,&nbsp;<span style="color:#2b91af;">Show</span>)
+</pre>
+	</p>
+	<p>
+		If parsing/validation fails, the output should report a collection of error messages <em>and</em> return the <code>Input</code> value with any valid data retained.
+	</p>
+	<h3 id="4ce26b2031084212a5fbab83dd848d4b">
+		Looking for a Semigroup <a href="#4ce26b2031084212a5fbab83dd848d4b" title="permalink">#</a>
+	</h3>
+	<p>
+		My hypothesis was that validation, even with that twist, can be implemented elegantly with an <code>Applicative</code> instance. The <em>validation</em> package defines its <code>Validation</code> data type such that it's an <code>Applicative</code> instance as long as its error type is a <code>Semigroup</code> instance:
+	</p>
+	<p>
+		<pre><span style="color:blue;">Semigroup</span> err =&gt; <span style="color:blue;">Applicative</span> (<span style="color:blue;">Validation</span> err)</pre>
+	</p>
+	<p>
+		The question is: which <code>Semigroup</code> can we use?
+	</p>
+	<p>
+		Since we need to return <em>both</em> a list of error messages <em>and</em> a modified <code>Input</code> value, it sounds like we'll need a product type of some sorts. A tuple will do; something like <code>(Input, [String])</code>. Is that a <code>Semigroup</code> instance, though?
+	</p>
+	<p>
+		Tuples only form semigroups if both elements give rise to a semigroup:
+	</p>
+	<p>
+		<pre>(<span style="color:blue;">Semigroup</span> a, <span style="color:blue;">Semigroup</span> b) =&gt; <span style="color:blue;">Semigroup</span> (a, b)</pre>
+	</p>
+	<p>
+		The second element of my candidate is <code>[String]</code>, which is fine. Lists are <code>Semigroup</code> instances. But what about <code>Input</code>? Can we somehow combine two <code>Input</code> values into one? It's not entirely clear how we should do that, so that doesn't seem too promising.
+	</p>
+	<p>
+		What we need to do, however, is to take the original <code>Input</code> and modify it by (optionally) resetting one or more fields. In other words, a series of functions of the type <code>Input -&gt; Input</code>. Aha! There's the semigroup we need: <code>Endo Input</code>.
+	</p>
+	<p>
+		So the <code>Semigroup</code> instance we need is <code>(<span style="color:blue;">Endo Input</span>, [<span style="color:#2b91af;">String</span>])</code>, and the validation output should be of the type <code><span style="color:blue;">Validation</span> (<span style="color:blue;">Endo Input</span>, [<span style="color:#2b91af;">String</span>]) a</code>.
+	</p>
+	<h3 id="5da9d89ac8414ad0bc9ebe322b831390">
+		Validators <a href="#5da9d89ac8414ad0bc9ebe322b831390" title="permalink">#</a>
+	</h3>
+	<p>
+		Cool, we can now implement the validation logic; a function for each field, starting with the name:
+	</p>
+	<p>
+		<pre><span style="color:#2b91af;">validateName</span>&nbsp;::&nbsp;<span style="color:blue;">Input</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">Validation</span>&nbsp;(<span style="color:blue;">Endo</span>&nbsp;<span style="color:blue;">Input</span>,&nbsp;[<span style="color:#2b91af;">String</span>])&nbsp;<span style="color:#2b91af;">String</span>
+validateName&nbsp;(Input&nbsp;(Just&nbsp;name)&nbsp;_&nbsp;_)&nbsp;|&nbsp;<span style="color:blue;">length</span>&nbsp;name&nbsp;&gt;&nbsp;3&nbsp;=&nbsp;Success&nbsp;name
+validateName&nbsp;(Input&nbsp;(Just&nbsp;_)&nbsp;_&nbsp;_)&nbsp;=
+&nbsp;&nbsp;Failure&nbsp;(Endo&nbsp;$&nbsp;\x&nbsp;-&gt;&nbsp;x&nbsp;{&nbsp;inputName&nbsp;=&nbsp;Nothing&nbsp;},&nbsp;[<span style="color:#a31515;">&quot;no&nbsp;bob&nbsp;and&nbsp;toms&nbsp;allowed&quot;</span>])
+validateName&nbsp;_&nbsp;=&nbsp;Failure&nbsp;(mempty,&nbsp;[<span style="color:#a31515;">&quot;name&nbsp;is&nbsp;required&quot;</span>])
+</pre>
+	</p>
+	<p>
+		This function reproduces the validation logic implied by <a href="https://forums.fsharp.org/t/thoughts-on-input-validation-pattern-from-a-noob/1541">the forum question that started it all</a>. Notice, particularly, that when the name is too short, the endomorphism resets <code>inputName</code> to <code>Nothing</code>.
+	</p>
+	<p>
+		The date-of-birth validation function works the same way:
+	</p>
+	<p>
+		<pre><span style="color:#2b91af;">validateDoB</span>&nbsp;::&nbsp;<span style="color:blue;">Day</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">Input</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">Validation</span>&nbsp;(<span style="color:blue;">Endo</span>&nbsp;<span style="color:blue;">Input</span>,&nbsp;[<span style="color:#2b91af;">String</span>])&nbsp;<span style="color:blue;">Day</span>
+validateDoB&nbsp;now&nbsp;(Input&nbsp;_&nbsp;(Just&nbsp;dob)&nbsp;_)&nbsp;|&nbsp;addGregorianYearsRollOver&nbsp;(-12)&nbsp;now&nbsp;&lt;&nbsp;dob&nbsp;=
+&nbsp;&nbsp;Success&nbsp;dob
+validateDoB&nbsp;_&nbsp;(Input&nbsp;_&nbsp;(Just&nbsp;_)&nbsp;_)&nbsp;=
+&nbsp;&nbsp;Failure&nbsp;(Endo&nbsp;$&nbsp;\x&nbsp;-&gt;&nbsp;x&nbsp;{&nbsp;inputDoB&nbsp;=&nbsp;Nothing&nbsp;},&nbsp;[<span style="color:#a31515;">&quot;get&nbsp;off&nbsp;my&nbsp;lawn&quot;</span>])
+validateDoB&nbsp;_&nbsp;_&nbsp;=&nbsp;Failure&nbsp;(mempty,&nbsp;[<span style="color:#a31515;">&quot;dob&nbsp;is&nbsp;required&quot;</span>])
+</pre>
+	</p>
+	<p>
+		Again, the validation logic is inferred from the forum question, although I found it better keep the function pure by passing in a <code>now</code> argument.
+	</p>
+	<p>
+		The address validation is the simplest of the three validators:
+	</p>
+	<p>
+		<pre><span style="color:#2b91af;">validateAddress</span>&nbsp;::&nbsp;<span style="color:blue;">Monoid</span>&nbsp;a&nbsp;<span style="color:blue;">=&gt;</span>&nbsp;<span style="color:blue;">Input</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">Validation</span>&nbsp;(a,&nbsp;[<span style="color:#2b91af;">String</span>])&nbsp;<span style="color:#2b91af;">String</span>
+validateAddress&nbsp;(Input&nbsp;_&nbsp;_&nbsp;(Just&nbsp;a))&nbsp;=&nbsp;Success&nbsp;a
+validateAddress&nbsp;_&nbsp;=&nbsp;Failure&nbsp;(mempty,&nbsp;[<span style="color:#a31515;">&quot;add1&nbsp;is&nbsp;required&quot;</span>])
+</pre>
+	</p>
+	<p>
+		This one's return type is actually more general than required, since I used <code>mempty</code> instead of <code>Endo id</code>. This means that it actually works for any <code>Monoid a</code>, but that also includes <code>Endo Input</code>.
+	</p>
+	<h3 id="6d5502d178f143d58a4d3c5bef7c1f05">
+		Composition <a href="#6d5502d178f143d58a4d3c5bef7c1f05" title="permalink">#</a>
+	</h3>
+	<p>
+		All three functions return <code><span style="color:blue;">Validation</span> (<span style="color:blue;">Endo Input</span>, [<span style="color:#2b91af;">String</span>])</code>, which has an <code>Applicative</code> instance. This means that we should be able to compose them together to get the behaviour we're looking for:
+	</p>
+	<p>
+		<pre><span style="color:#2b91af;">validateInput</span>&nbsp;::&nbsp;<span style="color:blue;">Day</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">Input</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:#2b91af;">Either</span>&nbsp;(<span style="color:blue;">Input</span>,&nbsp;[<span style="color:#2b91af;">String</span>])&nbsp;<span style="color:blue;">ValidInput</span>
+validateInput&nbsp;now&nbsp;args&nbsp;=
+&nbsp;&nbsp;toEither&nbsp;$
+&nbsp;&nbsp;first&nbsp;(first&nbsp;(`appEndo`&nbsp;args))&nbsp;$
+&nbsp;&nbsp;ValidInput&nbsp;&lt;$&gt;&nbsp;validateName&nbsp;args&nbsp;&lt;*&gt;&nbsp;validateDoB&nbsp;now&nbsp;args&nbsp;&lt;*&gt;&nbsp;validateAddress&nbsp;args
+</pre>
+	</p>
+	<p>
+		That compiles, so it probably works.
+	</p>
+	<h3 id="9ed5a5fe379244a3bd1e9206a79a1ea9">
+		Sanity check <a href="#9ed5a5fe379244a3bd1e9206a79a1ea9" title="permalink">#</a>
+	</h3>
+	<p>
+		Still, it'd be prudent to check. Since this is only a proof of concept, I'm not going to set up a test suite. Instead, I'll just start GHCi for some ad-hoc testing:
+	</p>
+	<p>
+		<pre>λ&gt; now &lt;- localDay &lt;&amp;&gt; zonedTimeToLocalTime &lt;&amp;&gt; getZonedTime
+λ&gt; validateInput now &amp; Input Nothing Nothing Nothing
+Left (Input {inputName = Nothing, inputDoB = Nothing, inputAddress = Nothing},
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;["name is required","dob is required","add1 is required"])
+λ&gt; validateInput now &amp; Input (Just "Bob") Nothing Nothing
+Left (Input {inputName = Nothing, inputDoB = Nothing, inputAddress = Nothing},
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;["no bob and toms allowed","dob is required","add1 is required"])
+λ&gt; validateInput now &amp; Input (Just "Alice") Nothing Nothing
+Left (Input {inputName = Just "Alice", inputDoB = Nothing, inputAddress = Nothing},
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;["dob is required","add1 is required"])
+λ&gt; validateInput now &amp; Input (Just "Alice") (Just &amp; fromGregorian 2002 10 12) Nothing
+Left (Input {inputName = Just "Alice", inputDoB = Nothing, inputAddress = Nothing},
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;["get off my lawn","add1 is required"])
+λ&gt; validateInput now &amp; Input (Just "Alice") (Just &amp; fromGregorian 2012 4 21) Nothing
+Left (Input {inputName = Just "Alice", inputDoB = Just 2012-04-21, inputAddress = Nothing},
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;["add1 is required"])
+λ&gt; validateInput now &amp; Input (Just "Alice") (Just &amp; fromGregorian 2012 4 21) (Just "x")
+Right (ValidInput {validName = "Alice", validDoB = 2012-04-21, validAddress = "x"})</pre>
+	</p>
+	<p>
+		In order to make the output more readable, I've manually edited the GHCi session by adding line breaks to the output.
+	</p>
+	<p>
+		It looks like it's working like it's supposed to. Only the last line successfully parses the input and returns a <code>Right</code> value.
+	</p>
+	<h3 id="8bbb1d8ca355495b95e5e5ed85a924f4">
+		Conclusion <a href="#8bbb1d8ca355495b95e5e5ed85a924f4" title="permalink">#</a>
+	</h3>
+	<p>
+		Before I started this proof of concept, I had an inkling of the way this would go. Instead of making the prototype in <a href="https://fsharp.org">F#</a>, I found it more productive to do it in Haskell, since Haskell enables me to compose things together. I particularly appreciate how a composition of types like <code>(<span style="color:blue;">Endo Input</span>, [<span style="color:#2b91af;">String</span>])</code> is automatically a <code>Semigroup</code> instance. I don't have to do anything. That makes the language great for prototyping things like this.
+	</p>
+	<p>
+		Now that I've found the appropriate semigroup, I know how to convert the code to F#. That's in the next article.
+	</p>
+	<p>
+		<strong>Next:</strong> An F# demo of validation with partial data round-trip.
+	</p>
+</div>
