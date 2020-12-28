@@ -1,0 +1,226 @@
+---
+layout: post
+title: "An F# demo of validation with partial data round trip"
+description: "An F# port of the previous Haskell proof of concept."
+date: 2020-11-23 18:36 UTC
+tags: [Functional Programming, F#]
+---
+{% include JB/setup %}
+
+<div id="post">
+	<p>
+		<em>{{ page.description }}</em>
+	</p>
+	<p>
+		This article is part of <a href="">a short article series</a> on <a href="/2018/11/05/applicative-validation">applicative validation</a> with a twist. The twist is that validation, when it fails, should return not only a list of error messages; it should also retain that part of the input that <em>was</em> valid.
+	</p>
+	<p>
+		In the <a href="">previous article</a> you saw a <a href="https://www.haskell.org">Haskell</a> proof of concept that demonstrated how to compose the appropriate <a href="/2018/10/01/applicative-functors">applicative functor</a> with a suitable <a href="/2017/11/27/semigroups">semigroup</a> to make validation work as desired. In this article, you'll see how to port that proof of concept to <a href="https://fsharp.org">F#</a>.
+	</p>
+	<h3 id="b2ea11fdb65343b5b60fcf2cffc62b1a">
+		Data definitions <a href="#b2ea11fdb65343b5b60fcf2cffc62b1a" title="permalink">#</a>
+	</h3>
+	<p>
+		Like in the previous article, we're going to need some types. These are essentially direct translations of the corresponding Haskell types:
+	</p>
+	<p>
+		<pre><span style="color:blue;">type</span>&nbsp;Input&nbsp;=&nbsp;{&nbsp;Name&nbsp;:&nbsp;string&nbsp;option;&nbsp;DoB&nbsp;:&nbsp;DateTime&nbsp;option;&nbsp;Address&nbsp;:&nbsp;string&nbsp;option}
+<span style="color:blue;">type</span>&nbsp;ValidInput&nbsp;=&nbsp;{&nbsp;Name&nbsp;:&nbsp;string;&nbsp;DoB&nbsp;:&nbsp;DateTime;&nbsp;Address&nbsp;:&nbsp;string&nbsp;}</pre>
+	</p>
+	<p>
+		The <code>Input</code> type plays the role of the input we'd like to validate, while <code>ValidInput</code> presents validated data.
+	</p>
+	<p>
+		If you're an F# fan, you can bask in the reality that F# records are terser than Haskell records. I like both languages, so I have mixed feelings about this.
+	</p>
+	<h3 id="2e1b689c57114b259b3b4019f4c3976d">
+		Computation expression <a href="#2e1b689c57114b259b3b4019f4c3976d" title="permalink">#</a>
+	</h3>
+	<p>
+		Haskell's main workhorse is its type class system. F# doesn't have that, but it has <a href="https://docs.microsoft.com/en-us/dotnet/fsharp/language-reference/computation-expressions">computation expressions</a>, which in F# 5 got support for applicative functors. That's just what we need, and it turns out that there isn't a lot of code we have to write to make all of this work.
+	</p>
+	<p>
+		To recap from the Haskell proof of concept: We need a <code>Result</code>-like <a href="https://bartoszmilewski.com/2014/01/14/functors-are-containers">container</a> that returns a tuple for errors. One element of the tuple should be a an <a href="https://en.wikipedia.org/wiki/Endomorphism">endomorphism</a>, which <a href="/2017/11/13/endomorphism-monoid">forms a monoid</a> (and therefore also a semigroup). The other element should be a list of error messages - <a href="/2017/10/10/strings-lists-and-sequences-as-a-monoid">another monoid</a>. In F# terms we'll write it as <code>(('b -&gt; 'b) * 'c list)</code>.
+	</p>
+	<p>
+		That's a tuple, and since <a href="/2017/10/30/tuple-monoids">tuples form monoids when their elements do</a> the <code>Error</code> part of <code>Result</code> <a href="/2017/11/20/monoids-accumulate">supports accumulation</a>.
+	</p>
+	<p>
+		To support an applicative computation expression, we're going to need a a way to merge two results together. This is by far the most complicated piece of code in this article, all six lines of code:
+	</p>
+	<p>
+		<pre><span style="color:blue;">module</span>&nbsp;Result&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;Result&lt;&#39;a&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;,((&#39;b&nbsp;-&gt;&nbsp;&#39;b)&nbsp;*&nbsp;&#39;c&nbsp;list)&gt;&nbsp;-&gt;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;Result&lt;&#39;d&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;,((&#39;b&nbsp;-&gt;&nbsp;&#39;b)&nbsp;*&nbsp;&#39;c&nbsp;list)&gt;&nbsp;-&gt;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;Result&lt;(&#39;a&nbsp;*&nbsp;&#39;d),((&#39;b&nbsp;-&gt;&nbsp;&#39;b)&nbsp;*&nbsp;&#39;c&nbsp;list)&gt;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;merge&nbsp;x&nbsp;y&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">match</span>&nbsp;x,&nbsp;y&nbsp;<span style="color:blue;">with</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;Ok&nbsp;xres,&nbsp;Ok&nbsp;yres&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;Ok&nbsp;(xres,&nbsp;yres)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;Error&nbsp;(f,&nbsp;e1s),&nbsp;Error&nbsp;(g,&nbsp;e2s)&nbsp;&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;Error&nbsp;(f&nbsp;&gt;&gt;&nbsp;g,&nbsp;e2s&nbsp;@&nbsp;e1s)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;Error&nbsp;e,&nbsp;Ok&nbsp;_&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;Error&nbsp;e
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;Ok&nbsp;_,&nbsp;Error&nbsp;e&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;Error&nbsp;e</pre>
+	</p>
+	<p>
+		The <code>merge</code> function composes two results together. The results have <code>Ok</code> types called <code>'a</code> and <code>'d</code>, and if they're both <code>Ok</code> values, the result is an <code>Ok</code> tuple of <code>'a</code> and <code>'d</code>.
+	</p>
+	<p>
+		If one of the results is an <code>Error</code> value, it beats an <code>Ok</code> value. The only moderately complex operations is when both are <code>Error</code> values.
+	</p>
+	<p>
+		Keep in mind that an <code>Error</code> value in this instance contains a tuple of the type <code>(('b -&gt; 'b) * 'c list)</code>. The first element is an endomorphism <code>'b -&gt; 'b</code> and the other element is a list. The <code>merge</code> function composes the endomorphism <code>f</code> and <code>g</code> by standard function composition (the <code>&gt;&gt;</code> operator), and concatenates the lists with the standard <code>@</code> list concatenation operator.
+	</p>
+	<p>
+		Because I'm emulating how the <a href="https://forums.fsharp.org/t/thoughts-on-input-validation-pattern-from-a-noob/1541">original forum post</a>'s code behaves, I'm concatenating the two lists with the rightmost going before the leftmost. It doesn't make any other difference than determining the order of the error list.
+	</p>
+	<p>
+		With the <code>merge</code> function in place, the computation expression is a simple matter:
+	</p>
+	<p>
+		<pre><span style="color:blue;">type</span>&nbsp;ValidationBuilder&nbsp;()&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">member</span>&nbsp;_.BindReturn&nbsp;(x,&nbsp;f)&nbsp;=&nbsp;Result.map&nbsp;f&nbsp;x
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">member</span>&nbsp;_.MergeSources&nbsp;(x,&nbsp;y)&nbsp;=&nbsp;Result.merge&nbsp;x&nbsp;y</pre>
+	</p>
+	<p>
+		The last piece is a <code>ValidationBuilder</code> value:
+	</p>
+	<p>
+		<pre>[&lt;AutoOpen&gt;]
+<span style="color:blue;">module</span>&nbsp;ComputationExpressions&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;validation&nbsp;=&nbsp;ValidationBuilder&nbsp;()</pre>
+	</p>
+	<p>
+		Now, whenever you use the <code>validation</code> computation expression, you get the desired functionality.
+	</p>
+	<h3 id="948b93fa6a1d47beac150180769731eb">
+		Validators <a href="#948b93fa6a1d47beac150180769731eb" title="permalink">#</a>
+	</h3>
+	<p>
+		Before we can compose some validation functions, we'll need to have some validators in place. These are straightforward translations of the Haskell validation functions, starting with the name validator:
+	</p>
+	<p>
+		<pre><span style="color:green;">//&nbsp;Input&nbsp;-&gt;&nbsp;Result&lt;string,((Input&nbsp;-&gt;&nbsp;Input)&nbsp;*&nbsp;string&nbsp;list)&gt;</span>
+<span style="color:blue;">let</span>&nbsp;validateName&nbsp;({&nbsp;Name&nbsp;=&nbsp;name&nbsp;}&nbsp;:&nbsp;Input)&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">match</span>&nbsp;name&nbsp;<span style="color:blue;">with</span>
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;Some&nbsp;n&nbsp;<span style="color:blue;">when</span>&nbsp;n.Length&nbsp;&gt;&nbsp;3&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;Ok&nbsp;n
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;Some&nbsp;_&nbsp;<span style="color:blue;">-&gt;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Error&nbsp;(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(<span style="color:blue;">fun</span>&nbsp;(args&nbsp;:&nbsp;Input)&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;{&nbsp;args&nbsp;<span style="color:blue;">with</span>&nbsp;Name&nbsp;=&nbsp;None&nbsp;}),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;[<span style="color:#a31515;">&quot;no&nbsp;bob&nbsp;and&nbsp;toms&nbsp;allowed&quot;</span>])
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;None&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;Error&nbsp;(id,&nbsp;[<span style="color:#a31515;">&quot;name&nbsp;is&nbsp;required&quot;</span>])</pre>
+	</p>
+	<p>
+		When the name is too short, the endomorphism resets the <code>Name</code> field to <code>None</code>.
+	</p>
+	<p>
+		The date-of-birth validation function works the same way:
+	</p>
+	<p>
+		<pre><span style="color:green;">//&nbsp;DateTime&nbsp;-&gt;&nbsp;Input&nbsp;-&gt;&nbsp;Result&lt;DateTime,((Input&nbsp;-&gt;&nbsp;Input)&nbsp;*&nbsp;string&nbsp;list)&gt;</span>
+<span style="color:blue;">let</span>&nbsp;validateDoB&nbsp;(now&nbsp;:&nbsp;DateTime)&nbsp;({&nbsp;DoB&nbsp;=&nbsp;dob&nbsp;}&nbsp;:&nbsp;Input)&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">match</span>&nbsp;dob&nbsp;<span style="color:blue;">with</span>
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;Some&nbsp;d&nbsp;<span style="color:blue;">when</span>&nbsp;d&nbsp;&gt;&nbsp;now.AddYears&nbsp;-12&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;Ok&nbsp;d
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;Some&nbsp;_&nbsp;<span style="color:blue;">-&gt;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Error&nbsp;(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(<span style="color:blue;">fun</span>&nbsp;(args&nbsp;:&nbsp;Input)&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;{&nbsp;args&nbsp;<span style="color:blue;">with</span>&nbsp;DoB&nbsp;=&nbsp;None&nbsp;}),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;[<span style="color:#a31515;">&quot;get&nbsp;off&nbsp;my&nbsp;lawn&quot;</span>])
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;None&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;Error&nbsp;(id,&nbsp;[<span style="color:#a31515;">&quot;dob&nbsp;is&nbsp;required&quot;</span>])</pre>
+	</p>
+	<p>
+		Again, like in the Haskell proof of concept, instead of calling <code>DateTime.Now</code> from within the function, I'm passing <code>now</code> as an argument to keep the function <a href="https://en.wikipedia.org/wiki/Pure_function">pure</a>.
+	</p>
+	<p>
+		The address validation concludes the set of validators:
+	</p>
+	<p>
+		<pre><span style="color:green;">//&nbsp;Input&nbsp;-&gt;&nbsp;Result&lt;string,((&#39;a&nbsp;-&gt;&nbsp;&#39;a)&nbsp;*&nbsp;string&nbsp;list)&gt;</span>
+<span style="color:blue;">let</span>&nbsp;validateAddress&nbsp;({&nbsp;Address&nbsp;=&nbsp;address&nbsp;}:&nbsp;Input)&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">match</span>&nbsp;address&nbsp;<span style="color:blue;">with</span>
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;Some&nbsp;a&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;Ok&nbsp;a
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;None&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;Error&nbsp;(id,&nbsp;[<span style="color:#a31515;">&quot;add1&nbsp;is&nbsp;required&quot;</span>])</pre>
+	</p>
+	<p>
+		The inferred endomorphism type is here the more general <code>'a -&gt; 'a</code>, but it's compatible with <code>Input -&gt; Input</code>.
+	</p>
+	<h3 id="836690a83da24da492f70c8eb756a52d">
+		Composition <a href="#836690a83da24da492f70c8eb756a52d" title="permalink">#</a>
+	</h3>
+	<p>
+		All three functions have compatible <code>Error</code> types, so they ought to compose with the applicative computation expression to produce the desired behaviour:
+	</p>
+	<p>
+		<pre><span style="color:green;">//&nbsp;DateTime&nbsp;-&gt;&nbsp;Input&nbsp;-&gt;&nbsp;Result&lt;ValidInput,(Input&nbsp;*&nbsp;string&nbsp;list)&gt;</span>
+<span style="color:blue;">let</span>&nbsp;validateInput&nbsp;now&nbsp;args&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;validation&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;name&nbsp;=&nbsp;validateName&nbsp;args
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">and!</span>&nbsp;dob&nbsp;=&nbsp;validateDoB&nbsp;now&nbsp;args
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">and!</span>&nbsp;address&nbsp;=&nbsp;validateAddress&nbsp;args
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;{&nbsp;Name&nbsp;=&nbsp;name;&nbsp;DoB&nbsp;=&nbsp;dob;&nbsp;Address&nbsp;=&nbsp;address&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;Result.mapError&nbsp;(<span style="color:blue;">fun</span>&nbsp;(f,&nbsp;msgs)&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;f&nbsp;args,&nbsp;msgs)</pre>
+	</p>
+	<p>
+		The <code>validation</code> expression alone produces a <code>Result&lt;ValidInput,((Input -&gt; Input) * string list)&gt;</code> value. To get an <code>Input</code> value in the <code>Error</code> tuple, we need to 'run' the <code>Input -&gt; Input</code> endomorphism. The <code>validateInput</code> function does that by applying the endomorphism <code>f</code> to <code>args</code> when mapping the error with <code>Result.mapError</code>.
+	</p>
+	<h3 id="df2c48e822ad48ce916e29da8638563a">
+		Tests <a href="#df2c48e822ad48ce916e29da8638563a" title="permalink">#</a>
+	</h3>
+	<p>
+		To test that the <code>validateInput</code> works as intended, I first copied all the code from the original forum post. I then wrote eight <a href="https://en.wikipedia.org/wiki/Characterization_test">characterisation tests</a> against that code to make sure that I could reproduce the desired functionality.
+	</p>
+	<p>
+		I then wrote a parametrised test against the new function:
+	</p>
+	<p>
+		<pre>[&lt;Theory;&nbsp;ClassData(typeof&lt;ValidationTestCases&gt;)&gt;]
+<span style="color:blue;">let</span>&nbsp;``Validation&nbsp;works``&nbsp;input&nbsp;expected&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;now&nbsp;=&nbsp;DateTime.Now
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;actual&nbsp;=&nbsp;validateInput&nbsp;now&nbsp;input
+&nbsp;&nbsp;&nbsp;&nbsp;expected&nbsp;=!&nbsp;actual</pre>
+	</p>
+	<p>
+		The <code>ValidationTestCases</code> class is defined like this:
+	</p>
+	<p>
+		<pre><span style="color:blue;">type</span>&nbsp;ValidationTestCases&nbsp;()&nbsp;<span style="color:blue;">as</span>&nbsp;this&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">inherit</span>&nbsp;TheoryData&lt;Input,&nbsp;Result&lt;ValidInput,&nbsp;Input&nbsp;*&nbsp;string&nbsp;list&gt;&gt;&nbsp;()</pre>
+	</p>
+	<p>
+		This class produces a set of test cases, where each test case contains an <code>input</code> value and the <code>expected</code> output. To define the test cases, I copied the eight characterisation tests I'd already produced and adjusted them so that they fit the simpler API of the <code>validateInput</code> function. Here's a few examples:
+	</p>
+	<p>
+		<pre><span style="color:blue;">let</span>&nbsp;eightYearsAgo&nbsp;=&nbsp;DateTime.Now.AddYears&nbsp;-8
+<span style="color:blue;">do</span>&nbsp;this.Add&nbsp;(
+&nbsp;&nbsp;&nbsp;&nbsp;{&nbsp;Name&nbsp;=&nbsp;Some&nbsp;<span style="color:#a31515;">&quot;Alice&quot;</span>;&nbsp;DoB&nbsp;=&nbsp;Some&nbsp;eightYearsAgo;&nbsp;Address&nbsp;=&nbsp;None&nbsp;},
+&nbsp;&nbsp;&nbsp;&nbsp;Error&nbsp;(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{&nbsp;Name&nbsp;=&nbsp;Some&nbsp;<span style="color:#a31515;">&quot;Alice&quot;</span>;&nbsp;DoB&nbsp;=&nbsp;Some&nbsp;eightYearsAgo;&nbsp;Address&nbsp;=&nbsp;None&nbsp;},
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;[<span style="color:#a31515;">&quot;add1&nbsp;is&nbsp;required&quot;</span>]))
+ 
+<span style="color:blue;">do</span>&nbsp;this.Add&nbsp;(
+&nbsp;&nbsp;&nbsp;&nbsp;{&nbsp;Name&nbsp;=&nbsp;Some&nbsp;<span style="color:#a31515;">&quot;Alice&quot;</span>;&nbsp;DoB&nbsp;=&nbsp;Some&nbsp;eightYearsAgo;&nbsp;Address&nbsp;=&nbsp;Some&nbsp;<span style="color:#a31515;">&quot;x&quot;</span>&nbsp;},
+&nbsp;&nbsp;&nbsp;&nbsp;Ok&nbsp;({&nbsp;Name&nbsp;=&nbsp;<span style="color:#a31515;">&quot;Alice&quot;</span>;&nbsp;DoB&nbsp;=&nbsp;eightYearsAgo;&nbsp;Address&nbsp;=&nbsp;<span style="color:#a31515;">&quot;x&quot;</span>&nbsp;}))</pre>
+	</p>
+	<p>
+		The first case expects an <code>Error</code> value because the <code>Input</code> value has no address. The other test case expects an <code>Ok</code> value because all input is fine.
+	</p>
+	<p>
+		I copied all eight characterisation tests over, so that I have those eight tests, as well as the modified eight tests for the applicative-based API shown here. All sixteen tests pass.
+	</p>
+	<h3 id="5a20682ce9494011b78d5a5f9c2c9bad">
+		Conclusion <a href="#5a20682ce9494011b78d5a5f9c2c9bad" title="permalink">#</a>
+	</h3>
+	<p>
+		I find this solution to the problem elegant. It's always satisfactory when you can implement what at first glance looks like custom behaviour using <a href="/2017/10/04/from-design-patterns-to-category-theory">universal abstractions</a>.
+	</p>
+	<p>
+		Besides the aesthetic value, I also believe that this keeps a team more productive. These concepts of monoids, semigroups, applicative functors, and so on, are concepts that you only have to learn once. Once you know them, you'll recognise them when you run into them. This means that there's less code to understand.
+	</p>
+	<p>
+		An ad-hoc implementation as the original forum post suggested (even though it looked quite decent) always puts the onus on a maintenance developer to read and understand even more one-off infrastructure code.
+	</p>
+	<p>
+		With an architecture based on universal abstractions and well-documented language features, a functional programmer that knows these things will be able to pick up what's going on without much trouble. Specifically, (s)he will recognise that this is 'just' applicative validation with a twist.
+	</p>
+	<p>
+		This article is the December 28 entry in the <a href="https://sergeytihon.com/2020/10/22/f-advent-calendar-in-english-2020">F# Advent Calendar in English 2020</a>.
+	</p>
+</div>
