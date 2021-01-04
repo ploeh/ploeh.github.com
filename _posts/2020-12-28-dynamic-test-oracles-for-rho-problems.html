@@ -1,0 +1,233 @@
+---
+layout: post
+title: "Dynamic test oracles for rho problems"
+description: "A proof of concept of cross-branch testing for compiled languages."
+date: 2020-12-28 14:27 UTC
+tags: [Languages, F#, Unit Testing]
+---
+{% include JB/setup %}
+
+<div id="post">
+	<p>
+		<em>{{ page.description }}</em>
+	</p>
+	<p>
+		<a href="https://www.hillelwayne.com">Hillel Wayne</a> recently published an article called <a href="https://buttondown.email/hillelwayne/archive/cross-branch-testing/">Cross-Branch Testing</a>. It outlines an approach to a class of problems that are hard to test. He mentions computer vision and simulations, among others. I can add that it's also <a href="/2015/10/19/visual-value-verification">difficult to write intuitive tests of convex hulls</a> and <a href="https://en.wikipedia.org/wiki/Conway%27s_Game_of_Life">Conway's game of life</a>.
+	</p>
+	<p>
+		Hillel Wayne calls these <em>rho problems</em>, 'just because'. I'm totally going to run with that term.
+	</p>
+	<p>
+		In the article, he outlines an approach where you test an iteration of rho code against a 'last known good' snapshot. He uses <code>git worktree</code> to set up a snapshot of the reference implementation. He then writes a property that compares the refactored code's behaviour against the reference.
+	</p>
+	<p>
+		The example code is in <a href="https://www.python.org">Python</a>, which is a language that I don't know. As far as I can tell, it works because Python is 'lightweight' enough that you can load and execute source code directly. I found that the approach makes much sense, but I wondered how it would apply for statically typed, compiled languages. I decided to create a proof of concept in <a href="https://fsharp.org">F#</a>.
+	</p>
+	<h3 id="ab0c6139b2c84e148fe1173c2508ec62">
+		Test cases from Python <a href="#ab0c6139b2c84e148fe1173c2508ec62" title="permalink">#</a>
+	</h3>
+	<p>
+		My first problem was to port Hillel Wayne's example rho problem to F#. The function <code>f</code> doesn't have any immediate mathematical properties; nor is its behaviour intuitive. While I think that I understand what each line of code in <code>f</code> means, I don't really know Python. Since one of the properties of rho problems is that bugs can be subtle, I didn't trust myself to be able to port the Python code to F# without some test cases.
+	</p>
+	<p>
+		To solve that problem, I first found an online Python interpreter and pasted the <code>f</code> function into it. I then wrote code to print the output of a function call:
+	</p>
+	<p>
+		<pre>print(f'1, 2, 3, { f(1, 2, 3) }')</pre>
+	</p>
+	<p>
+		This line of code produces this output:
+	</p>
+	<p>
+		<pre>1, 2, 3, True</pre>
+	</p>
+	<p>
+		In other words, I could produce comma-separated values of input and actual output.
+	</p>
+	<p>
+		Hillel Wayne wrote properties using <a href="https://hypothesis.works">Hypothesis</a>, which, <a href="https://hypothesis.works/articles/how-many-tests">it seems</a>, by default runs each property 200 times.
+	</p>
+	<p>
+		In F# I'm going to use <a href="https://fscheck.github.io/FsCheck">FsCheck</a>, so I first used <em>F# Interactive</em> with FsCheck to produce 200 Python <code>print</code> statements like the above:
+	</p>
+	<p>
+		<pre>&gt; Arb.Default.Int32().Generator
+|&gt; Gen.three
+|&gt; Gen.map (fun (x, y, z) -&gt; sprintf "print(f'%i, %i, %i, { f(%i, %i, %i) }')" x y z x y z)
+|&gt; Gen.sample 100 200
+|&gt; List.iter (printfn "%s");;
+print(f'-77, 67, 84, { f(-77, 67, 84) }')
+print(f'58, -46, 3, { f(58, -46, 3) }')
+print(f'21, 13, 94, { f(21, 13, 94) }')
+...
+</pre>
+	</p>
+	<p>
+		This is a throwaway data pipeline that starts with an FsCheck integer generator, creates a triple from it, turns that triple into a Python <code>print</code> statement, and finally writes 200 of those to the console. The above code listing only shows the first three lines of output, while the rest are indicated by an ellipsis.
+	</p>
+	<p>
+		I copied those 200 <code>print</code> statements over to the online Python interpreter and ran the code. That produced 200 comma-separated values like these:
+	</p>
+	<p>
+		<pre>-77, 67, 84, False
+58, -46, 3, False
+21, 13, 94, True
+...</pre>
+	</p>
+	<p>
+		These can serve as test cases for porting the Python code to F#.
+	</p>
+	<h3 id="936410215a784d73ae9b5dcba9125a4c">
+		Port to F# <a href="#936410215a784d73ae9b5dcba9125a4c" title="permalink">#</a>
+	</h3>
+	<p>
+		The next step is to write a parametrised test, using a provisional implementation of <code>f</code>:
+	</p>
+	<p>
+		<pre>[&lt;Theory;&nbsp;MemberData(nameof&nbsp;fTestCases)&gt;]
+<span style="color:blue;">let</span>&nbsp;``test&nbsp;f``&nbsp;x&nbsp;y&nbsp;z&nbsp;expected&nbsp;=&nbsp;expected&nbsp;=!&nbsp;f&nbsp;x&nbsp;y&nbsp;z</pre>
+	</p>
+	<p>
+		This test uses <a href="https://xunit.net">xUnit.net</a> 2.4.1 and <a href="https://github.com/SwensenSoftware/Unquote">Unquote</a> 5.0.0. As you can tell, apart from the annotations, it's a true one-liner. It calls the <code>f</code> function with the three supplied arguments <code>x</code>, <code>y</code>, and <code>z</code> and compares the return value with the <code>expected</code> value.
+	</p>
+	<p>
+		The code uses the new <a href="https://docs.microsoft.com/dotnet/fsharp/language-reference/nameof">nameof</a> feature of F# 5. <code>fTestCases</code> is a function in the same module that holds the test:
+	</p>
+	<p>
+		<pre><span style="color:green;">//&nbsp;unit&nbsp;-&gt;&nbsp;seq&lt;obj&nbsp;[]&gt;</span>
+<span style="color:blue;">let</span>&nbsp;fTestCases&nbsp;()&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">use</span>&nbsp;strm&nbsp;=&nbsp;typeof&lt;Anchor&gt;.Assembly.GetManifestResourceStream&nbsp;streamName
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">use</span>&nbsp;rdr&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;StreamReader&nbsp;(strm)
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;s&nbsp;=&nbsp;rdr.ReadToEnd&nbsp;()
+&nbsp;&nbsp;&nbsp;&nbsp;s.Split&nbsp;Environment.NewLine&nbsp;|&gt;&nbsp;Seq.map&nbsp;csvToTestCase</pre>
+	</p>
+	<p>
+		It reads an embedded resource stream of test cases, like the above comma-separated values. Even though the values are in a text file, it's easier to embed the file in the test assembly, because it nicely dispenses with the problem of copying a text file to the appropriate output directory when the code compiles. That would, however, be an valid alternative.
+	</p>
+	<p>
+		<code>Anchor</code> is a dummy type to support <code>typeof</code>, and <code>streamName</code> is just a string constant that identifies the name of the stream.
+	</p>
+	<p>
+		The <code>csvToTestCase</code> function converts each line of comma-separated values to test cases for the <code>[&lt;Theory&gt;]</code> attribute:
+	</p>
+	<p>
+		<pre><span style="color:green;">//&nbsp;string&nbsp;-&gt;&nbsp;obj&nbsp;[]</span>
+<span style="color:blue;">let</span>&nbsp;csvToTestCase&nbsp;(csv&nbsp;:&nbsp;string)&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;values&nbsp;=&nbsp;csv.Split&nbsp;<span style="color:#a31515;">&#39;,&#39;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;[|
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;values.[0]&nbsp;|&gt;&nbsp;Convert.ToInt32&nbsp;|&gt;&nbsp;box
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;values.[1]&nbsp;|&gt;&nbsp;Convert.ToInt32&nbsp;|&gt;&nbsp;box
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;values.[2]&nbsp;|&gt;&nbsp;Convert.ToInt32&nbsp;|&gt;&nbsp;box
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;values.[3]&nbsp;|&gt;&nbsp;Convert.ToBoolean&nbsp;|&gt;&nbsp;box
+&nbsp;&nbsp;&nbsp;&nbsp;|]</pre>
+	</p>
+	<p>
+		It's not the safest code I could write, but this is, after all, a proof of concept.
+	</p>
+	<p>
+		The most direct port of the Python code I could produce is this:
+	</p>
+	<p>
+		<pre><span style="color:green;">//&nbsp;f&nbsp;:&nbsp;int&nbsp;-&gt;&nbsp;int&nbsp;-&gt;&nbsp;int&nbsp;-&gt;&nbsp;bool</span>
+<span style="color:blue;">let</span>&nbsp;f&nbsp;(x&nbsp;:&nbsp;int)&nbsp;(y&nbsp;:&nbsp;int)&nbsp;(z&nbsp;:&nbsp;int)&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;<span style="color:blue;">mutable</span>&nbsp;mx&nbsp;=&nbsp;bigint&nbsp;x
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;<span style="color:blue;">mutable</span>&nbsp;my&nbsp;=&nbsp;bigint&nbsp;y
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;<span style="color:blue;">mutable</span>&nbsp;mz&nbsp;=&nbsp;bigint&nbsp;z
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;<span style="color:blue;">mutable</span>&nbsp;out&nbsp;=&nbsp;0I
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">for</span>&nbsp;i&nbsp;<span style="color:blue;">in</span>&nbsp;[0I..9I]&nbsp;<span style="color:blue;">do</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;out&nbsp;<span style="color:blue;">&lt;-</span>&nbsp;out&nbsp;*&nbsp;mx&nbsp;+&nbsp;abs&nbsp;(my&nbsp;*&nbsp;mz&nbsp;-&nbsp;i&nbsp;*&nbsp;i)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;x&#39;&nbsp;=&nbsp;mx
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;y&#39;&nbsp;=&nbsp;my
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;z&#39;&nbsp;=&nbsp;mz
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;mx&nbsp;<span style="color:blue;">&lt;-</span>&nbsp;y&#39;&nbsp;+&nbsp;1I
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;my&nbsp;<span style="color:blue;">&lt;-</span>&nbsp;z&#39;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;mz&nbsp;<span style="color:blue;">&lt;-</span>&nbsp;x&#39;
+&nbsp;&nbsp;&nbsp;&nbsp;abs&nbsp;out&nbsp;%&nbsp;100I&nbsp;&lt;&nbsp;10I</pre>
+	</p>
+	<p>
+		As F# code goes, it's disagreeable, but it passes all 200 test cases, so this will serve as an initial implementation. The <code>out</code> variable can grow to values that overflow even 64-bit integers, so I had to convert to <a href="https://docs.microsoft.com/dotnet/api/system.numerics.biginteger">bigint</a> to get all test cases to pass.
+	</p>
+	<p>
+		If I make the same mutation to the code that Hillel Wayne did (<code>abs&nbsp;out&nbsp;%&nbsp;100I&nbsp;&lt;&nbsp;9I</code>) two test cases fail. This gives me some confidence that I have a degree of problem coverage comparable to his.
+	</p>
+	<h3 id="289e30b4098c4e54b8390af0b672caf1">
+		Test oracle <a href="#289e30b4098c4e54b8390af0b672caf1" title="permalink">#</a>
+	</h3>
+	<p>
+		Now that a reference implementation exists, we can use it as a <a href="https://en.wikipedia.org/wiki/Test_oracle">test oracle</a> for refactorings. You can, for example, add a little test-only utility to your program portfolio:
+	</p>
+	<p>
+		<pre><span style="color:blue;">open</span>&nbsp;Prod
+<span style="color:blue;">open</span>&nbsp;FsCheck
+ 
+[&lt;EntryPoint&gt;]
+<span style="color:blue;">let</span>&nbsp;main&nbsp;argv&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;Arb.Default.Int32().Generator
+&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;Gen.three
+&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;Gen.sample&nbsp;100&nbsp;200
+&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;List.iter&nbsp;(<span style="color:blue;">fun</span>&nbsp;(x,&nbsp;y,&nbsp;z)&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;printfn&nbsp;<span style="color:#a31515;">&quot;%i,&nbsp;%i,&nbsp;%i,&nbsp;%b&quot;</span>&nbsp;x&nbsp;y&nbsp;z&nbsp;(f&nbsp;x&nbsp;y&nbsp;z))
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;0&nbsp;<span style="color:green;">//&nbsp;return&nbsp;an&nbsp;integer&nbsp;exit&nbsp;code</span></pre>
+	</p>
+	<p>
+		Notice that the last step in the pipeline is to output the values of each <code>x</code>, <code>y</code>, and <code>z</code>, as well as the result of calling <code>f x y z</code>.
+	</p>
+	<p>
+		This is a command-line executable that uses FsCheck to produce new test cases by calling the <code>f</code> function. It looks similar to the above one-off script that produced Python code, but this one instead just produces comma-separated values. You can run it from the command line to produce a new sample of test cases:
+	</p>
+	<p>
+		<pre>$ ./foracle
+29, -48, -78, false
+-8, -25, 13, false
+-74, 34, -68, true
+...</pre>
+	</p>
+	<p>
+		As above, I've used an ellipsis to indicate that in reality, 200 lines of comma-separated values scroll by.
+	</p>
+	<p>
+		When you use Bash, you can even pipe the output straight to a file:
+	</p>
+	<p>
+		<pre>$ ./foracle > csv.txt</pre>
+	</p>
+	<p>
+		You can now take the new comma-separated values and update the test values that the above <code>test f</code> test uses.
+	</p>
+	<p>
+		In other words, you use version <em>n</em> of <code>f</code> as a test oracle for version <em>n + 1</em>. When iteration <em>n + 1</em> is a function of iteration <em>n</em>, you have a so-called <em>dynamic system</em>, so I think that we can call this technique <em>dynamic test oracles</em>.
+	</p>
+	<p>
+		The above <code>foracle</code> program is just a proof of concept. You could make it more flexible by making it take command-line arguments that would let you control the sample size and FsCheck's <code>size</code> parameter (the hard-coded <code>100</code> in the above code listing).
+	</p>
+	<h3 id="b7cee6f3ed874b3390276dd3852850a6">
+		Refactoring <a href="#b7cee6f3ed874b3390276dd3852850a6" title="permalink">#</a>
+	</h3>
+	<p>
+		With the confidence instilled by the test cases, we can now refactor the <code>f</code> function:
+	</p>
+	<p>
+		<pre><span style="color:green;">//&nbsp;f&nbsp;:&nbsp;int&nbsp;-&gt;&nbsp;int&nbsp;-&gt;&nbsp;int&nbsp;-&gt;&nbsp;bool</span>
+<span style="color:blue;">let</span>&nbsp;f&nbsp;(x&nbsp;:&nbsp;int)&nbsp;(y&nbsp;:&nbsp;int)&nbsp;(z&nbsp;:&nbsp;int)&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;imp&nbsp;(x,&nbsp;y,&nbsp;z,&nbsp;out)&nbsp;i&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;out&nbsp;=&nbsp;out&nbsp;*&nbsp;x&nbsp;+&nbsp;abs&nbsp;(y&nbsp;*&nbsp;z&nbsp;-&nbsp;i&nbsp;*&nbsp;i)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;y&nbsp;+&nbsp;1I,&nbsp;z,&nbsp;x,&nbsp;out
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;(_,&nbsp;_,&nbsp;_,&nbsp;out)&nbsp;=&nbsp;List.fold&nbsp;imp&nbsp;(bigint&nbsp;x,&nbsp;bigint&nbsp;y,&nbsp;bigint&nbsp;z,&nbsp;0I)&nbsp;[0I..9I]
+&nbsp;&nbsp;&nbsp;&nbsp;abs&nbsp;out&nbsp;%&nbsp;100I&nbsp;&lt;&nbsp;10I</pre>
+	</p>
+	<p>
+		Instead of all those mutable variables, the function is, after all, just a left fold. Phew, I feel better now.
+	</p>
+	<h3 id="f849e03594b448299ba4eef5a6a72b4e">
+		Conclusion <a href="#f849e03594b448299ba4eef5a6a72b4e" title="permalink">#</a>
+	</h3>
+	<p>
+		This article demonstrated a proof of concept where you use a known good version (<em>n</em>) of the code as a test oracle for the next version (<em>n + 1</em>). In interpreted languages, you may be able to load two versions of the code base side by side, but that's rarely practical in a statically typed compiled language like F#. Instead, I used a utility program to generate test cases that can be used as a data source for a parametrised test.
+	</p>
+	<p>
+		The example rho problem takes only integers as input, and returns a simple Boolean value, so in this case it's trivial to encode each test case as a line of comma-separated values. For (real) problems that may involve more complex types, it'd be better to use another serialisation format, such as JSON or XML. 
+	</p>
+	<p>
+		An outstanding issue is whether it's possible to implement shrinking behaviour when tests fail. Currently, the proof of concept just uses a set of serialised test cases. Normally, when a <a href="/property-based-testing-intro">property-based testing</a> framework like FsCheck detects a counter-example, it'll shrink the counter-example to values that are easier to understand than the original. This proof of concept doesn't do that. I'm not sure if a framework like FsCheck currently contains enough extensibility points to enable that sort of behaviour. That remains to be seen.
+	</p>
+</div>
