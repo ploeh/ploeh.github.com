@@ -1,0 +1,265 @@
+---
+layout: post
+title: "Parametrised test primitive obsession code smell"
+description: "Watch out for this code smell with some unit testing frameworks."
+date: 2021-01-15 7:59 UTC
+tags: [Unit Testing, xUnit.net, Code]
+---
+{% include JB/setup %}
+
+<div id="post">
+	<p>
+		<em>{{ page.description }}</em>
+	</p>
+	<p>
+		In a <a href="/2021/01/11/waiting-to-happen">previous article</a> you saw this <a href="/2019/04/01/an-example-of-state-based-testing-in-c">state-based integration test</a>:
+	</p>
+	<p>
+		<pre>[<span style="color:#2b91af;">Theory</span>]
+[<span style="color:#2b91af;">InlineData</span>(1049,&nbsp;19,&nbsp;00,&nbsp;<span style="color:#a31515;">&quot;juliad@example.net&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;Julia&nbsp;Domna&quot;</span>,&nbsp;5)]
+[<span style="color:#2b91af;">InlineData</span>(1130,&nbsp;18,&nbsp;15,&nbsp;<span style="color:#a31515;">&quot;x@example.com&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;Xenia&nbsp;Ng&quot;</span>,&nbsp;9)]
+[<span style="color:#2b91af;">InlineData</span>(&nbsp;956,&nbsp;16,&nbsp;55,&nbsp;<span style="color:#a31515;">&quot;kite@example.edu&quot;</span>,&nbsp;<span style="color:blue;">null</span>,&nbsp;2)]
+[<span style="color:#2b91af;">InlineData</span>(&nbsp;433,&nbsp;17,&nbsp;30,&nbsp;<span style="color:#a31515;">&quot;shli@example.org&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;Shanghai&nbsp;Li&quot;</span>,&nbsp;5)]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">async</span>&nbsp;<span style="color:#2b91af;">Task</span>&nbsp;PostValidReservationWhenDatabaseIsEmpty(
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">int</span>&nbsp;days,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">int</span>&nbsp;hours,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">int</span>&nbsp;minutes,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">string</span>&nbsp;email,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">string</span>&nbsp;name,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">int</span>&nbsp;quantity)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;at&nbsp;=&nbsp;<span style="color:#2b91af;">DateTime</span>.Now.Date&nbsp;+&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">TimeSpan</span>(days,&nbsp;hours,&nbsp;minutes,&nbsp;0);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;db&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">FakeDatabase</span>();
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;sut&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">ReservationsController</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">SystemClock</span>(),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">InMemoryRestaurantDatabase</span>(<span style="color:#2b91af;">Grandfather</span>.Restaurant),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;db);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;dto&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">ReservationDto</span>
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Id&nbsp;=&nbsp;<span style="color:#a31515;">&quot;B50DF5B1-F484-4D99-88F9-1915087AF568&quot;</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;At&nbsp;=&nbsp;at.ToString(<span style="color:#a31515;">&quot;O&quot;</span>),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Email&nbsp;=&nbsp;email,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Name&nbsp;=&nbsp;name,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Quantity&nbsp;=&nbsp;quantity
+&nbsp;&nbsp;&nbsp;&nbsp;};
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">await</span>&nbsp;sut.Post(dto);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;expected&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Reservation</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Guid</span>.Parse(dto.Id),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">DateTime</span>.Parse(dto.At,&nbsp;<span style="color:#2b91af;">CultureInfo</span>.InvariantCulture),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Email</span>(dto.Email),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Name</span>(dto.Name&nbsp;??&nbsp;<span style="color:#a31515;">&quot;&quot;</span>),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;dto.Quantity);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Assert</span>.Contains(expected,&nbsp;db.Grandfather);
+}</pre>
+	</p>
+	<p>
+		This was the test <em>after</em> I improved it. Still, I wasn't satisfied with it. It has several problems. Take a few moments to consider it. Can you identify any problems? Which ones?
+	</p>
+	<h3 id="6da86d1040e544a3a67f509c0f3aade7">
+		Size <a href="#6da86d1040e544a3a67f509c0f3aade7" title="permalink">#</a>
+	</h3>
+	<p>
+		I know that you're not familiar with all the moving parts. You don't know how <code>ReservationDto</code> or <code>Reservation</code> are implemented. You don't know what <code>InMemoryRestaurantDatabase</code> is, or how <code>ReservationsController</code> behaves. Still, the issues I have in mind aren't specific to a particular code base.
+	</p>
+	<p>
+		I feel that the method is verging on being too big. Quantifiably, it doesn't fit in an <a href="/2019/11/04/the-80-24-rule">80x24 box</a>, but that's just an arbitrary <a href="/2020/04/13/curb-code-rot-with-thresholds">threshold</a> anyway. Still, I think it's grown to a size that makes me uncomfortable.
+	</p>
+	<p>
+		If you aren't convinced, think of this code example as a stand-in for something larger. In the above test, a reservation contains five smaller values (<code>Id</code>, <code>At</code>, <code>Email</code>, <code>Name</code>, and <code>Quantity</code>). How would a similar test look if the object in question contains ten or twenty values?
+	</p>
+	<p>
+		In the decades I've been programming and consulting, I've seen plenty of code bases. Data objects made from twenty fields are hardly unusual.
+	</p>
+	<p>
+		What would a similar test look like if the <code>dto</code> and the <code>expected</code> object required twenty smaller values?
+	</p>
+	<p>
+		The test would be too big.
+	</p>
+	<h3 id="e251bee2df414c5cb0d489f31183c664">
+		Primitive obsession <a href="#e251bee2df414c5cb0d489f31183c664" title="permalink">#</a>
+	</h3>
+	<p>
+		A test like this one contains a mix of essential behaviour and implementation details. The behaviour that it verifies is that when you <code>Post</code> a valid <code>dto</code>, the data makes it all the way to the database.
+	</p>
+	<p>
+		Exactly how the <code>dto</code> or the <code>expected</code> value are constructed is less relevant for the test. Yet it's intermingled with the test of behaviour. The signal-to-noise ratio in the test isn't all that great. What can you do to improve things?
+	</p>
+	<p>
+		As given, it seems difficult to do much. The problem is <a href="/2011/05/25/DesignSmellPrimitiveObsession">primitive obsession</a>. While this is a <a href="http://xunitpatterns.com/Parameterized%20Test.html">parametrised test</a>, all the method parameters are primitives: integers and strings. The makes it hard to introduce useful abstractions.
+	</p>
+	<p>
+		In C# (and probably other languages as well) parametrised tests often suffer from primitive obsession. The most common data source is an attribute (AKA <em>annotation</em>), like <a href="https://xunit.net">xUnit.net</a>'s <code>[InlineData]</code> attribute. This isn't a limitation of xUnit.net, but rather of .NET attributes. You can only create attributes with primitive values and arrays.
+	</p>
+	<p>
+		What <em>is</em> a limitation of xUnit.net (and the other mainstream .NET testing frameworks, as far as I know) is that tests aren't first-class values. In <a href="https://www.haskell.org">Haskell</a>, for example, it's <a href="/2018/04/30/parametrised-unit-tests-in-haskell">easy to write parametrised tests using the normal language constructs</a> exactly because tests are first-class values. (I hope that the next version of xUnit.net will support tests as first-class values.)
+	</p>
+	<p>
+		Imagine that instead of only five constituent fields, you'd have to write a parametrised test for objects with twenty primitive values. As long as you stick with attribute-based data sources, you'll be stuck with primitive values.
+	</p>
+	<p>
+		Granted, attributes like <code>[InlineData]</code> are lightweight, but over the years, my patience with them has grown shorter. They lock me into primitive obsession, and I don't appreciate that.
+	</p>
+	<h3 id="9342d4306e174fe79946a131b9c6894c">
+		Essential test <a href="#9342d4306e174fe79946a131b9c6894c" title="permalink">#</a>
+	</h3>
+	<p>
+		While tests as first-class values aren't an option in xUnit.net, you can provide other data sources for the <code>[Theory]</code> attribute than <code>[InlineData]</code>. It's not as lightweight, but it breaks the primitive obsession and re-enables normal code design techniques. It enables you to reduce the test itself to its essence. You no longer have to think in primitives, but can instead express the test unshackled by constraints. As a first pass, I'd like the test to look like this:
+	</p>
+	<p>
+		<pre>[<span style="color:#2b91af;">Theory</span>]
+[<span style="color:#2b91af;">ClassData</span>(<span style="color:blue;">typeof</span>(<span style="color:#2b91af;">PostValidReservationWhenDatabaseIsEmptyTestCases</span>))]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">async</span>&nbsp;<span style="color:#2b91af;">Task</span>&nbsp;PostValidReservationWhenDatabaseIsEmpty(
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">ReservationDto</span>&nbsp;validDto,&nbsp;<span style="color:#2b91af;">Reservation</span>&nbsp;expected)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;db&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">FakeDatabase</span>();
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;sut&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">ReservationsController</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">SystemClock</span>(),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">InMemoryRestaurantDatabase</span>(<span style="color:#2b91af;">Grandfather</span>.Restaurant),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;db);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">await</span>&nbsp;sut.Post(validDto);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Assert</span>.Contains(expected,&nbsp;db.Grandfather);
+}</pre>
+	</p>
+	<p>
+		This version of the test eliminates the noise. How <code>validDto</code> and <code>expected</code> are constructed is an implementation detail that has little bearing on the behaviour being tested.
+	</p>
+	<p>
+		For a reader of the code, it's should now be clearer what's at stake here: If you <code>Post</code> a <code>validDto</code> the <code>expected</code> reservation should appear in the database.
+	</p>
+	<p>
+		Reducing the test code to its essentials made me realise something that hitherto had escaped me: that I could <a href="/2020/11/30/name-by-role">name the DTO by role</a>. Instead of just <code>dto</code>, I could call the parameter <code>validDto</code>.
+	</p>
+	<p>
+		Granted, I could also have done that previously, but I didn't think of it. There's was so much noise in that test that I didn't stop to consider whether <code>dto</code> sufficiently communicated the role of that variable.
+	</p>
+	<p>
+		The less code, the easier it becomes to think such things through, I find.
+	</p>
+	<p>
+		In any case, the test code now much more succinctly expresses the essence of the desired behaviour. Notice how I started my refactoring by writing the desired test code. I've yet to implement the data source. Now that the data source expresses test data as full objects, I'm not so concerned with whether or not that's going to be possible. Of course it's possible.
+	</p>
+	<h3 id="469ee6ae8f264e21a544f11be2476111">
+		Object data source <a href="#469ee6ae8f264e21a544f11be2476111" title="permalink">#</a>
+	</h3>
+	<p>
+		You can define data sources for xUnit.net as classes or methods. In C# I usually reach for the <code>[ClassData]</code> option, since an object (in C#, that is) gives me better options for further decomposition. For example, I can define a class and delegate the details to helper methods:
+	</p>
+	<p>
+		<pre><span style="color:blue;">private</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">PostValidReservationWhenDatabaseIsEmptyTestCases</span>&nbsp;:
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">TheoryData</span>&lt;<span style="color:#2b91af;">ReservationDto</span>,&nbsp;<span style="color:#2b91af;">Reservation</span>&gt;
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">PostValidReservationWhenDatabaseIsEmptyTestCases</span>()
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;AddWithName(1049,&nbsp;19,&nbsp;00,&nbsp;<span style="color:#a31515;">&quot;juliad@example.net&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;Julia&nbsp;Domna&quot;</span>,&nbsp;5);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;AddWithName(1130,&nbsp;18,&nbsp;15,&nbsp;<span style="color:#a31515;">&quot;x@example.com&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;Xenia&nbsp;Ng&quot;</span>,&nbsp;9);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;AddWithoutName(956,&nbsp;16,&nbsp;55,&nbsp;<span style="color:#a31515;">&quot;kite@example.edu&quot;</span>,&nbsp;2);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;AddWithName(433,&nbsp;17,&nbsp;30,&nbsp;<span style="color:#a31515;">&quot;shli@example.org&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;Shanghai&nbsp;Li&quot;</span>,&nbsp;5);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;More&nbsp;members&nbsp;here...</span></pre>
+	</p>
+	<p>
+		Here, I'm taking advantage of xUnit.net's built-in <code>TheoryData&lt;T1, T2&gt;</code> base class, but that's just a convenience. All you have to do is to implement <code>IEnumerable&lt;object[]&gt;</code>.
+	</p>
+	<p>
+		As you can see, the constructor adds the four test cases by calling two private helper methods. Here's the first of those:
+	</p>
+	<p>
+		<pre><span style="color:blue;">private</span>&nbsp;<span style="color:blue;">const</span>&nbsp;<span style="color:blue;">string</span>&nbsp;id&nbsp;=&nbsp;<span style="color:#a31515;">&quot;B50DF5B1-F484-4D99-88F9-1915087AF568&quot;</span>;
+ 
+<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">void</span>&nbsp;AddWithName(
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">int</span>&nbsp;days,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">int</span>&nbsp;hours,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">int</span>&nbsp;minutes,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">string</span>&nbsp;email,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">string</span>&nbsp;name,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">int</span>&nbsp;quantity)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;at&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">DateTime</span>.Now.Date&nbsp;+&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">TimeSpan</span>(days,&nbsp;hours,&nbsp;minutes,&nbsp;0);
+&nbsp;&nbsp;&nbsp;&nbsp;Add(<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">ReservationDto</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Id&nbsp;=&nbsp;id,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;At&nbsp;=&nbsp;at.ToString(<span style="color:#a31515;">&quot;O&quot;</span>),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Email&nbsp;=&nbsp;email,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Name&nbsp;=&nbsp;name,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Quantity&nbsp;=&nbsp;quantity
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;},
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Reservation</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Guid</span>.Parse(id),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;at,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Email</span>(email),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Name</span>(name),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;quantity));
+}</pre>
+	</p>
+	<p>
+		The other helper method is almost identical, although it has a slight variation when it comes to the reservation name:
+	</p>
+	<p>
+		<pre><span style="color:blue;">private</span>&nbsp;<span style="color:blue;">void</span>&nbsp;AddWithoutName(
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">int</span>&nbsp;days,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">int</span>&nbsp;hours,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">int</span>&nbsp;minutes,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">string</span>&nbsp;email,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">int</span>&nbsp;quantity)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;at&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">DateTime</span>.Now.Date&nbsp;+&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">TimeSpan</span>(days,&nbsp;hours,&nbsp;minutes,&nbsp;0);
+&nbsp;&nbsp;&nbsp;&nbsp;Add(<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">ReservationDto</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Id&nbsp;=&nbsp;id,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;At&nbsp;=&nbsp;at.ToString(<span style="color:#a31515;">&quot;O&quot;</span>),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Email&nbsp;=&nbsp;email,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Quantity&nbsp;=&nbsp;quantity
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;},
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Reservation</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Guid</span>.Parse(id),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;at,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Email</span>(email),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Name</span>(<span style="color:#a31515;">&quot;&quot;</span>),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;quantity));
+}</pre>
+	</p>
+	<p>
+		In total, this refactoring results in <em>more</em> code, so how is this an improvement?
+	</p>
+	<h3 id="9722aade54194b1a87c7312d16ed7fc8">
+		The paradox of decomposition <a href="#9722aade54194b1a87c7312d16ed7fc8" title="permalink">#</a>
+	</h3>
+	<p>
+		In object-oriented design, decomposition tends to lead to more code. If you want to isolate and make reusable a particular piece of behaviour, you'll usually introduce an interface or a base class. Even stateless functions need a static class to define them. (To be fair, functional programming isn't entirely devoid of such overhead associated with decomposition, but the cost tends to smaller.) This leads to more code, compared with the situation before decomposition.
+	</p>
+	<p>
+		This is a situation you may also encounter if you attempt to refactor to design patterns, or follow the <a href="/encapsulation-and-solid">SOLID principles</a>. You'll have more code than when you started. This often leads to resistance to such 'code bloat'.
+	</p>
+	<p>
+		It's fine to resist code bloat. It's also fine to dislike 'complexity for complexity's sake'. Try to evaluate each potential code change based on advantages and disadvantages. I'm not insisting that the above refactoring is objectively better. I did feel, however, that I had a problem that I ought to address, and that this was a viable alternative. The result is more code, but each piece of code is smaller and simpler.
+	</p>
+	<p>
+		You can, conceivably, read the test method itself to get a feel for what it tests, even if you don't know all the implementation details. You can read the four statements in the <code>PostValidReservationWhenDatabaseIsEmptyTestCases</code> constructor without, I hope, understanding all the details about the two helper methods. And you <em>can</em> read <code>AddWithName</code> without understanding how <code>AddWithoutName</code> works, and vice versa, because these two methods don't depend on each other.
+	</p>
+	<h3 id="27b546f17ba44571a11ed44db9d45a09">
+		Conclusion <a href="#27b546f17ba44571a11ed44db9d45a09" title="permalink">#</a>
+	</h3>
+	<p>
+		In this article, I've described how the use of code annotations for parametrised tests tend to pull in the direction of primitive obsession. This is a force worth keeping an eye on, I think.
+	</p>
+	<p>
+		You saw how to refactor to class-based test data generation. This enables you to use objects instead of primitives, thus opening your design palette. You can now use all your usual object-oriented or functional design skills to factor the code in a way that's satisfactory.
+	</p>
+	<p>
+		Was it worth it in this case? Keep in mind that the original problem was already marginal. While the code didn't fit in a 80x24 box, it was only 33 lines of code (excluding the test data). Imagine, however, that instead of a five-field reservation, you'd be dealing with a twenty-field data class, and such a refactoring begins to look more compelling.
+	</p>
+	<p>
+		Is the code now perfect? It still isn't. I'm a little put off by the similarity of <code>AddWithName</code> and <code>AddWithoutName</code>. I'm also aware that there's a trace of production code duplicated in the test case, in the way that the test code duplicated how a valid <code>ReservationDto</code> relates to a <code>Reservation</code>. I'm on the fence whether I should do anything about this.
+	</p>
+	<p>
+		At the moment I'm inclined to heed <a href="https://en.wikipedia.org/wiki/Rule_of_three_(computer_programming)">the rule of three</a>. The duplication is still too insubstantial to warrant refactoring, but it's worth keeping an eye on.
+	</p>
+</div>
