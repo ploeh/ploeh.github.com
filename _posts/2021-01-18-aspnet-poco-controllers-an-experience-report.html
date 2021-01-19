@@ -1,0 +1,296 @@
+---
+layout: post
+title: "ASP.NET POCO Controllers: an experience report"
+description: "Controllers don't have to derive from a base class."
+date: 2021-01-18 8:39 UTC
+tags: [ASP.NET Web API, ASP.NET MVC]
+---
+{% include JB/setup %}
+
+<div id="post">
+	<p>
+		<em>{{ page.description }}</em>
+	</p>
+	<p>
+		In most tutorials about ASP.NET web APIs you'll be told to let Controller classes derive from a base class. It may be convenient if you believe that productivity is measured by how fast you can get an initial version of the software into production. Granted, sometimes that's the case, but usually there's a price to be paid. Did you produce legacy code in the process?
+	</p>
+	<p>
+		One <a href="http://bit.ly/working-effectively-with-legacy-code">common definition of legacy code</a> is that it's code without tests. With ASP.NET I've repeatedly found that when Controllers derive from <a href="https://docs.microsoft.com/dotnet/api/microsoft.aspnetcore.mvc.controllerbase">ControllerBase</a> they become harder to unit test. It may be convenient to have access to the <a href="https://docs.microsoft.com/dotnet/api/microsoft.aspnetcore.mvc.controllerbase.url#Microsoft_AspNetCore_Mvc_ControllerBase_Url">Url</a> and <a href="https://docs.microsoft.com/dotnet/api/microsoft.aspnetcore.mvc.controllerbase.user#Microsoft_AspNetCore_Mvc_ControllerBase_User">User</a> properties, but this tends to make the <em>arrange</em> phase of a unit test much more complex. Not impossible; just more complex than I like. In short, inheriting from <code>ControllerBase</code> just to get access to, say, <code>Url</code> or <code>User</code> violates the <a href="https://en.wikipedia.org/wiki/Interface_segregation_principle">Interface Segregation Principle</a>. That <code>ControllerBase</code> is a too big a dependency to my taste.
+	</p>
+	<p>
+		I already use self-hosting in integration tests so that I can interact with my REST APIs via HTTP. When I want to test how my API reacts to various HTTP-specific circumstances, I do that via integration tests. So, in a recent code base I decided to see if I could write an entire REST API in ASP.NET Core without inheriting from <code>ControllerBase</code>.
+	</p>
+	<p>
+		The short answer is that, yes, this is possible, and I'd do it again, but you have to jump through some hoops. I consider that hoop-jumping a fine price to pay for the benefits of simpler unit tests and (it turns out) better separation of concerns.
+	</p>
+	<p>
+		In this article, I'll share what I've learned.
+	</p>
+	<h3 id="fa68860febe6482287eadc65cf3e8a46">
+		POCO Controllers <a href="#fa68860febe6482287eadc65cf3e8a46" title="permalink">#</a>
+	</h3>
+	<p>
+		Just so that we're on the same page: A <a href="https://en.wikipedia.org/wiki/Plain_old_CLR_object">POCO</a> Controller is a Controller class that doesn't inherit from any base class. In my code base, they're defined like this:
+	</p>
+	<p>
+		<pre>[<span style="color:#2b91af;">Route</span>(<span style="color:#a31515;">&quot;&quot;</span>)]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">sealed</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">HomeController</span></pre>
+	</p>
+	<p>
+		or
+	</p>
+	<p>
+		<pre>[<span style="color:#2b91af;">Authorize</span>(Roles&nbsp;=&nbsp;<span style="color:#a31515;">&quot;MaitreD&quot;</span>)]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">ScheduleController</span></pre>
+	</p>
+	<p>
+		As you can tell, they don't inherit from <code>ControllerBase</code> or any other base class. They <em>are</em> annotated with attributes, like <code>[Route]</code>, <code>[Authorize]</code>, or <code>[ApiController]</code>. Strictly speaking, that may disqualify them as true POCOs, but in practice I've found that those attributes don't impact the sustainability of the code base in a negative manner.
+	</p>
+	<p>
+		Dependency Injection is still possible, and in use:
+	</p>
+	<p>
+		<pre>[<span style="color:#2b91af;">ApiController</span>]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">ReservationsController</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">ReservationsController</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">IClock</span>&nbsp;clock,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">IRestaurantDatabase</span>&nbsp;restaurantDatabase,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">IReservationsRepository</span>&nbsp;repository)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Clock&nbsp;=&nbsp;clock;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;RestaurantDatabase&nbsp;=&nbsp;restaurantDatabase;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Repository&nbsp;=&nbsp;repository;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">IClock</span>&nbsp;Clock&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">IRestaurantDatabase</span>&nbsp;RestaurantDatabase&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">IReservationsRepository</span>&nbsp;Repository&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;Controller&nbsp;actions&nbsp;and&nbsp;other&nbsp;members&nbsp;go&nbsp;here...</span></pre>
+	</p>
+	<p>
+		I consider Dependency Injection nothing but an application of polymorphism, so I think that still fits the POCO label. After all, <a href="/2017/01/27/dependency-injection-is-passing-an-argument">Dependency Injection is just argument-passing</a>.
+	</p>
+	<h3 id="b1672f04c9774dca9f221a301c191d95">
+		HTTP responses and status codes <a href="#b1672f04c9774dca9f221a301c191d95" title="permalink">#</a>
+	</h3>
+	<p>
+		The first thing I had to figure out was how to return various HTTP status codes. If you just return some model object, the default status code is <code>200 OK</code>. That's fine in many situations, but if you're implementing a proper REST API, you should be using headers and status codes to communicate with the client.
+	</p>
+	<p>
+		The <code>ControllerBase</code> class defines many helper methods to return various other types of responses, such as <a href="https://docs.microsoft.com/dotnet/api/microsoft.aspnetcore.mvc.controllerbase.badrequest#Microsoft_AspNetCore_Mvc_ControllerBase_BadRequest">BadRequest</a> or <a href="https://docs.microsoft.com/dotnet/api/microsoft.aspnetcore.mvc.controllerbase.notfound#Microsoft_AspNetCore_Mvc_ControllerBase_NotFound">NotFound</a>. I had to figure out how to return such responses without access to the base class.
+	</p>
+	<p>
+		Fortunately, ASP.NET Core is now open source, so it isn't too hard to look at the source code for those helper methods to see what they do. It turns out that they are just discoverable methods that create and return various result objects. So, instead of calling the <code>BadRequest</code> helper method, I can just return a <code>BadRequestResult</code>:
+	</p>
+	<p>
+		<pre><span style="color:blue;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">BadRequestResult</span>();</pre>
+	</p>
+	<p>
+		Some of the responses were a little more involved, so I created my own domain-specific helper methods for them:
+	</p>
+	<p>
+		<pre><span style="color:blue;">private</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:#2b91af;">ActionResult</span>&nbsp;Reservation201Created(<span style="color:blue;">int</span>&nbsp;restaurantId,&nbsp;<span style="color:#2b91af;">Reservation</span>&nbsp;r)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">CreatedAtActionResult</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;actionName:&nbsp;<span style="color:blue;">nameof</span>(Get),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;controllerName:&nbsp;<span style="color:blue;">null</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;routeValues:&nbsp;<span style="color:blue;">new</span>&nbsp;{&nbsp;restaurantId,&nbsp;id&nbsp;=&nbsp;r.Id.ToString(<span style="color:#a31515;">&quot;N&quot;</span>)&nbsp;},
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;value:&nbsp;r.ToDto());
+}</pre>
+	</p>
+	<p>
+		Apparently, the <code>controllerName</code> argument isn't required, so should be <code>null</code>. I had to experiment with various combinations to get it right, but I have self-hosted integration tests that cover this result. If it doesn't work as intended, tests will fail.
+	</p>
+	<p>
+		Returning this <code>CreatedAtActionResult</code> object produces an HTTP response like this:
+	</p>
+	<p>
+		<pre>HTTP/1.1 201 Created
+Content-Type: application/json; charset=utf-8
+Location: https://example.net:443/restaurants/2112/reservations/276d124f20cf4cc3b502f57b89433f80
+
+{
+&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;id&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;276d124f20cf4cc3b502f57b89433f80&quot;</span>,
+&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;at&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;2022-01-14T19:45:00.0000000&quot;</span>,
+&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;email&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;donkeyman@example.org&quot;</span>,
+&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;name&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;Don&nbsp;Keyman&quot;</span>,
+&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;quantity&quot;</span>:&nbsp;4
+}</pre>
+	</p>
+	<p>
+		I've edited and coloured the response for readability. The <code>Location</code> URL actually also <a href="/2020/10/26/fit-urls">includes a digital signature</a>, which I've removed here just to make the example look a little prettier.
+	</p>
+	<p>
+		In any case, returning various HTTP headers and status codes is less discoverable when you don't have a base class with all the helper methods, but once you've figured out the objects to return, it's straightforward, and the code is simple.
+	</p>
+	<h3 id="ecbc913d450d49b7ab92d2e0c193230e">
+		Generating links <a href="#ecbc913d450d49b7ab92d2e0c193230e" title="permalink">#</a>
+	</h3>
+	<p>
+		A true (<a href="https://martinfowler.com/articles/richardsonMaturityModel.html">level 3</a>) REST API uses <a href="https://en.wikipedia.org/wiki/HATEOAS">hypermedia as the engine of application state</a>; that is, <em>links</em>. This means that a HTTP response will typically include a JSON or XML representation with several links. <a href="/2020/10/26/fit-urls">This article</a> includes several examples.
+	</p>
+	<p>
+		ASP.NET provides <a href="https://docs.microsoft.com/dotnet/api/microsoft.aspnetcore.mvc.iurlhelper">IUrlHelper</a> for exactly that purpose, and if you inherit from <code>ControllerBase</code> the above-mentioned <code>Url</code> property gives you convenient access to just such an object.
+	</p>
+	<p>
+		When a class <em>doesn't</em> inherit from <code>ControllerBase</code>, you don't have convenient access to an <code>IUrlHelper</code>. Then what?
+	</p>
+	<p>
+		It's possible to get an <code>IUrlHelper</code> via the framework's built-in Dependency Injection engine, but if you add such a dependency to a POCO Controller, you'll have to jump through all sorts of hoops to configure it in unit tests. That was exactly the situation I wanted to avoid, so that got me thinking about design alternatives.
+	</p>
+	<p>
+		That was the real, underlying reason I came up with the idea to instead <a href="/2020/08/24/adding-rest-links-as-a-cross-cutting-concern">add REST links as a cross-cutting concern</a>. The Controllers are wonderfully free of that concern, which helps keeping the complexity down of the unit tests.
+	</p>
+	<p>
+		I still have test coverage of the links, but I prefer testing HTTP-related behaviour via the HTTP API instead of relying on implementation details:
+	</p>
+	<p>
+		<pre>[<span style="color:#2b91af;">Theory</span>]
+[<span style="color:#2b91af;">InlineData</span>(<span style="color:#a31515;">&quot;Hipgnosta&quot;</span>)]
+[<span style="color:#2b91af;">InlineData</span>(<span style="color:#a31515;">&quot;Nono&quot;</span>)]
+[<span style="color:#2b91af;">InlineData</span>(<span style="color:#a31515;">&quot;The&nbsp;Vatican&nbsp;Cellar&quot;</span>)]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">async</span>&nbsp;<span style="color:#2b91af;">Task</span>&nbsp;RestaurantReturnsCorrectLinks(<span style="color:blue;">string</span>&nbsp;name)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">using</span>&nbsp;<span style="color:blue;">var</span>&nbsp;api&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">SelfHostedApi</span>();
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;client&nbsp;=&nbsp;api.CreateClient();
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;response&nbsp;=&nbsp;<span style="color:blue;">await</span>&nbsp;client.GetRestaurant(name);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;expected&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">HashSet</span>&lt;<span style="color:blue;">string</span>?&gt;(<span style="color:blue;">new</span>[]
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#a31515;">&quot;urn:reservations&quot;</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#a31515;">&quot;urn:year&quot;</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#a31515;">&quot;urn:month&quot;</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#a31515;">&quot;urn:day&quot;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;});
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;actual&nbsp;=&nbsp;<span style="color:blue;">await</span>&nbsp;response.ParseJsonContent&lt;<span style="color:#2b91af;">RestaurantDto</span>&gt;();
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;actualRels&nbsp;=&nbsp;actual.Links.Select(l&nbsp;=&gt;&nbsp;l.Rel).ToHashSet();
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Assert</span>.Superset(expected,&nbsp;actualRels);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Assert</span>.All(actual.Links,&nbsp;AssertHrefAbsoluteUrl);
+}</pre>
+	</p>
+	<p>
+		This test verifies that the representation returned in <code>response</code> contains four labelled links. Granted, this particular test only verifies that each link contains an absolute URL (which could, in theory, be <code>http://www.example.com</code>), but the whole point of <a href="/2020/10/26/fit-urls">fit URLs</a> is that they should be opaque. I've other tests that follow links to verify that the API affords the desired behaviour.
+	</p>
+	<h3 id="cd0769917ec441f786877bba0e630f00">
+		Authorisation <a href="#cd0769917ec441f786877bba0e630f00" title="permalink">#</a>
+	</h3>
+	<p>
+		The final kind of behaviour that caused me a bit of trouble was authorisation. It's easy enough to annotate a Controller with an <code>[Authorize]</code> attribute, which is fine as long all you need is role-based authorisation.
+	</p>
+	<p>
+		I did, however, run into one situation where I needed something closer to an <a href="https://en.wikipedia.org/wiki/Access-control_list">access control list</a>. The system that includes all these code examples is a multi-tenant restaurant reservation system. There's one protected resource: a day's schedule, intended for use by the restaurant's staff. Here's a simplified example:
+	</p>
+	<p>
+		<pre>GET /restaurants/2112/schedule/2021/2/23 HTTP/1.1
+Authorization: Bearer eyJhbGciOiJIUzI1NiIsInCI6IkpXVCJ9.eyJ...
+
+HTTP/1.1 200 OK
+Content-Type: application/json; charset=utf-8
+{
+&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;name&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;Nono&quot;</span>,
+&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;year&quot;</span>:&nbsp;2021,
+&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;month&quot;</span>:&nbsp;2,
+&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;day&quot;</span>:&nbsp;23,
+&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;days&quot;</span>:&nbsp;[
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;date&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;2021-02-23&quot;</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;entries&quot;</span>:&nbsp;[
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;time&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;19:45:00&quot;</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;reservations&quot;</span>:&nbsp;[
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;id&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;2c7ace4bbee94553950afd60a86c530c&quot;</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;at&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;2021-02-23T19:45:00.0000000&quot;</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;email&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;anarchi@example.net&quot;</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;name&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;Ann&nbsp;Archie&quot;</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;quantity&quot;</span>:&nbsp;2
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;]
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;]
+&nbsp;&nbsp;&nbsp;&nbsp;}
+&nbsp;&nbsp;]
+}</pre>
+	</p>
+	<p>
+		Since this resource contains personally identifiable information (email addresses) it's protected. You have to present a valid <a href="https://en.wikipedia.org/wiki/JSON_Web_Token">JSON Web Token</a> with required claims. Role claims, however, aren't enough. A minimum bar is that the token must contain a sufficient role claim like <code>"MaitreD"</code> shown above, but that's not enough. This is, after all, a multi-tenant system, and we don't want one restaurant's <em>MaitreD</em> to be able to see another restaurant's schedule.
+	</p>
+	<p>
+		If ASP.NET can address that kind of problem with annotations, I haven't figured out how. The Controller needs to check an access control list against the resource being accessed. The above-mentioned <code>User</code> property of <code>ControllerBase</code> would be <em>really</em> convenient here.
+	</p>
+	<p>
+		Again, there are ways to inject an entire <a href="https://docs.microsoft.com/dotnet/api/system.security.claims.claimsprincipal">ClaimsPrincipal</a> class into the Controller that needs it, but once more I felt that that would violate the Interface Segregation Principle. I didn't need an entire <code>ClaimsPrincipal</code>; I just needed a list of restaurant IDs that a particular JSON Web Token allows access to.
+	</p>
+	<p>
+		As is often my modus operandi in such situations, I started by writing the code I wished to use, and then figured out how to make it work:
+	</p>
+	<p>
+		<pre>[<span style="color:#2b91af;">HttpGet</span>(<span style="color:#a31515;">&quot;restaurants/{restaurantId}/schedule/{year}/{month}/{day}&quot;</span>)]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">async</span>&nbsp;<span style="color:#2b91af;">Task</span>&lt;<span style="color:#2b91af;">ActionResult</span>&gt;&nbsp;Get(<span style="color:blue;">int</span>&nbsp;restaurantId,&nbsp;<span style="color:blue;">int</span>&nbsp;year,&nbsp;<span style="color:blue;">int</span>&nbsp;month,&nbsp;<span style="color:blue;">int</span>&nbsp;day)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;(!AccessControlList.Authorize(restaurantId))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">ForbidResult</span>();
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;Do&nbsp;the&nbsp;real&nbsp;work&nbsp;here...</span></pre>
+	</p>
+	<p>
+		<code>AccessControlList</code> is a <a href="/2012/08/31/ConcreteDependencies">Concrete Dependency</a>. It's just a wrapper around a collection of IDs:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">sealed</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">AccessControlList</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;<span style="color:#2b91af;">IReadOnlyCollection</span>&lt;<span style="color:blue;">int</span>&gt;&nbsp;restaurantIds;</pre>
+	</p>
+	<p>
+		I had to create a new class in order to keep the built-in ASP.NET DI Container happy. Had I been doing <a href="/2014/06/10/pure-di">Pure DI</a> I could just have injected <code>IReadOnlyCollection&lt;int&gt;</code> directly into the Controller, but in this code base I used the built-in DI Container, which I had to configure like this:
+	</p>
+	<p>
+		<pre>services.AddHttpContextAccessor();
+services.AddTransient(sp&nbsp;=&gt;&nbsp;<span style="color:#2b91af;">AccessControlList</span>.FromUser(
+&nbsp;&nbsp;&nbsp;&nbsp;sp.GetService&lt;<span style="color:#2b91af;">IHttpContextAccessor</span>&gt;().HttpContext.User));</pre>
+	</p>
+	<p>
+		Apart from having to wrap <code>IReadOnlyCollection&lt;int&gt;</code> in a new class, I found such an implementation preferable to inheriting from <code>ControllerBase</code>. The Controller in question only depends on the services it needs:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">ScheduleController</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">IRestaurantDatabase</span>&nbsp;restaurantDatabase,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">IReservationsRepository</span>&nbsp;repository,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">AccessControlList</span>&nbsp;accessControlList)</pre>
+	</p>
+	<p>
+		The <code>ScheduleController</code> uses its <code>restaurantDatabase</code> dependency to look up a specific restaurant based on the <code>restaurantId</code>, the <code>repository</code> to read the schedule, and <code>accessControlList</code> to implement authorisation. That's what it needs, so that's its dependencies. It follows the Interface Segregation Principle.
+	</p>
+	<p>
+		The <code>ScheduleController</code> class is easy to unit test, since a test can just create a new <code>AccessControlList</code> object whenever it needs to:
+	</p>
+	<p>
+		<pre>[<span style="color:#2b91af;">Fact</span>]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">async</span>&nbsp;<span style="color:#2b91af;">Task</span>&nbsp;GetScheduleForAbsentRestaurant()
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;sut&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">ScheduleController</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">InMemoryRestaurantDatabase</span>(<span style="color:#2b91af;">Some</span>.Restaurant.WithId(2)),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">FakeDatabase</span>(),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">AccessControlList</span>(3));
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;actual&nbsp;=&nbsp;<span style="color:blue;">await</span>&nbsp;sut.Get(3,&nbsp;2089,&nbsp;12,&nbsp;9);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Assert</span>.IsAssignableFrom&lt;<span style="color:#2b91af;">NotFoundResult</span>&gt;(actual);
+}</pre>
+	</p>
+	<p>
+		This test requests the schedule for a restaurant with the ID <code>3</code>, and the access control list <em>does</em> include that ID. The restaurant, however, doesn't exist, so despite correct permissions, the expected result is <code>404 Not Found</code>.
+	</p>
+	<h3 id="882c69dacd17476d899d3910a35aa62d">
+		Conclusion <a href="#882c69dacd17476d899d3910a35aa62d" title="permalink">#</a>
+	</h3>
+	<p>
+		ASP.NET has supported POCO Controllers for some time now, but it's clearly not a mainstream scenario. The documentation and Visual Studio tooling assumes that your Controllers inherit from one of the framework base classes.
+	</p>
+	<p>
+		You do, therefore, have to jump through a few hoops to make POCO Controllers work. The result, however, is more lightweight Controllers and better separation of concerns. I find the jumping worthwhile.
+	</p>
+</div>
