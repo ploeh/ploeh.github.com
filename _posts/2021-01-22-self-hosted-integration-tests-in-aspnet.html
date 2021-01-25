@@ -1,0 +1,189 @@
+---
+layout: post
+title: "Self hosted integration tests in ASP.NET"
+description: "A way to self-host a REST API and test it through HTTP."
+date: 2021-01-22 12:56 UTC
+tags: [Unit Testing, ASP.NET Web API, ASP.NET MVC]
+---
+{% include JB/setup %}
+
+<div id="post">
+	<p>
+		<em>{{ page.description }}</em>
+	</p>
+	<p>
+		In 2020 I developed a sizeable code base for an online restaurant REST API. In the spirit of <a href="/outside-in-tdd">outside-in TDD</a>, I found it best to test the HTTP behaviour of the API by actually interacting with it via HTTP.
+	</p>
+	<p>
+		Sometimes ASP.NET offers more than one way to achieve the same end result. For example, to return <code>200 OK</code>, you can use both <code>OkObjectResult</code> and <code>ObjectResult</code>. I don't want my tests to be coupled to such implementation details, so by testing an API via HTTP instead of using the ASP.NET object model, I decouple the two.
+	</p>
+	<p>
+		You can easily self-host an ASP.NET web API and test it using an <a href="https://docs.microsoft.com/dotnet/api/system.net.http.httpclient">HttpClient</a>. In this article, I'll show you how I went about it.
+	</p>
+	<h3 id="a070ceb1f9a84f2988aa7e4c59f38397">
+		Reserving a table <a href="#a070ceb1f9a84f2988aa7e4c59f38397" title="permalink">#</a>
+	</h3>
+	<p>
+		In true outside-in fashion, I'll first show you the test. Then I'll break it down to show you how it works.
+	</p>
+	<p>
+		<pre>[<span style="color:#2b91af;">Fact</span>]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">async</span>&nbsp;<span style="color:#2b91af;">Task</span>&nbsp;<span style="color:#74531f;">ReserveTableAtNono</span>()
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">using</span>&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">api</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">SelfHostedApi</span>();
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">client</span>&nbsp;=&nbsp;<span style="color:#1f377f;">api</span>.<span style="color:#74531f;">CreateClient</span>();
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">at</span>&nbsp;=&nbsp;<span style="color:#2b91af;">DateTime</span>.Today.<span style="color:#74531f;">AddDays</span>(434).<span style="color:#74531f;">At</span>(20,&nbsp;15);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">dto</span>&nbsp;=&nbsp;<span style="color:#2b91af;">Some</span>.Reservation.<span style="color:#74531f;">WithDate</span>(<span style="color:#1f377f;">at</span>).<span style="color:#74531f;">WithQuantity</span>(6).<span style="color:#74531f;">ToDto</span>();
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">response</span>&nbsp;=&nbsp;<span style="color:blue;">await</span>&nbsp;<span style="color:#1f377f;">client</span>.<span style="color:#74531f;">PostReservation</span>(<span style="color:#a31515;">&quot;Nono&quot;</span>,&nbsp;<span style="color:#1f377f;">dto</span>);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">await</span>&nbsp;<span style="color:#74531f;">AssertRemainingCapacity</span>(<span style="color:#1f377f;">client</span>,&nbsp;<span style="color:#1f377f;">at</span>,&nbsp;<span style="color:#a31515;">&quot;Nono&quot;</span>,&nbsp;4);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">await</span>&nbsp;<span style="color:#74531f;">AssertRemainingCapacity</span>(<span style="color:#1f377f;">client</span>,&nbsp;<span style="color:#1f377f;">at</span>,&nbsp;<span style="color:#a31515;">&quot;Hipgnosta&quot;</span>,&nbsp;10);
+}</pre>
+	</p>
+	<p>
+		This test uses <a href="https://xunit.net">xUnit.net</a> 2.4.1 to make a reservation at the restaurant named <em>Nono</em>. The first line that creates the <code>api</code> variable spins up a self-hosted instance of the REST API. The next line creates an <code>HttpClient</code> configured to communicate with the self-hosted instance.
+	</p>
+	<p>
+		The test proceeds to create a Data Transfer Object that it posts to the <em>Nono</em> restaurant. It then asserts that the remaining capacity at the <em>Nono</em> and <em>Hipgnosta</em> restaurants are as expected.
+	</p>
+	<p>
+		You'll see the implementation details soon, but I first want to discuss this high-level test. As is the case with most of my code, it's far from perfect. If you're not familiar with this code base, you may have plenty of questions:
+		<ul>
+			<li>Why does it make a reservation 434 days in the future? Why not 433, or 211, or 1?</li>
+			<li>Is there anything significant about the quantity <em>6?</em></li>
+			<li>Why is the expected remaining capacity at <em>Nono 4?</em></li>
+			<li>Why is the expected remaining capacity at <em>Hipgnosta 10?</em></li>
+		</ul>
+		To answer the easiest question first: There's nothing special about 434 days. The only <a href="/2021/01/11/waiting-to-happen">requirement is that it's a positive number</a>, so that the reservation is in the future. This makes this test a great candidate for a <a href="/property-based-testing-intro">property-based test</a>.
+	</p>
+	<p>
+		The three other questions are all related. A bit of background is in order. I wrote this test during a process where I turned the system into a multi-tenant system. Before that change, there was only one restaurant, which was <em>Hipgnosta</em>. I wanted to verify that if you make a reservation at another restaurant (here, <em>Nono</em>) it changes the observable state of that restaurant, and not of <em>Hipgnosta</em>.
+	</p>
+	<p>
+		The way these two restaurants are configured, <em>Hipgnosta</em> has <a href="/2020/01/27/the-maitre-d-kata">a single communal table that seats ten guests</a>. This explains why the expected capacity of <em>Hipgnosta</em> is <em>10</em>. Making a reservation at <em>Nono</em> shouldn't affect <em>Hipgnosta</em>.
+	</p>
+	<p>
+		<em>Nono</em> has a more complex table configuration. It has both standard and communal tables, but the largest table is a six-person communal table. There's only one table of that size. The next-largest tables are four-person tables. Thus, a reservation for six people reserves the largest table that day, after which only four-person and two-person tables are available. Therefore the remaining capacity ought to be <em>4</em>.
+	</p>
+	<p>
+		The above test knows all this. You are welcome to criticise such hard-coded knowledge. There's a real risk that it might make it more difficult to maintain the test suite in the future.
+	</p>
+	<p>
+		Certainly, had this been a unit test, and not an integration test, I wouldn't have accepted so much implicit knowledge. Particularly because I mostly apply <a href="/2018/11/19/functional-architecture-a-definition">functional architecture</a>, and <a href="/2015/05/07/functional-design-is-intrinsically-testable">pure functions should have isolation</a>. Functions shouldn't depend on implicit global state; they should return a value based on input arguments. That's a bit of digression, though.
+	</p>
+	<p>
+		These are integration tests, which I mostly use to for smoke tests and to verify HTTP-specific behaviour. I have unit tests for fine-grained testing of edge cases and variations of input. While I wouldn't accept so much implicit knowledge from a unit test, I find that it so far works well with integration tests.
+	</p>
+	<h3 id="db1185165dc748aba67c8daa6278f523">
+		Self-hosting <a href="#db1185165dc748aba67c8daa6278f523" title="permalink">#</a>
+	</h3>
+	<p>
+		It only takes a <a href="https://docs.microsoft.com/dotnet/api/microsoft.aspnetcore.mvc.testing.webapplicationfactory-1">WebApplicationFactory</a> to self-host an ASP.NET API. You can use it directly, but if you want to modify the hosted service in some way, you can also inherit from it.
+	</p>
+	<p>
+		I want my self-hosted integration tests to run as <a href="/2019/02/18/from-interaction-based-to-state-based-testing">state-based tests</a> that use an in-memory database instead of SQL Server. I've defined <code>SelfHostedApi</code> for that purpose:
+	</p>
+	<p>
+		<pre><span style="color:blue;">internal</span>&nbsp;<span style="color:blue;">sealed</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">SelfHostedApi</span>&nbsp;:&nbsp;<span style="color:#2b91af;">WebApplicationFactory</span>&lt;<span style="color:#2b91af;">Startup</span>&gt;
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">protected</span>&nbsp;<span style="color:blue;">override</span>&nbsp;<span style="color:blue;">void</span>&nbsp;<span style="color:#74531f;">ConfigureWebHost</span>(<span style="color:#2b91af;">IWebHostBuilder</span>&nbsp;<span style="color:#1f377f;">builder</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#1f377f;">builder</span>.<span style="color:#74531f;">ConfigureServices</span>(<span style="color:#1f377f;">services</span>&nbsp;=&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#1f377f;">services</span>.<span style="color:#74531f;">RemoveAll</span>&lt;<span style="color:#2b91af;">IReservationsRepository</span>&gt;();
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#1f377f;">services</span>.<span style="color:#74531f;">AddSingleton</span>&lt;<span style="color:#2b91af;">IReservationsRepository</span>&gt;(<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">FakeDatabase</span>());
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;});
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+	</p>
+	<p>
+		The way that <code>WebApplicationFactory</code> works, its <code>ConfigureWebHost</code> method runs <em>after</em> the <code>Startup</code> class' <code>ConfigureServices</code> method. Thus, when <code>ConfigureWebHost</code> runs, the <code>services</code> collection is already configured to use SQL Server. As <a href="/2020/04/20/unit-bias-against-collections#e6675033a3a9dc8a21c64650dff91b8432a9a151">Julius H so kindly pointed out to me</a>, the <code>RemoveAll</code> extension method removes all existing registrations of a service. I use it to remove the SQL Server dependency from the system, after which I replace it with a test-specific in-memory implementation.
+	</p>
+	<p>
+		Notice that <a href="/2020/11/30/name-by-role">I named the class by the role it plays</a> rather than which base class it derives from.
+	</p>
+	<h3 id="af89655ac4d948f8a749aa20fffe2b12">
+		Posting a reservation <a href="#af89655ac4d948f8a749aa20fffe2b12" title="permalink">#</a>
+	</h3>
+	<p>
+		The <code>PostReservation</code> method is an extension method on <code>HttpClient</code>:
+	</p>
+	<p>
+		<pre><span style="color:blue;">internal</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:blue;">async</span>&nbsp;<span style="color:#2b91af;">Task</span>&lt;<span style="color:#2b91af;">HttpResponseMessage</span>&gt;&nbsp;<span style="color:#74531f;">PostReservation</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>&nbsp;<span style="color:#2b91af;">HttpClient</span>&nbsp;<span style="color:#1f377f;">client</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">string</span>&nbsp;<span style="color:#1f377f;">name</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">object</span>&nbsp;<span style="color:#1f377f;">reservation</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">string</span>&nbsp;<span style="color:#1f377f;">json</span>&nbsp;=&nbsp;<span style="color:#2b91af;">JsonSerializer</span>.<span style="color:#74531f;">Serialize</span>(<span style="color:#1f377f;">reservation</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">using</span>&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">content</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">StringContent</span>(<span style="color:#1f377f;">json</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#1f377f;">content</span>.Headers.ContentType.MediaType&nbsp;=&nbsp;<span style="color:#a31515;">&quot;application/json&quot;</span>;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">resp</span>&nbsp;=&nbsp;<span style="color:blue;">await</span>&nbsp;<span style="color:#1f377f;">client</span>.<span style="color:#74531f;">GetRestaurant</span>(<span style="color:#1f377f;">name</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#1f377f;">resp</span>.<span style="color:#74531f;">EnsureSuccessStatusCode</span>();
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">rest</span>&nbsp;=&nbsp;<span style="color:blue;">await</span>&nbsp;<span style="color:#1f377f;">resp</span>.<span style="color:#74531f;">ParseJsonContent</span>&lt;<span style="color:#2b91af;">RestaurantDto</span>&gt;();
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">address</span>&nbsp;=&nbsp;<span style="color:#1f377f;">rest</span>.Links.<span style="color:#74531f;">FindAddress</span>(<span style="color:#a31515;">&quot;urn:reservations&quot;</span>);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">await</span>&nbsp;<span style="color:#1f377f;">client</span>.<span style="color:#74531f;">PostAsync</span>(<span style="color:#1f377f;">address</span>,&nbsp;<span style="color:#1f377f;">content</span>);
+}</pre>
+	</p>
+	<p>
+		It's part of a larger set of methods that enables an <code>HttpClient</code> to interact with the REST API. Three of those methods are visible here: <code>GetRestaurant</code>, <code>ParseJsonContent</code>, and <code>FindAddress</code>. These, and many other methods form a client API for interacting with the REST API. While this is currently test code, it's ripe for being extracted to a reusable client SDK library.
+	</p>
+	<p>
+		I'm not going to show all of them, but here's <code>GetRestaurant</code> to give you a sense of what's going on:
+	</p>
+	<p>
+		<pre><span style="color:blue;">internal</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:blue;">async</span>&nbsp;<span style="color:#2b91af;">Task</span>&lt;<span style="color:#2b91af;">HttpResponseMessage</span>&gt;&nbsp;<span style="color:#74531f;">GetRestaurant</span>(<span style="color:blue;">this</span>&nbsp;<span style="color:#2b91af;">HttpClient</span>&nbsp;<span style="color:#1f377f;">client</span>,&nbsp;<span style="color:blue;">string</span>&nbsp;<span style="color:#1f377f;">name</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">homeResponse</span>&nbsp;=&nbsp;<span style="color:blue;">await</span>&nbsp;<span style="color:#1f377f;">client</span>.<span style="color:#74531f;">GetAsync</span>(<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Uri</span>(<span style="color:#a31515;">&quot;&quot;</span>,&nbsp;<span style="color:#2b91af;">UriKind</span>.Relative));
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#1f377f;">homeResponse</span>.<span style="color:#74531f;">EnsureSuccessStatusCode</span>();
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">homeRepresentation</span>&nbsp;=&nbsp;<span style="color:blue;">await</span>&nbsp;<span style="color:#1f377f;">homeResponse</span>.<span style="color:#74531f;">ParseJsonContent</span>&lt;<span style="color:#2b91af;">HomeDto</span>&gt;();
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">restaurant</span>&nbsp;=&nbsp;<span style="color:#1f377f;">homeRepresentation</span>.Restaurants.<span style="color:#74531f;">First</span>(<span style="color:#1f377f;">r</span>&nbsp;=&gt;&nbsp;<span style="color:#1f377f;">r</span>.Name&nbsp;==&nbsp;<span style="color:#1f377f;">name</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">address</span>&nbsp;=&nbsp;<span style="color:#1f377f;">restaurant</span>.Links.<span style="color:#74531f;">FindAddress</span>(<span style="color:#a31515;">&quot;urn:restaurant&quot;</span>);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">await</span>&nbsp;<span style="color:#1f377f;">client</span>.<span style="color:#74531f;">GetAsync</span>(<span style="color:#1f377f;">address</span>);
+}</pre>
+	</p>
+	<p>
+		The REST API has only a single documented address, which is the 'home' resource at the relative URL <code>""</code>; i.e. the root of the API. In this incarnation of the API, the home resource responds with a JSON array of restaurants. The <code>GetRestaurant</code> method finds the restaurant with the desired name and finds its address. It then issues another <code>GET</code> request against that address, and returns the response.
+	</p>
+	<h3 id="00d69af4ad6b43538b86f3e27fb7c4ee">
+		Verifying state <a href="#00d69af4ad6b43538b86f3e27fb7c4ee" title="permalink">#</a>
+	</h3>
+	<p>
+		The verification phase of the above test calls a private helper method:
+	</p>
+	<p>
+		<pre><span style="color:blue;">private</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:blue;">async</span>&nbsp;<span style="color:#2b91af;">Task</span>&nbsp;<span style="color:#74531f;">AssertRemainingCapacity</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">HttpClient</span>&nbsp;<span style="color:#1f377f;">client</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">DateTime</span>&nbsp;<span style="color:#1f377f;">date</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">string</span>&nbsp;<span style="color:#1f377f;">name</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">int</span>&nbsp;<span style="color:#1f377f;">expected</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">response</span>&nbsp;=&nbsp;<span style="color:blue;">await</span>&nbsp;<span style="color:#1f377f;">client</span>.<span style="color:#74531f;">GetDay</span>(<span style="color:#1f377f;">name</span>,&nbsp;<span style="color:#1f377f;">date</span>.Year,&nbsp;<span style="color:#1f377f;">date</span>.Month,&nbsp;<span style="color:#1f377f;">date</span>.Day);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">day</span>&nbsp;=&nbsp;<span style="color:blue;">await</span>&nbsp;<span style="color:#1f377f;">response</span>.<span style="color:#74531f;">ParseJsonContent</span>&lt;<span style="color:#2b91af;">CalendarDto</span>&gt;();
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Assert</span>.<span style="color:#74531f;">All</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#1f377f;">day</span>.Days.<span style="color:#74531f;">Single</span>().Entries,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#1f377f;">e</span>&nbsp;=&gt;&nbsp;<span style="color:#2b91af;">Assert</span>.<span style="color:#74531f;">Equal</span>(<span style="color:#1f377f;">expected</span>,&nbsp;<span style="color:#1f377f;">e</span>.MaximumPartySize));
+}</pre>
+	</p>
+	<p>
+		It uses another of the above-mentioned client API extension methods, <code>GetDay</code>, to inspect the REST API's calendar entry for the restaurant and day in question. Each calendar contains a series of time entries that lists the largest party size the restaurant can accept at that time slot. The two restaurants in question only have single seatings, so once you've booked a six-person table, you have it for the entire evening.
+	</p>
+	<p>
+		Notice that verification is done by interacting with the system itself. No <a href="http://xunitpatterns.com/Back%20Door%20Manipulation.html">Back Door Manipulation</a> is required. I favour this if at all possible, since I believe that it offers better confidence that the system behaves as it should.
+	</p>
+	<h3 id="e93c5eb19e1d4f358197b4a1c048f01e">
+		Conclusion <a href="#e93c5eb19e1d4f358197b4a1c048f01e" title="permalink">#</a>
+	</h3>
+	<p>
+		It's been possible to self-host .NET REST APIs for testing purposes at least since 2012, but it's only become easier over the years. All you need to get started is the <code>WebApplicationFactory&lt;TEntryPoint&gt;</code> class, although you're probably going to need a derived class to override some of the system configuration.
+	</p>
+	<p>
+		From there, you can interact with the self-hosted system using the standard <code>HttpClient</code> class.
+	</p>
+	<p>
+		Since I configure these tests to run on an in-memory database, the execution time is comparable to 'normal' unit tests. I admit that I haven't measured it, but that's because I haven't felt the need to do so.
+	</p>
+</div>
