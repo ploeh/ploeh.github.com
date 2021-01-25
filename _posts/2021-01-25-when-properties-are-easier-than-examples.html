@@ -1,0 +1,695 @@
+---
+layout: post
+title: "When properties are easier than examples"
+description: "Sometimes, describing the properties of a function is easier than coming up with examples."
+date: 2021-01-25 8:05 UTC
+tags: [Unit Testing, FsCheck]
+---
+{% include JB/setup %}
+
+<div id="post">
+	<p>
+		<em>{{ page.description }}</em>
+	</p>
+	<p>
+		Instead of the term <em>test-driven development</em> you may occasionally encounter the phrase <em>example-driven development</em>. The idea is that each test is an example of how the system under test ought to behave. As you add more tests, you add more examples.
+	</p>
+	<p>
+		I've noticed that beginners often find it difficult to come up with good examples. This is the reason I've developed the <a href="/2019/10/07/devils-advocate">Devil's advocate</a> technique. It's meant as a heuristic that may help you identify the next good example. It's particularly effective if you combine it with the <a href="https://blog.cleancoder.com/uncle-bob/2013/05/27/TheTransformationPriorityPremise.html">Transformation Priority Premise</a> (TPP) and <a href="https://en.wikipedia.org/wiki/Equivalence_partitioning">equivalence partitioning</a>.
+	</p>
+	<p>
+		I've noticed, however, that translating concrete examples into code is not always straightforward. In the following, I'll describe an experience I had in 2020 while developing an online restaurant reservation system.
+	</p>
+	<h3 id="83a8dd13c9694ebc99b5fa4ae049b3b4">
+		Problem outline <a href="#83a8dd13c9694ebc99b5fa4ae049b3b4" title="permalink">#</a>
+	</h3>
+	<p>
+		I'm going to start by explaining what it was that I was trying to do. I wanted to present the <a href="https://en.wikipedia.org/wiki/Ma%C3%AEtre_d%27h%C3%B4tel">maître d'</a> (or other restaurant staff) with a schedule of a day's reservations. It should take the form of a list of time entries, one entry for every time one or more new reservations would start. I also wanted to list, for each entry, all reservations that were currently ongoing, or would soon start. Here's a simple example, represented as JSON:
+	</p>
+	<p>
+		<pre><span style="color:#2e75b6;">&quot;date&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;2023-08-23&quot;</span>,
+<span style="color:#2e75b6;">&quot;entries&quot;</span>:&nbsp;[
+&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;time&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;20:00:00&quot;</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;reservations&quot;</span>:&nbsp;[
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;id&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;af5feb35f62f475cb02df2a281948829&quot;</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;at&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;2023-08-23T20:00:00.0000000&quot;</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;email&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;crystalmeth@example.net&quot;</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;name&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;Crystal&nbsp;Metheney&quot;</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;quantity&quot;</span>:&nbsp;3
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;},
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;id&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;eae39bc5b3a7408eb2049373b2661e32&quot;</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;at&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;2023-08-23T20:30:00.0000000&quot;</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;email&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;x.benedict@example.org&quot;</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;name&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;Benedict&nbsp;Xavier&quot;</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;quantity&quot;</span>:&nbsp;4
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;]
+&nbsp;&nbsp;},
+&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;time&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;20:30:00&quot;</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;reservations&quot;</span>:&nbsp;[
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;id&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;af5feb35f62f475cb02df2a281948829&quot;</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;at&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;2023-08-23T20:00:00.0000000&quot;</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;email&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;crystalmeth@example.net&quot;</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;name&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;Crystal&nbsp;Metheney&quot;</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;quantity&quot;</span>:&nbsp;3
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;},
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;id&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;eae39bc5b3a7408eb2049373b2661e32&quot;</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;at&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;2023-08-23T20:30:00.0000000&quot;</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;email&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;x.benedict@example.org&quot;</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;name&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;Benedict&nbsp;Xavier&quot;</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;quantity&quot;</span>:&nbsp;4
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;]
+&nbsp;&nbsp;}
+]</pre>
+	</p>
+	<p>
+		To keep the example simple, there are only two reservations for that particular day: one for 20:00 and one for 20:30. Since something happens at both of these times, both time has an entry. My intent isn't necessarily that a user interface should show things like this, but I wanted to make the relevant data available so that a user interface could show it if it needed to.
+	</p>
+	<p>
+		The first entry for 20:00 shows both reservations. It shows the reservation for 20:00 for obvious reasons, and it shows the reservation for 20:30 to indicate that the staff can expect a party of four at 20:30. Since this restaurant runs with a single seating per evening, this effectively means that although the reservation hasn't started yet, it still reserves a table. This gives a user interface an opportunity to show the state of the restaurant at that time. The table for the 20:30 party isn't active yet, but it's effectively reserved.
+	</p>
+	<p>
+		For restaurants with shorter seating durations, the schedule should reflect that. If the seating duration is, say, two hours, and someone has a reservation for 20:00, you can sell that table to another party at 18:00, but not at 18:30. I wanted the functionality to take such things into account.
+	</p>
+	<p>
+		The other entry in the above example is for 20:30. Again, both reservations are shown because one is ongoing (and takes up a table) and the other is just starting.
+	</p>
+	<h3 id="63e308b1c630441e8f55fe3ecaa5a03f">
+		Desired API <a href="#63e308b1c630441e8f55fe3ecaa5a03f" title="permalink">#</a>
+	</h3>
+	<p>
+		A major benefit of test-driven development (TDD) is that you get fast feedback on the API you intent for the system under test (SUT). You write a test against the intended API, and besides a pass-or-fail result, you also learn something about the interaction between client code and the SUT. You often learn that the original design you had in mind isn't going to work well once it meets the harsh realities of an actual programming language.
+	</p>
+	<p>
+		In TDD, you often have to revise the design multiple times during the process.
+	</p>
+	<p>
+		This doesn't mean that you can't have a plan. You can't write the initial test if you have no inkling of what the API should look like. For the schedule feature, I did have a plan. It turned out to hold, more or less. I wanted the API to be a method on a class called <code>MaitreD</code>, which already had these four fields and the constructors to support them:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">TimeOfDay</span>&nbsp;OpensAt&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;}
+<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">TimeOfDay</span>&nbsp;LastSeating&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;}
+<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">TimeSpan</span>&nbsp;SeatingDuration&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;}
+<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">IEnumerable</span>&lt;<span style="color:#2b91af;">Table</span>&gt;&nbsp;Tables&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;}</pre>
+	</p>
+	<p>
+		I planned to implement the new feature as a new instance method on that class:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">IEnumerable</span>&lt;<span style="color:#2b91af;">Occurrence</span>&lt;<span style="color:#2b91af;">IEnumerable</span>&lt;<span style="color:#2b91af;">Table</span>&gt;&gt;&gt;&nbsp;<span style="color:#74531f;">Schedule</span>(<span style="color:#2b91af;">IEnumerable</span>&lt;<span style="color:#2b91af;">Reservation</span>&gt;&nbsp;<span style="color:#1f377f;">reservations</span>)</pre>
+	</p>
+	<p>
+		This plan turned out to hold in general, although I ultimately decided to simplify the return type by getting rid of the <code>Occurrence</code> <a href="https://bartoszmilewski.com/2014/01/14/functors-are-containers">container</a>. It's going to be present through all of this article, however, so I need to briefly introduce it. I meant to use it as a generic container of anything, but with an time-stamp associated with the value:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">sealed</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">Occurrence</span>&lt;<span style="color:#2b91af;">T</span>&gt;
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">Occurrence</span>(<span style="color:#2b91af;">DateTime</span>&nbsp;<span style="color:#1f377f;">at</span>,&nbsp;<span style="color:#2b91af;">T</span>&nbsp;<span style="color:#1f377f;">value</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;At&nbsp;=&nbsp;<span style="color:#1f377f;">at</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Value&nbsp;=&nbsp;<span style="color:#1f377f;">value</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">DateTime</span>&nbsp;At&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">T</span>&nbsp;Value&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">Occurrence</span>&lt;<span style="color:#2b91af;">TResult</span>&gt;&nbsp;<span style="color:#74531f;">Select</span>&lt;<span style="color:#2b91af;">TResult</span>&gt;(<span style="color:#2b91af;">Func</span>&lt;<span style="color:#2b91af;">T</span>,&nbsp;<span style="color:#2b91af;">TResult</span>&gt;&nbsp;<span style="color:#1f377f;">selector</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">if</span>&nbsp;(<span style="color:#1f377f;">selector</span>&nbsp;<span style="color:blue;">is</span>&nbsp;<span style="color:blue;">null</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">throw</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">ArgumentNullException</span>(<span style="color:blue;">nameof</span>(<span style="color:#1f377f;">selector</span>));
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Occurrence</span>&lt;<span style="color:#2b91af;">TResult</span>&gt;(At,&nbsp;<span style="color:#1f377f;">selector</span>(Value));
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">override</span>&nbsp;<span style="color:blue;">bool</span>&nbsp;<span style="color:#74531f;">Equals</span>(<span style="color:blue;">object</span>?&nbsp;<span style="color:#1f377f;">obj</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;<span style="color:#1f377f;">obj</span>&nbsp;<span style="color:blue;">is</span>&nbsp;<span style="color:#2b91af;">Occurrence</span>&lt;<span style="color:#2b91af;">T</span>&gt;&nbsp;<span style="color:#1f377f;">occurrence</span>&nbsp;&amp;&amp;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;At&nbsp;<span style="color:#74531f;">==</span>&nbsp;<span style="color:#1f377f;">occurrence</span>.At&nbsp;&amp;&amp;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">EqualityComparer</span>&lt;<span style="color:#2b91af;">T</span>&gt;.Default.<span style="color:#74531f;">Equals</span>(Value,&nbsp;<span style="color:#1f377f;">occurrence</span>.Value);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">override</span>&nbsp;<span style="color:blue;">int</span>&nbsp;<span style="color:#74531f;">GetHashCode</span>()
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;<span style="color:#2b91af;">HashCode</span>.<span style="color:#74531f;">Combine</span>(At,&nbsp;Value);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+	</p>
+	<p>
+		You may notice that due to the presence of the <code>Select</code> method this is a <a href="/2018/03/22/functors">functor</a>.
+	</p>
+	<p>
+		There's also a little extension method that we may later encounter:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:#2b91af;">Occurrence</span>&lt;<span style="color:#2b91af;">T</span>&gt;&nbsp;<span style="color:#74531f;">At</span>&lt;<span style="color:#2b91af;">T</span>&gt;(<span style="color:blue;">this</span>&nbsp;<span style="color:#2b91af;">T</span>&nbsp;<span style="color:#1f377f;">value</span>,&nbsp;<span style="color:#2b91af;">DateTime</span>&nbsp;<span style="color:#1f377f;">at</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Occurrence</span>&lt;<span style="color:#2b91af;">T</span>&gt;(<span style="color:#1f377f;">at</span>,&nbsp;<span style="color:#1f377f;">value</span>);
+}</pre>
+	</p>
+	<p>
+		The plan, then, is to return a collection of occurrences, each of which may contain a collection of tables that are relevant to include at that time entry.
+	</p>
+	<h3 id="d121920365874005a3bf46d0555bd008">
+		Examples <a href="#d121920365874005a3bf46d0555bd008" title="permalink">#</a>
+	</h3>
+	<p>
+		When I embarked on developing this feature, I thought that it was a good fit for example-driven development. Since the input for <code>Schedule</code> requires a collection of <code>Reservation</code> objects, each of which comes with some data, I expected the test cases to become verbose. So I decided to bite the bullet right away and define test cases using <a href="https://xunit.net">xUnit.net</a>'s <code>[ClassData]</code> feature. I wrote this test:
+	</p>
+	<p>
+		<pre>[<span style="color:#2b91af;">Theory</span>,&nbsp;<span style="color:#2b91af;">ClassData</span>(<span style="color:blue;">typeof</span>(<span style="color:#2b91af;">ScheduleTestCases</span>))]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;<span style="color:#74531f;">Schedule</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">MaitreD</span>&nbsp;<span style="color:#1f377f;">sut</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">IEnumerable</span>&lt;<span style="color:#2b91af;">Reservation</span>&gt;&nbsp;<span style="color:#1f377f;">reservations</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">IEnumerable</span>&lt;<span style="color:#2b91af;">Occurrence</span>&lt;<span style="color:#2b91af;">Table</span>[]&gt;&gt;&nbsp;<span style="color:#1f377f;">expected</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">actual</span>&nbsp;=&nbsp;<span style="color:#1f377f;">sut</span>.<span style="color:#74531f;">Schedule</span>(<span style="color:#1f377f;">reservations</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Assert</span>.<span style="color:#74531f;">Equal</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#1f377f;">expected</span>.<span style="color:#74531f;">Select</span>(<span style="color:#1f377f;">o</span>&nbsp;=&gt;&nbsp;<span style="color:#1f377f;">o</span>.<span style="color:#74531f;">Select</span>(<span style="color:#1f377f;">ts</span>&nbsp;=&gt;&nbsp;<span style="color:#1f377f;">ts</span>.<span style="color:#74531f;">AsEnumerable</span>())),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#1f377f;">actual</span>);
+}</pre>
+	</p>
+	<p>
+		This is almost as simple as it can be: Call the method and verify that <code>expected</code> is equal to <code>actual</code>. The only slightly complicated piece is the nested projection of <code>expected</code> from <code>IEnumerable&lt;Occurrence&lt;Table[]&gt;&gt;</code> to <code>IEnumerable&lt;Occurrence&lt;IEnumerable&lt;Table&gt;&gt;&gt;</code>. There are ugly reasons for this that I don't want to discuss here, since they have no bearing on the actual topic, which is coming up with tests.
+	</p>
+	<p>
+		I also added the <code>ScheduleTestCases</code> class and a single test case:
+	</p>
+	<p>
+		<pre><span style="color:blue;">private</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">ScheduleTestCases</span>&nbsp;:
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">TheoryData</span>&lt;<span style="color:#2b91af;">MaitreD</span>,&nbsp;<span style="color:#2b91af;">IEnumerable</span>&lt;<span style="color:#2b91af;">Reservation</span>&gt;,&nbsp;<span style="color:#2b91af;">IEnumerable</span>&lt;<span style="color:#2b91af;">Occurrence</span>&lt;<span style="color:#2b91af;">Table</span>[]&gt;&gt;&gt;
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">ScheduleTestCases</span>()
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;No&nbsp;reservations,&nbsp;so&nbsp;no&nbsp;occurrences:</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#74531f;">Add</span>(<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">MaitreD</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">TimeSpan</span>.<span style="color:#74531f;">FromHours</span>(18),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">TimeSpan</span>.<span style="color:#74531f;">FromHours</span>(21),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">TimeSpan</span>.<span style="color:#74531f;">FromHours</span>(6),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Table</span>.<span style="color:#74531f;">Communal</span>(12)),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Array</span>.<span style="color:#74531f;">Empty</span>&lt;<span style="color:#2b91af;">Reservation</span>&gt;(),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Array</span>.<span style="color:#74531f;">Empty</span>&lt;<span style="color:#2b91af;">Occurrence</span>&lt;<span style="color:#2b91af;">Table</span>[]&gt;&gt;());
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+	</p>
+	<p>
+		The simplest implementation that passed that test was this:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">IEnumerable</span>&lt;<span style="color:#2b91af;">Occurrence</span>&lt;<span style="color:#2b91af;">IEnumerable</span>&lt;<span style="color:#2b91af;">Table</span>&gt;&gt;&gt;&nbsp;<span style="color:#74531f;">Schedule</span>(<span style="color:#2b91af;">IEnumerable</span>&lt;<span style="color:#2b91af;">Reservation</span>&gt;&nbsp;<span style="color:#1f377f;">reservations</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">yield</span>&nbsp;<span style="color:#8f08c4;">break</span>;
+}</pre>
+	</p>
+	<p>
+		Okay, hardly rocket science, but this was just a test case to get started. So I added another one:
+	</p>
+	<p>
+		<pre><span style="color:blue;">private</span>&nbsp;<span style="color:blue;">void</span>&nbsp;<span style="color:#74531f;">SingleReservationCommunalTable</span>()
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">table</span>&nbsp;=&nbsp;<span style="color:#2b91af;">Table</span>.<span style="color:#74531f;">Communal</span>(12);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">r</span>&nbsp;=&nbsp;<span style="color:#2b91af;">Some</span>.Reservation;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#74531f;">Add</span>(<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">MaitreD</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">TimeSpan</span>.<span style="color:#74531f;">FromHours</span>(18),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">TimeSpan</span>.<span style="color:#74531f;">FromHours</span>(21),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">TimeSpan</span>.<span style="color:#74531f;">FromHours</span>(6),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#1f377f;">table</span>),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>[]&nbsp;{&nbsp;<span style="color:#1f377f;">r</span>&nbsp;},
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>[]&nbsp;{&nbsp;<span style="color:blue;">new</span>[]&nbsp;{&nbsp;<span style="color:#1f377f;">table</span>.<span style="color:#74531f;">Reserve</span>(<span style="color:#1f377f;">r</span>)&nbsp;}.<span style="color:#74531f;">At</span>(<span style="color:#1f377f;">r</span>.At)&nbsp;});
+}</pre>
+	</p>
+	<p>
+		This test case adds a single reservation to a restaurant with a single communal table. The <code>expected</code> result is now a single occurrence with that reservation. In true TDD fashion, this new test case caused a test failure, and I now had to adjust the <code>Schedule</code> method to pass all tests:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">IEnumerable</span>&lt;<span style="color:#2b91af;">Occurrence</span>&lt;<span style="color:#2b91af;">IEnumerable</span>&lt;<span style="color:#2b91af;">Table</span>&gt;&gt;&gt;&nbsp;<span style="color:#74531f;">Schedule</span>(<span style="color:#2b91af;">IEnumerable</span>&lt;<span style="color:#2b91af;">Reservation</span>&gt;&nbsp;<span style="color:#1f377f;">reservations</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">if</span>&nbsp;(<span style="color:#1f377f;">reservations</span>.<span style="color:#74531f;">Any</span>())
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">r</span>&nbsp;=&nbsp;<span style="color:#1f377f;">reservations</span>.<span style="color:#74531f;">First</span>();
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">yield</span>&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">new</span>[]&nbsp;{&nbsp;<span style="color:#2b91af;">Table</span>.<span style="color:#74531f;">Communal</span>(12).<span style="color:#74531f;">Reserve</span>(<span style="color:#1f377f;">r</span>)&nbsp;}.<span style="color:#74531f;">AsEnumerable</span>().<span style="color:#74531f;">At</span>(<span style="color:#1f377f;">r</span>.At);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">yield</span>&nbsp;<span style="color:#8f08c4;">break</span>;
+}</pre>
+	</p>
+	<p>
+		You might have wanted to jump to something prettier right away, but I wanted to proceed according to the Devil's advocate technique. I was concerned that I was going to mess up the implementation if I moved too fast.
+	</p>
+	<p>
+		And that was when I basically hit a wall.
+	</p>
+	<h3 id="c8fd655d50414215b04f891676a09bd8">
+		Property-based testing to the rescue <a href="#c8fd655d50414215b04f891676a09bd8" title="permalink">#</a>
+	</h3>
+	<p>
+		I couldn't figure out how to proceed from there. Which test case ought to be the next? I wanted to follow the spirit of the TPP and pick a test case that would cause another incremental step in the right direction. The sheer number of possible combinations overwhelmed me, though. Should I adjust the reservations? The table configuration for the <code>MaitreD</code> class? The <code>SeatingDuration</code>?
+	</p>
+	<p>
+		It's possible that you'd be able to conjure up the perfect next test case, but I couldn't. I actually let it stew for a couple of days before I decided to give up on the example-driven approach. While I couldn't see a clear path forward with concrete examples, I had a vivid vision of how to proceed with <a href="/property-based-testing-intro">property-based testing</a>.
+	</p>
+	<p>
+		I left the above tests in place and instead added a new test class to my code base. Its only purpose: to test the <code>Schedule</code> method. The test method itself is only a composition of various data definitions and the actual test code:
+	</p>
+	<p>
+		<pre>[<span style="color:#2b91af;">Property</span>]
+<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">Property</span>&nbsp;<span style="color:#74531f;">Schedule</span>()
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;<span style="color:#2b91af;">Prop</span>.<span style="color:#74531f;">ForAll</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;GenReservation.<span style="color:#74531f;">ArrayOf</span>().<span style="color:#74531f;">ToArbitrary</span>(),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#74531f;">ScheduleImp</span>);
+}</pre>
+	</p>
+	<p>
+		This uses <a href="https://fscheck.github.io/FsCheck">FsCheck</a> 2.14.3, which is written in <a href="https://fsharp.org">F#</a> and composes better if you also write the tests in F#. In order to make things a little more palatable for C# developers, I decided to implement the building blocks for the property using methods and class properties.
+	</p>
+	<p>
+		The <code>ScheduleImp</code> method, for example, actually implements the test. This method runs a hundred times (FsCheck's default value) with randomly generated input values:
+	</p>
+	<p>
+		<pre><span style="color:blue;">private</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:blue;">void</span>&nbsp;<span style="color:#74531f;">ScheduleImp</span>(<span style="color:#2b91af;">Reservation</span>[]&nbsp;<span style="color:#1f377f;">reservations</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;Create&nbsp;a&nbsp;table&nbsp;for&nbsp;each&nbsp;reservation,&nbsp;to&nbsp;ensure&nbsp;that&nbsp;all</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;reservations&nbsp;can&nbsp;be&nbsp;allotted&nbsp;a&nbsp;table.</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">tables</span>&nbsp;=&nbsp;<span style="color:#1f377f;">reservations</span>.<span style="color:#74531f;">Select</span>(<span style="color:#1f377f;">r</span>&nbsp;=&gt;&nbsp;<span style="color:#2b91af;">Table</span>.<span style="color:#74531f;">Standard</span>(<span style="color:#1f377f;">r</span>.Quantity));
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">sut</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">MaitreD</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">TimeSpan</span>.<span style="color:#74531f;">FromHours</span>(18),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">TimeSpan</span>.<span style="color:#74531f;">FromHours</span>(21),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">TimeSpan</span>.<span style="color:#74531f;">FromHours</span>(6),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#1f377f;">tables</span>);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">actual</span>&nbsp;=&nbsp;<span style="color:#1f377f;">sut</span>.<span style="color:#74531f;">Schedule</span>(<span style="color:#1f377f;">reservations</span>);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Assert</span>.<span style="color:#74531f;">Equal</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#1f377f;">reservations</span>.<span style="color:#74531f;">Select</span>(<span style="color:#1f377f;">r</span>&nbsp;=&gt;&nbsp;<span style="color:#1f377f;">r</span>.At).<span style="color:#74531f;">Distinct</span>().<span style="color:#74531f;">Count</span>(),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#1f377f;">actual</span>.<span style="color:#74531f;">Count</span>());
+}</pre>
+	</p>
+	<p>
+		The step you see in the first line of code is an example of a trick that I find myself doing often with property-based testing: instead of trying to find some good test values for a particular set of circumstances, I create a set of circumstances that fits the randomly generated test values. As the code comment explains, given a set of <code>Reservation</code> values, it creates a table that fits each reservation. In that way I ensure that all the reservations can be allocated a table.
+	</p>
+	<p>
+		I'll soon return to how those random <code>Reservation</code> values are generated, but first let's discuss the rest of the test body. Given a valid <code>MaitreD</code> object it calls the <code>Schedule</code> method. In the <a href="/2013/06/24/a-heuristic-for-formatting-code-according-to-the-aaa-pattern">assertion phase</a>, it so far only verifies that there's as many time entries in <code>actual</code> as there are distinct <code>At</code> values in <code>reservations</code>.
+	</p>
+	<p>
+		That's hardly a comprehensive description of the SUT, but it's a start. This implementation passes both the new property, as well as the two examples above:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">IEnumerable</span>&lt;<span style="color:#2b91af;">Occurrence</span>&lt;<span style="color:#2b91af;">IEnumerable</span>&lt;<span style="color:#2b91af;">Table</span>&gt;&gt;&gt;&nbsp;<span style="color:#74531f;">Schedule</span>(<span style="color:#2b91af;">IEnumerable</span>&lt;<span style="color:#2b91af;">Reservation</span>&gt;&nbsp;<span style="color:#1f377f;">reservations</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">from</span>&nbsp;r&nbsp;<span style="color:blue;">in</span>&nbsp;<span style="color:#1f377f;">reservations</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">group</span>&nbsp;<span style="color:#2b91af;">Table</span>.<span style="color:#74531f;">Communal</span>(12).<span style="color:#74531f;">Reserve</span>(r)&nbsp;<span style="color:blue;">by</span>&nbsp;r.At&nbsp;<span style="color:blue;">into</span>&nbsp;g
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">select</span>&nbsp;g.<span style="color:#74531f;">AsEnumerable</span>().<span style="color:#74531f;">At</span>(g.Key);
+}</pre>
+	</p>
+	<p>
+		I know that many C# programmers don't like query syntax, but I've always had a soft spot for it. I liked it, but wasn't sure that I'd be able to keep it up as I added more constraints to the property.
+	</p>
+	<h3 id="5670f47a815542bfac848645e9a3ccf4">
+		Generators <a href="#5670f47a815542bfac848645e9a3ccf4" title="permalink">#</a>
+	</h3>
+	<p>
+		Before we get to that, though, I promised to show you how the random <code>reservations</code> are generated. FsCheck has an API for that, and it's also query-syntax-friendly:
+	</p>
+	<p>
+		<pre><span style="color:blue;">private</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:#2b91af;">Gen</span>&lt;<span style="color:#2b91af;">Email</span>&gt;&nbsp;GenEmail&nbsp;=&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">from</span>&nbsp;s&nbsp;<span style="color:blue;">in</span>&nbsp;<span style="color:#2b91af;">Arb</span>.<span style="color:#2b91af;">Default</span>.<span style="color:#74531f;">NonWhiteSpaceString</span>().Generator
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">select</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Email</span>(s.Item);
+ 
+<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:#2b91af;">Gen</span>&lt;<span style="color:#2b91af;">Name</span>&gt;&nbsp;GenName&nbsp;=&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">from</span>&nbsp;s&nbsp;<span style="color:blue;">in</span>&nbsp;<span style="color:#2b91af;">Arb</span>.<span style="color:#2b91af;">Default</span>.<span style="color:#74531f;">StringWithoutNullChars</span>().Generator
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">select</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Name</span>(s.Item);
+ 
+<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:#2b91af;">Gen</span>&lt;<span style="color:#2b91af;">Reservation</span>&gt;&nbsp;GenReservation&nbsp;=&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">from</span>&nbsp;id&nbsp;<span style="color:blue;">in</span>&nbsp;<span style="color:#2b91af;">Arb</span>.<span style="color:#2b91af;">Default</span>.<span style="color:#74531f;">Guid</span>().Generator
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">from</span>&nbsp;d&nbsp;<span style="color:blue;">in</span>&nbsp;<span style="color:#2b91af;">Arb</span>.<span style="color:#2b91af;">Default</span>.<span style="color:#74531f;">DateTime</span>().Generator
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">from</span>&nbsp;e&nbsp;<span style="color:blue;">in</span>&nbsp;GenEmail
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">from</span>&nbsp;n&nbsp;<span style="color:blue;">in</span>&nbsp;GenName
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">from</span>&nbsp;q&nbsp;<span style="color:blue;">in</span>&nbsp;<span style="color:#2b91af;">Arb</span>.<span style="color:#2b91af;">Default</span>.<span style="color:#74531f;">PositiveInt</span>().Generator
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">select</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Reservation</span>(id,&nbsp;d,&nbsp;e,&nbsp;n,&nbsp;q.Item);</pre>
+	</p>
+	<p>
+		<code>GenReservation</code> is a generator of <code>Reservation</code> values (for a simplified explanation of how such a generator might work, see <a href="/2017/09/18/the-test-data-generator-functor">The Test Data Generator functor</a>). It's composed from smaller generators, among these <code>GenEmail</code> and <code>GenName</code>. The rest of the generators are general-purpose generators defined by FsCheck.
+	</p>
+	<p>
+		If you refer back to the <code>Schedule</code> property above, you'll see that it uses <code>GenReservation</code> to produce an array generator. This is another general-purpose combinator provided by FsCheck. It turns any single-object generator into a generator of arrays containing such objects. Some of these arrays will be empty, which is often desirable, because it means that you'll automatically get coverage of that edge case.
+	</p>
+	<h3 id="ad13aac51d654a7f988b1106579f42fd">
+		Iterative development <a href="#ad13aac51d654a7f988b1106579f42fd" title="permalink">#</a>
+	</h3>
+	<p>
+		As I already <a href="/2015/01/10/diamond-kata-with-fscheck">discovered in 2015</a> some problems are just much better suited for property-based development than example-driven development. As I expected, this one turned out to be just such a problem. (Recently, <a href="https://www.hillelwayne.com">Hillel Wayne</a> identified a set of problems with no clear properties as <a href="https://buttondown.email/hillelwayne/archive/cross-branch-testing/">rho problems</a>. I wonder if we should pick another Greek letter for this type of problems that almost ooze properties. Sigma problems? Maybe we should just call them <em>describable problems</em>...)
+	</p>
+	<p>
+		For the next step, I didn't have to write a completely new property. I only had to add a new assertion, and thereby strengthening the postconditions of the <code>Schedule</code> method:
+	</p>
+	<p>
+		<pre><span style="color:#2b91af;">Assert</span>.<span style="color:#74531f;">Equal</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#1f377f;">actual</span>.<span style="color:#74531f;">Select</span>(<span style="color:#1f377f;">o</span>&nbsp;=&gt;&nbsp;<span style="color:#1f377f;">o</span>.At).<span style="color:#74531f;">OrderBy</span>(<span style="color:#1f377f;">d</span>&nbsp;=&gt;&nbsp;<span style="color:#1f377f;">d</span>),
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#1f377f;">actual</span>.<span style="color:#74531f;">Select</span>(<span style="color:#1f377f;">o</span>&nbsp;=&gt;&nbsp;<span style="color:#1f377f;">o</span>.At));</pre>
+	</p>
+	<p>
+		I added the above assertion to <code>ScheduleImp</code> after the previous assertion. It simply states that <code>actual</code> should be sorted in ascending order.
+	</p>
+	<p>
+		To pass this new requirement I added an ordering clause to the implementation:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">IEnumerable</span>&lt;<span style="color:#2b91af;">Occurrence</span>&lt;<span style="color:#2b91af;">IEnumerable</span>&lt;<span style="color:#2b91af;">Table</span>&gt;&gt;&gt;&nbsp;<span style="color:#74531f;">Schedule</span>(<span style="color:#2b91af;">IEnumerable</span>&lt;<span style="color:#2b91af;">Reservation</span>&gt;&nbsp;<span style="color:#1f377f;">reservations</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">from</span>&nbsp;r&nbsp;<span style="color:blue;">in</span>&nbsp;<span style="color:#1f377f;">reservations</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">group</span>&nbsp;<span style="color:#2b91af;">Table</span>.<span style="color:#74531f;">Communal</span>(12).<span style="color:#74531f;">Reserve</span>(r)&nbsp;<span style="color:blue;">by</span>&nbsp;r.At&nbsp;<span style="color:blue;">into</span>&nbsp;g
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">orderby</span>&nbsp;g.Key
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">select</span>&nbsp;g.<span style="color:#74531f;">AsEnumerable</span>().<span style="color:#74531f;">At</span>(g.Key);
+}</pre>
+	</p>
+	<p>
+		It passes all tests. Commit to Git. Next.
+	</p>
+	<h3 id="040edba86dfd4bfe8a57cef15b4a9ff6">
+		Table configuration <a href="#040edba86dfd4bfe8a57cef15b4a9ff6" title="permalink">#</a>
+	</h3>
+	<p>
+		If you consider the current implementation, there's much not to like. The worst offence, I think, is that it conjures a hard-coded communal table out of thin air. The method ought to use the table configuration passed to the <code>MaitreD</code> object. This seems like an obvious flaw to address. I therefore added this to the property:
+	</p>
+	<p>
+		<pre>&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Assert</span>.<span style="color:#74531f;">All</span>(<span style="color:#1f377f;">actual</span>,&nbsp;<span style="color:#1f377f;">o</span>&nbsp;=&gt;&nbsp;<span style="color:#74531f;">AssertTables</span>(<span style="color:#1f377f;">tables</span>,&nbsp;<span style="color:#1f377f;">o</span>.Value));
+}
+ 
+<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:blue;">void</span>&nbsp;<span style="color:#74531f;">AssertTables</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">IEnumerable</span>&lt;<span style="color:#2b91af;">Table</span>&gt;&nbsp;<span style="color:#1f377f;">expected</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">IEnumerable</span>&lt;<span style="color:#2b91af;">Table</span>&gt;&nbsp;<span style="color:#1f377f;">actual</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Assert</span>.<span style="color:#74531f;">Equal</span>(<span style="color:#1f377f;">expected</span>.<span style="color:#74531f;">Count</span>(),&nbsp;<span style="color:#1f377f;">actual</span>.<span style="color:#74531f;">Count</span>());
+}</pre>
+	</p>
+	<p>
+		It's just another assertion that uses the helper assertion also shown. As a first pass, it's not enough to cheat the Devil, but it sets me up for my next move. The plan is to assert that no tables are generated out of thin air. Currently, <code>AssertTables</code> only verifies that the actual count of tables in each occurrence matches the expected count.
+	</p>
+	<p>
+		The Devil easily foils that plan by generating a table for each reservation:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">IEnumerable</span>&lt;<span style="color:#2b91af;">Occurrence</span>&lt;<span style="color:#2b91af;">IEnumerable</span>&lt;<span style="color:#2b91af;">Table</span>&gt;&gt;&gt;&nbsp;<span style="color:#74531f;">Schedule</span>(<span style="color:#2b91af;">IEnumerable</span>&lt;<span style="color:#2b91af;">Reservation</span>&gt;&nbsp;<span style="color:#1f377f;">reservations</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">tables</span>&nbsp;=&nbsp;<span style="color:#1f377f;">reservations</span>.<span style="color:#74531f;">Select</span>(<span style="color:#1f377f;">r</span>&nbsp;=&gt;&nbsp;<span style="color:#2b91af;">Table</span>.<span style="color:#74531f;">Communal</span>(12).<span style="color:#74531f;">Reserve</span>(<span style="color:#1f377f;">r</span>));
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">from</span>&nbsp;r&nbsp;<span style="color:blue;">in</span>&nbsp;<span style="color:#1f377f;">reservations</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">group</span>&nbsp;r&nbsp;<span style="color:blue;">by</span>&nbsp;r.At&nbsp;<span style="color:blue;">into</span>&nbsp;g
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">orderby</span>&nbsp;g.Key
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">select</span>&nbsp;<span style="color:#1f377f;">tables</span>.<span style="color:#74531f;">At</span>(g.Key);
+}</pre>
+	</p>
+	<p>
+		This (unfortunately) passes all tests, so commit to Git and move on.
+	</p>
+	<p>
+		The next move I made was to add an assertion to <code>AssertTables</code>:
+	</p>
+	<p>
+		<pre><span style="color:#2b91af;">Assert</span>.<span style="color:#74531f;">Equal</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#1f377f;">expected</span>.<span style="color:#74531f;">Sum</span>(<span style="color:#1f377f;">t</span>&nbsp;=&gt;&nbsp;<span style="color:#1f377f;">t</span>.Capacity),
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#1f377f;">actual</span>.<span style="color:#74531f;">Sum</span>(<span style="color:#1f377f;">t</span>&nbsp;=&gt;&nbsp;<span style="color:#1f377f;">t</span>.Capacity));</pre>
+	</p>
+	<p>
+		This new requirement states that the total capacity of the actual tables should be equal to the total capacity of the allocated tables. It doesn't prevent the Devil from generating tables out of thin air, but it makes it harder. At least, it makes it so hard that I found it more reasonable to use the supplied table configuration:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">IEnumerable</span>&lt;<span style="color:#2b91af;">Occurrence</span>&lt;<span style="color:#2b91af;">IEnumerable</span>&lt;<span style="color:#2b91af;">Table</span>&gt;&gt;&gt;&nbsp;<span style="color:#74531f;">Schedule</span>(<span style="color:#2b91af;">IEnumerable</span>&lt;<span style="color:#2b91af;">Reservation</span>&gt;&nbsp;<span style="color:#1f377f;">reservations</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">tables</span>&nbsp;=&nbsp;<span style="color:#1f377f;">reservations</span>.<span style="color:#74531f;">Zip</span>(Tables,&nbsp;(<span style="color:#1f377f;">r</span>,&nbsp;<span style="color:#1f377f;">t</span>)&nbsp;=&gt;&nbsp;<span style="color:#1f377f;">t</span>.<span style="color:#74531f;">Reserve</span>(<span style="color:#1f377f;">r</span>));
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">from</span>&nbsp;r&nbsp;<span style="color:blue;">in</span>&nbsp;<span style="color:#1f377f;">reservations</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">group</span>&nbsp;r&nbsp;<span style="color:blue;">by</span>&nbsp;r.At&nbsp;<span style="color:blue;">into</span>&nbsp;g
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">orderby</span>&nbsp;g.Key
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">select</span>&nbsp;<span style="color:#1f377f;">tables</span>.<span style="color:#74531f;">At</span>(g.Key);
+}</pre>
+	</p>
+	<p>
+		The implementation of <code>Schedule</code> still cheats because it 'knows' that no tests (except for the degenerate test where there are no reservations) have surplus tables in the configuration. It takes advantage of that knowledge to zip the two collections, which is really not appropriate.
+	</p>
+	<p>
+		Still, it seems that things are moving in the right direction.
+	</p>
+	<h3 id="5891a00f231f46b68afb0b6aff43b0b0">
+		Generated SUT <a href="#5891a00f231f46b68afb0b6aff43b0b0" title="permalink">#</a>
+	</h3>
+	<p>
+		Until now, <code>ScheduleImp</code> has been using a hard-coded <code>sut</code>. It's time to change that.
+	</p>
+	<p>
+		To keep my steps as small as possible, I decided to start with the <code>SeatingDuration</code> since it was currently not being used by the implementation. This meant that I could start randomising it without affecting the SUT. Since this was a code change of middling complexity in the test code, I found it most prudent to move in such a way that I didn't have to change the SUT as well.
+	</p>
+	<p>
+		I completely extracted the initialisation of the <code>sut</code> to a method argument of the <code>ScheduleImp</code> method, and adjusted it accordingly:
+	</p>
+	<p>
+		<pre><span style="color:blue;">private</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:blue;">void</span>&nbsp;<span style="color:#74531f;">ScheduleImp</span>(<span style="color:#2b91af;">MaitreD</span>&nbsp;<span style="color:#1f377f;">sut</span>,&nbsp;<span style="color:#2b91af;">Reservation</span>[]&nbsp;<span style="color:#1f377f;">reservations</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">actual</span>&nbsp;=&nbsp;<span style="color:#1f377f;">sut</span>.<span style="color:#74531f;">Schedule</span>(<span style="color:#1f377f;">reservations</span>);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Assert</span>.<span style="color:#74531f;">Equal</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#1f377f;">reservations</span>.<span style="color:#74531f;">Select</span>(<span style="color:#1f377f;">r</span>&nbsp;=&gt;&nbsp;<span style="color:#1f377f;">r</span>.At).<span style="color:#74531f;">Distinct</span>().<span style="color:#74531f;">Count</span>(),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#1f377f;">actual</span>.<span style="color:#74531f;">Count</span>());
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Assert</span>.<span style="color:#74531f;">Equal</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#1f377f;">actual</span>.<span style="color:#74531f;">Select</span>(<span style="color:#1f377f;">o</span>&nbsp;=&gt;&nbsp;<span style="color:#1f377f;">o</span>.At).<span style="color:#74531f;">OrderBy</span>(<span style="color:#1f377f;">d</span>&nbsp;=&gt;&nbsp;<span style="color:#1f377f;">d</span>),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#1f377f;">actual</span>.<span style="color:#74531f;">Select</span>(<span style="color:#1f377f;">o</span>&nbsp;=&gt;&nbsp;<span style="color:#1f377f;">o</span>.At));
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Assert</span>.<span style="color:#74531f;">All</span>(<span style="color:#1f377f;">actual</span>,&nbsp;<span style="color:#1f377f;">o</span>&nbsp;=&gt;&nbsp;<span style="color:#74531f;">AssertTables</span>(<span style="color:#1f377f;">sut</span>.Tables,&nbsp;<span style="color:#1f377f;">o</span>.Value));
+}</pre>
+	</p>
+	<p>
+		This meant that I also had to adjust the calling property:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">Property</span>&nbsp;<span style="color:#74531f;">Schedule</span>()
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;<span style="color:#2b91af;">Prop</span>.<span style="color:#74531f;">ForAll</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;GenReservation
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.<span style="color:#74531f;">ArrayOf</span>()
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.<span style="color:#74531f;">SelectMany</span>(<span style="color:#1f377f;">rs</span>&nbsp;=&gt;&nbsp;<span style="color:#74531f;">GenMaitreD</span>(<span style="color:#1f377f;">rs</span>).<span style="color:#74531f;">Select</span>(<span style="color:#1f377f;">m</span>&nbsp;=&gt;&nbsp;(<span style="color:#1f377f;">m</span>,&nbsp;<span style="color:#1f377f;">rs</span>)))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.<span style="color:#74531f;">ToArbitrary</span>(),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#1f377f;">t</span>&nbsp;=&gt;&nbsp;<span style="color:#74531f;">ScheduleImp</span>(<span style="color:#1f377f;">t</span>.m,&nbsp;<span style="color:#1f377f;">t</span>.rs));
+}</pre>
+	</p>
+	<p>
+		You've already seen <code>GenReservation</code>, but <code>GenMaitreD</code> is new:
+	</p>
+	<p>
+		<pre><span style="color:blue;">private</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:#2b91af;">Gen</span>&lt;<span style="color:#2b91af;">MaitreD</span>&gt;&nbsp;<span style="color:#74531f;">GenMaitreD</span>(<span style="color:#2b91af;">IEnumerable</span>&lt;<span style="color:#2b91af;">Reservation</span>&gt;&nbsp;<span style="color:#1f377f;">reservations</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;Create&nbsp;a&nbsp;table&nbsp;for&nbsp;each&nbsp;reservation,&nbsp;to&nbsp;ensure&nbsp;that&nbsp;all</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;reservations&nbsp;can&nbsp;be&nbsp;allotted&nbsp;a&nbsp;table.</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">tables</span>&nbsp;=&nbsp;<span style="color:#1f377f;">reservations</span>.<span style="color:#74531f;">Select</span>(<span style="color:#1f377f;">r</span>&nbsp;=&gt;&nbsp;<span style="color:#2b91af;">Table</span>.<span style="color:#74531f;">Standard</span>(<span style="color:#1f377f;">r</span>.Quantity));
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">from</span>&nbsp;seatingDuration&nbsp;<span style="color:blue;">in</span>&nbsp;<span style="color:#2b91af;">Gen</span>.<span style="color:#74531f;">Choose</span>(1,&nbsp;6)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">select</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">MaitreD</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">TimeSpan</span>.<span style="color:#74531f;">FromHours</span>(18),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">TimeSpan</span>.<span style="color:#74531f;">FromHours</span>(21),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">TimeSpan</span>.<span style="color:#74531f;">FromHours</span>(seatingDuration),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#1f377f;">tables</span>);
+}</pre>
+	</p>
+	<p>
+		The only difference from before is that the new <code>MaitreD</code> object is now initialised from within a generator expression. The duration is randomly picked from the range of one to six hours (those numbers are my arbitrary choices).
+	</p>
+	<p>
+		Notice that it's possible to base one generator on values randomly generated by another generator. Here, <code>reservations</code> are randomly produced by <code>GenReservation</code> and merged to a tuple with <code>SelectMany</code>, as you can see above.
+	</p>
+	<p>
+		This in itself didn't impact the SUT, but set up the code for my next move, which was to generate <em>more</em> tables than reservations, so that there'd be some free tables left after the schedule allocation. I first added a more complex table generator:
+	</p>
+	<p>
+		<pre><span style="color:gray;">///</span><span style="color:green;">&nbsp;</span><span style="color:gray;">&lt;</span><span style="color:gray;">summary</span><span style="color:gray;">&gt;</span>
+<span style="color:gray;">///</span><span style="color:green;">&nbsp;Generate&nbsp;a&nbsp;table&nbsp;configuration&nbsp;that&nbsp;can&nbsp;at&nbsp;minimum&nbsp;accomodate&nbsp;all</span>
+<span style="color:gray;">///</span><span style="color:green;">&nbsp;reservations.</span>
+<span style="color:gray;">///</span><span style="color:green;">&nbsp;</span><span style="color:gray;">&lt;/</span><span style="color:gray;">summary</span><span style="color:gray;">&gt;</span>
+<span style="color:gray;">///</span><span style="color:green;">&nbsp;</span><span style="color:gray;">&lt;</span><span style="color:gray;">param</span><span style="color:gray;">&nbsp;name</span><span style="color:gray;">=</span><span style="color:gray;">&quot;</span><span style="color:#1f377f;">reservations</span><span style="color:gray;">&quot;</span><span style="color:gray;">&gt;</span><span style="color:green;">The&nbsp;reservations&nbsp;to&nbsp;accommodate</span><span style="color:gray;">&lt;/</span><span style="color:gray;">param</span><span style="color:gray;">&gt;</span>
+<span style="color:gray;">///</span><span style="color:green;">&nbsp;</span><span style="color:gray;">&lt;</span><span style="color:gray;">returns</span><span style="color:gray;">&gt;</span><span style="color:green;">A&nbsp;generator&nbsp;of&nbsp;valid&nbsp;table&nbsp;configurations.</span><span style="color:gray;">&lt;/</span><span style="color:gray;">returns</span><span style="color:gray;">&gt;</span>
+<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:#2b91af;">Gen</span>&lt;<span style="color:#2b91af;">IEnumerable</span>&lt;<span style="color:#2b91af;">Table</span>&gt;&gt;&nbsp;<span style="color:#74531f;">GenTables</span>(<span style="color:#2b91af;">IEnumerable</span>&lt;<span style="color:#2b91af;">Reservation</span>&gt;&nbsp;<span style="color:#1f377f;">reservations</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;Create&nbsp;a&nbsp;table&nbsp;for&nbsp;each&nbsp;reservation,&nbsp;to&nbsp;ensure&nbsp;that&nbsp;all</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;reservations&nbsp;can&nbsp;be&nbsp;allotted&nbsp;a&nbsp;table.</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">tables</span>&nbsp;=&nbsp;<span style="color:#1f377f;">reservations</span>.<span style="color:#74531f;">Select</span>(<span style="color:#1f377f;">r</span>&nbsp;=&gt;&nbsp;<span style="color:#2b91af;">Table</span>.<span style="color:#74531f;">Standard</span>(<span style="color:#1f377f;">r</span>.Quantity));
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">from</span>&nbsp;moreTables&nbsp;<span style="color:blue;">in</span>&nbsp;<span style="color:#2b91af;">Gen</span>.<span style="color:#74531f;">Choose</span>(1,&nbsp;12).<span style="color:#74531f;">Select</span>(<span style="color:#2b91af;">Table</span>.<span style="color:#74531f;">Standard</span>).<span style="color:#74531f;">ArrayOf</span>()
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">from</span>&nbsp;allTables&nbsp;<span style="color:blue;">in</span>&nbsp;<span style="color:#2b91af;">Gen</span>.<span style="color:#74531f;">Shuffle</span>(<span style="color:#1f377f;">tables</span>.<span style="color:#74531f;">Concat</span>(moreTables))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">select</span>&nbsp;allTables.<span style="color:#74531f;">AsEnumerable</span>();
+}</pre>
+	</p>
+	<p>
+		This function first creates standard tables that exactly accommodate each reservation. It then generates an array of <code>moreTables</code>, each fitting between one and twelve people. It then mixes those tables together with the ones that fit a reservation and returns the sequence. Since <code>moreTables</code> can be empty, it's possible that the entire sequence of tables only just accommodates the <code>reservations</code>.
+	</p>
+	<p>
+		I then modified <code>GenMaitreD</code> to use <code>GenTables</code>:
+	</p>
+	<p>
+		<pre><span style="color:blue;">private</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:#2b91af;">Gen</span>&lt;<span style="color:#2b91af;">MaitreD</span>&gt;&nbsp;<span style="color:#74531f;">GenMaitreD</span>(<span style="color:#2b91af;">IEnumerable</span>&lt;<span style="color:#2b91af;">Reservation</span>&gt;&nbsp;<span style="color:#1f377f;">reservations</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">from</span>&nbsp;seatingDuration&nbsp;<span style="color:blue;">in</span>&nbsp;<span style="color:#2b91af;">Gen</span>.<span style="color:#74531f;">Choose</span>(1,&nbsp;6)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">from</span>&nbsp;tables&nbsp;<span style="color:blue;">in</span>&nbsp;<span style="color:#74531f;">GenTables</span>(<span style="color:#1f377f;">reservations</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">select</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">MaitreD</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">TimeSpan</span>.<span style="color:#74531f;">FromHours</span>(18),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">TimeSpan</span>.<span style="color:#74531f;">FromHours</span>(21),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">TimeSpan</span>.<span style="color:#74531f;">FromHours</span>(seatingDuration),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;tables);
+}</pre>
+	</p>
+	<p>
+		This provoked a change in the SUT:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">IEnumerable</span>&lt;<span style="color:#2b91af;">Occurrence</span>&lt;<span style="color:#2b91af;">IEnumerable</span>&lt;<span style="color:#2b91af;">Table</span>&gt;&gt;&gt;&nbsp;<span style="color:#74531f;">Schedule</span>(<span style="color:#2b91af;">IEnumerable</span>&lt;<span style="color:#2b91af;">Reservation</span>&gt;&nbsp;<span style="color:#1f377f;">reservations</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">from</span>&nbsp;r&nbsp;<span style="color:blue;">in</span>&nbsp;<span style="color:#1f377f;">reservations</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">group</span>&nbsp;r&nbsp;<span style="color:blue;">by</span>&nbsp;r.At&nbsp;<span style="color:blue;">into</span>&nbsp;g
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">orderby</span>&nbsp;g.Key
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">select</span>&nbsp;<span style="color:#74531f;">Allocate</span>(g).<span style="color:#74531f;">At</span>(g.Key);
+}</pre>
+	</p>
+	<p>
+		The <code>Schedule</code> method now calls a private helper method called <code>Allocate</code>. This method already existed, since it supports the algorithm used to decide whether or not to accept a reservation request.
+	</p>
+	<h3 id="79e43322721b45a390c68caeaa1a3dcf">
+		Rinse and repeat <a href="#79e43322721b45a390c68caeaa1a3dcf" title="permalink">#</a>
+	</h3>
+	<p>
+		I hope that a pattern starts to emerge. I kept adding more and more randomisation to the data generators, while I also added more and more assertions to the property. Here's what it looked like after a few more iterations:
+	</p>
+	<p>
+		<pre><span style="color:blue;">private</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:blue;">void</span>&nbsp;<span style="color:#74531f;">ScheduleImp</span>(<span style="color:#2b91af;">MaitreD</span>&nbsp;<span style="color:#1f377f;">sut</span>,&nbsp;<span style="color:#2b91af;">Reservation</span>[]&nbsp;<span style="color:#1f377f;">reservations</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">actual</span>&nbsp;=&nbsp;<span style="color:#1f377f;">sut</span>.<span style="color:#74531f;">Schedule</span>(<span style="color:#1f377f;">reservations</span>);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Assert</span>.<span style="color:#74531f;">Equal</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#1f377f;">reservations</span>.<span style="color:#74531f;">Select</span>(<span style="color:#1f377f;">r</span>&nbsp;=&gt;&nbsp;<span style="color:#1f377f;">r</span>.At).<span style="color:#74531f;">Distinct</span>().<span style="color:#74531f;">Count</span>(),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#1f377f;">actual</span>.<span style="color:#74531f;">Count</span>());
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Assert</span>.<span style="color:#74531f;">Equal</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#1f377f;">actual</span>.<span style="color:#74531f;">Select</span>(<span style="color:#1f377f;">o</span>&nbsp;=&gt;&nbsp;<span style="color:#1f377f;">o</span>.At).<span style="color:#74531f;">OrderBy</span>(<span style="color:#1f377f;">d</span>&nbsp;=&gt;&nbsp;<span style="color:#1f377f;">d</span>),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#1f377f;">actual</span>.<span style="color:#74531f;">Select</span>(<span style="color:#1f377f;">o</span>&nbsp;=&gt;&nbsp;<span style="color:#1f377f;">o</span>.At));
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Assert</span>.<span style="color:#74531f;">All</span>(<span style="color:#1f377f;">actual</span>,&nbsp;<span style="color:#1f377f;">o</span>&nbsp;=&gt;&nbsp;<span style="color:#74531f;">AssertTables</span>(<span style="color:#1f377f;">sut</span>.Tables,&nbsp;<span style="color:#1f377f;">o</span>.Value));
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Assert</span>.<span style="color:#74531f;">All</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#1f377f;">actual</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#1f377f;">o</span>&nbsp;=&gt;&nbsp;<span style="color:#74531f;">AssertRelevance</span>(<span style="color:#1f377f;">reservations</span>,&nbsp;<span style="color:#1f377f;">sut</span>.SeatingDuration,&nbsp;<span style="color:#1f377f;">o</span>));
+}</pre>
+	</p>
+	<p>
+		While <code>AssertTables</code> didn't change further, I added another helper assertion called <code>AssertRelevance</code>. I'm not going to show it here, but it checks that each occurrence only contains reservations that overlaps that point in time, give or take the <code>SeatingDuration</code>.
+	</p>
+	<p>
+		I also made the reservation generator more sophisticated. If you consider the one defined above, one flaw is that it generates reservations at random dates. The chance that it'll generate two reservations that are actually adjacent in time is minimal. To counter this problem, I added a function that would return a generator of adjacent reservations:
+	</p>
+	<p>
+		<pre><span style="color:gray;">///</span><span style="color:green;">&nbsp;</span><span style="color:gray;">&lt;</span><span style="color:gray;">summary</span><span style="color:gray;">&gt;</span>
+<span style="color:gray;">///</span><span style="color:green;">&nbsp;Generate&nbsp;an&nbsp;adjacant&nbsp;reservation&nbsp;with&nbsp;a&nbsp;25%&nbsp;chance.</span>
+<span style="color:gray;">///</span><span style="color:green;">&nbsp;</span><span style="color:gray;">&lt;/</span><span style="color:gray;">summary</span><span style="color:gray;">&gt;</span>
+<span style="color:gray;">///</span><span style="color:green;">&nbsp;</span><span style="color:gray;">&lt;</span><span style="color:gray;">param</span><span style="color:gray;">&nbsp;name</span><span style="color:gray;">=</span><span style="color:gray;">&quot;</span><span style="color:#1f377f;">reservation</span><span style="color:gray;">&quot;</span><span style="color:gray;">&gt;</span><span style="color:green;">The&nbsp;candidate&nbsp;reservation</span><span style="color:gray;">&lt;/</span><span style="color:gray;">param</span><span style="color:gray;">&gt;</span>
+<span style="color:gray;">///</span><span style="color:green;">&nbsp;</span><span style="color:gray;">&lt;</span><span style="color:gray;">returns</span><span style="color:gray;">&gt;</span>
+<span style="color:gray;">///</span><span style="color:green;">&nbsp;A&nbsp;generator&nbsp;of&nbsp;an&nbsp;array&nbsp;of&nbsp;reservations.&nbsp;The&nbsp;generated&nbsp;array&nbsp;is</span>
+<span style="color:gray;">///</span><span style="color:green;">&nbsp;either&nbsp;a&nbsp;singleton&nbsp;or&nbsp;a&nbsp;pair.&nbsp;In&nbsp;75%&nbsp;of&nbsp;the&nbsp;cases,&nbsp;the&nbsp;input</span>
+<span style="color:gray;">///</span><span style="color:green;">&nbsp;</span><span style="color:gray;">&lt;</span><span style="color:gray;">paramref</span><span style="color:gray;">&nbsp;name</span><span style="color:gray;">=</span><span style="color:gray;">&quot;</span><span style="color:#1f377f;">reservation</span><span style="color:gray;">&quot;</span><span style="color:gray;">&nbsp;/&gt;</span><span style="color:green;">&nbsp;is&nbsp;returned&nbsp;as&nbsp;a&nbsp;singleton&nbsp;array.</span>
+<span style="color:gray;">///</span><span style="color:green;">&nbsp;In&nbsp;25%&nbsp;of&nbsp;the&nbsp;cases,&nbsp;the&nbsp;array&nbsp;contains&nbsp;two&nbsp;reservations:&nbsp;the&nbsp;input</span>
+<span style="color:gray;">///</span><span style="color:green;">&nbsp;reservation&nbsp;as&nbsp;well&nbsp;as&nbsp;another&nbsp;reservation&nbsp;adjacent&nbsp;to&nbsp;it.</span>
+<span style="color:gray;">///</span><span style="color:green;">&nbsp;</span><span style="color:gray;">&lt;/</span><span style="color:gray;">returns</span><span style="color:gray;">&gt;</span>
+<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:#2b91af;">Gen</span>&lt;<span style="color:#2b91af;">Reservation</span>[]&gt;&nbsp;<span style="color:#74531f;">GenAdjacentReservations</span>(<span style="color:#2b91af;">Reservation</span>&nbsp;<span style="color:#1f377f;">reservation</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">from</span>&nbsp;adjacent&nbsp;<span style="color:blue;">in</span>&nbsp;<span style="color:#74531f;">GenReservationAdjacentTo</span>(<span style="color:#1f377f;">reservation</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">from</span>&nbsp;useAdjacent&nbsp;<span style="color:blue;">in</span>&nbsp;<span style="color:#2b91af;">Gen</span>.<span style="color:#74531f;">Frequency</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">WeightAndValue</span>&lt;<span style="color:#2b91af;">Gen</span>&lt;<span style="color:blue;">bool</span>&gt;&gt;(3,&nbsp;<span style="color:#2b91af;">Gen</span>.<span style="color:#74531f;">Constant</span>(<span style="color:blue;">false</span>)),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">WeightAndValue</span>&lt;<span style="color:#2b91af;">Gen</span>&lt;<span style="color:blue;">bool</span>&gt;&gt;(1,&nbsp;<span style="color:#2b91af;">Gen</span>.<span style="color:#74531f;">Constant</span>(<span style="color:blue;">true</span>)))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;rs&nbsp;=&nbsp;useAdjacent&nbsp;?
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>[]&nbsp;{&nbsp;<span style="color:#1f377f;">reservation</span>,&nbsp;adjacent&nbsp;}&nbsp;:
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>[]&nbsp;{&nbsp;<span style="color:#1f377f;">reservation</span>&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">select</span>&nbsp;rs;
+}
+ 
+<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:#2b91af;">Gen</span>&lt;<span style="color:#2b91af;">Reservation</span>&gt;&nbsp;<span style="color:#74531f;">GenReservationAdjacentTo</span>(<span style="color:#2b91af;">Reservation</span>&nbsp;<span style="color:#1f377f;">reservation</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">from</span>&nbsp;minutes&nbsp;<span style="color:blue;">in</span>&nbsp;<span style="color:#2b91af;">Gen</span>.<span style="color:#74531f;">Choose</span>(-6&nbsp;*&nbsp;4,&nbsp;6&nbsp;*&nbsp;4)&nbsp;<span style="color:green;">//&nbsp;4:&nbsp;quarters/h</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">from</span>&nbsp;r&nbsp;<span style="color:blue;">in</span>&nbsp;GenReservation
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">select</span>&nbsp;r.<span style="color:#74531f;">WithDate</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#1f377f;">reservation</span>.At&nbsp;<span style="color:#74531f;">+</span>&nbsp;<span style="color:#2b91af;">TimeSpan</span>.<span style="color:#74531f;">FromMinutes</span>(minutes));
+}</pre>
+	</p>
+	<p>
+		Now that I look at it again, I wonder whether I could have expressed this in a simpler way... It gets the job done, though.
+	</p>
+	<p>
+		I then defined a generator that would either create entirely random reservations, or some with some adjacent ones mixed in:
+	</p>
+	<p>
+		<pre><span style="color:blue;">private</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:#2b91af;">Gen</span>&lt;<span style="color:#2b91af;">Reservation</span>[]&gt;&nbsp;GenReservations
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">get</span>
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">normalArrayGen</span>&nbsp;=&nbsp;GenReservation.<span style="color:#74531f;">ArrayOf</span>();
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">adjacentReservationsGen</span>&nbsp;=&nbsp;GenReservation.<span style="color:#74531f;">ArrayOf</span>()
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.<span style="color:#74531f;">SelectMany</span>(<span style="color:#1f377f;">rs</span>&nbsp;=&gt;&nbsp;<span style="color:#2b91af;">Gen</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.<span style="color:#74531f;">Sequence</span>(<span style="color:#1f377f;">rs</span>.<span style="color:#74531f;">Select</span>(<span style="color:#74531f;">GenAdjacentReservations</span>))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.<span style="color:#74531f;">SelectMany</span>(<span style="color:#1f377f;">rss</span>&nbsp;=&gt;&nbsp;<span style="color:#2b91af;">Gen</span>.<span style="color:#74531f;">Shuffle</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#1f377f;">rss</span>.<span style="color:#74531f;">SelectMany</span>(<span style="color:#1f377f;">rs</span>&nbsp;=&gt;&nbsp;<span style="color:#1f377f;">rs</span>))));
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;<span style="color:#2b91af;">Gen</span>.<span style="color:#74531f;">OneOf</span>(<span style="color:#1f377f;">normalArrayGen</span>,&nbsp;<span style="color:#1f377f;">adjacentReservationsGen</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+	</p>
+	<p>
+		I changed the property to use this generator instead:
+	</p>
+	<p>
+		<pre>[<span style="color:#2b91af;">Property</span>]
+<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">Property</span>&nbsp;<span style="color:#74531f;">Schedule</span>()
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;<span style="color:#2b91af;">Prop</span>.<span style="color:#74531f;">ForAll</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;GenReservations
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.<span style="color:#74531f;">SelectMany</span>(<span style="color:#1f377f;">rs</span>&nbsp;=&gt;&nbsp;<span style="color:#74531f;">GenMaitreD</span>(<span style="color:#1f377f;">rs</span>).<span style="color:#74531f;">Select</span>(<span style="color:#1f377f;">m</span>&nbsp;=&gt;&nbsp;(<span style="color:#1f377f;">m</span>,&nbsp;<span style="color:#1f377f;">rs</span>)))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.<span style="color:#74531f;">ToArbitrary</span>(),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#1f377f;">t</span>&nbsp;=&gt;&nbsp;<span style="color:#74531f;">ScheduleImp</span>(<span style="color:#1f377f;">t</span>.m,&nbsp;<span style="color:#1f377f;">t</span>.rs));
+}</pre>
+	</p>
+	<p>
+		I could have kept at it longer, but this turned out to be good enough to bring about the change in the SUT that I was looking for.
+	</p>
+	<h3 id="f34220b7400d464c9fce7c2b65454971">
+		Implementation <a href="#f34220b7400d464c9fce7c2b65454971" title="permalink">#</a>
+	</h3>
+	<p>
+		These incremental changes iteratively brought me closer and closer to an implementation that I think has the correct behaviour:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">IEnumerable</span>&lt;<span style="color:#2b91af;">Occurrence</span>&lt;<span style="color:#2b91af;">IEnumerable</span>&lt;<span style="color:#2b91af;">Table</span>&gt;&gt;&gt;&nbsp;<span style="color:#74531f;">Schedule</span>(<span style="color:#2b91af;">IEnumerable</span>&lt;<span style="color:#2b91af;">Reservation</span>&gt;&nbsp;<span style="color:#1f377f;">reservations</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">from</span>&nbsp;r&nbsp;<span style="color:blue;">in</span>&nbsp;<span style="color:#1f377f;">reservations</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">group</span>&nbsp;r&nbsp;<span style="color:blue;">by</span>&nbsp;r.At&nbsp;<span style="color:blue;">into</span>&nbsp;g
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">orderby</span>&nbsp;g.Key
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;seating&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Seating</span>(SeatingDuration,&nbsp;g.Key)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;overlapping&nbsp;=&nbsp;<span style="color:#1f377f;">reservations</span>.<span style="color:#74531f;">Where</span>(seating.<span style="color:#74531f;">Overlaps</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">select</span>&nbsp;<span style="color:#74531f;">Allocate</span>(overlapping).<span style="color:#74531f;">At</span>(g.Key);
+}</pre>
+	</p>
+	<p>
+		Contrary to my initial expectations, I managed to keep the implementation to a single query expression all the way through.
+	</p>
+	<h3 id="c64408017700494a808fae9388341e87">
+		Conclusion <a href="#c64408017700494a808fae9388341e87" title="permalink">#</a>
+	</h3>
+	<p>
+		This was a problem that I was stuck on for a couple of days. I could describe the properties I wanted the function to have, but I had a hard time coming up with a good set of examples for unit tests.
+	</p>
+	<p>
+		You may think that using property-based testing looks even more complicated, and I admit that it's far from trivial. The problem itself, however, isn't easy, and while the property-based approach may look daunting, it turned an intractable problem into a manageable one. That's a win in my book.
+	</p>
+	<p>
+		It's also worth noting that this would all have looked more elegant in F#. There's an object-oriented tax to be paid when using FsCheck from C#.
+	</p>
+</div>
