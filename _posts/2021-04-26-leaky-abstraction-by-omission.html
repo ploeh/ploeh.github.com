@@ -1,0 +1,250 @@
+---
+layout: post
+title: "Leaky abstraction by omission"
+description: "Sometimes, an abstraction can be leaky because it leaves something out."
+date: 2021-04-26 5:40 UTC
+tags: [Software Design]
+---
+{% include JB/setup %}
+
+<div id="post">
+	<p>
+		<em>{{ page.description }}</em>
+	</p>
+	<p>
+		Consider the following interface definition. What's wrong with it?
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">interface</span>&nbsp;<span style="color:#2b91af;">IReservationsRepository</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;Task&nbsp;<span style="color:#74531f;">Create</span>(<span style="color:blue;">int</span>&nbsp;<span style="color:#1f377f;">restaurantId</span>,&nbsp;Reservation&nbsp;<span style="color:#1f377f;">reservation</span>);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;Task&lt;IReadOnlyCollection&lt;Reservation&gt;&gt;&nbsp;<span style="color:#74531f;">ReadReservations</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">int</span>&nbsp;<span style="color:#1f377f;">restaurantId</span>,&nbsp;DateTime&nbsp;<span style="color:#1f377f;">min</span>,&nbsp;DateTime&nbsp;<span style="color:#1f377f;">max</span>);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;Task&lt;Reservation?&gt;&nbsp;<span style="color:#74531f;">ReadReservation</span>(Guid&nbsp;<span style="color:#1f377f;">id</span>);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;Task&nbsp;<span style="color:#74531f;">Update</span>(Reservation&nbsp;<span style="color:#1f377f;">reservation</span>);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;Task&nbsp;<span style="color:#74531f;">Delete</span>(Guid&nbsp;<span style="color:#1f377f;">id</span>);
+}</pre>
+	</p>
+	<p>
+		Perhaps you think that the name is incorrect; that this really isn't an example of the Repository design pattern, as it's described in <a href="http://bit.ly/patternsofeaa">Patterns of Enterprise Application Architecture</a>. Ironically, of all patterns, it may be the one most affected by <a href="https://martinfowler.com/bliki/SemanticDiffusion.html">semantic diffusion</a>.
+	</p>
+	<p>
+		That's not what I have in mind, though. There's something else with that interface.
+	</p>
+	<p>
+		It's not its <a href="https://en.wikipedia.org/wiki/Create,_read,_update_and_delete">CRUD</a> design, either. You could consider that a leaky abstraction, since it strongly implies a sort of persistent data store. That's a worthwhile discussion, but not what I have in mind today. There's something else wrong with the interface.
+	</p>
+	<h3 id="998668fec2d9488db5a31a99c0c81774">
+		Consistency <a href="#998668fec2d9488db5a31a99c0c81774" title="permalink">#</a>
+	</h3>
+	<p>
+		Look closer at the parameters for the various methods. The <code>Create</code> and <code>ReadReservations</code> methods take a <code>restaurantId</code> parameter, but the other three don't.
+	</p>
+	<p>
+		Why does the <code>ReadReservations</code> method take a <code>restaurantId</code> while <code>ReadReservation</code> doesn't? Why is that parameter required for <code>Create</code>, but not for <code>Update</code>? That doesn't seem consistent.
+	</p>
+	<p>
+		The reason is that each reservation has an ID (a <a href="https://en.wikipedia.org/wiki/Universally_unique_identifier">GUID</a>). Once the reservation exists, you can uniquely identify it to read, update, or delete it.
+	</p>
+	<p>
+		As the <code>restaurantId</code> parameter suggests, however, this interface is part of a multi-tenant code base. This code base implements an online restaurant reservation system as a <a href="https://en.wikipedia.org/wiki/Representational_state_transfer">REST</a> API. It's an online service where each restaurant is a separate tenant.
+	</p>
+	<p>
+		While each reservation has a unique ID, the system still needs to associate it with a restaurant. Thus, the <code>Create</code> method must take a <code>restaurantId</code> parameter in order to associate the reservation with a restaurant.
+	</p>
+	<p>
+		Once the reservation is stored, however, it's possible to uniquely identify it with the ID. The <code>ReadReservation</code>, <code>Update</code>, and <code>Delete</code> methods need only the <code>id</code> to work.
+	</p>
+	<p>
+		On the other hand, when you're <em>not</em> querying on reservation ID, you'll need to identify the restaurant, as with the <code>ReadReservations</code> methods. If you didn't identify the restaurant in that method, you'd get all reservations in the requested range, from all tenants. That's not what you want. Therefore, you must supply the <code>restaurantId</code> to limit the query.
+	</p>
+	<p>
+		The interface is inconsistent, but also allows the underlying implementation to leak through.
+	</p>
+	<h3 id="d270b5a98c7644389bc662287d8aa37e">
+		Implied implementation detail <a href="#d270b5a98c7644389bc662287d8aa37e" title="permalink">#</a>
+	</h3>
+	<p>
+		If I told you that the implementation of <code>IReservationsRepository</code> is based on a relational database, can you imagine the design? You may want to stop reading and see if you can predict what the database looks like.
+	</p>
+	<p>
+		The interface strongly implies a design like this:
+	</p>
+	<p>
+		<pre><span style="color:blue;">CREATE</span>&nbsp;<span style="color:blue;">TABLE</span>&nbsp;[dbo]<span style="color:gray;">.</span>[Reservations]<span style="color:blue;">&nbsp;</span><span style="color:gray;">(</span>
+&nbsp;&nbsp;&nbsp;&nbsp;[Id]&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">INT</span>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">IDENTITY&nbsp;</span><span style="color:gray;">(</span>1<span style="color:gray;">,</span>&nbsp;1<span style="color:gray;">)</span>&nbsp;<span style="color:gray;">NOT</span>&nbsp;<span style="color:gray;">NULL,</span>
+&nbsp;&nbsp;&nbsp;&nbsp;[At]&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">DATETIME2&nbsp;</span><span style="color:gray;">(</span>7<span style="color:gray;">)</span>&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:gray;">NOT</span>&nbsp;<span style="color:gray;">NULL,</span>
+&nbsp;&nbsp;&nbsp;&nbsp;[Name]&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">NVARCHAR&nbsp;</span><span style="color:gray;">(</span>50<span style="color:gray;">)</span>&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:gray;">NOT</span>&nbsp;<span style="color:gray;">NULL,</span>
+&nbsp;&nbsp;&nbsp;&nbsp;[Email]&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">NVARCHAR&nbsp;</span><span style="color:gray;">(</span>50<span style="color:gray;">)</span>&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:gray;">NOT</span>&nbsp;<span style="color:gray;">NULL,</span>
+&nbsp;&nbsp;&nbsp;&nbsp;[Quantity]&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">INT</span>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:gray;">NOT</span>&nbsp;<span style="color:gray;">NULL,</span>
+&nbsp;&nbsp;&nbsp;&nbsp;[PublicId]&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">UNIQUEIDENTIFIER</span>&nbsp;<span style="color:gray;">NOT</span>&nbsp;<span style="color:gray;">NULL,</span>
+&nbsp;&nbsp;&nbsp;&nbsp;[RestaurantId]&nbsp;<span style="color:blue;">INT</span>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:gray;">NOT</span>&nbsp;<span style="color:gray;">NULL,</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">PRIMARY</span>&nbsp;<span style="color:blue;">KEY</span>&nbsp;<span style="color:blue;">CLUSTERED&nbsp;</span><span style="color:gray;">(</span>[Id]&nbsp;<span style="color:blue;">ASC</span><span style="color:gray;">),</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">CONSTRAINT</span>&nbsp;[AK_PublicId]&nbsp;<span style="color:blue;">UNIQUE</span>&nbsp;<span style="color:blue;">NONCLUSTERED&nbsp;</span><span style="color:gray;">(</span>[PublicId]&nbsp;<span style="color:blue;">ASC</span><span style="color:gray;">)</span>
+<span style="color:gray;">);</span></pre>
+	</p>
+	<p>
+		What I wrote above is even clearer now. You can't create a row in that table without supplying a <code>RestaurantId</code>, since that column has a <code>NOT NULL</code> constraint.
+	</p>
+	<p>
+		The <code>PublicId</code> column has a <code>UNIQUE</code> constraint, which means that you can uniquely read and manipulate a single row when you have an ID.
+	</p>
+	<p>
+		Since all reservations are in a single table, any query <em>not</em> based on <code>PublicId</code> should also filter on <code>RestaurantId</code>. If it doesn't, the result set could included reservations from all restaurants.
+	</p>
+	<h3 id="646f0fb2adf147c6bca42d9aada6cf43">
+		Other interpretations <a href="#646f0fb2adf147c6bca42d9aada6cf43" title="permalink">#</a>
+	</h3>
+	<p>
+		Is the above relational database design the only possible implementation? Perhaps not. You could implement the interface based on a document database as well. It'd be natural to store each reservation as a separate document with a unique ID. Again, once you have the ID, you can directly retrieve and manipulate the document.
+	</p>
+	<p>
+		Other implementations become harder, though. Imagine, for example, that you want to <a href="https://en.wikipedia.org/wiki/Shard_(database_architecture)">shard</a> the database design: Each restaurant gets a separate database. Or perhaps, more realistically, you distribute tenants over a handful of databases, perhaps partitioned on physical location, or some other criterion.
+	</p>
+	<p>
+		With such a design, the <code>ReadReservation</code>, <code>Update</code>, and <code>Delete</code> methods become more inefficient. While you should be able to identify the correct shard if you have a restaurant ID, <em>you don't have that information.</em> Instead, you'll have to attempt the operation on all databases, thereby eliminating most  sharding benefits.
+	</p>
+	<p>
+		In other words, the <em>absence</em> of the <code>restaurantId</code> parameter from some of the methods suggests certain implementation details.
+	</p>
+	<h3 id="5edc25ddf2c8439096577e8eaf45806c">
+		Leak by omission <a href="#5edc25ddf2c8439096577e8eaf45806c" title="permalink">#</a>
+	</h3>
+	<p>
+		I admit that I rarely run into this sort of problem. Usually, a leaky abstraction manifests by a language construct that contains <em>too much</em> information. This is typically an interface or base class that exposes implementation details by either requiring too specific inputs, or by returning data that reveals implementation details.
+	</p>
+	<p>
+		For a data access abstraction like the above 'repository', this most frequently happens when people design such an interface around an <a href="https://en.wikipedia.org/wiki/Object%E2%80%93relational_mapping">object-relational mapper</a> (ORM). A class like <code>Reservation</code> would then typically carry ORM details around. Perhaps it inherits from an ORM base class, or perhaps (this is very common) it has a parameterless constructor or getters and setters that model the relationships of the database (these are often called <em>navigation properties</em>).
+	</p>
+	<p>
+		Another common examples of a leaky abstraction might be the presence of <code>Connect</code> and <code>Disconnect</code> methods. The <code>Connect</code> method may even take a <code>connectionString</code> parameter, clearly leaking that some sort of database is involved.
+	</p>
+	<p>
+		Yet another example is <a href="/2014/08/11/cqs-versus-server-generated-ids">CQS-violating designs where a <code>Create</code> method returns a database ID</a>.
+	</p>
+	<p>
+		All such leaky abstractions are leaky because they expose or require too much information.
+	</p>
+	<p>
+		The example in this article, on the contrary, is leaky because of a lack of detail.
+	</p>
+	<h3 id="d6391eb7487d4b3ca38e4e5b1e868bd5">
+		Dependency Inversion Principle <a href="#d6391eb7487d4b3ca38e4e5b1e868bd5" title="permalink">#</a>
+	</h3>
+	<p>
+		Ironically, I originally arrived at the above design because I followed the <a href="https://en.wikipedia.org/wiki/Dependency_inversion_principle">Dependency Inversion Principle</a> (DIP). The clients of <code>IReservationsRepository</code> are ASP.NET Controller actions, like this <code>Delete</code> method:
+	</p>
+	<p>
+		<pre>[HttpDelete(<span style="color:#a31515;">&quot;restaurants/{restaurantId}/reservations/{id}&quot;</span>)]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">async</span>&nbsp;Task&nbsp;<span style="color:#74531f;">Delete</span>(<span style="color:blue;">int</span>&nbsp;<span style="color:#1f377f;">restaurantId</span>,&nbsp;<span style="color:blue;">string</span>&nbsp;<span style="color:#1f377f;">id</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">if</span>&nbsp;(Guid.TryParse(id,&nbsp;<span style="color:blue;">out</span>&nbsp;var&nbsp;<span style="color:#1f377f;">rid</span>))
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">r</span>&nbsp;=&nbsp;<span style="color:blue;">await</span>&nbsp;Repository.ReadReservation(rid)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.ConfigureAwait(<span style="color:blue;">false</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">await</span>&nbsp;Repository.Delete(rid).ConfigureAwait(<span style="color:blue;">false</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">if</span>&nbsp;(r&nbsp;<span style="color:blue;">is</span>&nbsp;{&nbsp;})
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">await</span>&nbsp;PostOffice.EmailReservationDeleted(restaurantId,&nbsp;r)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.ConfigureAwait(<span style="color:blue;">false</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+	</p>
+	<p>
+		As Robert C. Martin explains about the Dependency Inversion Principle:
+		<blockquote>
+			<p>
+				"clients [...] own the abstract interfaces"
+			</p>
+			<footer><cite>Robert C. Martin, <a href="http://amzn.to/19W4JHk">APPP</a>, chapter 11</cite></footer>
+		</blockquote>
+		From that principle, it follows that the <code>Delete</code> method decides what <code>IReservationsRepository.Delete</code> looks like. It seems that the Controller action doesn't <em>need</em> to tell the <code>Repository</code> about the <code>restaurantId</code> when calling its <code>Delete</code> method. Supplying the reservation ID (<code>rid</code>) is enough.
+	</p>
+	<p>
+		There are, however, various problems with the above code. If the DIP suggests that the <code>restaurantId</code> is redundant when calling <code>Repository.Delete</code>, then why is it required when calling <code>PostOffice.EmailReservationDeleted</code>? This seems inconsistent.
+	</p>
+	<p>
+		Indeed it is.
+	</p>
+	<p>
+		As I often do, I arrived at the above <code>Delete</code> method via <a href="/outside-in-tdd">outside-in TDD</a>, but as I observed a decade ago, <a href="/2010/12/22/TheTDDApostate">TDD alone doesn't guarantee good design</a>. Even when following the <a href="/2019/10/21/a-red-green-refactor-checklist">red-green-refactor checklist</a>, I often fail to spot problems right away.
+	</p>
+	<p>
+		That's okay. TDD doesn't guarantee perfection, but done well it should set you up so that you can easily make changes.
+	</p>
+	<h3 id="b19d4f16b2ee48759c0e4d698a83cfdc">
+		Possible remedies <a href="#b19d4f16b2ee48759c0e4d698a83cfdc" title="permalink">#</a>
+	</h3>
+	<p>
+		I can think of two ways to address the problem. The simplest solution is to make the interface consistent by adding a <code>restaurantId</code> parameter to all methods:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">interface</span>&nbsp;<span style="color:#2b91af;">IReservationsRepository</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;Task&nbsp;<span style="color:#74531f;">Create</span>(<span style="color:blue;">int</span>&nbsp;<span style="color:#1f377f;">restaurantId</span>,&nbsp;Reservation&nbsp;<span style="color:#1f377f;">reservation</span>);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;Task&lt;IReadOnlyCollection&lt;Reservation&gt;&gt;&nbsp;<span style="color:#74531f;">ReadReservations</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">int</span>&nbsp;<span style="color:#1f377f;">restaurantId</span>,&nbsp;DateTime&nbsp;<span style="color:#1f377f;">min</span>,&nbsp;DateTime&nbsp;<span style="color:#1f377f;">max</span>);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;Task&lt;Reservation?&gt;&nbsp;<span style="color:#74531f;">ReadReservation</span>(<span style="color:blue;">int</span>&nbsp;<span style="color:#1f377f;">restaurantId</span>,&nbsp;Guid&nbsp;<span style="color:#1f377f;">id</span>);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;Task&nbsp;<span style="color:#74531f;">Update</span>(<span style="color:blue;">int</span>&nbsp;<span style="color:#1f377f;">restaurantId</span>,&nbsp;Reservation&nbsp;<span style="color:#1f377f;">reservation</span>);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;Task&nbsp;<span style="color:#74531f;">Delete</span>(<span style="color:blue;">int</span>&nbsp;<span style="color:#1f377f;">restaurantId</span>,&nbsp;Guid&nbsp;<span style="color:#1f377f;">id</span>);
+}</pre>
+	</p>
+	<p>
+		This is the simplest solution, and the one that I prefer. In a future article, I'll show how it enabled me to significantly simplify the code base.
+	</p>
+	<p>
+		For good measure, though, I should also mention the opposite solution. Completely drain the interface of <code>restaurantId</code> parameters:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">interface</span>&nbsp;<span style="color:#2b91af;">IReservationsRepository</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;Task&nbsp;<span style="color:#74531f;">Create</span>(Reservation&nbsp;<span style="color:#1f377f;">reservation</span>);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;Task&lt;IReadOnlyCollection&lt;Reservation&gt;&gt;&nbsp;<span style="color:#74531f;">ReadReservations</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;DateTime&nbsp;<span style="color:#1f377f;">min</span>,&nbsp;DateTime&nbsp;<span style="color:#1f377f;">max</span>);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;Task&lt;Reservation?&gt;&nbsp;<span style="color:#74531f;">ReadReservation</span>(Guid&nbsp;<span style="color:#1f377f;">id</span>);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;Task&nbsp;<span style="color:#74531f;">Update</span>(Reservation&nbsp;<span style="color:#1f377f;">reservation</span>);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;Task&nbsp;<span style="color:#74531f;">Delete</span>(Guid&nbsp;<span style="color:#1f377f;">id</span>);
+}</pre>
+	</p>
+	<p>
+		How can that work in practice? After all, an implementation <em>must</em> have a restaurant ID to create a new row in the database.
+	</p>
+	<p>
+		It's possible to solve that problem by making the <code>restaurantId</code> an implementation detail. You could make it constructor parameter for the concrete class, but this gives you another problem. Your <a href="/2011/07/28/CompositionRoot">Composition Root</a> doesn't know the restaurant ID - after all, it's a run-time argument.
+	</p>
+	<p>
+		In a method like the above <code>Delete</code> Controller action, you'd have to translate the <code>restaurantId</code> run-time parameter to an <code>IReservationsRepository</code> instance. There are various ways around that kind of problem, but they typically involve some kind of <em>factory</em>. That'd be yet another interface:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">interface</span>&nbsp;<span style="color:#2b91af;">IReservationsRepositoryFactory</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;IReservationsRepository&nbsp;<span style="color:#74531f;">Create</span>(<span style="color:blue;">int</span>&nbsp;<span style="color:#1f377f;">restaurantId</span>);
+}</pre>
+	</p>
+	<p>
+		That just makes the API more complicated. Factories give <a href="/dippp">Dependency Injection</a> a bad reputation. For that reason, I don't like this second alternative.
+	</p>
+	<h3 id="ae975d7eff014d31b26ec78fa055f343">
+		Conclusion <a href="#ae975d7eff014d31b26ec78fa055f343" title="permalink">#</a>
+	</h3>
+	<p>
+		Leaky abstractions usually express themselves as APIs that expose too many details; the implementation details leak through.
+	</p>
+	<p>
+		In this example, however, a leaky abstraction manifested as a lack of consistency. Some methods require a <code>restaurantId</code> argument, while others don't - because one particular implementation doesn't need that information.
+	</p>
+	<p>
+		It turned out, though, that when I was trying to simplify the overall code, this API design held me back. Consistently adding <code>restaurantId</code> parameters to all repository methods solved the problem. A future article tells that tale.
+	</p>
+</div>
