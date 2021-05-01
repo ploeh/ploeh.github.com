@@ -1,0 +1,207 @@
+---
+layout: post
+title: "Structural equality for better tests"
+description: "A Fluent Builder as a Value Object?"
+date: 2021-04-30 15:39 UTC
+tags: [Unit Testing, F#, Functional Programming]
+---
+{% include JB/setup %}
+
+<div id="post">
+	<p>
+		<em>{{ page.description }}</em>
+	</p>
+	<p>
+		If you've read a bit about unit testing, test-driven development, or other kinds of developer testing, you've probably come across a phrase like this:
+		<blockquote>
+			Test behaviour, not implementation.
+		</blockquote>
+		It's often taken to mean something like <a href="https://en.wikipedia.org/wiki/Behavior-driven_development">behaviour-driven development</a> (BDD), and that's certainly one interpretation. I've no problem with that. My own Pluralsight course <a href="/outside-in-tdd">Outside-In Test-Driven Development</a> shows a similar technique.
+	</p>
+	<p>
+		It'd be a logical fallacy, however, to thereby conclude that you can only apply that ideal in the large, but not in the small. That it's only possible to do it with course-grained tests at the boundary of the system, but not with unit testing.
+	</p>
+	<p>
+		It may be harder to do at the unit level, since when writing unit tests, you're closer to the implementation, so to speak. Writing the test before the implementation may, however, help
+	</p>
+	<h3 id="fc448a62f581457392f12bd1fe2d273d">
+		An example test <a href="#fc448a62f581457392f12bd1fe2d273d" title="permalink">#</a>
+	</h3>
+	<p>
+		Here's a test (using <a href="https://xunit.net">xUnit.net</a> 2.4.1) I wrote before the implementation:
+	</p>
+	<p>
+		<pre>[Theory]
+[InlineData(<span style="color:#a31515;">&quot;Home&quot;</span>)]
+[InlineData(<span style="color:#a31515;">&quot;Calendar&quot;</span>)]
+[InlineData(<span style="color:#a31515;">&quot;Reservations&quot;</span>)]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;<span style="color:#74531f;">WithControllerHandlesSuffix</span>(<span style="color:blue;">string</span>&nbsp;<span style="color:#1f377f;">name</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">sut</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;UrlBuilder();
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">actual</span>&nbsp;=&nbsp;sut.WithController(name&nbsp;+&nbsp;<span style="color:#a31515;">&quot;Controller&quot;</span>);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">expected</span>&nbsp;=&nbsp;sut.WithController(name);
+&nbsp;&nbsp;&nbsp;&nbsp;Assert.Equal(expected,&nbsp;actual);
+}</pre>
+	</p>
+	<p>
+		It tests an <a href="/2020/08/10/an-aspnet-core-url-builder">ASP.NET Core URL Builder</a>; particular how it deals with the <code>Controller</code> <a href="/2020/08/03/using-the-nameof-c-keyword-with-aspnet-3-iurlhelper">suffix issue I ran into last year</a>.
+	</p>
+	<p>
+		Do you notice something odd about this test?
+	</p>
+	<p>
+		It describes an equality relation between two individual projections of an initial <code>UrlBuilder</code> object (<a href="https://docs.microsoft.com/en-us/archive/blogs/ploeh/naming-sut-test-variables">sut</a>).
+	</p>
+	<p>
+		First of all, with a <a href="/2020/02/10/builder-isomorphisms">Mutable Fluent Builder</a> the test would produce a <a href="http://xunitpatterns.com/false%20negative.html">false negative</a> because <a href="https://en.wikipedia.org/wiki/Aliasing_(computing)">aliasing</a> would make the assertion a <a href="/2019/10/14/tautological-assertion">tautological assertion</a>. Using an <a href="/2020/02/10/builder-isomorphisms">Immutable Fluent Builder</a>, however, elegantly dodges that bullet. <code>expected</code> and <code>actual</code> are two separate objects.
+	</p>
+	<p>
+		Yet, it's possible to compare them. How?
+	</p>
+	<h3 id="ef79a890e2c3494d88f0202b687a8633">
+		Assertions <a href="#ef79a890e2c3494d88f0202b687a8633" title="permalink">#</a>
+	</h3>
+	<p>
+		I think that most people would have written the above test like this:
+	</p>
+	<p>
+		<pre>[Theory]
+[InlineData(<span style="color:#a31515;">&quot;Home&quot;</span>)]
+[InlineData(<span style="color:#a31515;">&quot;Calendar&quot;</span>)]
+[InlineData(<span style="color:#a31515;">&quot;Reservations&quot;</span>)]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;<span style="color:#74531f;">WithControllerHandlesSuffix</span>(<span style="color:blue;">string</span>&nbsp;<span style="color:#1f377f;">name</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">sut</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;UrlBuilder();
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">actual</span>&nbsp;=&nbsp;sut.WithController(name&nbsp;+&nbsp;<span style="color:#a31515;">&quot;Controller&quot;</span>);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">expected</span>&nbsp;=&nbsp;sut.WithController(name);
+&nbsp;&nbsp;&nbsp;&nbsp;Assert.Equal(expected.Controller,&nbsp;actual.Controller);
+}</pre>
+	</p>
+	<p>
+		Instead of comparing two objects, this variation compares the <code>Controller</code> property values from two objects. In order for this to compile, you have to expose an implementation detail: that the class has a class field (here exposed as an <a href="/2011/05/26/CodeSmellAutomaticProperty">automatic property</a>) that keeps track of the Controller name.
+	</p>
+	<p>
+		I think that most object-oriented programmers' default habit is to write assertions that compare properties or class fields because in both C# and Java, objects by default only have reference equality. This leads to <a href="/2011/05/25/DesignSmellPrimitiveObsession">primitive obsession</a>, this time in the context of test assertions.
+	</p>
+	<p>
+		Structural equality, on the other hand, makes it much easier to write concise and meaningful assertions. Just compare <code>expected</code> with <code>actual</code>.
+	</p>
+	<h3 id="b140911476e341dc83c421dc6eed70b3">
+		Structural equality on a Builder? <a href="#b140911476e341dc83c421dc6eed70b3" title="permalink">#</a>
+	</h3>
+	<p>
+		The <code>UrlBuilder</code> class has structural equality by overriding <code>Equals</code> and <code>GetHashCode</code>:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">override</span>&nbsp;<span style="color:blue;">bool</span>&nbsp;<span style="color:#74531f;">Equals</span>(<span style="color:blue;">object</span>?&nbsp;<span style="color:#1f377f;">obj</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;obj&nbsp;<span style="color:blue;">is</span>&nbsp;UrlBuilder&nbsp;<span style="color:#1f377f;">builder</span>&nbsp;&amp;&amp;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;action&nbsp;==&nbsp;builder.action&nbsp;&amp;&amp;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;controller&nbsp;==&nbsp;builder.controller&nbsp;&amp;&amp;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;EqualityComparer&lt;<span style="color:blue;">object</span>?&gt;.Default.Equals(values,&nbsp;builder.values);
+}
+ 
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">override</span>&nbsp;<span style="color:blue;">int</span>&nbsp;<span style="color:#74531f;">GetHashCode</span>()
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;HashCode.Combine(action,&nbsp;controller,&nbsp;values);
+}</pre>
+	</p>
+	<p>
+		That's why the above <code>Assert.Equal</code> statement works.
+	</p>
+	<p>
+		You may think that it's an odd choice to give a Fluent Builder structural equality, but why not? Since it's immutable, it's perfectly safe, and it makes things like testing much easier.
+	</p>
+	<p>
+		I rarely see people do this. Even programmers experienced with functional programming often seem to categorise structural equality as something associated exclusively with <a href="https://en.wikipedia.org/wiki/Algebraic_data_type">algebraic data types</a> (ADTs). The <code>UrlBuilder</code> class, on the other hand, doesn't look like an ADT. After all, its public API exposes only behaviour, but no data:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">sealed</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">UrlBuilder</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">UrlBuilder</span>()
+  
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;UrlBuilder&nbsp;<span style="color:#74531f;">WithAction</span>(<span style="color:blue;">string</span>&nbsp;<span style="color:#1f377f;">newAction</span>)
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;UrlBuilder&nbsp;<span style="color:#74531f;">WithController</span>(<span style="color:blue;">string</span>&nbsp;<span style="color:#1f377f;">newController</span>)
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;UrlBuilder&nbsp;<span style="color:#74531f;">WithValues</span>(<span style="color:blue;">object</span>&nbsp;<span style="color:#1f377f;">newValues</span>)
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;Uri&nbsp;<span style="color:#74531f;">BuildAbsolute</span>(IUrlHelper&nbsp;<span style="color:#1f377f;">url</span>)
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">override</span>&nbsp;<span style="color:blue;">bool</span>&nbsp;<span style="color:#74531f;">Equals</span>(<span style="color:blue;">object</span>?&nbsp;<span style="color:#1f377f;">obj</span>)
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">override</span>&nbsp;<span style="color:blue;">int</span>&nbsp;<span style="color:#74531f;">GetHashCode</span>()
+}</pre>
+	</p>
+	<p>
+		On the other hand, my threshold for when I give an immutable class structural equality is <a href="https://en.wikipedia.org/wiki/Monotonic_function">monotonically decreasing</a>. Structural equality just makes things easier. The above test is just one example. Structural equality enables you to test behaviour instead of implementation details. In this example, the behaviour can be expressed as an equality relation between two different inputs.
+	</p>
+	<h3 id="3843708f89fe46769d7c49af2977bf19">
+		UrlBuilder as an algebraic data type <a href="#3843708f89fe46769d7c49af2977bf19" title="permalink">#</a>
+	</h3>
+	<p>
+		While it may seem odd or surprising to give a Fluent Builder structural equality, it's really isomorphic to a simple record type equipped with a few <a href="https://en.wikipedia.org/wiki/Endomorphism">endomorphisms</a>. (After all, we already know that <a href="/2020/02/17/builder-as-a-monoid">the Builder pattern is isomorphic to the endomorphism monoid</a>.) Let's make this explicit with <a href="https://fsharp.org">F#</a>.
+	</p>
+	<p>
+		Start by declaring a record type with a <code>private</code> definition:
+	</p>
+	<p>
+		<pre><span style="color:blue;">type</span>&nbsp;UrlBuilder&nbsp;=&nbsp;<span style="color:blue;">private</span>&nbsp;{&nbsp;Action&nbsp;:&nbsp;string&nbsp;option;&nbsp;Controller&nbsp;:&nbsp;string&nbsp;option;&nbsp;Values&nbsp;:&nbsp;obj&nbsp;option&nbsp;}</pre>
+	</p>
+	<p>
+		While its definition is <code>private</code>, it's still an algebraic data type. Records in F# automatically have structural equality, and so does this one.
+	</p>
+	<p>
+		Since it's <code>private</code>, client code can't use the normal language constructs to create instances. Instead, the module that defines the type must supply an API that client code can use:
+	</p>
+	<p>
+		<pre><span style="color:blue;">let</span>&nbsp;emptyUrlBuilder&nbsp;=&nbsp;{&nbsp;Action&nbsp;=&nbsp;None;&nbsp;Controller&nbsp;=&nbsp;None;&nbsp;Values&nbsp;=&nbsp;None&nbsp;}
+ 
+<span style="color:blue;">let</span>&nbsp;withAction&nbsp;action&nbsp;ub&nbsp;=&nbsp;{&nbsp;ub&nbsp;<span style="color:blue;">with</span>&nbsp;Action&nbsp;=&nbsp;Some&nbsp;action&nbsp;}
+ 
+<span style="color:blue;">let</span>&nbsp;withController&nbsp;(controller&nbsp;:&nbsp;string)&nbsp;ub&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;index&nbsp;=&nbsp;controller.LastIndexOf&nbsp;(<span style="color:#a31515;">&quot;controller&quot;</span>,&nbsp;StringComparison.OrdinalIgnoreCase)
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;newController&nbsp;=&nbsp;<span style="color:blue;">if</span>&nbsp;0&nbsp;&lt;=&nbsp;index&nbsp;<span style="color:blue;">then</span>&nbsp;controller.Remove(index)&nbsp;<span style="color:blue;">else</span>&nbsp;controller
+&nbsp;&nbsp;&nbsp;&nbsp;{&nbsp;ub&nbsp;<span style="color:blue;">with</span>&nbsp;Controller&nbsp;=&nbsp;Some&nbsp;newController&nbsp;}
+ 
+<span style="color:blue;">let</span>&nbsp;withValues&nbsp;values&nbsp;ub&nbsp;=&nbsp;{&nbsp;ub&nbsp;<span style="color:blue;">with</span>&nbsp;Values&nbsp;=&nbsp;Some&nbsp;values&nbsp;}</pre>
+	</p>
+	<p>
+		Without further <a href="/2019/12/16/zone-of-ceremony">ceremony</a> you can port the initial test to F# as well:
+	</p>
+	<p>
+		<pre>[&lt;Theory&gt;]
+[&lt;InlineData(<span style="color:#a31515;">&quot;Home&quot;</span>)&gt;]
+[&lt;InlineData(<span style="color:#a31515;">&quot;Calendar&quot;</span>)&gt;]
+[&lt;InlineData(<span style="color:#a31515;">&quot;Reservations&quot;</span>)&gt;]
+<span style="color:blue;">let</span>&nbsp;``withController&nbsp;handles&nbsp;suffix``&nbsp;name&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;sut&nbsp;=&nbsp;emptyUrlBuilder
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;actual&nbsp;=&nbsp;sut&nbsp;|&gt;&nbsp;withController&nbsp;(name&nbsp;+&nbsp;<span style="color:#a31515;">&quot;Controller&quot;</span>)
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;expected&nbsp;=&nbsp;sut&nbsp;|&gt;&nbsp;withController&nbsp;name
+&nbsp;&nbsp;&nbsp;&nbsp;expected&nbsp;=!&nbsp;actual</pre>
+	</p>
+	<p>
+		In addition to xUnit.net this test also uses <a href="https://github.com/SwensenSoftware/unquote">Unquote</a> 6.0.0.
+	</p>
+	<p>
+		Even though <code>UrlBuilder</code> has no externally visible data, it automatically has structural equality. <a href="/2015/05/07/functional-design-is-intrinsically-testable">Functional programming is, indeed, more test-friendly</a> than object-oriented programming.
+	</p>
+	<p>
+		This F# implementation is equivalent to the <a href="/2020/08/10/an-aspnet-core-url-builder">C# UrlBuilder class</a>.
+	</p>
+	<h3 id="a59f8b304431456d94ef47e4a4481542">
+		Conclusion <a href="#a59f8b304431456d94ef47e4a4481542" title="permalink">#</a>
+	</h3>
+	<p>
+		You can safely give immutable objects structural equality. Besides other advantages, it makes it easier to write tests. With structural equality, you can express a relationship between the expected and actual outcome using high-level language.
+	</p>
+	<p>
+		These days, I don't really care if the type in question is a 'proper' algebraic data type. If it's immutable, I don't have to think much about it before giving it structural equality.
+	</p>
+</div>
