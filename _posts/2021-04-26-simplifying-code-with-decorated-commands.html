@@ -1,0 +1,350 @@
+---
+layout: post
+title: "Simplifying code with Decorated Commands"
+description: "Consider modelling many side effects as a single Command."
+date: 2021-04-26 11:10 UTC
+tags: [Software Design]
+---
+{% include JB/setup %}
+
+<div id="post">
+	<p>
+		<em>{{ page.description }}</em>
+	</p>
+	<p>
+		In a <a href="">previous article I discussed how an abstraction can sometimes be leaky by omission</a>. In this article, you'll see how removing the leak enables some beneficial refactoring. I'm going to assume that you've read the previous article.
+	</p>
+	<h3 id="7d89e80085aa44edaf169962232a078a">
+		The relative cost of the four CRUD operations <a href="#7d89e80085aa44edaf169962232a078a" title="permalink">#</a>
+	</h3>
+	<p>
+		In this article, you'll see code that implements an ASP.NET Controller action. It enables a <a href="https://en.wikipedia.org/wiki/Representational_state_transfer">REST</a> client to update an existing reservation via a <code>PUT</code> request.
+	</p>
+	<p>
+		I chose to show you the <code>Put</code> method because it's the worst, and thereby the one where refactoring is most warranted. This seems to follow a pattern I've noticed over the years: data updates are always the worst.
+	</p>
+	<p>
+		Before I show you the code, I'd like to take a little detour to discuss this observation.
+	</p>
+	<p>
+		Consider the four <a href="https://en.wikipedia.org/wiki/Create,_read,_update_and_delete">CRUD</a> operations. Which one is the easiest to implement and maintain, and which one gives you most grief?
+	</p>
+	<p>
+		<em>Deletes</em> are typically straightforward: A unique identifier is all it takes. The only small complication you may have to consider is <a href="https://en.wikipedia.org/wiki/Idempotence">idempotence</a>. If you delete an entity once, it's gone. What should happen if you 'delete' it again? To be clear, I don't consider this a trick question. A delete operation should be idempotent, but sometimes, depending on the underlying storage technology, you may have to write a few lines of code to make that happen.
+	</p>
+	<p>
+		<em>Reads</em> are a little more complicated. I'm actually not sure if reads are more or less involved than <em>create</em> operations. The complexity is probably about the same. Reading a single document from a document database is easy, as is reading a single row from a database. Relational databases can make this a bit harder when you have to join tables, but when you get the hang of it, it's not that hard.
+	</p>
+	<p>
+		<em>Create</em> operations tend to be about as easy or difficult as reads. Adding a new document to a document database or BLOB storage is easy. Adding a complex entity with foreign key relationships in a relational database is a bit more complicated, but still doable.
+	</p>
+	<p>
+		<em>Updates</em>, though, are evil. In a document database, it may be easy enough if you can just replace the document wholesale. Often, however, updates involves delta detection. Particularly in databases, when foreign keys are involved, you may have to recursively track down all the related rows and either update those as well, or delete and recreate them.
+	</p>
+	<p>
+		As you'll see in the upcoming code example, an update typically also involves complicated auxiliary logic to determine what changed, and how to react to it.
+	</p>
+	<p>
+		For that reason, if possible, I prefer modelling data without supporting updates. Create/read/delete is fine, but if you don't support updates, you may not need deletes either. There's a reason I like Event Sourcing.
+	</p>
+	<h3 id="530a01b1e4e24a5e9af0d8e87d8cacf6">
+		A complicated Put method <a href="#530a01b1e4e24a5e9af0d8e87d8cacf6" title="permalink">#</a>
+	</h3>
+	<p>
+		My restaurant reservation API included this method that enables REST clients to update reservations:
+	</p>
+	<p>
+		<pre>[HttpPut(<span style="color:#a31515;">&quot;restaurants/{restaurantId}/reservations/{id}&quot;</span>)]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">async</span>&nbsp;Task&lt;ActionResult&gt;&nbsp;<span style="color:#74531f;">Put</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">int</span>&nbsp;<span style="color:#1f377f;">restaurantId</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">string</span>&nbsp;<span style="color:#1f377f;">id</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;ReservationDto&nbsp;<span style="color:#1f377f;">dto</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">if</span>&nbsp;(dto&nbsp;<span style="color:blue;">is</span>&nbsp;<span style="color:blue;">null</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">throw</span>&nbsp;<span style="color:blue;">new</span>&nbsp;ArgumentNullException(nameof(dto));
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">if</span>&nbsp;(!Guid.TryParse(id,&nbsp;<span style="color:blue;">out</span>&nbsp;var&nbsp;<span style="color:#1f377f;">rid</span>))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;NotFoundResult();
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;Reservation?&nbsp;<span style="color:#1f377f;">reservation</span>&nbsp;=&nbsp;dto.Validate(rid);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">if</span>&nbsp;(reservation&nbsp;<span style="color:blue;">is</span>&nbsp;<span style="color:blue;">null</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;BadRequestResult();
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">restaurant</span>&nbsp;=&nbsp;<span style="color:blue;">await</span>&nbsp;RestaurantDatabase
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.GetRestaurant(restaurantId).ConfigureAwait(<span style="color:blue;">false</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">if</span>&nbsp;(restaurant&nbsp;<span style="color:blue;">is</span>&nbsp;<span style="color:blue;">null</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;NotFoundResult();
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">await</span>&nbsp;TryUpdate(restaurant,&nbsp;reservation).ConfigureAwait(<span style="color:blue;">false</span>);
+}</pre>
+	</p>
+	<p>
+		Had I written this code exclusively for myself, I'd written in a more functional style, as an <a href="/2020/03/02/impureim-sandwich">impureim sandwich</a>. (Actually, had I written this code exclusively for myself, I'd written it in <a href="https://fsharp.org">F#</a> or <a href="https://www.haskell.org">Haskell</a>.) This code, however, is written for another audience, so I didn't want to assume that the reader knows about impureim sandwiches.
+	</p>
+	<p>
+		I still wanted to decompose the functionality into <a href="/2019/11/04/the-80-24-rule">small blocks</a>. There's still an echo of the impureim sandwich architecture in the <code>Put</code> method, because it handles all the impure preparation - the top of the sandwich, so to speak.
+	</p>
+	<p>
+		The rest - any functional core there might be, as well as impure post-processing - it delegates to the <code>TryUpdate</code> method.
+	</p>
+	<h3 id="fbbac35a68604f0ca221b0d4cc0f6743">
+		TryUpdate <a href="#fbbac35a68604f0ca221b0d4cc0f6743" title="permalink">#</a>
+	</h3>
+	<p>
+		Here's the <code>TryUpdate</code> method:
+	</p>
+	<p>
+		<pre><span style="color:blue;">private</span>&nbsp;<span style="color:blue;">async</span>&nbsp;Task&lt;ActionResult&gt;&nbsp;<span style="color:#74531f;">TryUpdate</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;Restaurant&nbsp;<span style="color:#1f377f;">restaurant</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;Reservation&nbsp;<span style="color:#1f377f;">reservation</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">using</span>&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">scope</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;TransactionScope(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;TransactionScopeAsyncFlowOption.Enabled);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">existing</span>&nbsp;=&nbsp;<span style="color:blue;">await</span>&nbsp;Repository.ReadReservation(reservation.Id)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.ConfigureAwait(<span style="color:blue;">false</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">if</span>&nbsp;(existing&nbsp;<span style="color:blue;">is</span>&nbsp;<span style="color:blue;">null</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;NotFoundResult();
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">ok</span>&nbsp;=&nbsp;<span style="color:blue;">await</span>&nbsp;WillAcceptUpdate(restaurant,&nbsp;reservation)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.ConfigureAwait(<span style="color:blue;">false</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">if</span>&nbsp;(!ok)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;NoTables500InternalServerError();
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">await</span>&nbsp;Update(restaurant,&nbsp;reservation,&nbsp;existing)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.ConfigureAwait(<span style="color:blue;">false</span>);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;scope.Complete();
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;OkObjectResult(reservation.ToDto());
+}</pre>
+	</p>
+	<p>
+		To be honest, this is mostly just more impure pre-processing. The functional core is hidden away inside the (impure) <code>WillAcceptUpdate</code> method, but I'm not going to show you that one. It's not important in this context.
+	</p>
+	<p>
+		If, however, the method decides that the update is possible, it'll make one more delegation, to the <code>Update</code> method.
+	</p>
+	<p>
+		I admit it: This isn't the prettiest code I've ever written. I did warn you, though. I chose this method as an example because it could really do with some refactoring. One problem I have with it is the naming. You have a <code>Put</code> method, which calls a <code>TryUpdate</code> method, which again calls an <code>Update</code> method.
+	</p>
+	<p>
+		Even though the <em>Try</em> prefix is a .NET <a href="/2015/08/03/idiomatic-or-idiosyncratic">idiom</a>, I still feel that a regular reader could be easily confused, having to choose between <code>TryUpdate</code> and <code>Update</code>.
+	</p>
+	<p>
+		Still, let's soldier on and review the <code>Update</code> method as well. It's the last one, I promise.
+	</p>
+	<h3 id="4f28399e4ca64ab796446932136c5d7e">
+		Update <a href="#4f28399e4ca64ab796446932136c5d7e" title="permalink">#</a>
+	</h3>
+	<p>
+		Here's the <code>Update</code> method:
+	</p>
+	<p>
+		<pre><span style="color:blue;">private</span>&nbsp;<span style="color:blue;">async</span>&nbsp;Task&nbsp;<span style="color:#74531f;">Update</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;Restaurant&nbsp;<span style="color:#1f377f;">restaurant</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;Reservation&nbsp;<span style="color:#1f377f;">reservation</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;Reservation&nbsp;<span style="color:#1f377f;">existing</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">if</span>&nbsp;(existing.Email&nbsp;!=&nbsp;reservation.Email)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">await</span>&nbsp;PostOffice
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.EmailReservationUpdating(restaurant.Id,&nbsp;existing)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.ConfigureAwait(<span style="color:blue;">false</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">await</span>&nbsp;Repository.Update(reservation).ConfigureAwait(<span style="color:blue;">false</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">await</span>&nbsp;PostOffice
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.EmailReservationUpdated(restaurant.Id,&nbsp;reservation)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.ConfigureAwait(<span style="color:blue;">false</span>);
+}</pre>
+	</p>
+	<p>
+		The method perfectly illustrates what I meant when I wrote that you often have to do various kinds of delta analysis when implementing an update - even if delta analysis isn't required by the data store.
+	</p>
+	<p>
+		This method does two things:
+		<ul>
+			<li>It sends emails</li>
+			<li>It updates the repository</li>
+		</ul>
+		Notice that if the email address changes, it sends an email to the old address. This is an example of delta analysis. This only happens on a changing email address. It doesn't happen if the name or quantity changes.
+	</p>
+	<p>
+		The motivation is that it may serve to warn the user if someone tries to change the reservation. Only when the email address changes is it necessary to send an email to the old address.
+	</p>
+	<p>
+		In all cases, the method sends an email to the 'current' address.
+	</p>
+	<p>
+		This seems ripe for refactoring.
+	</p>
+	<h3 id="7d446d5e2d1647a49a22b4be7953e1c7">
+		Plugging the leak <a href="#7d446d5e2d1647a49a22b4be7953e1c7" title="permalink">#</a>
+	</h3>
+	<p>
+		The <code>Update</code> method is an asynchronous <a href="https://en.wikipedia.org/wiki/Command%E2%80%93query_separation">Command</a>. It exclusively produces side effects, but it doesn't return anything (we'll regard <code>Task</code> as 'asynchronous <a href="/2018/01/15/unit-isomorphisms">unit</a>').
+	</p>
+	<p>
+		I've <a href="/2011/03/22/CommandsareComposable">known since 2011 that Commands are composable</a>. Later, I also figured out <a href="/2019/01/28/better-abstractions-revisited">the fundamental reason for that</a>.
+	</p>
+	<p>
+		The <code>Update</code> method composes three other Commands - one conditional and two unconditional. This seems to call for some sort of composition: <a href="https://en.wikipedia.org/wiki/Chain-of-responsibility_pattern">Chain of Responsibility</a>, <a href="https://en.wikipedia.org/wiki/Decorator_pattern">Decorator</a>, or <a href="https://en.wikipedia.org/wiki/Composite_pattern">Composite</a>. Common to these patterns, however, is that the object that they compose must share an API. In a language like C# it means that they must share a polymorphic type.
+	</p>
+	<p>
+		Which type might that be? Let's list the three method signatures in action, one after the other:
+		<ul>
+			<li>
+				<code>Task&nbsp;<span style="color:#74531f;">EmailReservationUpdating</span>(<span style="color:blue;">int</span>&nbsp;<span style="color:#1f377f;">restaurantId</span>,&nbsp;Reservation&nbsp;<span style="color:#1f377f;">reservation</span>)</code>
+			</li>
+			<li>
+				<code>Task&nbsp;<span style="color:#74531f;">Update</span>(Reservation&nbsp;<span style="color:#1f377f;">reservation</span>)</code>
+			</li>
+			<li>
+				<code>Task&nbsp;<span style="color:#74531f;">EmailReservationUpdated</span>(<span style="color:blue;">int</span>&nbsp;<span style="color:#1f377f;">restaurantId</span>,&nbsp;Reservation&nbsp;<span style="color:#1f377f;">reservation</span>)</code>
+			</li>
+		</ul>
+		Do these three methods have anything in common?
+	</p>
+	<p>
+		The commonality might be easier to spot if we X out the names (<a href="/2020/11/23/good-names-are-skin-deep">which are only skin-deep</a>, anyway):
+		<ul>
+			<li>
+				<code>Task&nbsp;<span style="color:#74531f;">Xxx</span>(<span style="color:blue;">int</span>&nbsp;<span style="color:#1f377f;">restaurantId</span>,&nbsp;Reservation&nbsp;<span style="color:#1f377f;">reservation</span>)</code>
+			</li>
+			<li>
+				<code>Task&nbsp;<span style="color:#74531f;">Xxx</span>(Reservation&nbsp;<span style="color:#1f377f;">reservation</span>)</code>
+			</li>
+			<li>
+				<code>Task&nbsp;<span style="color:#74531f;">Xxx</span>(<span style="color:blue;">int</span>&nbsp;<span style="color:#1f377f;">restaurantId</span>,&nbsp;Reservation&nbsp;<span style="color:#1f377f;">reservation</span>)</code>
+			</li>
+		</ul>
+		They <em>almost</em> look like each other!
+	</p>
+	<p>
+		The only deviation is that the middle method (originally the <code>Update</code> method) lacks a <code>restaurantId</code> parameter.
+	</p>
+	<p>
+		As the <a href="">previous article</a> explained, though, this is a leaky abstraction by omission. Will plugging the leak enable a refactoring?
+	</p>
+	<p>
+		Let's try. Make <code>restaurantId</code> a parameter for all methods defined by the interface:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">interface</span>&nbsp;<span style="color:#2b91af;">IReservationsRepository</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;Task&nbsp;<span style="color:#74531f;">Create</span>(<span style="color:blue;">int</span>&nbsp;<span style="color:#1f377f;">restaurantId</span>,&nbsp;Reservation&nbsp;<span style="color:#1f377f;">reservation</span>);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;Task&lt;IReadOnlyCollection&lt;Reservation&gt;&gt;&nbsp;<span style="color:#74531f;">ReadReservations</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">int</span>&nbsp;<span style="color:#1f377f;">restaurantId</span>,&nbsp;DateTime&nbsp;<span style="color:#1f377f;">min</span>,&nbsp;DateTime&nbsp;<span style="color:#1f377f;">max</span>);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;Task&lt;Reservation?&gt;&nbsp;<span style="color:#74531f;">ReadReservation</span>(<span style="color:blue;">int</span>&nbsp;<span style="color:#1f377f;">restaurantId</span>,&nbsp;Guid&nbsp;<span style="color:#1f377f;">id</span>);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;Task&nbsp;<span style="color:#74531f;">Update</span>(<span style="color:blue;">int</span>&nbsp;<span style="color:#1f377f;">restaurantId</span>,&nbsp;Reservation&nbsp;<span style="color:#1f377f;">reservation</span>);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;Task&nbsp;<span style="color:#74531f;">Delete</span>(<span style="color:blue;">int</span>&nbsp;<span style="color:#1f377f;">restaurantId</span>,&nbsp;Guid&nbsp;<span style="color:#1f377f;">id</span>);
+}</pre>
+	</p>
+	<p>
+		This is the suggested remedy from the previous article, so I put it here solely as a reminder.
+	</p>
+	<h3 id="e5963702434c4674a39a99944d599522">
+		An emailing Decorator <a href="#e5963702434c4674a39a99944d599522" title="permalink">#</a>
+	</h3>
+	<p>
+		There's a sequence to the actions in the <code>Update</code> method:
+		<ol>
+			<li>It emails the old address about a changing address</li>
+			<li>It updates the reservation</li>
+			<li>It emails the current address about the update</li>
+		</ol>
+		It's easiest to preserve this order of actions if you implement a <a href="https://en.wikipedia.org/wiki/Decorator_pattern">Decorator</a> around the new version of <code>IReservationsRepository</code>:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">EmailingReservationsRepository</span>&nbsp;:&nbsp;IReservationsRepository
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">EmailingReservationsRepository</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;IPostOffice&nbsp;<span style="color:#1f377f;">postOffice</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;IReservationsRepository&nbsp;<span style="color:#1f377f;">inner</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;PostOffice&nbsp;=&nbsp;postOffice;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Inner&nbsp;=&nbsp;inner;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;IPostOffice&nbsp;PostOffice&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;IReservationsRepository&nbsp;Inner&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">async</span>&nbsp;Task&nbsp;<span style="color:#74531f;">Update</span>(<span style="color:blue;">int</span>&nbsp;<span style="color:#1f377f;">restaurantId</span>,&nbsp;Reservation&nbsp;<span style="color:#1f377f;">reservation</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">if</span>&nbsp;(reservation&nbsp;<span style="color:blue;">is</span>&nbsp;<span style="color:blue;">null</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">throw</span>&nbsp;<span style="color:blue;">new</span>&nbsp;ArgumentNullException(nameof(reservation));
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">existing</span>&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">await</span>&nbsp;Inner.ReadReservation(restaurantId,&nbsp;reservation.Id)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.ConfigureAwait(<span style="color:blue;">false</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">if</span>&nbsp;(existing&nbsp;<span style="color:blue;">is</span>&nbsp;{&nbsp;}&nbsp;&amp;&amp;&nbsp;existing.Email&nbsp;!=&nbsp;reservation.Email)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">await</span>&nbsp;PostOffice
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.EmailReservationUpdating(restaurantId,&nbsp;existing)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.ConfigureAwait(<span style="color:blue;">false</span>);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">await</span>&nbsp;Inner.Update(restaurantId,&nbsp;reservation)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.ConfigureAwait(<span style="color:blue;">false</span>);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">await</span>&nbsp;PostOffice.EmailReservationUpdated(restaurantId,&nbsp;reservation)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.ConfigureAwait(<span style="color:blue;">false</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;Other&nbsp;members&nbsp;go&nbsp;here...</span>
+}</pre>
+	</p>
+	<p>
+		You may think that it seems odd to have a 'repository' that also sends emails. I think that this is mostly an artefact of unfortunate naming. Perhaps a follow-up change should be to rename both the class and the property. I'm open to suggestions, but for now, I'll leave the names as they are.
+	</p>
+	<p>
+		If you're still not convinced, consider an alternative architecture based on asynchronous message passing (e.g. CQRS). In such architectures, you'd put Commands on a message bus and think no more of it. A background process would then asynchronously perform all the actions, including sending emails and updating the data store. I think that people used to that kind of architecture wouldn't bat an eyelid by <code>bus.Send(new UpdateReservation(/**/))</code>.
+	</p>
+	<h3 id="23ba3b2153ee43dabc4a0fa964627dc0">
+		Simplification <a href="#23ba3b2153ee43dabc4a0fa964627dc0" title="permalink">#</a>
+	</h3>
+	<p>
+		This greatly simplifies things. The above <code>Update</code> method now becomes redundant and can be deleted. Instead, the <code>TryUpdate</code> can now directly call <code>Repository.Update</code>:
+	</p>
+	<p>
+		<pre><span style="color:blue;">private</span>&nbsp;<span style="color:blue;">async</span>&nbsp;Task&lt;ActionResult&gt;&nbsp;<span style="color:#74531f;">TryUpdate</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;Restaurant&nbsp;<span style="color:#1f377f;">restaurant</span>,&nbsp;Reservation&nbsp;<span style="color:#1f377f;">reservation</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">using</span>&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">scope</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;TransactionScope(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;TransactionScopeAsyncFlowOption.Enabled);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">existing</span>&nbsp;=&nbsp;<span style="color:blue;">await</span>&nbsp;Repository
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.ReadReservation(restaurant.Id,&nbsp;reservation.Id)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.ConfigureAwait(<span style="color:blue;">false</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">if</span>&nbsp;(existing&nbsp;<span style="color:blue;">is</span>&nbsp;<span style="color:blue;">null</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;NotFoundResult();
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">ok</span>&nbsp;=&nbsp;<span style="color:blue;">await</span>&nbsp;WillAcceptUpdate(restaurant,&nbsp;reservation)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.ConfigureAwait(<span style="color:blue;">false</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">if</span>&nbsp;(!ok)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;NoTables500InternalServerError();
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">await</span>&nbsp;Repository.Update(restaurant.Id,&nbsp;reservation)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.ConfigureAwait(<span style="color:blue;">false</span>);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;scope.Complete();
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;OkObjectResult(reservation.ToDto());
+}</pre>
+	</p>
+	<p>
+		This also means that you can remove the <code>PostOffice</code> dependency from the Controller. Lots of things becomes simpler by this refactoring. It better separates concerns, so tests become simpler as well.
+	</p>
+	<h3 id="90227dd1059f432f9573cfe3c2553507">
+		Conclusion <a href="#90227dd1059f432f9573cfe3c2553507" title="permalink">#</a>
+	</h3>
+	<p>
+		You can simplify code by composing Commands. Candidate patterns for this are Chain of Responsibility, Decorator, and Composite. These patterns, however, require a common polymorphic type. Key to refactoring to these patterns is to identify such a common interface. In this article, I used the refactored <code>IReservationsRepository</code> interface.
+	</p>
+	<p>
+		Whenever a client calls a method on the repository, a change of state now automatically also sends emails. The client doesn't have to worry about that.
+	</p>
+	<p>
+		Consider modelling many related side-effects as a single composed Command.
+	</p>
+</div>
