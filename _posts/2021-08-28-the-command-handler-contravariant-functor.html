@@ -1,0 +1,585 @@
+---
+layout: post
+title: "The Command Handler contravariant functor"
+description: "An introduction to the Command Handler contravariant functor for object-oriented programmers."
+date: 2021-08-28 15:39 UTC
+tags: [Software Design, Architecture]
+---
+{% include JB/setup %}
+
+<div id="post">
+	<p>
+		<em>{{ page.description }}</em>
+	</p>
+	<p>
+		This article is an instalment in <a href="">an article series about contravariant functors</a>. It assumes that you've read the introduction.
+	</p>
+	<p>
+		Asynchronous software architectures, such as those described in <a href="http://bit.ly/eipatterns">Enterprise Integration Patterns</a>, often make good use of a pattern where <em>Commands</em> are (preferably immutable) <a href="https://en.wikipedia.org/wiki/Data_transfer_object">Data Transfer Objects</a> (DTOs) that are often placed on a persistent queue and later handled by a background process.
+	</p>
+	<p>
+		Even if you don't use asynchronous processing, separating command data from command handling can be beneficial for your software's granular architecture. In perhaps his most remarkable contribution to <a href="/dippp">our book</a>, <a href="https://blogs.cuttingedge.it/steven">Steven van Deursen</a> describes how this pattern can greatly simplify how you deal with cross-cutting concerns.
+	</p>
+	<h3 id="3d338bea6fa74d149b239067a283967c">
+		Interface <a href="#3d338bea6fa74d149b239067a283967c" title="permalink">#</a>
+	</h3>
+	<p>
+		In <a href="/dippp">DIPPP</a> the interface is called <code>ICommandService</code>, but in this article I'll instead call it <code>ICommandHandler</code>. It's a generic interface with a single method:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">interface</span>&nbsp;<span style="color:#2b91af;">ICommandHandler</span>&lt;<span style="color:#2b91af;">TCommand</span>&gt;
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">void</span>&nbsp;<span style="color:#74531f;">Execute</span>(TCommand&nbsp;<span style="color:#1f377f;">command</span>);
+}</pre>
+	</p>
+	<p>
+		The book explains how this interface enables you to gracefully handle cross-cutting concerns without any reflection magic. You can also peruse <a href="https://github.com/DependencyInjection-2nd-edition/codesamples">its example code base on GitHub</a>. In this article, however, I'm using <a href="">a fork of that code</a> because I wanted to make the properties of contravariant functors stand out more clearly.
+	</p>
+	<p>
+		In the sample code base, an ASP.NET Controller delegates work to an injected <code>ICommandHandler&lt;AdjustInventory&gt;</code> called <code>inventoryAdjuster</code>.
+	</p>
+	<p>
+		<pre>[Route(<span style="color:#a31515;">&quot;inventory/adjustinventory&quot;</span>)]
+<span style="color:blue;">public</span>&nbsp;ActionResult&nbsp;<span style="color:#74531f;">AdjustInventory</span>(AdjustInventoryViewModel&nbsp;<span style="color:#1f377f;">viewModel</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">if</span>&nbsp;(!<span style="color:blue;">this</span>.ModelState.IsValid)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">this</span>.View(nameof(Index),&nbsp;<span style="color:blue;">this</span>.Populate(viewModel));
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;AdjustInventory&nbsp;<span style="color:#1f377f;">command</span>&nbsp;=&nbsp;viewModel.Command;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.inventoryAdjuster.Execute(command);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.TempData[<span style="color:#a31515;">&quot;SuccessMessage&quot;</span>]&nbsp;=&nbsp;<span style="color:#a31515;">&quot;Inventory&nbsp;successfully&nbsp;adjusted.&quot;</span>;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">this</span>.RedirectToAction(nameof(HomeController.Index),&nbsp;<span style="color:#a31515;">&quot;Home&quot;</span>);
+}</pre>
+	</p>
+	<p>
+		There's a single implementation of <code>ICommandHandler&lt;AdjustInventory&gt;</code>, which is a class called <code>AdjustInventoryService</code>:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">AdjustInventoryService</span>&nbsp;:&nbsp;ICommandHandler&lt;AdjustInventory&gt;
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;IInventoryRepository&nbsp;repository;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">AdjustInventoryService</span>(IInventoryRepository&nbsp;<span style="color:#1f377f;">repository</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">if</span>&nbsp;(repository&nbsp;==&nbsp;<span style="color:blue;">null</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">throw</span>&nbsp;<span style="color:blue;">new</span>&nbsp;ArgumentNullException(nameof(repository));
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.repository&nbsp;=&nbsp;repository;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;<span style="color:#74531f;">Execute</span>(AdjustInventory&nbsp;<span style="color:#1f377f;">command</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">productInventory</span>&nbsp;=&nbsp;<span style="color:blue;">this</span>.repository.GetByIdOrNull(command.ProductId)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;??&nbsp;<span style="color:blue;">new</span>&nbsp;ProductInventory(command.ProductId);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">int</span>&nbsp;<span style="color:#1f377f;">quantityAdjustment</span>&nbsp;=&nbsp;command.Quantity&nbsp;*&nbsp;(command.Decrease&nbsp;?&nbsp;-1&nbsp;:&nbsp;1);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;productInventory&nbsp;=&nbsp;productInventory.AdjustQuantity(quantityAdjustment);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">if</span>&nbsp;(productInventory.Quantity&nbsp;&lt;&nbsp;0)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">throw</span>&nbsp;<span style="color:blue;">new</span>&nbsp;InvalidOperationException(<span style="color:#a31515;">&quot;Can&#39;t&nbsp;decrease&nbsp;below&nbsp;0.&quot;</span>);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.repository.Save(productInventory);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+	</p>
+	<p>
+		The <code>Execute</code> method first loads the inventory data from the database, calculates how to adjust it, and saves it. This is all fine and good object-oriented design, and my intent with the present article isn't to point fingers at it. My intent is only to demonstrate how the <code>ICommandHandler</code> interface gives rise to a contravariant functor.
+	</p>
+	<p>
+		I'm using this particular code base because it provides a good setting for a realistic example.
+	</p>
+	<h3 id="24bc8cde80ca4234b4eea11c7617a784">
+		Towards Domain-Driven Design <a href="#24bc8cde80ca4234b4eea11c7617a784" title="permalink">#</a>
+	</h3>
+	<p>
+		Consider these two lines of code from <code>AdjustInventoryService</code>:
+	</p>
+	<p>
+		<pre><span style="color:blue;">int</span>&nbsp;<span style="color:#1f377f;">quantityAdjustment</span>&nbsp;=&nbsp;command.Quantity&nbsp;*&nbsp;(command.Decrease&nbsp;?&nbsp;-1&nbsp;:&nbsp;1);
+productInventory&nbsp;=&nbsp;productInventory.AdjustQuantity(quantityAdjustment);</pre>
+	</p>
+	<p>
+		Doesn't that look like a case of <a href="https://wiki.c2.com/?FeatureEnvySmell">Feature Envy</a>? Doesn't this calculation belong better on another class? Which one? The <code>AdjustInventory</code> Command? That's one option, but Commands are supposed to be dumb DTOs, so that may not be the best fit. <code>ProductInventory</code>? That may be more promising.
+	</p>
+	<p>
+		Before making that change, however, let's consider the current state of the class.
+	</p>
+	<p>
+		One of the changes I made in my fork of the code was to turn the <code>ProductInventory</code> class into an immutable <a href="https://martinfowler.com/bliki/ValueObject.html">Value Object</a>, as recommended in <a href="http://amzn.to/WBCwx7">DDD</a>:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">sealed</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">ProductInventory</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">ProductInventory</span>(Guid&nbsp;<span style="color:#1f377f;">id</span>)&nbsp;:&nbsp;<span style="color:blue;">this</span>(id,&nbsp;0)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">ProductInventory</span>(Guid&nbsp;<span style="color:#1f377f;">id</span>,&nbsp;<span style="color:blue;">int</span>&nbsp;<span style="color:#1f377f;">quantity</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Id&nbsp;=&nbsp;id;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Quantity&nbsp;=&nbsp;quantity;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;Guid&nbsp;Id&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">int</span>&nbsp;Quantity&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;ProductInventory&nbsp;<span style="color:#74531f;">WithQuantity</span>(<span style="color:blue;">int</span>&nbsp;<span style="color:#1f377f;">newQuantity</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;ProductInventory(Id,&nbsp;newQuantity);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;ProductInventory&nbsp;<span style="color:#74531f;">AdjustQuantity</span>(<span style="color:blue;">int</span>&nbsp;<span style="color:#1f377f;">adjustment</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;WithQuantity(Quantity&nbsp;+&nbsp;adjustment);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">override</span>&nbsp;<span style="color:blue;">bool</span>&nbsp;<span style="color:#74531f;">Equals</span>(<span style="color:blue;">object</span>&nbsp;<span style="color:#1f377f;">obj</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;obj&nbsp;<span style="color:blue;">is</span>&nbsp;ProductInventory&nbsp;<span style="color:#1f377f;">inventory</span>&nbsp;&amp;&amp;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Id.Equals(inventory.Id)&nbsp;&amp;&amp;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Quantity&nbsp;==&nbsp;inventory.Quantity;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">override</span>&nbsp;<span style="color:blue;">int</span>&nbsp;<span style="color:#74531f;">GetHashCode</span>()
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;HashCode.Combine(Id,&nbsp;Quantity);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+	</p>
+	<p>
+		That looks like a lot of code, but keep in mind that <a href="/2018/09/17/typing-is-not-a-programming-bottleneck">typing isn't the bottleneck</a> - and besides, most of that code was written by various Visual Studio <em>Quick Actions</em>.
+	</p>
+	<p>
+		Let's try to add a <code>Handle</code> method to <code>ProductInventory</code>:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;ProductInventory&nbsp;<span style="color:#74531f;">Handle</span>(AdjustInventory&nbsp;<span style="color:#1f377f;">command</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">adjustment</span>&nbsp;=&nbsp;command.Quantity&nbsp;*&nbsp;(command.Decrease&nbsp;?&nbsp;-1&nbsp;:&nbsp;1);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;AdjustQuantity(adjustment);
+}</pre>
+	</p>
+	<p>
+		While <code>AdjustInventoryService</code> isn't too difficult to unit test, it still does require setting up and configuring some <a href="https://martinfowler.com/bliki/TestDouble.html">Test Doubles</a>. The new method, on the other hand, is actually a <a href="https://en.wikipedia.org/wiki/Pure_function">pure function</a>, which means that <a href="/2015/05/07/functional-design-is-intrinsically-testable">it's trivial to unit test</a>:
+	</p>
+	<p>
+		<pre>[Theory]
+[InlineData(0,&nbsp;<span style="color:blue;">false</span>,&nbsp;0,&nbsp;0)]
+[InlineData(0,&nbsp;&nbsp;<span style="color:blue;">true</span>,&nbsp;0,&nbsp;0)]
+[InlineData(0,&nbsp;<span style="color:blue;">false</span>,&nbsp;1,&nbsp;1)]
+[InlineData(0,&nbsp;<span style="color:blue;">false</span>,&nbsp;2,&nbsp;2)]
+[InlineData(1,&nbsp;<span style="color:blue;">false</span>,&nbsp;1,&nbsp;2)]
+[InlineData(2,&nbsp;<span style="color:blue;">false</span>,&nbsp;3,&nbsp;5)]
+[InlineData(5,&nbsp;&nbsp;<span style="color:blue;">true</span>,&nbsp;2,&nbsp;3)]
+[InlineData(5,&nbsp;&nbsp;<span style="color:blue;">true</span>,&nbsp;5,&nbsp;0)]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;<span style="color:#74531f;">Handle</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">int</span>&nbsp;<span style="color:#1f377f;">initial</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">bool</span>&nbsp;<span style="color:#1f377f;">decrease</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">int</span>&nbsp;<span style="color:#1f377f;">adjustment</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">int</span>&nbsp;<span style="color:#1f377f;">expected</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">sut</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;ProductInventory(Guid.NewGuid(),&nbsp;initial);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">command</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;AdjustInventory
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;ProductId&nbsp;=&nbsp;sut.Id,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Decrease&nbsp;=&nbsp;decrease,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Quantity&nbsp;=&nbsp;adjustment
+&nbsp;&nbsp;&nbsp;&nbsp;};
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">actual</span>&nbsp;=&nbsp;sut.Handle(command);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;Assert.Equal(sut.WithQuantity(expected),&nbsp;actual);
+}</pre>
+	</p>
+	<p>
+		Now that the new function is available on <code>ProductInventory</code>, you can use it in <code>AdjustInventoryService</code>:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;<span style="color:#74531f;">Execute</span>(AdjustInventory&nbsp;<span style="color:#1f377f;">command</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">productInventory</span>&nbsp;=&nbsp;<span style="color:blue;">this</span>.repository.GetByIdOrNull(command.ProductId)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;??&nbsp;<span style="color:blue;">new</span>&nbsp;ProductInventory(command.ProductId);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;productInventory&nbsp;=&nbsp;productInventory.Handle(command);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">if</span>&nbsp;(productInventory.Quantity&nbsp;&lt;&nbsp;0)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">throw</span>&nbsp;<span style="color:blue;">new</span>&nbsp;InvalidOperationException(<span style="color:#a31515;">&quot;Can&#39;t&nbsp;decrease&nbsp;below&nbsp;0.&quot;</span>);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.repository.Save(productInventory);
+}</pre>
+	</p>
+	<p>
+		The <code>Execute</code> method now delegates its central logic to <code>ProductInventory.Handle</code>.
+	</p>
+	<h3 id="ee1b47388e1340a9ac8ced8eb3d7a181">
+		Encapsulation <a href="#ee1b47388e1340a9ac8ced8eb3d7a181" title="permalink">#</a>
+	</h3>
+	<p>
+		If you consider the <code>Execute</code> method in its current incarnation, you may wonder why it checks whether the <code>Quantity</code> is negative. Shouldn't that be the responsibility of <code>ProductInventory</code>? Why do we even allow <code>ProductInventory</code> to enter an invalid state?
+	</p>
+	<p>
+		This breaks encapsulation. Encapsulation is one of the most misunderstood concepts in programming, but as <a href="/encapsulation-and-solid">I explain in my PluralSight course</a>, as a minimum requirement, an object should not allow itself to be put into an invalid state.
+	</p>
+	<p>
+		How to better encapsulate <code>ProductInventory</code>? Add a Guard Clause to the constructor:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">ProductInventory</span>(Guid&nbsp;<span style="color:#1f377f;">id</span>,&nbsp;<span style="color:blue;">int</span>&nbsp;<span style="color:#1f377f;">quantity</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">if</span>&nbsp;(quantity&nbsp;&lt;&nbsp;0)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">throw</span>&nbsp;<span style="color:blue;">new</span>&nbsp;ArgumentOutOfRangeException(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;nameof(quantity),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#a31515;">&quot;Negative&nbsp;quantity&nbsp;not&nbsp;allowed.&quot;</span>);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;Id&nbsp;=&nbsp;id;
+&nbsp;&nbsp;&nbsp;&nbsp;Quantity&nbsp;=&nbsp;quantity;
+}</pre>
+	</p>
+	<p>
+		Again, such behaviour is trivial to drive with a unit test:
+	</p>
+	<p>
+		<pre>[Theory]
+[InlineData(&nbsp;-1)]
+[InlineData(&nbsp;-2)]
+[InlineData(-19)]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;<span style="color:#74531f;">SetNegativeQuantity</span>(<span style="color:blue;">int</span>&nbsp;<span style="color:#1f377f;">negative</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">id</span>&nbsp;=&nbsp;Guid.NewGuid();
+&nbsp;&nbsp;&nbsp;&nbsp;Action&nbsp;<span style="color:#1f377f;">action</span>&nbsp;=&nbsp;()&nbsp;=&gt;&nbsp;<span style="color:blue;">new</span>&nbsp;ProductInventory(id,&nbsp;negative);
+&nbsp;&nbsp;&nbsp;&nbsp;Assert.Throws&lt;ArgumentOutOfRangeException&gt;(action);
+}</pre>
+	</p>
+	<p>
+		With those changes in place, <code>AdjustInventoryService</code> becomes even simpler:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;<span style="color:#74531f;">Execute</span>(AdjustInventory&nbsp;<span style="color:#1f377f;">command</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">productInventory</span>&nbsp;=&nbsp;<span style="color:blue;">this</span>.repository.GetByIdOrNull(command.ProductId)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;??&nbsp;<span style="color:blue;">new</span>&nbsp;ProductInventory(command.ProductId);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;productInventory&nbsp;=&nbsp;productInventory.Handle(command);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.repository.Save(productInventory);
+}</pre>
+	</p>
+	<p>
+		Perhaps even so simple that the class begins to seem unwarranted.
+	</p>
+	<h3 id="6f41a860c47741d7b2eb3b4b720d1d7f">
+		Sandwich <a href="#6f41a860c47741d7b2eb3b4b720d1d7f" title="permalink">#</a>
+	</h3>
+	<p>
+		It's just a database Query, a single pure function call, and another database Command. In fact, it looks a lot like an <a href="/2020/03/02/impureim-sandwich">impureim sandwich</a>:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;<span style="color:#74531f;">Execute</span>(AdjustInventory&nbsp;<span style="color:#1f377f;">command</span>)
+{
+<span style="background-color: lightsalmon;">&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">productInventory</span>&nbsp;=&nbsp;<span style="color:blue;">this</span>.repository.GetByIdOrNull(command.ProductId)</span>
+<span style="background-color: palegreen;">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;??&nbsp;<span style="color:blue;">new</span>&nbsp;ProductInventory(command.ProductId);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;productInventory&nbsp;=&nbsp;productInventory.Handle(command);</span>
+ 
+<span style="background-color: lightsalmon;">&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.repository.Save(productInventory);</span>
+}</pre>
+	</p>
+	<p>
+		In fact, it'd probably be more appropriate to move the null-handling closer to the other <a href="https://en.wikipedia.org/wiki/Referential_transparency">referentially transparent</a> code:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;<span style="color:#74531f;">Execute</span>(AdjustInventory&nbsp;<span style="color:#1f377f;">command</span>)
+{
+<span style="background-color: lightsalmon;">&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">productInventory</span>&nbsp;=&nbsp;<span style="color:blue;">this</span>.repository.GetByIdOrNull(command.ProductId);</span>
+<span style="background-color: palegreen;">&nbsp;&nbsp;&nbsp;&nbsp;productInventory&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(productInventory&nbsp;??&nbsp;<span style="color:blue;">new</span>&nbsp;ProductInventory(command.ProductId)).Handle(command);</span>
+<span style="background-color: lightsalmon;">&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.repository.Save(productInventory);</span>
+}</pre>
+	</p>
+	<p>
+		Why do we need the <code>AdjustInventoryService</code> class, again?
+	</p>
+	<p>
+		Can't we move those three lines of code to the Controller? We could, but that might make testing the above <code>AdjustInventory</code> Controller action more difficult. After all, at the moment, the Controller has an injected <code>ICommandHandler&lt;AdjustInventory&gt;</code>, which is easy to replace with a Test Double.
+	</p>
+	<p>
+		If only we could somehow <em>compose</em> an <code>ICommandHandler&lt;AdjustInventory&gt;</code> from the above sandwich <em>without having to define a class</em>...
+	</p>
+	<h3 id="535cefbfe8564f888f92fa4edd1fe7c8">
+		Contravariant functor <a href="#535cefbfe8564f888f92fa4edd1fe7c8" title="permalink">#</a>
+	</h3>
+	<p>
+		Fortunately, an interface like <code>ICommandHandler&lt;T&gt;</code> gives rise to a contravariant functor. This will enable you to compose an <code>ICommandHandler&lt;AdjustInventory&gt;</code> object from the above constituent parts.
+	</p>
+	<p>
+		In order to enable contravariant mapping, you must add a <code>ContraMap</code> method:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;ICommandHandler&lt;T1&gt;&nbsp;<span style="color:#74531f;">ContraMap</span>&lt;<span style="color:#2b91af;">T</span>,&nbsp;<span style="color:#2b91af;">T1</span>&gt;(
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>&nbsp;ICommandHandler&lt;T&gt;&nbsp;<span style="color:#1f377f;">source</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;Func&lt;T1,&nbsp;T&gt;&nbsp;<span style="color:#1f377f;">selector</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;Action&lt;T1&gt;&nbsp;<span style="color:#1f377f;">action</span>&nbsp;=&nbsp;<span style="color:#1f377f;">x</span>&nbsp;=&gt;&nbsp;source.Execute(selector(x));
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;DelegatingCommandHandler&lt;T1&gt;(action);
+}</pre>
+	</p>
+	<p>
+		Notice that, as explained in the overview article, in order to map from an <code>ICommandHandler&lt;T&gt;</code> to an <code>ICommandHandler&lt;T1&gt;</code>, the <code>selector</code> has to go the other way: from <code>T1</code> to <code>T</code>. How this is possible will become more apparent with an example, which will follow later in the article.
+	</p>
+	<p>
+		The <code>ContraMap</code> method uses a <code>DelegatingCommandHandler</code> handler that wraps any <code>Action&lt;T&gt;</code>:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">DelegatingCommandHandler</span>&lt;<span style="color:#2b91af;">T</span>&gt;&nbsp;:&nbsp;ICommandHandler&lt;T&gt;
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;Action&lt;T&gt;&nbsp;action;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">DelegatingCommandHandler</span>(Action&lt;T&gt;&nbsp;<span style="color:#1f377f;">action</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.action&nbsp;=&nbsp;action;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;<span style="color:#74531f;">Execute</span>(T&nbsp;<span style="color:#1f377f;">command</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;action(command);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+	</p>
+	<p>
+		If you're now wondering whether <code>Action&lt;T&gt;</code> itself gives rise to a contravariant functor, then yes it does.
+	</p>
+	<h3 id="cab26cece052462890c8e04363a907ec">
+		Identity law <a href="#cab26cece052462890c8e04363a907ec" title="permalink">#</a>
+	</h3>
+	<p>
+		A <code>ContraMap</code> method with the right signature isn't enough to be a contravariant functor. It must also obey the contravariant functor laws. As usual, it's proper computer-science work to actually prove this, but you can write some tests to demonstrate the identity law for the <code>ICommandHandler&lt;T&gt;</code> interface. In this article, you'll see parametrised tests written with <a href="https://xunit.net">xUnit.net</a>. First, the identity law:
+	</p>
+	<p>
+		<pre>[Theory]
+[InlineData(<span style="color:#a31515;">&quot;foo&quot;</span>)]
+[InlineData(<span style="color:#a31515;">&quot;bar&quot;</span>)]
+[InlineData(<span style="color:#a31515;">&quot;baz&quot;</span>)]
+[InlineData(<span style="color:#a31515;">&quot;qux&quot;</span>)]
+[InlineData(<span style="color:#a31515;">&quot;quux&quot;</span>)]
+[InlineData(<span style="color:#a31515;">&quot;quuz&quot;</span>)]
+[InlineData(<span style="color:#a31515;">&quot;corge&quot;</span>)]
+[InlineData(<span style="color:#a31515;">&quot;grault&quot;</span>)]
+[InlineData(<span style="color:#a31515;">&quot;garply&quot;</span>)]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;<span style="color:#74531f;">IdentityLaw</span>(<span style="color:blue;">string</span>&nbsp;<span style="color:#1f377f;">input</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">observations</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;List&lt;<span style="color:blue;">string</span>&gt;();
+&nbsp;&nbsp;&nbsp;&nbsp;ICommandHandler&lt;<span style="color:blue;">string</span>&gt;&nbsp;<span style="color:#1f377f;">sut</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;DelegatingCommandHandler&lt;<span style="color:blue;">string</span>&gt;(observations.Add);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;T&nbsp;<span style="color:#74531f;">id</span>&lt;<span style="color:#2b91af;">T</span>&gt;(T&nbsp;<span style="color:#1f377f;">x</span>)&nbsp;=&gt;&nbsp;x;
+&nbsp;&nbsp;&nbsp;&nbsp;ICommandHandler&lt;<span style="color:blue;">string</span>&gt;&nbsp;<span style="color:#1f377f;">projection</span>&nbsp;=&nbsp;sut.ContraMap&lt;<span style="color:blue;">string</span>,&nbsp;<span style="color:blue;">string</span>&gt;(id);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;Run&nbsp;both&nbsp;handlers</span>
+&nbsp;&nbsp;&nbsp;&nbsp;sut.Execute(input);
+&nbsp;&nbsp;&nbsp;&nbsp;projection.Execute(input);
+&nbsp;&nbsp;&nbsp;&nbsp;Assert.Equal(2,&nbsp;observations.Count);
+&nbsp;&nbsp;&nbsp;&nbsp;Assert.Single(observations.Distinct());
+}</pre>
+	</p>
+	<p>
+		In order to observe that the two handlers have identical behaviours, the test has to <code>Execute</code> both of them to verify that both observations are the same.
+	</p>
+	<p>
+		All test cases pass.
+	</p>
+	<h3 id="b4000e7978f949d8817590b0779d0afe">
+		Composition law <a href="#b4000e7978f949d8817590b0779d0afe" title="permalink">#</a>
+	</h3>
+	<p>
+		Like the above example, you can also write a parametrised test that demonstrates that <code>ContraMap</code> obeys the composition law for contravariant functors:
+	</p>
+	<p>
+		<pre>[Theory]
+[InlineData(<span style="color:#a31515;">&quot;foo&quot;</span>)]
+[InlineData(<span style="color:#a31515;">&quot;bar&quot;</span>)]
+[InlineData(<span style="color:#a31515;">&quot;baz&quot;</span>)]
+[InlineData(<span style="color:#a31515;">&quot;qux&quot;</span>)]
+[InlineData(<span style="color:#a31515;">&quot;quux&quot;</span>)]
+[InlineData(<span style="color:#a31515;">&quot;quuz&quot;</span>)]
+[InlineData(<span style="color:#a31515;">&quot;corge&quot;</span>)]
+[InlineData(<span style="color:#a31515;">&quot;grault&quot;</span>)]
+[InlineData(<span style="color:#a31515;">&quot;garply&quot;</span>)]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;<span style="color:#74531f;">CompositionLaw</span>(<span style="color:blue;">string</span>&nbsp;<span style="color:#1f377f;">input</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">observations</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;List&lt;TimeSpan&gt;();
+&nbsp;&nbsp;&nbsp;&nbsp;ICommandHandler&lt;TimeSpan&gt;&nbsp;<span style="color:#1f377f;">sut</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;DelegatingCommandHandler&lt;TimeSpan&gt;(observations.Add);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;Func&lt;<span style="color:blue;">string</span>,&nbsp;<span style="color:blue;">int</span>&gt;&nbsp;<span style="color:#1f377f;">f</span>&nbsp;=&nbsp;<span style="color:#1f377f;">s</span>&nbsp;=&gt;&nbsp;s.Length;
+&nbsp;&nbsp;&nbsp;&nbsp;Func&lt;<span style="color:blue;">int</span>,&nbsp;TimeSpan&gt;&nbsp;<span style="color:#1f377f;">g</span>&nbsp;=&nbsp;<span style="color:#1f377f;">i</span>&nbsp;=&gt;&nbsp;TimeSpan.FromDays(i);
+&nbsp;&nbsp;&nbsp;&nbsp;ICommandHandler&lt;<span style="color:blue;">string</span>&gt;&nbsp;<span style="color:#1f377f;">projection1</span>&nbsp;=&nbsp;sut.ContraMap((<span style="color:blue;">string</span>&nbsp;<span style="color:#1f377f;">s</span>)&nbsp;=&gt;&nbsp;g(f(s)));
+&nbsp;&nbsp;&nbsp;&nbsp;ICommandHandler&lt;<span style="color:blue;">string</span>&gt;&nbsp;<span style="color:#1f377f;">projection2</span>&nbsp;=&nbsp;sut.ContraMap(g).ContraMap(f);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;Run&nbsp;both&nbsp;handlers</span>
+&nbsp;&nbsp;&nbsp;&nbsp;projection1.Execute(input);
+&nbsp;&nbsp;&nbsp;&nbsp;projection2.Execute(input);
+&nbsp;&nbsp;&nbsp;&nbsp;Assert.Equal(2,&nbsp;observations.Count);
+&nbsp;&nbsp;&nbsp;&nbsp;Assert.Single(observations.Distinct());
+}</pre>
+	</p>
+	<p>
+		This test defines two local functions, <code>f</code> and <code>g</code>. Once more, you can't directly compare methods for equality, so instead you have to <code>Execute</code> them to verify that they produce the same observable effect.
+	</p>
+	<p>
+		They do.
+	</p>
+	<h3 id="a068d2c54eda4315a4c592aa30b998f4">
+		Composed inventory adjustment handler <a href="#a068d2c54eda4315a4c592aa30b998f4" title="permalink">#</a>
+	</h3>
+	<p>
+		We can now return to the inventory adjustment example. You may recall that the Controller would <code>Execute</code> a <code>command</code> on an injected <code>ICommandHandler&lt;AdjustInventory&gt;</code>:
+	</p>
+	<p>
+		<pre><span style="color:blue;">this</span>.inventoryAdjuster.Execute(command);</pre>
+	</p>
+	<p>
+		As a first step, we can attempt to compose <code>inventoryAdjuster</code> on the fly:
+	</p>
+	<p>
+		<pre>ICommandHandler&lt;AdjustInventory&gt;&nbsp;<span style="color:#1f377f;">inventoryAdjuster</span>&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;DelegatingCommandHandler&lt;ProductInventory&gt;(repository.Save)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.ContraMap((ProductInventory&nbsp;<span style="color:#1f377f;">inv</span>)&nbsp;=&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(inv&nbsp;??&nbsp;<span style="color:blue;">new</span>&nbsp;ProductInventory(command.ProductId)).Handle(command))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.ContraMap((AdjustInventory&nbsp;<span style="color:#1f377f;">cmd</span>)&nbsp;=&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;repository.GetByIdOrNull(cmd.ProductId));
+inventoryAdjuster.Execute(command);</pre>
+	</p>
+	<p>
+		Contra-mapping is hard to get one's head around, and to make matters worse, you have to read it from the bottom towards the top to understand what it does. It really is contrarian.
+	</p>
+	<p>
+		How do you arrive at something like this?
+	</p>
+	<p>
+		You start by looking at what you have. The Controller may already have an injected <code>repository</code> with various methods. <code>repository.Save</code>, for example, has this signature:
+	</p>
+	<p>
+		<pre><span style="color:blue;">void</span>&nbsp;<span style="color:#74531f;">Save</span>(ProductInventory&nbsp;<span style="color:#1f377f;">productInventory</span>);</pre>
+	</p>
+	<p>
+		Since it has a <code>void</code> return type, you can treat <code>repository.Save</code> as an <code>Action&lt;ProductInventory&gt;</code>. Wrap it in a <code>DelegatingCommandHandler</code> and you have an <code>ICommandHandler&lt;ProductInventory&gt;</code>:
+	</p>
+	<p>
+		<pre>ICommandHandler&lt;ProductInventory&gt;&nbsp;<span style="color:#1f377f;">inventoryAdjuster</span>&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;DelegatingCommandHandler&lt;ProductInventory&gt;(repository.Save);</pre>
+	</p>
+	<p>
+		That's not what you need, though. You need an <code>ICommandHandler&lt;AdjustInventory&gt;</code>. How do you get closer to that?
+	</p>
+	<p>
+		You already know from the <code>AdjustInventoryService</code> class that you can use a pure function as the core of the impureim sandwich. Try that and see what it gives you:
+	</p>
+	<p>
+		<pre>ICommandHandler&lt;ProductInventory&gt;&nbsp;<span style="color:#1f377f;">inventoryAdjuster</span>&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;DelegatingCommandHandler&lt;ProductInventory&gt;(repository.Save)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.ContraMap((ProductInventory&nbsp;<span style="color:#1f377f;">inv</span>)&nbsp;=&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(inv&nbsp;??&nbsp;<span style="color:blue;">new</span>&nbsp;ProductInventory(command.ProductId)).Handle(command));</pre>
+	</p>
+	<p>
+		That doesn't change the type of the handler, but implements the desired functionality.
+	</p>
+	<p>
+		You have an <code>ICommandHandler&lt;ProductInventory&gt;</code> that you need to somehow map to an <code>ICommandHandler&lt;AdjustInventory&gt;</code>. How do you do that?
+	</p>
+	<p>
+		By supplying a function that goes the other way: from <code>AdjustInventory</code> to <code>ProductInventory</code>. Does such a method exist? Yes, it does, on the repository:
+	</p>
+	<p>
+		<pre>ProductInventory&nbsp;<span style="color:#74531f;">GetByIdOrNull</span>(Guid&nbsp;<span style="color:#1f377f;">id</span>);</pre>
+	</p>
+	<p>
+		Or, close enough. While <code>AdjustInventory</code> is not a <code>Guid</code>, it <em>comes with</em> a <code>Guid</code>:
+	</p>
+	<p>
+		<pre>ICommandHandler&lt;AdjustInventory&gt;&nbsp;<span style="color:#1f377f;">inventoryAdjuster</span>&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;DelegatingCommandHandler&lt;ProductInventory&gt;(repository.Save)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.ContraMap((ProductInventory&nbsp;<span style="color:#1f377f;">inv</span>)&nbsp;=&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(inv&nbsp;??&nbsp;<span style="color:blue;">new</span>&nbsp;ProductInventory(command.ProductId)).Handle(command))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.ContraMap((AdjustInventory&nbsp;<span style="color:#1f377f;">cmd</span>)&nbsp;=&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;repository.GetByIdOrNull(cmd.ProductId));</pre>
+	</p>
+	<p>
+		That's cool, but unfortunately, this composition cheats. It closes over <code>command</code>, which is a run-time variable only available inside the <code>AdjustInventory</code> Controller action.
+	</p>
+	<p>
+		If we're allowed to compose the Command Handler <em>inside</em> the <code>AdjustInventory</code> method, we might as well just have written:
+	</p>
+	<p>
+		<pre><span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">inv</span>&nbsp;=&nbsp;repository.GetByIdOrNull(command.ProductId);
+inv&nbsp;=&nbsp;(inv&nbsp;??&nbsp;<span style="color:blue;">new</span>&nbsp;ProductInventory(command.ProductId)).Handle(command);
+repository.Save(inv);</pre>
+	</p>
+	<p>
+		This is clearly much simpler, so why don't we do that?
+	</p>
+	<p>
+		In this particular example, that's probably a better idea overall, but I'm trying to explain what is possible with contravariant functors. The goal here is to decouple the caller (the Controller) from the handler. We want to be able to define the handler outside of the Controller action.
+	</p>
+	<p>
+		That's what the <code>AdjustInventory</code> class does, but can we leverage the contravariant functor to compose an <code>ICommandHandler&lt;AdjustInventory&gt;</code> <em>without</em> adding a new class?
+	</p>
+	<h3 id="01c3971cdf1d43ca8fd5db6005477304">
+		Composition without closures <a href="#01c3971cdf1d43ca8fd5db6005477304" title="permalink">#</a>
+	</h3>
+	<p>
+		The use of a closure in the above composition is what disqualifies it. Is it possible to compose an <code>ICommandHandler&lt;AdjustInventory&gt;</code> when the <code>command</code> object is unavailable to close over?
+	</p>
+	<p>
+		Yes, but it isn't pretty:
+	</p>
+	<p>
+		<pre>ICommandHandler&lt;AdjustInventory&gt;&nbsp;<span style="color:#1f377f;">inventoryAdjuster</span>&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;DelegatingCommandHandler&lt;ProductInventory&gt;(repository.Save)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.ContraMap((ValueTuple&lt;AdjustInventory,&nbsp;ProductInventory&gt;&nbsp;<span style="color:#1f377f;">t</span>)&nbsp;=&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(t.Item2&nbsp;??&nbsp;<span style="color:blue;">new</span>&nbsp;ProductInventory(t.Item1.ProductId)).Handle(t.Item1))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.ContraMap((AdjustInventory&nbsp;<span style="color:#1f377f;">cmd</span>)&nbsp;=&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(cmd,&nbsp;repository.GetByIdOrNull(cmd.ProductId)));</pre>
+	</p>
+	<p>
+		You can let the composing function return a tuple of the original input value <em>and</em> the projected value. That's what the lowest <code>ContraMap</code> does. This means that the upper <code>ContraMap</code> receives this tuple to map. Not pretty, but possible.
+	</p>
+	<p>
+		I never said that this was the <em>best</em> way to address some of the concerns I've hinted at in this article. The purpose of the article was mainly to give you a sense of what a contravariant functor can do.
+	</p>
+	<h3 id="0a960dd6e8f24121a5b9229b9cca1e7a">
+		Action as a contravariant functor <a href="#0a960dd6e8f24121a5b9229b9cca1e7a" title="permalink">#</a>
+	</h3>
+	<p>
+		Wrapping an <code>Action&lt;T&gt;</code> in a <code>DelegatingCommandHandler</code> isn't necessary in order to form the contravariant functor. I only used the <code>ICommandHandler</code> interface as an object-oriented-friendly introduction to the example. In fact, any <code>Action&lt;T&gt;</code> gives rise to a contravariant functor with this <code>ContraMap</code> function:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;Action&lt;T1&gt;&nbsp;<span style="color:#74531f;">ContraMap</span>&lt;<span style="color:#2b91af;">T</span>,&nbsp;<span style="color:#2b91af;">T1</span>&gt;(<span style="color:blue;">this</span>&nbsp;Action&lt;T&gt;&nbsp;<span style="color:#1f377f;">source</span>,&nbsp;Func&lt;T1,&nbsp;T&gt;&nbsp;<span style="color:#1f377f;">selector</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;<span style="color:#1f377f;">x</span>&nbsp;=&gt;&nbsp;source(selector(x));
+}</pre>
+	</p>
+	<p>
+		As you can tell, the function being returned is similar to the lambda expression used to implement <code>ContraMap</code> for <code>ICommandHandler&lt;T&gt;</code>.
+	</p>
+	<p>
+		This turns out to make little difference in the context of the examples shown here, so I'm not going to tire you with more example code.
+	</p>
+	<h3 id="9c7dc6d88a164a0b8bd7ac06eea22dc4">
+		Conclusion <a href="#9c7dc6d88a164a0b8bd7ac06eea22dc4" title="permalink">#</a>
+	</h3>
+	<p>
+		Any generic polymorphic interface or abstract method with a <code>void</code> return type gives rise to a contravariant functor. This includes the <code>ICommandHandler&lt;T&gt;</code> (originally <code>ICommandService&lt;T&gt;</code>) interface, but also another interface discussed in <a href="/dippp">DIPPP</a>: <code>IEventHandler&lt;TEvent&gt;</code>.
+	</p>
+	<p>
+		The utility of this insight may not be immediately apparent. Contrary to its built-in support for functors, C# doesn't have any language features that light up if you implement a <code>ContraMap</code> function. Even in <a href="https://www.haskell.org">Haskell</a> where <a href="https://hackage.haskell.org/package/base/docs/Data-Functor-Contravariant.html">the Contravriant functor is available in the <em>base</em> library</a>, I can't recall having ever used it.
+	</p>
+	<p>
+		Still, even if not a <em>practical</em> insight, the ubiquitous presence of contravariant functors in everyday programming 'building blocks' tells us something profound about the fabric of abstraction and polymorphism.
+	</p>
+	<p>
+		<strong>Next:</strong> The Specification contravariant functor.
+	</p>
+</div>
