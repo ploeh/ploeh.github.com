@@ -1,0 +1,260 @@
+---
+layout: post
+title: "Keep IDs internal with REST"
+description: "Instead of relying on entity IDs, use hypermedia to identify resources."
+date: 2021-09-07 15:02 UTC
+tags: [REST, Services]
+---
+{% include JB/setup %}
+
+<div id="post">
+	<p>
+		<em>{{ page.description }}</em>
+	</p>
+	<p>
+		Whenever I've helped teams design HTTP APIs, sooner or later one request comes up - typically from client developers: <em>Please add the entity ID to the representation.</em>
+	</p>
+	<p>
+		In this article I'll show an alternative, but first: the normal state of affairs.
+	</p>
+	<h3 id="24703d08faec4fe6a650599e54e8dbf8">
+		Business as usual <a href="#24703d08faec4fe6a650599e54e8dbf8" title="permalink">#</a>
+	</h3>
+	<p>
+		It's such a common requirement that, despite admonitions not to expose IDs, I did it myself in the code base that accompanies my book <a href="/code-that-fits-in-your-head">Code That Fits in Your Head</a>. This code base is a <a href="https://martinfowler.com/articles/richardsonMaturityModel.html">level 3 REST API</a>, and still, I'd included the ID in the JSON representation of a reservation:
+	</p>
+	<p>
+		<pre>{
+&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;id&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;bf4e84130dac451b9c94049da8ea8c17&quot;</span>,
+&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;at&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;2021-12-08T20:30:00.0000000&quot;</span>,
+&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;email&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;snomob@example.com&quot;</span>,
+&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;name&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;Snow&nbsp;Moe&nbsp;Beal&quot;</span>,
+&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;quantity&quot;</span>:&nbsp;1
+}</pre>
+	</p>
+	<p>
+		At least the ID is a <a href="https://en.wikipedia.org/wiki/Universally_unique_identifier">GUID</a>, so I'm <a href="/2014/08/11/cqs-versus-server-generated-ids">not exposing internal database IDs</a>.
+	</p>
+	<p>
+		After having written the book, the <code>id</code> property kept nagging me, and I wondered if it'd be possible to get rid of it. After all, in a true REST API, clients aren't supposed to construct URLs from templates. They're supposed to follow links. So why do you need the ID?
+	</p>
+	<h3 id="e480deb4e2b3470a847fc2995bdf406d">
+		Following links <a href="#e480deb4e2b3470a847fc2995bdf406d" title="permalink">#</a>
+	</h3>
+	<p>
+		Early on in the system's lifetime, I began <a href="/2020/10/26/fit-urls">signing all URLs</a> to prevent clients from <a href="/2013/05/01/rest-lesson-learned-avoid-hackable-urls">retro-engineering URLs</a>. This also meant that most of my <a href="/2021/01/25/self-hosted-integration-tests-in-aspnet">self-hosted integration tests</a> were already following links:
+	</p>
+	<p>
+		<pre>[Theory]
+[InlineData(867,&nbsp;19,&nbsp;10,&nbsp;<span style="color:#a31515;">&quot;adur@example.net&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;Adrienne&nbsp;Ursa&quot;</span>,&nbsp;2)]
+[InlineData(901,&nbsp;18,&nbsp;55,&nbsp;<span style="color:#a31515;">&quot;emol@example.gov&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;Emma&nbsp;Olsen&quot;</span>,&nbsp;5)]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">async</span>&nbsp;Task&nbsp;<span style="color:#74531f;">ReadSuccessfulReservation</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">int</span>&nbsp;<span style="color:#1f377f;">days</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">int</span>&nbsp;<span style="color:#1f377f;">hours</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">int</span>&nbsp;<span style="color:#1f377f;">minutes</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">string</span>&nbsp;<span style="color:#1f377f;">email</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">string</span>&nbsp;<span style="color:#1f377f;">name</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">int</span>&nbsp;<span style="color:#1f377f;">quantity</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">using</span>&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">api</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;LegacyApi();
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">at</span>&nbsp;=&nbsp;DateTime.Today.AddDays(days).At(hours,&nbsp;minutes)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.ToIso8601DateTimeString();
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">expected</span>&nbsp;=&nbsp;Create.ReservationDto(at,&nbsp;email,&nbsp;name,&nbsp;quantity);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">postResp</span>&nbsp;=&nbsp;<span style="color:blue;">await</span>&nbsp;api.PostReservation(expected);
+&nbsp;&nbsp;&nbsp;&nbsp;Uri&nbsp;<span style="color:#1f377f;">address</span>&nbsp;=&nbsp;FindReservationAddress(postResp);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">getResp</span>&nbsp;=&nbsp;<span style="color:blue;">await</span>&nbsp;api.CreateClient().GetAsync(address);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;getResp.EnsureSuccessStatusCode();
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">actual</span>&nbsp;=&nbsp;<span style="color:blue;">await</span>&nbsp;getResp.ParseJsonContent&lt;ReservationDto&gt;();
+&nbsp;&nbsp;&nbsp;&nbsp;Assert.Equal(expected,&nbsp;actual,&nbsp;<span style="color:blue;">new</span>&nbsp;ReservationDtoComparer());
+&nbsp;&nbsp;&nbsp;&nbsp;AssertUrlFormatIsIdiomatic(address);
+}</pre>
+	</p>
+	<p>
+		This parametrised test uses <a href="https://xunit.net">xUnit.net</a> 2.4.1 to first post a new reservation to the system, and then following the link provided in the response's <code>Location</code> header to verify that this resource contains a representation compatible with the reservation that was posted.
+	</p>
+	<p>
+		A corresponding plaintext HTTP session would start like this:
+	</p>
+	<p>
+		<pre>POST /restaurants/90125/reservations?sig=aco7VV%2Bh5sA3RBtrN8zI8Y9kLKGC60Gm3SioZGosXVE%3D HTTP/1.1
+Content-Type: application/json
+{
+&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;at&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;2021-12-08&nbsp;20:30&quot;</span>,
+&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;email&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;snomob@example.com&quot;</span>,
+&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;name&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;Snow&nbsp;Moe&nbsp;Beal&quot;</span>,
+&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;quantity&quot;</span>:&nbsp;1
+}
+
+HTTP/1.1 201 Created
+Content-Type: application/json; charset=utf-8
+Location: example.com/restaurants/90125/reservations/bf4e84130dac451b9c94049da8ea8c17?sig=ZVM%2[...]
+{
+&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;id&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;bf4e84130dac451b9c94049da8ea8c17&quot;</span>,
+&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;at&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;2021-12-08T20:30:00.0000000&quot;</span>,
+&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;email&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;snomob@example.com&quot;</span>,
+&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;name&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;Snow&nbsp;Moe&nbsp;Beal&quot;</span>,
+&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;quantity&quot;</span>:&nbsp;1
+}</pre>
+	</p>
+	<p>
+		That's the first request and response. Clients can now examine the response's headers to find the <code>Location</code> header. That URL is the actual, external ID of the resource, not the <code>id</code> property in the JSON representation.
+	</p>
+	<p>
+		The client can save that URL and request it whenever it needs the reservation:
+	</p>
+	<p>
+		<pre>GET /restaurants/90125/reservations/bf4e84130dac451b9c94049da8ea8c17?sig=ZVM%2[...] HTTP/1.1
+
+HTTP/1.1 200 OK
+Content-Type: application/json; charset=utf-8
+{
+&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;id&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;bf4e84130dac451b9c94049da8ea8c17&quot;</span>,
+&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;at&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;2021-12-08T20:30:00.0000000&quot;</span>,
+&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;email&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;snomob@example.com&quot;</span>,
+&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;name&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;Snow&nbsp;Moe&nbsp;Beal&quot;</span>,
+&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;quantity&quot;</span>:&nbsp;1
+}</pre>
+	</p>
+	<p>
+		The actual, intended use of the API doesn't rely on the <code>id</code> property, neither do the tests.
+	</p>
+	<p>
+		Based on this consistent design principle, I had reason to hope that I'd be able to remove the <code>id</code> property.
+	</p>
+	<h3 id="f4fc880aa8434cc2ac1675fcdf68bc18">
+		Breaking change <a href="#f4fc880aa8434cc2ac1675fcdf68bc18" title="permalink">#</a>
+	</h3>
+	<p>
+		My motivation for making this change was to educate myself. I wanted to see if it would be possible to design a REST API that doesn't expose IDs in their JSON (or XML) representations. Usually I'm having trouble doing this in practice because when I'm consulting, I'm usually present to help the organisation with test-driven development and how to organise their code. It's always hard to learn new ways of doing things, and I don't wish to overwhelm my clients with too many changes at the same time.
+	</p>
+	<p>
+		So I usually let them do <a href="https://martinfowler.com/articles/richardsonMaturityModel.html">level 2 APIs</a> because that's what they're comfortable with. With that style of HTTP API design, it's hard to avoid <code>id</code> fields.
+	</p>
+	<p>
+		This wasn't a constraint for the book's code, so I'd gone full REST on that API, and I'm happy that I did. By habit, though, I'd exposed the <code>id</code> property in JSON, and I now wanted to perform an experiment: Could I remove the field?
+	</p>
+	<p>
+		A word of warning: You can't just remove a JSON property from a production API. That would constitute a breaking change, and even though clients aren't supposed to use the <code>id</code>, <a href="https://www.hyrumslaw.com">Hyrum's law</a> says that someone somewhere probably already is.
+	</p>
+	<p>
+		This is just an experiment that I carried out on a separate Git branch, for my own edification.
+	</p>
+	<h3 id="3cf78b876e2a4f91b3e49b91f89bde02">
+		Leaning on the compiler <a href="#3cf78b876e2a4f91b3e49b91f89bde02" title="permalink">#</a>
+	</h3>
+	<p>
+		As outlined, I had relatively strong faith in my test suite, so I decided to modify the <a href="https://en.wikipedia.org/wiki/Data_transfer_object">Data Transfer Object</a> (DTO) in question. Before the change, it looked like this:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">sealed</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">ReservationDto</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;LinkDto[]?&nbsp;Links&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;<span style="color:blue;">set</span>;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">string</span>?&nbsp;Id&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;<span style="color:blue;">set</span>;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">string</span>?&nbsp;At&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;<span style="color:blue;">set</span>;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">string</span>?&nbsp;Email&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;<span style="color:blue;">set</span>;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">string</span>?&nbsp;Name&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;<span style="color:blue;">set</span>;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">int</span>&nbsp;Quantity&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;<span style="color:blue;">set</span>;&nbsp;}
+}</pre>
+	</p>
+	<p>
+		At first, I simply tried to delete the <code>Id</code> property, but while it turned out to be not too bad in general, it did break one feature: The ability of <a href="/2020/08/24/adding-rest-links-as-a-cross-cutting-concern">the LinksFilter</a> to generate links to reservations. Instead, I changed the <code>Id</code> property to be internal:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">sealed</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">ReservationDto</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;LinkDto[]?&nbsp;Links&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;<span style="color:blue;">set</span>;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">internal</span>&nbsp;<span style="color:blue;">string</span>?&nbsp;Id&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;<span style="color:blue;">set</span>;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">string</span>?&nbsp;At&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;<span style="color:blue;">set</span>;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">string</span>?&nbsp;Email&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;<span style="color:blue;">set</span>;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">string</span>?&nbsp;Name&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;<span style="color:blue;">set</span>;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">int</span>&nbsp;Quantity&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;<span style="color:blue;">set</span>;&nbsp;}
+}</pre>
+	</p>
+	<p>
+		This enables the <code>LinksFilter</code> and other internal code to still access the <code>Id</code> property, while the unit tests no longer could. As expected, this change caused some compiler errors. That was expected, and my plan was to <em>lean on the compiler</em>, as <a href="https://michaelfeathers.silvrback.com">Michael Feathers</a> describes in <a href="http://bit.ly/working-effectively-with-legacy-code">Working Effectively with Legacy Code</a>.
+	</p>
+	<p>
+		As I had hoped, relatively few things broke, and they were fixed in 5-10 minutes. Once everything compiled, I ran the tests. Only a single test failed, and this was a unit test that used some Back Door Manipulation, as <a href="http://bit.ly/xunitpatterns">xUnit Test Patterns</a> terms it. I'll return to that test in a future article.
+	</p>
+	<p>
+		None of my self-hosted integration tests failed.
+	</p>
+	<h3 id="d65ef3b7816c4f73b1060af4532fe1dc">
+		ID-free interaction <a href="#d65ef3b7816c4f73b1060af4532fe1dc" title="permalink">#</a>
+	</h3>
+	<p>
+		Since clients are supposed to follow links, they can still do so. For example, a <a href="https://en.wikipedia.org/wiki/Maître_d%27hôtel">maître d'hôtel</a> might request the day's schedule:
+	</p>
+	<p>
+		<pre>GET /restaurants/90125/schedule/2021/12/8?sig=82fosBYsE9zSKkA4Biy5t%2BFMxl71XiLlFKaI2E[...] HTTP/1.1
+Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJyZXN0YXVyYW50IjpbIjEiLCIyMTEyIiwi[...]
+
+HTTP/1.1 200 OK
+Content-Type: application/json; charset=utf-8
+{
+&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;name&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;The&nbsp;Vatican&nbsp;Cellar&quot;</span>,
+&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;year&quot;</span>:&nbsp;2021,
+&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;month&quot;</span>:&nbsp;12,
+&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;day&quot;</span>:&nbsp;8,
+&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;days&quot;</span>:&nbsp;[
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;date&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;2021-12-08&quot;</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;entries&quot;</span>:&nbsp;[
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;time&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;20:30:00&quot;</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;reservations&quot;</span>:&nbsp;[
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;links&quot;</span>:&nbsp;[
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;rel&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;urn:reservation&quot;</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;href&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;http://example.com/restaurants/90125/reservations/bf4e84130dac4[...]&quot;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;],
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;at&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;2021-12-08T20:30:00.0000000&quot;</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;email&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;snomob@example.com&quot;</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;name&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;Snow&nbsp;Moe&nbsp;Beal&quot;</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;quantity&quot;</span>:&nbsp;1
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;]
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;]
+&nbsp;&nbsp;&nbsp;&nbsp;}
+&nbsp;&nbsp;]
+}</pre>
+	</p>
+	<p>
+		I've edited the response quite heavily by removing other links, and so on.
+	</p>
+	<p>
+		Clients that wish to navigate to Snow Moe Beal's reservation must locate its <code>urn:reservation</code> link and use the corresponding <code>href</code> value. This is an opaque URL that clients can use to make requests:
+	</p>
+	<p>
+		<pre>GET /restaurants/90125/reservations/bf4e84130dac451b9c94049da8ea8c17?sig=vxkBT1g1GHRmx[...] HTTP/1.1
+
+HTTP/1.1 200 OK
+Content-Type: application/json; charset=utf-8
+{
+&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;at&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;2021-12-08T20:30:00.0000000&quot;</span>,
+&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;email&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;snomob@example.com&quot;</span>,
+&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;name&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;Snow&nbsp;Moe&nbsp;Beal&quot;</span>,
+&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;quantity&quot;</span>:&nbsp;1
+}</pre>
+	</p>
+	<p>
+		In none of these interactions do clients rely on the <code>id</code> property - which is also gone now. It's gone because the <code>Id</code> property on the C# DTO is <code>internal</code>, which means that it's not being rendered.
+	</p>
+	<p>
+		Mission accomplished.
+	</p>
+	<h3 id="849eb1540d7145c78415976e8c662597">
+		Conclusion <a href="#849eb1540d7145c78415976e8c662597" title="permalink">#</a>
+	</h3>
+	<p>
+		It always grates on me when I have to add an <code>id</code> property to a representation in an HTTP API. It's often necessary when working with a level 2 API, but with a proper hypermedia-driven REST API, it may not be necessary.
+	</p>
+	<p>
+		At least, the experiment I performed with the code base from my book <a href="/code-that-fits-in-your-head">Code That Fits in Your Head</a> indicates that this may be so.
+	</p>
+</div>
