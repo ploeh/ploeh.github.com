@@ -1,0 +1,491 @@
+---
+layout: post
+title: "The Equivalence contravariant functor"
+description: "An introduction to the Equivalence contravariant functor for object-oriented programmers."
+date: 2021-09-08 6:12 UTC
+tags: [Software Design, Unit Testing]
+---
+{% include JB/setup %}
+
+<div id="post">
+	<p>
+		<em>{{ page.description }}</em>
+	</p>
+	<p>
+		This article is an instalment in <a href="/2021/09/02/contravariant-functors">an article series about contravariant functors</a>. It assumes that you've read the introduction. In previous articles, you saw examples of <a href="/2021/09/06/the-command-handler-contravariant-functor">the Command Handler</a> and <a href="">Specification</a> contravariant functors. This article presents another example.
+	</p>
+	<p>
+		In <a href="">a recent article</a> I described how I experimented with removing the <code>id</code> property from a JSON representation in a REST API. I also mentioned that doing that made one test fail. In this article you'll see the failing test and how the Equivalence contravariant functor can improve the situation.
+	</p>
+	<h3 id="be01e1b437a94b2689f5fdd3a68ae33f">
+		Baseline <a href="#be01e1b437a94b2689f5fdd3a68ae33f" title="permalink">#</a>
+	</h3>
+	<p>
+		Before I made the change, the test in question looked like this:
+	</p>
+	<p>
+		<pre>[Theory]
+[InlineData(1049,&nbsp;19,&nbsp;00,&nbsp;<span style="color:#a31515;">&quot;juliad@example.net&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;Julia&nbsp;Domna&quot;</span>,&nbsp;5)]
+[InlineData(1130,&nbsp;18,&nbsp;15,&nbsp;<span style="color:#a31515;">&quot;x@example.com&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;Xenia&nbsp;Ng&quot;</span>,&nbsp;9)]
+[InlineData(&nbsp;956,&nbsp;16,&nbsp;55,&nbsp;<span style="color:#a31515;">&quot;kite@example.edu&quot;</span>,&nbsp;<span style="color:blue;">null</span>,&nbsp;2)]
+[InlineData(&nbsp;433,&nbsp;17,&nbsp;30,&nbsp;<span style="color:#a31515;">&quot;shli@example.org&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;Shanghai&nbsp;Li&quot;</span>,&nbsp;5)]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">async</span>&nbsp;Task&nbsp;<span style="color:#74531f;">PostValidReservationWhenDatabaseIsEmpty</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">int</span>&nbsp;<span style="color:#1f377f;">days</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">int</span>&nbsp;<span style="color:#1f377f;">hours</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">int</span>&nbsp;<span style="color:#1f377f;">minutes</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">string</span>&nbsp;<span style="color:#1f377f;">email</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">string</span>&nbsp;<span style="color:#1f377f;">name</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">int</span>&nbsp;<span style="color:#1f377f;">quantity</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">at</span>&nbsp;=&nbsp;DateTime.Now.Date&nbsp;+&nbsp;<span style="color:blue;">new</span>&nbsp;TimeSpan(days,&nbsp;hours,&nbsp;minutes,&nbsp;0);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">db</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;FakeDatabase();
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">sut</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;ReservationsController(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;SystemClock(),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;InMemoryRestaurantDatabase(Grandfather.Restaurant),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;db);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">dto</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;ReservationDto
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Id&nbsp;=&nbsp;<span style="color:#a31515;">&quot;B50DF5B1-F484-4D99-88F9-1915087AF568&quot;</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;At&nbsp;=&nbsp;at.ToString(<span style="color:#a31515;">&quot;O&quot;</span>),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Email&nbsp;=&nbsp;email,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Name&nbsp;=&nbsp;name,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Quantity&nbsp;=&nbsp;quantity
+&nbsp;&nbsp;&nbsp;&nbsp;};
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">await</span>&nbsp;sut.Post(dto);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">expected</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;Reservation(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Guid.Parse(dto.Id),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;at,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;Email(email),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;Name(name&nbsp;??&nbsp;<span style="color:#a31515;">&quot;&quot;</span>),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;quantity);
+&nbsp;&nbsp;&nbsp;&nbsp;Assert.Contains(expected,&nbsp;db.Grandfather);
+}</pre>
+	</p>
+	<p>
+		You can find this test in the code base that accompanies my book <a href="/code-that-fits-in-your-head">Code That Fits in Your Head</a>, although I've slightly simplified the initialisation of <code>expected</code> since I froze the code for the manuscript. I've already discussed this particular test in the articles <a href="/2020/12/07/branching-tests">Branching tests</a>, <a href="/2021/01/11/waiting-to-happen">Waiting to happen</a>, and <a href="/2021/01/18/parametrised-test-primitive-obsession-code-smell">Parametrised test primitive obsession code smell</a>. It's the gift that keeps giving.
+	</p>
+	<p>
+		It's a <a href="/2019/04/01/an-example-of-state-based-testing-in-c">state-based integration test</a> that verifies the state of the <code>FakeDatabase</code> after 'posting' a reservation to 'the REST API'. I'm using quotes because the test doesn't really perform an HTTP POST request (it's not <a href="/2021/01/25/self-hosted-integration-tests-in-aspnet">a self-hosted integration test</a>). Rather, it directly calls the <code>Post</code> method on the <code>sut</code>. In the assertion phase, it uses Back Door Manipulation (as <a href="http://bit.ly/xunitpatterns">xUnit Test Patterns</a> terms it) to verify the state of the <a href="http://xunitpatterns.com/Fake%20Object.html">Fake</a> <code>db</code>.
+	</p>
+	<p>
+		If you're wondering about the <code>Grandfather</code> property, <a href="/2020/11/16/redirect-legacy-urls">it represents the original restaurant that was grandfathered in</a> when I expanded the REST API to a multi-tenant service.
+	</p>
+	<p>
+		Notice, particularly, the use of <code>dto.Id</code> when defining the <code>expected</code> reservation.
+	</p>
+	<h3 id="be8ae690e33a4e7fb3b5d5f15d6ddce9">
+		Brittle assertion <a href="#be8ae690e33a4e7fb3b5d5f15d6ddce9" title="permalink">#</a>
+	</h3>
+	<p>
+		When I <a href="">made the <code>Id</code> property <code>internal</code></a>, this test no longer compiled. I had to delete the assignment of <code>Id</code>, which also meant that I couldn't use a deterministic <code>Guid</code> to define the <code>expected</code> value. While I could create an arbitrary <code>Guid</code>, that would never pass the test, since the <code>Post</code> method also generates a new <code>Guid</code>.
+	</p>
+	<p>
+		In order to <a href="/2019/10/21/a-red-green-refactor-checklist">get to green</a> as quickly as possible, I rewrote the assertion:
+	</p>
+	<p>
+		<pre>Assert.Contains(
+&nbsp;&nbsp;&nbsp;&nbsp;db.Grandfather,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#1f377f;">r</span>&nbsp;=&gt;&nbsp;&nbsp;&nbsp;DateTime.Parse(dto.At,&nbsp;CultureInfo.InvariantCulture)&nbsp;==&nbsp;r.At
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&amp;&amp;&nbsp;<span style="color:blue;">new</span>&nbsp;Email(dto.Email)&nbsp;==&nbsp;r.Email
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&amp;&amp;&nbsp;<span style="color:blue;">new</span>&nbsp;Name(dto.Name&nbsp;??&nbsp;<span style="color:#a31515;">&quot;&quot;</span>)&nbsp;==&nbsp;r.Name
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&amp;&amp;&nbsp;dto.Quantity&nbsp;==&nbsp;r.Quantity);</pre>
+	</p>
+	<p>
+		This passed the test so that I could move on. It may even be the simplest thing that could possibly work, but it's brittle and noisy.
+	</p>
+	<p>
+		It's brittle because it explicitly considers the four properties <code>At</code>, <code>Email</code>, <code>Name</code>, and <code>Quantity</code> of the <code>Reservation</code> class. What happens if you add a new property to <code>Reservation</code>? What happens if you have similar assertions scattered over the code base?
+	</p>
+	<p>
+		This is one reason that <a href="https://en.wikipedia.org/wiki/Don%27t_repeat_yourself">DRY</a> also applies to unit tests. You want to have as few places as possible that you have to edit when you make changes. Otherwise, the risk increases that you forget one or more.
+	</p>
+	<p>
+		Not only is the assertion brittle - it's also noisy, because it's hard to read. There's parsing, null coalescing and object initialisation going on in those four lines of Boolean operations. Perhaps it'd be better to extract a well-named helper method, but while I'm often in favour of doing that, I'm also a little concerned that too many ad-hoc helper methods obscure something essential. After all:
+	</p>
+	<blockquote>
+		<p>
+			"Abstraction is the elimination of the irrelevant and the amplification of the essential"
+		</p>
+		<footer><cite>Robert C. Martin, <a href="http://amzn.to/19W4JHk">APPP</a></cite></footer>
+	</blockquote>
+	<p>
+		The hardest part of abstraction is striking the right balance. Does a well-named helper method effectively communicate the essentials while eliminating <em>only</em> the irrelevant. While I favour good names over bad names, I'm also aware that <a href="/2020/11/23/good-names-are-skin-deep">good names are skin-deep</a>. If I can draw on a universal abstraction rather than coming up with an ad-hoc name, I prefer doing that.
+	</p>
+	<p>
+		Which universal abstraction might be useful in this situation?
+	</p>
+	<h3 id="724d8609add4401cae58a14c259c5698">
+		Relaxed comparison <a href="#724d8609add4401cae58a14c259c5698" title="permalink">#</a>
+	</h3>
+	<p>
+		The baseline version of the test relied on the structural equality of the <code>Reservation</code> class:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">override</span>&nbsp;<span style="color:blue;">bool</span>&nbsp;<span style="color:#74531f;">Equals</span>(<span style="color:blue;">object</span>?&nbsp;<span style="color:#1f377f;">obj</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;obj&nbsp;<span style="color:blue;">is</span>&nbsp;Reservation&nbsp;<span style="color:#1f377f;">reservation</span>&nbsp;&amp;&amp;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Id.Equals(reservation.Id)&nbsp;&amp;&amp;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;At&nbsp;==&nbsp;reservation.At&nbsp;&amp;&amp;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;EqualityComparer&lt;Email&gt;.Default.Equals(Email,&nbsp;reservation.Email)&nbsp;&amp;&amp;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;EqualityComparer&lt;Name&gt;.Default.Equals(Name,&nbsp;reservation.Name)&nbsp;&amp;&amp;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Quantity&nbsp;==&nbsp;reservation.Quantity;
+}</pre>
+	</p>
+	<p>
+		This implementation was auto-generated by a Visual Studio <em>Quick Action</em>. From C# 9, I could also have made <code>Reservation</code> a <a href="https://docs.microsoft.com/dotnet/csharp/language-reference/builtin-types/record">record</a>, in which case the compiler would be taking care of implementing <code>Equals</code>.
+	</p>
+	<p>
+		The <code>Reservation</code> class already defines the canonical way to compare two reservations for equality. Why can't we use that?
+	</p>
+	<p>
+		The <code>PostValidReservationWhenDatabaseIsEmpty</code> test can no longer use the <code>Reservation</code> class' structural equality because it doesn't know what the <code>Id</code> is going to be.
+	</p>
+	<p>
+		One way to address this problem is to inject a hypothetical <code>IGuidGenerator</code> dependency into <code>ReservationsController</code>. I consider this a valid alternative, since the Controller already takes an <code>IClock</code> dependency. I might be inclined towards such a course of action <a href="/2020/03/23/repeatable-execution">for other reasons</a>, but here I wanted to explore other options.
+	</p>
+	<p>
+		Can we somehow reuse the <code>Equals</code> implementation of <code>Reservation</code>, but relax its behaviour so that it doesn't consider the <code>Id</code>?
+	</p>
+	<p>
+		This would be <a href="https://docs.microsoft.com/archive/msdn-magazine/2010/october/msdn-magazine-the-working-programmer-multiparadigmatic-net-part-2">what Ted Neward called <em>negative variability</em></a> - the ability to subtract from an existing feature. As he implied in 2010, normal programming languages don't have that capability. That strikes me as true in 2021 as well.
+	</p>
+	<p>
+		The best we can hope for, then, is to put the required custom comparison somewhere central, so that at least it's not scattered across the entire code base. Since the test uses <a href="https://xunit.net">xUnit.net</a>, a class that implements <code>IEqualityComparer&lt;Reservation&gt;</code> sounds like just the right solution.
+	</p>
+	<p>
+		This is definitely doable, but it's odd having to define a custom equality comparer for a class that already has structural equality. In the context of the <code>PostValidReservationWhenDatabaseIsEmpty</code> test, we understand the reason, but for a future team member who may encounter the class out of context, it might be confusing.
+	</p>
+	<p>
+		Are there other options?
+	</p>
+	<h3 id="df0297c4c0274368843e9e0f5bb98cba">
+		Reuse <a href="#df0297c4c0274368843e9e0f5bb98cba" title="permalink">#</a>
+	</h3>
+	<p>
+		It turns out that, by lucky accident, the code base already contains an equality comparer that almost fits:
+	</p>
+	<p>
+		<pre><span style="color:blue;">internal</span>&nbsp;<span style="color:blue;">sealed</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">ReservationDtoComparer</span>&nbsp;:&nbsp;IEqualityComparer&lt;ReservationDto&gt;
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">bool</span>&nbsp;<span style="color:#74531f;">Equals</span>(ReservationDto?&nbsp;<span style="color:#1f377f;">x</span>,&nbsp;ReservationDto?&nbsp;<span style="color:#1f377f;">y</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">datesAreEqual</span>&nbsp;=&nbsp;Equals(x?.At,&nbsp;y?.At);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">if</span>&nbsp;(!datesAreEqual&nbsp;&amp;&amp;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;DateTime.TryParse(x?.At,&nbsp;<span style="color:blue;">out</span>&nbsp;var&nbsp;<span style="color:#1f377f;">xDate</span>)&nbsp;&amp;&amp;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;DateTime.TryParse(y?.At,&nbsp;<span style="color:blue;">out</span>&nbsp;var&nbsp;<span style="color:#1f377f;">yDate</span>))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;datesAreEqual&nbsp;=&nbsp;Equals(xDate,&nbsp;yDate);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;datesAreEqual
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&amp;&amp;&nbsp;Equals(x?.Email,&nbsp;y?.Email)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&amp;&amp;&nbsp;Equals(x?.Name,&nbsp;y?.Name)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&amp;&amp;&nbsp;Equals(x?.Quantity,&nbsp;y?.Quantity);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">int</span>&nbsp;<span style="color:#74531f;">GetHashCode</span>(ReservationDto&nbsp;<span style="color:#1f377f;">obj</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">dateHash</span>&nbsp;=&nbsp;obj.At?.GetHashCode(StringComparison.InvariantCulture);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">if</span>&nbsp;(DateTime.TryParse(obj.At,&nbsp;<span style="color:blue;">out</span>&nbsp;var&nbsp;<span style="color:#1f377f;">dt</span>))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;dateHash&nbsp;=&nbsp;dt.GetHashCode();
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;HashCode.Combine(dateHash,&nbsp;obj.Email,&nbsp;obj.Name,&nbsp;obj.Quantity);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+	</p>
+	<p>
+		This class already compares two reservations' dates, emails, names, and quantities, while ignoring any IDs. Just what we need?
+	</p>
+	<p>
+		There's only one problem. <code>ReservationDtoComparer</code> compares <code>ReservationDto</code> objects - not <code>Reservation</code> objects.
+	</p>
+	<p>
+		Would it be possible to somehow, on the spot, without writing a new class, transform <code>ReservationDtoComparer</code> to an <code>IEqualityComparer&lt;Reservation&gt;</code>?
+	</p>
+	<p>
+		Well, yes it is.
+	</p>
+	<h3 id="affeb3f683624666a9c1bb3b0bae342a">
+		Contravariant functor <a href="#affeb3f683624666a9c1bb3b0bae342a" title="permalink">#</a>
+	</h3>
+	<p>
+		We can contramap an <code>IEqualityComparer&lt;ReservationDto&gt;</code> to a <code>IEqualityComparer&lt;Reservation&gt;</code> because <em>equivalence</em> gives rise to a contravariant functor.
+	</p>
+	<p>
+		In order to enable contravariant mapping, you must add a <code>ContraMap</code> method:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">Equivalance</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;IEqualityComparer&lt;T1&gt;&nbsp;<span style="color:#74531f;">ContraMap</span>&lt;<span style="color:#2b91af;">T</span>,&nbsp;<span style="color:#2b91af;">T1</span>&gt;(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>&nbsp;IEqualityComparer&lt;T&gt;&nbsp;<span style="color:#1f377f;">source</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Func&lt;T1,&nbsp;T&gt;&nbsp;<span style="color:#1f377f;">selector</span>)&nbsp;<span style="color:blue;">where</span>&nbsp;T&nbsp;:&nbsp;<span style="color:blue;">notnull</span>
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;ContraMapComparer&lt;T,&nbsp;T1&gt;(source,&nbsp;selector);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">sealed</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">ContraMapComparer</span>&lt;<span style="color:#2b91af;">T</span>,&nbsp;<span style="color:#2b91af;">T1</span>&gt;&nbsp;:&nbsp;IEqualityComparer&lt;T1&gt;&nbsp;<span style="color:blue;">where</span>&nbsp;T&nbsp;:&nbsp;<span style="color:blue;">notnull</span>
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;IEqualityComparer&lt;T&gt;&nbsp;source;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;Func&lt;T1,&nbsp;T&gt;&nbsp;selector;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">ContraMapComparer</span>(IEqualityComparer&lt;T&gt;&nbsp;<span style="color:#1f377f;">source</span>,&nbsp;Func&lt;T1,&nbsp;T&gt;&nbsp;<span style="color:#1f377f;">selector</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.source&nbsp;=&nbsp;source;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.selector&nbsp;=&nbsp;selector;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">bool</span>&nbsp;<span style="color:#74531f;">Equals</span>([AllowNull]&nbsp;T1&nbsp;<span style="color:#1f377f;">x</span>,&nbsp;[AllowNull]&nbsp;T1&nbsp;<span style="color:#1f377f;">y</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">if</span>&nbsp;(x&nbsp;<span style="color:blue;">is</span>&nbsp;<span style="color:blue;">null</span>&nbsp;&amp;&amp;&nbsp;y&nbsp;<span style="color:blue;">is</span>&nbsp;<span style="color:blue;">null</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">true</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">if</span>&nbsp;(x&nbsp;<span style="color:blue;">is</span>&nbsp;<span style="color:blue;">null</span>&nbsp;||&nbsp;y&nbsp;<span style="color:blue;">is</span>&nbsp;<span style="color:blue;">null</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">false</span>;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;source.Equals(selector(x),&nbsp;selector(y));
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">int</span>&nbsp;<span style="color:#74531f;">GetHashCode</span>(T1&nbsp;<span style="color:#1f377f;">obj</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;source.GetHashCode(selector(obj));
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+	</p>
+	<p>
+		Since the <code>IEqualityComparer&lt;T&gt;</code> interface defines <em>two</em> methods, the <code>selector</code> must contramap the behaviour of both <code>Equals</code> and <code>GetHashCode</code>. Fortunately, that's possible.
+	</p>
+	<p>
+		Notice that, as explained in the overview article, in order to map from an <code>IEqualityComparer&lt;T&gt;</code> to an <code>IEqualityComparer&lt;T1&gt;</code>, the <code>selector</code> has to go the other way: from <code>T1</code> to <code>T</code>. How this is possible will become more apparent with an example, which will follow later in the article.
+	</p>
+	<h3 id="911357268ea14f09ac03bac6a781333e">
+		Identity law <a href="#911357268ea14f09ac03bac6a781333e" title="permalink">#</a>
+	</h3>
+	<p>
+		A <code>ContraMap</code> method with the right signature isn't enough to be a contravariant functor. It must also obey the contravariant functor laws. As usual, it's proper computer-science work to actually prove this, but you can write some tests to demonstrate the identity law for the <code>IEqualityComparer&lt;T&gt;</code> interface. In this article, you'll see parametrised tests written with xUnit.net. First, the identity law:
+	</p>
+	<p>
+		<pre>[Theory]
+[InlineData(<span style="color:#a31515;">&quot;18:30&quot;</span>,&nbsp;1,&nbsp;<span style="color:#a31515;">&quot;18:30&quot;</span>,&nbsp;1)]
+[InlineData(<span style="color:#a31515;">&quot;18:30&quot;</span>,&nbsp;2,&nbsp;<span style="color:#a31515;">&quot;18:30&quot;</span>,&nbsp;2)]
+[InlineData(<span style="color:#a31515;">&quot;19:00&quot;</span>,&nbsp;1,&nbsp;<span style="color:#a31515;">&quot;19:00&quot;</span>,&nbsp;1)]
+[InlineData(<span style="color:#a31515;">&quot;18:30&quot;</span>,&nbsp;1,&nbsp;<span style="color:#a31515;">&quot;19:00&quot;</span>,&nbsp;1)]
+[InlineData(<span style="color:#a31515;">&quot;18:30&quot;</span>,&nbsp;2,&nbsp;<span style="color:#a31515;">&quot;18:30&quot;</span>,&nbsp;1)]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;<span style="color:#74531f;">IdentityLaw</span>(<span style="color:blue;">string</span>&nbsp;<span style="color:#1f377f;">time1</span>,&nbsp;<span style="color:blue;">int</span>&nbsp;<span style="color:#1f377f;">size1</span>,&nbsp;<span style="color:blue;">string</span>&nbsp;<span style="color:#1f377f;">time2</span>,&nbsp;<span style="color:blue;">int</span>&nbsp;<span style="color:#1f377f;">size2</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">sut</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;TimeDtoComparer();
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;T&nbsp;<span style="color:#74531f;">id</span>&lt;<span style="color:#2b91af;">T</span>&gt;(T&nbsp;<span style="color:#1f377f;">x</span>)&nbsp;=&gt;&nbsp;x;
+&nbsp;&nbsp;&nbsp;&nbsp;IEqualityComparer&lt;TimeDto&gt;?&nbsp;<span style="color:#1f377f;">actual</span>&nbsp;=&nbsp;sut.ContraMap&lt;TimeDto,&nbsp;TimeDto&gt;(id);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">dto1</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;TimeDto&nbsp;{&nbsp;Time&nbsp;=&nbsp;time1,&nbsp;MaximumPartySize&nbsp;=&nbsp;size1&nbsp;};
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">dto2</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;TimeDto&nbsp;{&nbsp;Time&nbsp;=&nbsp;time2,&nbsp;MaximumPartySize&nbsp;=&nbsp;size2&nbsp;};
+&nbsp;&nbsp;&nbsp;&nbsp;Assert.Equal(sut.Equals(dto1,&nbsp;dto2),&nbsp;actual.Equals(dto1,&nbsp;dto2));
+&nbsp;&nbsp;&nbsp;&nbsp;Assert.Equal(sut.GetHashCode(dto1),&nbsp;actual.GetHashCode(dto1));
+}</pre>
+	</p>
+	<p>
+		In order to observe that the two comparers have identical behaviours, the test must invoke both the <code>Equals</code> and the <code>GetHashCode</code> methods on both <code>sut</code> and <code>actual</code> to assert that the two different objects produce the same output.
+	</p>
+	<p>
+		All test cases pass.
+	</p>
+	<h3 id="c2228ba4c0044dc8b90ad92354850a22">
+		Composition law <a href="#c2228ba4c0044dc8b90ad92354850a22" title="permalink">#</a>
+	</h3>
+	<p>
+		Like the above example, you can also write a parametrised test that demonstrates that <code>ContraMap</code> obeys the composition law for contravariant functors:
+	</p>
+	<p>
+		<pre>[Theory]
+[InlineData(<span style="color:#a31515;">&quot;&nbsp;7:45&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;18:13&quot;</span>)]
+[InlineData(<span style="color:#a31515;">&quot;18:13&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;18:13&quot;</span>)]
+[InlineData(<span style="color:#a31515;">&quot;22&quot;</span>&nbsp;&nbsp;&nbsp;,&nbsp;<span style="color:#a31515;">&quot;22&quot;</span>&nbsp;&nbsp;&nbsp;)]
+[InlineData(<span style="color:#a31515;">&quot;22:32&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;22&quot;</span>&nbsp;&nbsp;&nbsp;)]
+[InlineData(&nbsp;<span style="color:#a31515;">&quot;9&quot;</span>&nbsp;&nbsp;&nbsp;,&nbsp;&nbsp;<span style="color:#a31515;">&quot;9&quot;</span>&nbsp;&nbsp;&nbsp;)]
+[InlineData(&nbsp;<span style="color:#a31515;">&quot;9&quot;</span>&nbsp;&nbsp;&nbsp;,&nbsp;&nbsp;<span style="color:#a31515;">&quot;8&quot;</span>&nbsp;&nbsp;&nbsp;)]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;<span style="color:#74531f;">CompositionLaw</span>(<span style="color:blue;">string</span>&nbsp;<span style="color:#1f377f;">time1</span>,&nbsp;<span style="color:blue;">string</span>&nbsp;<span style="color:#1f377f;">time2</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;IEqualityComparer&lt;TimeDto&gt;&nbsp;<span style="color:#1f377f;">sut</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;TimeDtoComparer();
+&nbsp;&nbsp;&nbsp;&nbsp;Func&lt;<span style="color:blue;">string</span>,&nbsp;(<span style="color:blue;">string</span>,&nbsp;<span style="color:blue;">int</span>)&gt;&nbsp;<span style="color:#1f377f;">f</span>&nbsp;=&nbsp;<span style="color:#1f377f;">s</span>&nbsp;=&gt;&nbsp;(s,&nbsp;s.Length);
+&nbsp;&nbsp;&nbsp;&nbsp;Func&lt;(<span style="color:blue;">string</span>&nbsp;s,&nbsp;<span style="color:blue;">int</span>&nbsp;i),&nbsp;TimeDto&gt;&nbsp;<span style="color:#1f377f;">g</span>&nbsp;=&nbsp;<span style="color:#1f377f;">t</span>&nbsp;=&gt;&nbsp;<span style="color:blue;">new</span>&nbsp;TimeDto&nbsp;{&nbsp;Time&nbsp;=&nbsp;t.s,&nbsp;MaximumPartySize&nbsp;=&nbsp;t.i&nbsp;};
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;IEqualityComparer&lt;<span style="color:blue;">string</span>&gt;?&nbsp;<span style="color:#1f377f;">projection1</span>&nbsp;=&nbsp;sut.ContraMap((<span style="color:blue;">string</span>&nbsp;<span style="color:#1f377f;">s</span>)&nbsp;=&gt;&nbsp;g(f(s)));
+&nbsp;&nbsp;&nbsp;&nbsp;IEqualityComparer&lt;<span style="color:blue;">string</span>&gt;?&nbsp;<span style="color:#1f377f;">projection2</span>&nbsp;=&nbsp;sut.ContraMap(g).ContraMap(f);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;Assert.Equal(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;projection1.Equals(time1,&nbsp;time2),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;projection2.Equals(time1,&nbsp;time2));
+&nbsp;&nbsp;&nbsp;&nbsp;Assert.Equal(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;projection1.GetHashCode(time1),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;projection2.GetHashCode(time1));
+}</pre>
+	</p>
+	<p>
+		This test defines two local functions, <code>f</code> and <code>g</code>. Once more, you can't directly compare methods for equality, so instead you have to call both <code>Equals</code> and <code>GetHashCode</code> on <code>projection1</code> and <code>projection2</code> to verify that they return the same values.
+	</p>
+	<p>
+		They do.
+	</p>
+	<h3 id="857e86fbf0944fe4b985cae73a9edb4b">
+		Relaxed assertion <a href="#857e86fbf0944fe4b985cae73a9edb4b" title="permalink">#</a>
+	</h3>
+	<p>
+		The code base already contains a function that converts <code>Reservation</code> values to <code>ReservationDto</code> objects:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;ReservationDto&nbsp;<span style="color:#74531f;">ToDto</span>(<span style="color:blue;">this</span>&nbsp;Reservation&nbsp;<span style="color:#1f377f;">reservation</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">if</span>&nbsp;(reservation&nbsp;<span style="color:blue;">is</span>&nbsp;<span style="color:blue;">null</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">throw</span>&nbsp;<span style="color:blue;">new</span>&nbsp;ArgumentNullException(nameof(reservation));
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;ReservationDto
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Id&nbsp;=&nbsp;reservation.Id.ToString(<span style="color:#a31515;">&quot;N&quot;</span>),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;At&nbsp;=&nbsp;reservation.At.ToIso8601DateTimeString(),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Email&nbsp;=&nbsp;reservation.Email.ToString(),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Name&nbsp;=&nbsp;reservation.Name.ToString(),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Quantity&nbsp;=&nbsp;reservation.Quantity
+&nbsp;&nbsp;&nbsp;&nbsp;};
+}</pre>
+	</p>
+	<p>
+		Given that it's possible to map from <code>Reservation</code> to <code>ReservationDto</code>, it's also possible to map equality comparers in the contrary direction: from <code>IEqualityComparer&lt;ReservationDto&gt;</code> to <code>IEqualityComparer&lt;Reservation&gt;</code>. That's just what the <code>PostValidReservationWhenDatabaseIsEmpty</code> test needs!
+	</p>
+	<p>
+		Most of the test stays the same, but you can now write the assertion as:
+	</p>
+	<p>
+		<pre><span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">expected</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;Reservation(
+&nbsp;&nbsp;&nbsp;&nbsp;Guid.NewGuid(),
+&nbsp;&nbsp;&nbsp;&nbsp;at,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;Email(email),
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;Name(name&nbsp;??&nbsp;<span style="color:#a31515;">&quot;&quot;</span>),
+&nbsp;&nbsp;&nbsp;&nbsp;quantity);
+Assert.Contains(
+&nbsp;&nbsp;&nbsp;&nbsp;expected,
+&nbsp;&nbsp;&nbsp;&nbsp;db.Grandfather,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;ReservationDtoComparer().ContraMap((Reservation&nbsp;<span style="color:#1f377f;">r</span>)&nbsp;=&gt;&nbsp;r.ToDto()));</pre>
+	</p>
+	<p>
+		Instead of using the too-strict equality comparison of <code>Reservation</code>, the assertion now takes advantage of the relaxed, test-specific comparison of <code>ReservationDto</code> objects.
+	</p>
+	<p>
+		What's not to like?
+	</p>
+	<p>
+		To be truthful, this probably isn't a trick I'll perform often. I think it's fair to consider contravariant functors an advanced programming concept. On a team, I'd be concerned that colleagues wouldn't understand what's going on here.
+	</p>
+	<p>
+		The purpose of this article series isn't to advocate for this style of programming. It's to show some realistic examples of contravariant functors.
+	</p>
+	<p>
+		Even in <a href="https://www.haskell.org">Haskell</a>, where contravariant functors are en explicit part of <a href="https://hackage.haskell.org/package/base/docs/index.html">the <em>base</em> package</a>, I can't recall having availed myself of this functionality.
+	</p>
+	<h3 id="50a1d26e56054e8f896af110d176e3a5">
+		Equivalence in Haskell <a href="#50a1d26e56054e8f896af110d176e3a5" title="permalink">#</a>
+	</h3>
+	<p>
+		The <a href="https://hackage.haskell.org/package/base/docs/Data-Functor-Contravariant.html">Haskell <em>Data.Functor.Contravariant</em> module</a> defines a <code>Contravariant</code> type class and some instances to go with it. One of these is a <code>newtype</code> called <code>Equivalence</code>, which is just a wrapper around <code>a -&gt; a -&gt; Bool</code>.
+	</p>
+	<p>
+		In Haskell, equality is normally defined by the <code>Eq</code> type class. You can trivially 'promote' any <code>Eq</code> instance to an <code>Equivalence</code> instance using the <code>defaultEquivalence</code> value.
+	</p>
+	<p>
+		To illustrate how this works in Haskell, you can reproduce the two reservation types:
+	</p>
+	<p>
+		<pre><span style="color:blue;">data</span>&nbsp;Reservation&nbsp;=&nbsp;Reservation&nbsp;{
+&nbsp;&nbsp;<span style="color:#2b91af;">reservationID</span>&nbsp;::&nbsp;<span style="color:blue;">UUID</span>,
+&nbsp;&nbsp;<span style="color:#2b91af;">reservationAt</span>&nbsp;::&nbsp;<span style="color:blue;">LocalTime</span>,
+&nbsp;&nbsp;<span style="color:#2b91af;">reservationEmail</span>&nbsp;::&nbsp;<span style="color:#2b91af;">String</span>,
+&nbsp;&nbsp;<span style="color:#2b91af;">reservationName</span>&nbsp;::&nbsp;<span style="color:#2b91af;">String</span>,
+&nbsp;&nbsp;<span style="color:#2b91af;">reservationQuantity</span>&nbsp;::&nbsp;<span style="color:#2b91af;">Int</span>&nbsp;}
+&nbsp;&nbsp;<span style="color:blue;">deriving</span>&nbsp;(<span style="color:#2b91af;">Eq</span>,&nbsp;<span style="color:#2b91af;">Show</span>)
+ 
+<span style="color:blue;">data</span>&nbsp;ReservationJson&nbsp;=&nbsp;ReservationJson&nbsp;{
+&nbsp;&nbsp;<span style="color:#2b91af;">jsonAt</span>&nbsp;::&nbsp;<span style="color:#2b91af;">String</span>,
+&nbsp;&nbsp;<span style="color:#2b91af;">jsonEmail</span>&nbsp;::&nbsp;<span style="color:#2b91af;">String</span>,
+&nbsp;&nbsp;<span style="color:#2b91af;">jsonName</span>&nbsp;::&nbsp;<span style="color:#2b91af;">String</span>,
+&nbsp;&nbsp;<span style="color:#2b91af;">jsonQuantity</span>&nbsp;::&nbsp;<span style="color:#2b91af;">Double</span>&nbsp;}
+&nbsp;&nbsp;<span style="color:blue;">deriving</span>&nbsp;(<span style="color:#2b91af;">Eq</span>,&nbsp;<span style="color:#2b91af;">Show</span>,&nbsp;<span style="color:#2b91af;">Read</span>,&nbsp;<span style="color:#2b91af;">Generic</span>)</pre>
+	</p>
+	<p>
+		The <code>ReservationJson</code> type doesn't have an ID, whereas <code>Reservation</code> does. Still, you can easily convert from <code>Reservation</code> to <code>ReservationJson</code>:
+	</p>
+	<p>
+		<pre><span style="color:#2b91af;">reservationToJson</span>&nbsp;::&nbsp;<span style="color:blue;">Reservation</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">ReservationJson</span>
+reservationToJson&nbsp;(Reservation&nbsp;_&nbsp;at&nbsp;email&nbsp;name&nbsp;q)&nbsp;=
+&nbsp;&nbsp;ReservationJson&nbsp;(<span style="color:blue;">show</span>&nbsp;at)&nbsp;email&nbsp;name&nbsp;(<span style="color:blue;">fromIntegral</span>&nbsp;q)</pre>
+	</p>
+	<p>
+		Now imagine that you have two reservations that differ only on <code>reservationID</code>:
+	</p>
+	<p>
+		<pre><span style="color:#2b91af;">reservation1</span>&nbsp;::&nbsp;<span style="color:blue;">Reservation</span>
+reservation1&nbsp;=
+&nbsp;&nbsp;Reservation
+&nbsp;&nbsp;&nbsp;&nbsp;(fromWords&nbsp;3822151499&nbsp;288494060&nbsp;2147588346&nbsp;2611157519)
+&nbsp;&nbsp;&nbsp;&nbsp;(LocalTime&nbsp;(fromGregorian&nbsp;2021&nbsp;11&nbsp;11)&nbsp;(TimeOfDay&nbsp;12&nbsp;30&nbsp;0))
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#a31515;">&quot;just.inhale@example.net&quot;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#a31515;">&quot;Justin&nbsp;Hale&quot;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;2
+ 
+<span style="color:#2b91af;">reservation2</span>&nbsp;::&nbsp;<span style="color:blue;">Reservation</span>
+reservation2&nbsp;=
+&nbsp;&nbsp;Reservation
+&nbsp;&nbsp;&nbsp;&nbsp;(fromWords&nbsp;1263859666&nbsp;288625132&nbsp;2147588346&nbsp;2611157519)
+&nbsp;&nbsp;&nbsp;&nbsp;(LocalTime&nbsp;(fromGregorian&nbsp;2021&nbsp;11&nbsp;11)&nbsp;(TimeOfDay&nbsp;12&nbsp;30&nbsp;0))
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#a31515;">&quot;just.inhale@example.net&quot;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#a31515;">&quot;Justin&nbsp;Hale&quot;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;2</pre>
+	</p>
+	<p>
+		If you compare these two values using the standard equality operator, they're (not surprisingly) not the same:
+	</p>
+	<p>
+		<pre>&gt; reservation1 == reservation2
+False</pre>
+	</p>
+	<p>
+		Attempting to compare them using the default <code>Equivalence</code> value doesn't help, either:
+	</p>
+	<p>
+		<pre>&gt; (getEquivalence $ defaultEquivalence) reservation1 reservation2
+False</pre>
+	</p>
+	<p>
+		But if you promote the comparison to <code>Equivalence</code> and then <code>contramap</code> it with <code>reservationToJson</code>, they do look the same:
+	</p>
+	<p>
+		<pre>&gt; (getEquivalence $ contramap reservationToJson $ defaultEquivalence) reservation1 reservation2
+True</pre>
+	</p>
+	<p>
+		This Haskell example is equivalent in spirit to the above C# assertion.
+	</p>
+	<p>
+		Notice that <code>Equivalence</code> is only a wrapper around any function of the type <code>a -&gt; a -&gt; Bool</code>. This corresponds to the <code>IEqualityComparer</code> interface's <code>Equals</code> method. On the other hand, <code>Equivalence</code> has no counterpart to <code>GetHashCode</code> - that's a .NETism.
+	</p>
+	<p>
+		When using Haskell as inspiration for identifying universal abstractions, it's not entirely clear how <code>Equivalence</code> is similar to <code>IEqualityComparer&lt;T&gt;</code>. While <code>a -&gt; a -&gt; Bool</code> is isomorphic to its <code>Equals</code> method, and thus gives rise to a contravariant functor, what about the <code>GetHashCode</code> method?
+	</p>
+	<p>
+		As this article has demonstrated, it turned out that it's possible to also contramap the <code>GetHashCode</code> method, but was that just a fortunate accident, or is there something more fundamental going on?
+	</p>
+	<h3 id="d51dbd1743e14420ab8c38b25bc02369">
+		Conclusion <a href="#d51dbd1743e14420ab8c38b25bc02369" title="permalink">#</a>
+	</h3>
+	<p>
+		Equivalence relations give rise to a contravariant functor. In this article, you saw how this property can be used to relax assertions in unit tests.
+	</p>
+	<p>
+		Strictly speaking, an equivalence relation is exclusively a function that compares two values to return a Boolean value. No <code>GetHashCode</code> method is required. That's a .NET-specific implementation detail that, unfortunately, has been allowed to leak into the <code>object</code> base class. It's not part of the concept of an equivalence relation, but still, it's possible to form a contravariant functor from <code>IEqualityComparer&lt;T&gt;</code>. Is this just a happy coincidence, or could there be something more fundamental going on?
+	</p>
+	<p>
+		Read on.
+	</p>
+	<p>
+		<strong>Next:</strong> Reader as a contravariant functor.
+	</p>
+</div>
