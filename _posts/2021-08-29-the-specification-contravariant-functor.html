@@ -1,0 +1,242 @@
+---
+layout: post
+title: "The Specification contravariant functor"
+description: "An introduction to the Specification contravariant functor for object-oriented programmers."
+date: 2021-08-29 11:23 UTC
+tags: [Software Design]
+---
+{% include JB/setup %}
+
+<div id="post">
+	<p>
+		<em>{{ page.description }}</em>
+	</p>
+	<p>
+		This article is an instalment in <a href="">an article series about contravariant functors</a>. It assumes that you've read the introduction. In the <a href="">previous article</a>, you saw an example of a contravariant functor based on the Command Handler pattern. This article gives another example.
+	</p>
+	<p>
+		<a href="http://amzn.to/WBCwx7">Domain-Driven Design</a> discusses the benefits of the <a href="https://en.wikipedia.org/wiki/Specification_pattern">Specification pattern</a>. In its generic incarnation this pattern gives rise to a contravariant functor.
+	</p>
+	<h3 id="2d6538ee35d84c47808f6b162f61eeb3">
+		Interface <a href="#2d6538ee35d84c47808f6b162f61eeb3" title="permalink">#</a>
+	</h3>
+	<p>
+		<a href="http://amzn.to/WBCwx7">DDD</a> introduces the pattern with a non-generic <code>InvoiceSpecification</code> interface. The book also shows other examples, and it quickly becomes clear that with generics, you can generalise the pattern to this interface:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">interface</span>&nbsp;<span style="color:#2b91af;">ISpecification</span>&lt;<span style="color:#2b91af;">T</span>&gt;
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">bool</span>&nbsp;<span style="color:#74531f;">IsSatisfiedBy</span>(T&nbsp;<span style="color:#1f377f;">candidate</span>);
+}</pre>
+	</p>
+	<p>
+		Given such an interface, you can implement standard reusable Boolean logic such as <em>and</em>, <em>or</em>, and <em>not</em>. (Exercise: consider how implementations of <em>and</em> and <em>or</em> correspond to well-known <a href="/2017/10/06/monoids">monoids</a>. Do the implementations look like <a href="https://en.wikipedia.org/wiki/Composite_pattern">Composites</a>? <a href="/2018/03/12/composite-as-a-monoid">Is that a coincidence?</a>)
+	</p>
+	<p>
+		The <code>ISpecification&lt;T&gt;</code> interface is really just a glorified predicate. These days the Specification pattern may seem somewhat exotic in languages with first-class functions. C#, for example, defines both a <a href="https://docs.microsoft.com/dotnet/api/system.predicate-1">specialised Predicate delegate</a>, as well as the more general <code>Func&lt;T, bool&gt;</code> delegate. Since you can pass those around as objects, that's often good enough, and you don't need an <code>ISpecification</code> interface.
+	</p>
+	<p>
+		Still, for the sake of argument, in this article I'll start with the Specification pattern and demonstrate how that gives rise to a contravariant functor.
+	</p>
+	<h3 id="a13ce5becb564762847a6876f87aa16f">
+		Natural number specification <a href="#a13ce5becb564762847a6876f87aa16f" title="permalink">#</a>
+	</h3>
+	<p>
+		Consider the <code>AdjustInventoryService</code> class from <a href="">the previous article</a>. I'll repeat the 'original' <code>Execute</code> method here:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;<span style="color:#74531f;">Execute</span>(AdjustInventory&nbsp;<span style="color:#1f377f;">command</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">productInventory</span>&nbsp;=&nbsp;<span style="color:blue;">this</span>.repository.GetByIdOrNull(command.ProductId)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;??&nbsp;<span style="color:blue;">new</span>&nbsp;ProductInventory(command.ProductId);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">int</span>&nbsp;<span style="color:#1f377f;">quantityAdjustment</span>&nbsp;=&nbsp;command.Quantity&nbsp;*&nbsp;(command.Decrease&nbsp;?&nbsp;-1&nbsp;:&nbsp;1);
+&nbsp;&nbsp;&nbsp;&nbsp;productInventory&nbsp;=&nbsp;productInventory.AdjustQuantity(quantityAdjustment);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">if</span>&nbsp;(productInventory.Quantity&nbsp;&lt;&nbsp;0)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">throw</span>&nbsp;<span style="color:blue;">new</span>&nbsp;InvalidOperationException(<span style="color:#a31515;">&quot;Can&#39;t&nbsp;decrease&nbsp;below&nbsp;0.&quot;</span>);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.repository.Save(productInventory);
+}</pre>
+	</p>
+	<p>
+		Notice the Guard Clause:
+	</p>
+	<p>
+		<pre><span style="color:#8f08c4;">if</span>&nbsp;(productInventory.Quantity&nbsp;&lt;&nbsp;0)</pre>
+	</p>
+	<p>
+		Image that we'd like to introduce some flexibility here. It's admittedly a silly example, but just come along for the edification. Imagine that we'd like to use an injected <code>ISpecification&lt;ProductInventory&gt;</code> instead:
+	</p>
+	<p>
+		<pre><span style="color:#8f08c4;">if</span>&nbsp;(!specification.IsSatisfiedBy(productInventory))</pre>
+	</p>
+	<p>
+		That doesn't sound too difficult, but what if you only have an <code>ISpecification</code> implementation like the following?
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">sealed</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">NaturalNumber</span>&nbsp;:&nbsp;ISpecification&lt;<span style="color:blue;">int</span>&gt;
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;<span style="color:blue;">static</span>&nbsp;ISpecification&lt;<span style="color:blue;">int</span>&gt;&nbsp;Specification&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;NaturalNumber();
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:#2b91af;">NaturalNumber</span>()
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">bool</span>&nbsp;<span style="color:#74531f;">IsSatisfiedBy</span>(<span style="color:blue;">int</span>&nbsp;<span style="color:#1f377f;">candidate</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;0&nbsp;&lt;=&nbsp;candidate;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+	</p>
+	<p>
+		That's essentially what you need, but alas, it only implements <code>ISpecification&lt;int&gt;</code>, not <code>ISpecification&lt;ProductInventory&gt;</code>. Do you <em>really</em> have to write a new <a href="https://en.wikipedia.org/wiki/Adapter_pattern">Adapter</a> just to implement the right interface?
+	</p>
+	<p>
+		No, you don't.
+	</p>
+	<h3 id="069f9ff7ee4d41dab4cf9243804dc873">
+		Contravariant functor <a href="#069f9ff7ee4d41dab4cf9243804dc873" title="permalink">#</a>
+	</h3>
+	<p>
+		Fortunately, an interface like <code>ISpecification&lt;T&gt;</code> gives rise to a contravariant functor. This will enable you to compose an <code>ISpecification&lt;ProductInventory&gt;</code> object from the <code>NaturalNumber</code> specification.
+	</p>
+	<p>
+		In order to enable contravariant mapping, you must add a <code>ContraMap</code> method:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;ISpecification&lt;T1&gt;&nbsp;<span style="color:#74531f;">ContraMap</span>&lt;<span style="color:#2b91af;">T</span>,&nbsp;<span style="color:#2b91af;">T1</span>&gt;(
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>&nbsp;ISpecification&lt;T&gt;&nbsp;<span style="color:#1f377f;">source</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;Func&lt;T1,&nbsp;T&gt;&nbsp;<span style="color:#1f377f;">selector</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;ContraSpecification&lt;T,&nbsp;T1&gt;(source,&nbsp;selector);
+}
+ 
+<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">ContraSpecification</span>&lt;<span style="color:#2b91af;">T</span>,&nbsp;<span style="color:#2b91af;">T1</span>&gt;&nbsp;:&nbsp;ISpecification&lt;T1&gt;
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;ISpecification&lt;T&gt;&nbsp;source;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;Func&lt;T1,&nbsp;T&gt;&nbsp;selector;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">ContraSpecification</span>(ISpecification&lt;T&gt;&nbsp;<span style="color:#1f377f;">source</span>,&nbsp;Func&lt;T1,&nbsp;T&gt;&nbsp;<span style="color:#1f377f;">selector</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.source&nbsp;=&nbsp;source;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.selector&nbsp;=&nbsp;selector;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">bool</span>&nbsp;<span style="color:#74531f;">IsSatisfiedBy</span>(T1&nbsp;<span style="color:#1f377f;">candidate</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;source.IsSatisfiedBy(selector(candidate));
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+	</p>
+	<p>
+		Notice that, as explained in the overview article, in order to map from an <code>ISpecification&lt;T&gt;</code> to an <code>ISpecification&lt;T1&gt;</code>, the <code>selector</code> has to go the other way: from <code>T1</code> to <code>T</code>. How this is possible will become more apparent with an example, which will follow later in the article.
+	</p>
+	<h3 id="f3211a80973c4d85b63a564704e67028">
+		Identity law <a href="#f3211a80973c4d85b63a564704e67028" title="permalink">#</a>
+	</h3>
+	<p>
+		A <code>ContraMap</code> method with the right signature isn't enough to be a contravariant functor. It must also obey the contravariant functor laws. As usual, it's proper computer-science work to actually prove this, but you can write some tests to demonstrate the identity law for the <code>ISpecification&lt;T&gt;</code> interface. In this article, you'll see parametrised tests written with <a href="https://xunit.net">xUnit.net</a>. First, the identity law:
+	</p>
+	<p>
+		<pre>[Theory]
+[InlineData(-102)]
+[InlineData(&nbsp;&nbsp;-3)]
+[InlineData(&nbsp;&nbsp;-1)]
+[InlineData(&nbsp;&nbsp;&nbsp;0)]
+[InlineData(&nbsp;&nbsp;&nbsp;1)]
+[InlineData(&nbsp;&nbsp;32)]
+[InlineData(&nbsp;283)]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;<span style="color:#74531f;">IdentityLaw</span>(<span style="color:blue;">int</span>&nbsp;<span style="color:#1f377f;">input</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;T&nbsp;<span style="color:#74531f;">id</span>&lt;<span style="color:#2b91af;">T</span>&gt;(T&nbsp;<span style="color:#1f377f;">x</span>)&nbsp;=&gt;&nbsp;x;
+&nbsp;&nbsp;&nbsp;&nbsp;ISpecification&lt;<span style="color:blue;">int</span>&gt;&nbsp;<span style="color:#1f377f;">projection</span>&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;NaturalNumber.Specification.ContraMap&lt;<span style="color:blue;">int</span>,&nbsp;<span style="color:blue;">int</span>&gt;(id);
+&nbsp;&nbsp;&nbsp;&nbsp;Assert.Equal(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;NaturalNumber.Specification.IsSatisfiedBy(input),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;projection.IsSatisfiedBy(input));
+}</pre>
+	</p>
+
+	<p>
+		In order to observe that the two Specifications have identical behaviours, the test has to invoke <code>IsSatisfiedBy</code> on both of them to verify that the return values are the same.
+	</p>
+	<p>
+		All test cases pass.
+	</p>
+	<h3 id="84d4761adecd427fbd9e463a05e8cc67">
+		Composition law <a href="#84d4761adecd427fbd9e463a05e8cc67" title="permalink">#</a>
+	</h3>
+	<p>
+		Like the above example, you can also write a parametrised test that demonstrates that <code>ContraMap</code> obeys the composition law for contravariant functors:
+	</p>
+	<p>
+		<pre>[Theory]
+[InlineData(&nbsp;&nbsp;&nbsp;<span style="color:#a31515;">&quot;0:05&quot;</span>)]
+[InlineData(&nbsp;&nbsp;&nbsp;<span style="color:#a31515;">&quot;1:20&quot;</span>)]
+[InlineData(&nbsp;&nbsp;&nbsp;<span style="color:#a31515;">&quot;0:12:10&quot;</span>)]
+[InlineData(&nbsp;&nbsp;&nbsp;<span style="color:#a31515;">&quot;1:00:12&quot;</span>)]
+[InlineData(<span style="color:#a31515;">&quot;1.13:14:34&quot;</span>)]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;<span style="color:#74531f;">CompositionLaw</span>(<span style="color:blue;">string</span>&nbsp;<span style="color:#1f377f;">input</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;Func&lt;<span style="color:blue;">string</span>,&nbsp;TimeSpan&gt;&nbsp;<span style="color:#1f377f;">f</span>&nbsp;=&nbsp;TimeSpan.Parse;
+&nbsp;&nbsp;&nbsp;&nbsp;Func&lt;TimeSpan,&nbsp;<span style="color:blue;">int</span>&gt;&nbsp;<span style="color:#1f377f;">g</span>&nbsp;=&nbsp;<span style="color:#1f377f;">ts</span>&nbsp;=&gt;&nbsp;(<span style="color:blue;">int</span>)ts.TotalMinutes;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;Assert.Equal(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;NaturalNumber.Specification.ContraMap((<span style="color:blue;">string</span>&nbsp;<span style="color:#1f377f;">s</span>)&nbsp;=&gt;&nbsp;g(f(s))).IsSatisfiedBy(input),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;NaturalNumber.Specification.ContraMap(g).ContraMap(f).IsSatisfiedBy(input));
+}</pre>
+	</p>
+	<p>
+		This test defines two local functions, <code>f</code> and <code>g</code>. Once more, you can't directly compare methods for equality, so instead you have to call <code>IsSatisfiedBy</code> on both compositions to verify that they return the same Boolean value.
+	</p>
+	<p>
+		They do.
+	</p>
+	<h3 id="94ecc00ea3064f86b48c45d0e9627cc8">
+		Product inventory specification <a href="#94ecc00ea3064f86b48c45d0e9627cc8" title="permalink">#</a>
+	</h3>
+	<p>
+		You can now produce the desired <code>ISpecification&lt;ProductInventory&gt;</code> from the <code>NaturalNumber</code> Specification without having to add a new class:
+	</p>
+	<p>
+		<pre>ISpecification&lt;ProductInventory&gt;&nbsp;<span style="color:#1f377f;">specification</span>&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;NaturalNumber.Specification.ContraMap((ProductInventory&nbsp;<span style="color:#1f377f;">inv</span>)&nbsp;=&gt;&nbsp;inv.Quantity);</pre>
+	</p>
+	<p>
+		Granted, it is, once more, a silly example, but the purpose of this article isn't to convince you that this is better (it probably isn't). The purpose of the article is to show an example of a contravariant functor, and how it can be used.
+	</p>
+	<h3 id="376573ff36c64561b5fc231589f6922f">
+		Predicates <a href="#376573ff36c64561b5fc231589f6922f" title="permalink">#</a>
+	</h3>
+	<p>
+		For good measure, any predicate forms a contravariant functor. You don't need the <code>ISpecification</code> interface. Here are <code>ContraMap</code> overloads for <code>Predicate&lt;T&gt;</code> and <code>Func&lt;T, bool&gt;</code>:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;Predicate&lt;T1&gt;&nbsp;<span style="color:#74531f;">ContraMap</span>&lt;<span style="color:#2b91af;">T</span>,&nbsp;<span style="color:#2b91af;">T1</span>&gt;(<span style="color:blue;">this</span>&nbsp;Predicate&lt;T&gt;&nbsp;<span style="color:#1f377f;">predicate</span>,&nbsp;Func&lt;T1,&nbsp;T&gt;&nbsp;<span style="color:#1f377f;">selector</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;<span style="color:#1f377f;">x</span>&nbsp;=&gt;&nbsp;predicate(selector(x));
+}
+
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;Func&lt;T1,&nbsp;<span style="color:blue;">bool</span>&gt;&nbsp;<span style="color:#74531f;">ContraMap</span>&lt;<span style="color:#2b91af;">T</span>,&nbsp;<span style="color:#2b91af;">T1</span>&gt;(<span style="color:blue;">this</span>&nbsp;Func&lt;T,&nbsp;<span style="color:blue;">bool</span>&gt;&nbsp;<span style="color:#1f377f;">predicate</span>,&nbsp;Func&lt;T1,&nbsp;T&gt;&nbsp;<span style="color:#1f377f;">selector</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;<span style="color:#1f377f;">x</span>&nbsp;=&gt;&nbsp;predicate(selector(x));
+}</pre>
+	</p>
+	<p>
+		Notice that the lambda expressions are identical in both implementations.
+	</p>
+	<h3 id="4c2e7471713547d5a24a20dacce49806">
+		Conclusion <a href="#4c2e7471713547d5a24a20dacce49806" title="permalink">#</a>
+	</h3>
+	<p>
+		Like Command Handlers and Event Handlers, generic predicates give rise to a contravariant functor. This includes both the Specification pattern, <code>Predicate&lt;T&gt;</code>, and <code>Func&lt;T, bool&gt;</code>.
+	</p>
+	<p>
+		Are you noticing a pattern?
+	</p>
+	<p>
+		<strong>Next:</strong> Reader as a contravariant functor.
+	</p>
+</div>
