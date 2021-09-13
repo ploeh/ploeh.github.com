@@ -1,0 +1,198 @@
+---
+layout: post
+title: "Unit testing private helper methods"
+description: "Evolving a private helper method, guided by tests."
+date: 2021-09-12 10:26 UTC
+tags: [Unit Testing, Code]
+---
+{% include JB/setup %}
+
+<div id="post">
+	<p>
+		<em>{{ page.description }}</em>
+	</p>
+	<p>
+		A frequently asked question about unit testing and test-driven development (TDD) is how to test private helper methods. I've <a href="/2015/09/22/unit-testing-internals">already attempted to answer that question: <em>through the public API</em></a>, but a recent comment to <a href="https://stackoverflow.com/a/69141655/126014">a Stack Overflow question</a> made me realise that I've failed to supply a code example.
+	</p>
+	<p>
+		Show, don't tell.
+	</p>
+	<p>
+		In this article I'll show a code example that outlines how a private helper method can evolve under TDD.
+	</p>
+	<h3 id="03e1e533e1514945812c557b006883c3">
+		Threshold <a href="#03e1e533e1514945812c557b006883c3" title="permalink">#</a>
+	</h3>
+	<p>
+		The code example in this article comes from my book <a href="/code-that-fits-in-your-head">Code That Fits in Your Head</a>. When you buy the book, you get not only the finished code examples, but the entire Git repository, with detailed commit messages.
+	</p>
+	<p>
+		A central part of the code base is a method that decides whether or not to accept a reservation attempt. It's essentially a solution to <a href="https://blog.ploeh.dk/2020/01/27/the-maitre-d-kata/">the Maître d' kata</a>. I wrote most of the book's code with TDD, and after commit <code>fa12fd69c158168178f3a75bcd900e5caa7e7dec</code> I decided that I ought to refactor the implementation. As I wrote in the commit message:
+	</p>
+	<p>
+		<pre>Filter later reservations based on date
+
+The line count of the willAccept method has now risen to 28. Cyclomatic
+complexity is still at 7. It's ripe for refactoring.</pre>
+	</p>
+	<p>
+		I think, by the way, that I made a small mistake. As far as I can tell, the <code>WillAccept</code> line count in this commit is <em>26</em> - not <em>28:</em>
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">bool</span>&nbsp;<span style="color:#74531f;">WillAccept</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;IEnumerable&lt;Reservation&gt;&nbsp;<span style="color:#1f377f;">existingReservations</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;Reservation&nbsp;<span style="color:#1f377f;">candidate</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">if</span>&nbsp;(existingReservations&nbsp;<span style="color:blue;">is</span>&nbsp;<span style="color:blue;">null</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">throw</span>&nbsp;<span style="color:blue;">new</span>&nbsp;ArgumentNullException(nameof(existingReservations));
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">if</span>&nbsp;(candidate&nbsp;<span style="color:blue;">is</span>&nbsp;<span style="color:blue;">null</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">throw</span>&nbsp;<span style="color:blue;">new</span>&nbsp;ArgumentNullException(nameof(candidate));
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">relevantReservations</span>&nbsp;=&nbsp;existingReservations
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.Where(<span style="color:#1f377f;">r</span>&nbsp;=&gt;&nbsp;candidate.At.Date&nbsp;==&nbsp;r.At.Date);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;List&lt;Table&gt;&nbsp;<span style="color:#1f377f;">availableTables</span>&nbsp;=&nbsp;Tables.ToList();
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">foreach</span>&nbsp;(var&nbsp;<span style="color:#1f377f;">r</span>&nbsp;<span style="color:#8f08c4;">in</span>&nbsp;relevantReservations)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">table</span>&nbsp;=&nbsp;availableTables.Find(<span style="color:#1f377f;">t</span>&nbsp;=&gt;&nbsp;r.Quantity&nbsp;&lt;=&nbsp;t.Seats);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">if</span>&nbsp;(table&nbsp;<span style="color:blue;">is</span>&nbsp;{&nbsp;})
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;availableTables.Remove(table);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">if</span>&nbsp;(table.IsCommunal)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;availableTables.Add(table.Reserve(r.Quantity));
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;availableTables.Any(<span style="color:#1f377f;">t</span>&nbsp;=&gt;&nbsp;candidate.Quantity&nbsp;&lt;=&nbsp;t.Seats);
+}</pre>
+	</p>
+	<p>
+		Still, I knew that it wasn't done - that I'd be adding more tests that would increase both the size and complexity of the method. It was brushing against more than one <a href="/2020/04/13/curb-code-rot-with-thresholds">threshold</a>. I decided that it was time for a prophylactic refactoring.
+	</p>
+	<p>
+		Notice that the <a href="/2019/10/21/a-red-green-refactor-checklist">red-green-refactor checklist</a> explicitly states that refactoring is part of the process. It doesn't, however, mandate that refactoring must be done in the same commit as the green phase. Here, I did <em>red-green-commit-refactor-commit</em>.
+	</p>
+	<p>
+		While I decided to refactor, I also knew that I still had some way to go before the <code>WillAccept</code> would be complete. With the code still in flux, I didn't want to couple tests to a new method, so I chose to extract a <code>private</code> helper method.
+	</p>
+	<h3 id="8db39405ecce4ee9b647866eed0e1383">
+		Helper method <a href="#8db39405ecce4ee9b647866eed0e1383" title="permalink">#</a>
+	</h3>
+	<p>
+		After the refactoring, the code looked like this:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">bool</span>&nbsp;<span style="color:#74531f;">WillAccept</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;IEnumerable&lt;Reservation&gt;&nbsp;<span style="color:#1f377f;">existingReservations</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;Reservation&nbsp;<span style="color:#1f377f;">candidate</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">if</span>&nbsp;(existingReservations&nbsp;<span style="color:blue;">is</span>&nbsp;<span style="color:blue;">null</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">throw</span>&nbsp;<span style="color:blue;">new</span>&nbsp;ArgumentNullException(nameof(existingReservations));
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">if</span>&nbsp;(candidate&nbsp;<span style="color:blue;">is</span>&nbsp;<span style="color:blue;">null</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">throw</span>&nbsp;<span style="color:blue;">new</span>&nbsp;ArgumentNullException(nameof(candidate));
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">relevantReservations</span>&nbsp;=&nbsp;existingReservations
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.Where(<span style="color:#1f377f;">r</span>&nbsp;=&gt;&nbsp;candidate.At.Date&nbsp;==&nbsp;r.At.Date);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">availableTables</span>&nbsp;=&nbsp;Allocate(relevantReservations);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;availableTables.Any(<span style="color:#1f377f;">t</span>&nbsp;=&gt;&nbsp;candidate.Quantity&nbsp;&lt;=&nbsp;t.Seats);
+}
+ 
+<span style="color:blue;">private</span>&nbsp;IEnumerable&lt;Table&gt;&nbsp;<span style="color:#74531f;">Allocate</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;IEnumerable&lt;Reservation&gt;&nbsp;<span style="color:#1f377f;">reservations</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;List&lt;Table&gt;&nbsp;<span style="color:#1f377f;">availableTables</span>&nbsp;=&nbsp;Tables.ToList();
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">foreach</span>&nbsp;(var&nbsp;<span style="color:#1f377f;">r</span>&nbsp;<span style="color:#8f08c4;">in</span>&nbsp;reservations)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">table</span>&nbsp;=&nbsp;availableTables.Find(<span style="color:#1f377f;">t</span>&nbsp;=&gt;&nbsp;r.Quantity&nbsp;&lt;=&nbsp;t.Seats);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">if</span>&nbsp;(table&nbsp;<span style="color:blue;">is</span>&nbsp;{&nbsp;})
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;availableTables.Remove(table);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">if</span>&nbsp;(table.IsCommunal)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;availableTables.Add(table.Reserve(r.Quantity));
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;availableTables;
+}</pre>
+	</p>
+	<p>
+		I committed the change, and wrote in the commit message:
+	</p>
+	<p>
+		<pre>Extract helper method from WillAccept
+
+This quite improves the complexity of the method, which is now 4, and at
+18 lines of code. The new helper method also has a cyclomatic complexity
+of 4, and 17 lines of code.
+
+A remaining issue with the WillAccept method is that the code operates
+on different levels of abstraction. The call to Allocate represents an
+abstraction, while the filter on date is as low-level as it can get.</pre>
+	</p>
+	<p>
+		As you can tell, I was well aware that there were remaining issues with the code.
+	</p>
+	<p>
+		Since the new <code>Allocate</code> helper method is <code>private</code>, unit tests can't reach it directly. It's still <em>covered</em> by tests, though, just as that code block was before I extracted it.
+	</p>
+	<h3 id="b8928ae201444a78b7ca1715e486fb92">
+		More tests <a href="#b8928ae201444a78b7ca1715e486fb92" title="permalink">#</a>
+	</h3>
+	<p>
+		I wasn't done with the <code>WillAccept</code> method, and after a bout of other refactorings, I added more test cases covering it.
+	</p>
+	<p>
+		While the method ultimately grows to exhibit moderately complex behaviour, I only had two test methods covering it: one (not shown) for the rejection case, and another for the accept (<code>true</code>) case:
+	</p>
+	<p>
+		<pre>[Theory,&nbsp;ClassData(<span style="color:blue;">typeof</span>(AcceptTestCases))]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;<span style="color:#74531f;">Accept</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;TimeSpan&nbsp;<span style="color:#1f377f;">seatingDuration</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;IEnumerable&lt;Table&gt;&nbsp;<span style="color:#1f377f;">tables</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;IEnumerable&lt;Reservation&gt;&nbsp;<span style="color:#1f377f;">reservations</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">sut</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;MaitreD(seatingDuration,&nbsp;tables);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">r</span>&nbsp;=&nbsp;Some.Reservation.WithQuantity(11);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">actual</span>&nbsp;=&nbsp;sut.WillAccept(reservations,&nbsp;r);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;Assert.True(actual);
+}</pre>
+	</p>
+	<p>
+		I based the example code on the <a href="/2020/03/02/impureim-sandwich">impureim sandwich architecture</a>, which meant that domain logic (including the <code>WillAccept</code> method) is all <a href="https://en.wikipedia.org/wiki/Pure_function">pure functions</a>. The nice thing about pure functions is that <a href="/2015/05/07/functional-design-is-intrinsically-testable">they're easy to unit test</a>.
+	</p>
+	<p>
+		The <code>Accept</code> test method uses an object data source (see the article <a href="/2021/01/18/parametrised-test-primitive-obsession-code-smell">Parametrised test primitive obsession code smell</a> for another example of the motivation behind using objects for test parametrisation), so adding more test cases were simply a matter of adding them to the data source:
+	</p>
+	<p>
+		<pre><span style="color:silver;">Add(TimeSpan.FromHours(6),
+&nbsp;&nbsp;&nbsp;&nbsp;new[]&nbsp;{&nbsp;Table.Communal(11)&nbsp;},
+&nbsp;&nbsp;&nbsp;&nbsp;new[]&nbsp;{&nbsp;Some.Reservation.WithQuantity(11).TheDayAfter()&nbsp;});</span>
+Add(TimeSpan.FromHours(2.5),
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>[]&nbsp;{&nbsp;Table.Standard(12)&nbsp;},
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>[]&nbsp;{&nbsp;Some.Reservation.WithQuantity(11).AddDate(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;TimeSpan.FromHours(-2.5))&nbsp;});
+Add(TimeSpan.FromHours(1),
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>[]&nbsp;{&nbsp;Table.Standard(14)&nbsp;},
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>[]&nbsp;{&nbsp;Some.Reservation.WithQuantity(9).AddDate(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;TimeSpan.FromHours(1))&nbsp;});</pre>
+	</p>
+	<p>
+		The two bottom test cases are new additions. In that way, by adding new test cases, I could keep evolving <code>WillAccept</code> and its various private helper methods (of which I added more). While no tests directly exercise the private helper methods, the unit tests still <a href="https://en.wikipedia.org/wiki/Transitive_relation">transitively</a> exercise the private parts of the code base.
+	</p>
+	<p>
+		Since I followed TDD, no private helper methods sprang into existence untested. I didn't have to jump through hoops in order to be able to unit test private helper methods. Rather, the private helper methods were a natural by-product of the red-green-refactor process.
+	</p>
+	<h3 id="6c5f4e12a3cb4318a3331cf4f2485028">
+		Conclusion <a href="#6c5f4e12a3cb4318a3331cf4f2485028" title="permalink">#</a>
+	</h3>
+	<p>
+		Following TDD doesn't preclude the creation of private helper methods. In fact, private helper methods can (and should?) emerge during the refactoring phase of the red-green-refactoring cycle.
+	</p>
+	<p>
+		For long-time practitioners of TDD, there's nothing new in this, but people new to TDD are still learning. This question keeps coming up, so I hope that this example is useful.
+	</p>
+</div>
