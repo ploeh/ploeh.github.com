@@ -1,0 +1,339 @@
+---
+layout: post
+title: "The Liskov Substitution Principle as a profunctor"
+description: "With a realistic example in C#."
+date: 2021-11-04 8:46 UTC
+tags: [Software Design]
+image: "/content/binary/lsp-pipes.png"
+image_alt: "The Liskov Substitution Principle illustrated with flanged pipes."
+---
+{% include JB/setup %}
+
+<div id="post">
+	<p>
+		<em>{{ page.description }}</em>
+	</p>
+	<p>
+		Like the previous article on <a href="">Postel's law as a profunctor</a>, this article is part of a series titled <a href="/2018/03/05/some-design-patterns-as-universal-abstractions">Some design patterns as universal abstractions</a>. And like the previous article, it's a bit of a stretch including the present article in that series, since the <a href="https://en.wikipedia.org/wiki/Liskov_substitution_principle">Liskov Substitution Principle</a> (LSP) isn't a <a href="https://en.wikipedia.org/wiki/Software_design_pattern">design pattern</a>, but rather a software design principle or heuristic. I still think, however, that the article fits the spirit of the article series, if not the letter.
+	</p>
+	<p>
+		As was also the case for the previous article, I don't claim that any of this is new. <a href="https://twitter.com/runarorama/status/1425946258234032130">Michael Feathers and Rúnar Bjarnason blazed that trail long before me</a>.
+	</p>
+	<h3 id="95f8226160af4ba7a62e5d8f7d4da5c5">
+		LSP distilled <a href="#95f8226160af4ba7a62e5d8f7d4da5c5" title="permalink">#</a>
+	</h3>
+	<p>
+		In more or less natural language, the LSP states that subtypes must preserve correctness. A subtype isn't allowed to change behaviour in such a way that client code breaks.
+	</p>
+	<p>
+		Note that subtypes <em>are</em> allowed to change behaviour. That's often the point of subtyping. By providing a subtype, you can change the behaviour of a system. You can, for example, override how messages are sent, so that an SMS becomes a Slack notification or a Tweet.
+	</p>
+	<p>
+		If client code 'originally' supplied correct input for sending an SMS, this input should also be valid for posting a Tweet.
+	</p>
+	<p>
+		Specifically (paraphrasing <a href="https://en.wikipedia.org/wiki/Liskov_substitution_principle">the Wikipedia entry as of early November 2021</a>):
+	</p>
+	<p>
+		<ul>
+			<li>Subtypes must be contravariant in input</li>
+			<li>Subtypes must be covariant in output</li>
+			<li>Preconditions must not be strengthened in the subtype</li>
+			<li>Postconditions must not be weakened in the subtype</li>
+		</ul>
+	</p>
+	<p>
+		There's a bit more, but in this article, I'll focus on those rules. The first two we already know. Since <a href="">any function is already a profunctor</a>, we know that functions are contravariant in input and covariant in output.
+	</p>
+	<p>
+		The LSP, however, isn't a rule about a single function. Rather, it's a rule about a family of functions. Think about a function <code>a -&gt; b</code> <a href="">as a pipe</a>. You can replace the pipe segment with another pipe segment that has exactly the same shape, but replacing it with a flanged pipe also works, as long as the input flange is wider, and the nozzle narrower than the original pipe shape.
+	</p>
+	<p>
+		<img src="/content/binary/lsp-pipes.png" alt="The Liskov Substitution Principle illustrated with flanged pipes.">
+	</p>
+	<p>
+		On the other hand, if you narrow the pipe at the input and widen it at the output, spillage will happen. That's essentially what the LSP states: The upper, green, flanged pipe is a good replacement for the supertype (the blue pipe in the middle), while the lower, orange, flanged pipe is not useful.
+	</p>
+	<p>
+		The previous article already described that visual metaphor when it comes to co- and contravariance, so this article will focus on pre- and postconditions. My conjecture is that this is just another take on co- and contravariance.
+	</p>
+	<h3 id="73b14971495b4701a322f95ff3f332a0">
+		Supertype example <a href="#73b14971495b4701a322f95ff3f332a0" title="permalink">#</a>
+	</h3>
+	<p>
+		When encountering statements about subtypes and supertypes, most people tend to think about object inheritance, but that's just one example. As I've <a href="/2021/10/25/functor-variance-compared-to-cs-notion-of-variance">previously outlined</a>, anything that can 'act as' something else is a subtype of that something else. Specifically, an interface implementation is a subtype of the interface, and the interface itself the supertype.
+	</p>
+	<p>
+		Consider, as a supertype example, this interface from my book <a href="/code-that-fits-in-your-head">Code That Fits in Your Head</a>:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">interface</span>&nbsp;<span style="color:#2b91af;">IReservationsRepository</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;Task&nbsp;<span style="color:#74531f;">Create</span>(<span style="color:blue;">int</span>&nbsp;<span style="color:#1f377f;">restaurantId</span>,&nbsp;Reservation&nbsp;<span style="color:#1f377f;">reservation</span>);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;Task&lt;IReadOnlyCollection&lt;Reservation&gt;&gt;&nbsp;<span style="color:#74531f;">ReadReservations</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">int</span>&nbsp;<span style="color:#1f377f;">restaurantId</span>,&nbsp;DateTime&nbsp;<span style="color:#1f377f;">min</span>,&nbsp;DateTime&nbsp;<span style="color:#1f377f;">max</span>);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;Task&lt;Reservation?&gt;&nbsp;<span style="color:#74531f;">ReadReservation</span>(<span style="color:blue;">int</span>&nbsp;<span style="color:#1f377f;">restaurantId</span>,&nbsp;Guid&nbsp;<span style="color:#1f377f;">id</span>);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;Task&nbsp;<span style="color:#74531f;">Update</span>(<span style="color:blue;">int</span>&nbsp;<span style="color:#1f377f;">restaurantId</span>,&nbsp;Reservation&nbsp;<span style="color:#1f377f;">reservation</span>);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;Task&nbsp;<span style="color:#74531f;">Delete</span>(<span style="color:blue;">int</span>&nbsp;<span style="color:#1f377f;">restaurantId</span>,&nbsp;Guid&nbsp;<span style="color:#1f377f;">id</span>);
+}</pre>
+	</p>
+	<p>
+		Specifically, in this article, I'll focus exclusively on the <code>ReadReservations</code> method. You can imagine that there's an interface with only that method, or that when subtyping the interface in the following, we vary only that method and keep everything else fixed.
+	</p>
+	<p>
+		What might be the pre- and postconditions of the <code>ReadReservations</code> method?
+	</p>
+	<h3 id="18ffff3d0ba7474086053e283d3bd77b">
+		ReadReservations preconditions <a href="#18ffff3d0ba7474086053e283d3bd77b" title="permalink">#</a>
+	</h3>
+	<p>
+		The most basic kind of precondition is captured by the parameter types. In order to be able to call the method, you must supply an <code>int</code> and two <code>DateTime</code> instances. You can't omit any of them or replace one of the <code>DateTime</code> values with a <code>Guid</code>. In a statically typed language, this is obvious, and the compiler will take care of that.
+	</p>
+	<p>
+		Both <code>int</code> and <code>DateTime</code> are value types (<code>struct</code>s), so they can't be null. Had one of the parameters been a reference type, it'd be appropriate to consider whether or not null constitutes valid input.
+	</p>
+	<p>
+		So far, we've only discussed static types. Of course a subtype must satisfy the compiler, but what other pre-conditions might be implied by <code>ReadReservations</code>?
+	</p>
+	<p>
+		The purpose of the method is to enable client code to query a data store and retrieve the reservations for a particular restaurant and in a particular time interval.
+	</p>
+	<p>
+		Is any <code>restaurantId</code> acceptable? <code>1</code>? <code>0</code>? <code>-235</code>?
+	</p>
+	<p>
+		It's probably a distraction that the restaurant ID is even an <code>int</code>. After all, you don't add IDs together, or multiply one with another one. That an ID is an integer is really just a leaky implementation detail - databases like it best when IDs are integers. I should actually have defined the restaurant ID as an opaque object with <a href="https://martinfowler.com/bliki/ValueObject.html">Value Object</a> semantics, but I didn't (like other humans, I'm imperfect and lazy). The bottom line is that any number is as good as any other number. No precondition there.
+	</p>
+	<p>
+		What about the two <code>DateTime</code> parameters? Are <code>DateTime.MinValue</code> or <code>DateTime.MaxValue</code> valid values? Probably: If you'd like to retrieve all reservations in the past, you could ask for <code>DateTime.MinValue</code> as <code>min</code> and <code>DateTime.Now</code> as <code>max</code>. On the other hand, it'd be reasonable to require that <code>min</code> should be less than (or equal to?) <code>max</code>. That sounds like a proper precondition, and one that's difficult to express as a type.
+	</p>
+	<p>
+		We may also consider it a precondition that the object that implements the <code>ReadReservations</code> method is properly initialised, but I'll take that as a given. Making sure of that is the responsibility of the constructor, not the <code>ReadReservations</code> method.
+	</p>
+	<p>
+		To summarise, apart from the types and other things handled by the compiler, there's only one additional pre-condition: that <code>min</code> must be less than <code>max</code>.
+	</p>
+	<p>
+		Are there any postconditions?
+	</p>
+	<h3 id="e1588e7f3cb7406f8a15b286edfd570e">
+		ReadReservations postconditions <a href="#e1588e7f3cb7406f8a15b286edfd570e" title="permalink">#</a>
+	</h3>
+	<p>
+		The code base for the book obeys <a href="https://en.wikipedia.org/wiki/Command%E2%80%93query_separation">Command-Query Separation</a>. Since <code>ReadReservations</code> returns data, it must be a Query. Thus, we can assume that calling it isn't supposed to change state. Thus, postconditions can only be statements about the return value.
+	</p>
+	<p>
+		Again, static typing takes care of the most fundamental postconditions. An implementation can't return a <code>double</code> or an <code>UriBuilder</code>. It must be a <code>Task</code>, and that task must compute an <code>IReadOnlyCollection&lt;Reservation&gt;</code>.
+	</p>
+	<p>
+		Why <code>IReadOnlyCollection</code>, by the way? That's my attempt at describing a particular postcondition as a type.
+	</p>
+	<p>
+		The <a href="https://docs.microsoft.com/dotnet/api/system.collections.generic.ireadonlycollection-1">IReadOnlyCollection&lt;T&gt;</a> interface is a restriction of <code>IEnumerable&lt;T&gt;</code> that adds a <code>Count</code>. By adding the <code>Count</code> property, the interface strongly suggests that the collection is finite.
+	</p>
+	<p>
+		<code>IEnumerable&lt;T&gt;</code> implementations can be infinite sequences. These can be useful as functional alternatives to infinite loops, but are clearly not appropriate when retrieving reservations from a database.
+	</p>
+	<p>
+		The use of <code>IReadOnlyCollection</code> tells us about a postcondition: The collection of reservations is finite. This is, however, captured by the type. Any valid implementation of the interface ought to make that guarantee.
+	</p>
+	<p>
+		Is there anything else? Is it okay if the collection is empty? Yes, that could easily happen, if you have no reservations in the requested interval.
+	</p>
+	<p>
+		What else? Not much comes to mind, only that we'd expect the collection to be 'stable'. Technically, you could implement the <code>GetEnumerator</code> method so that it generates <code>Count</code> random <code>Reservation</code> objects every time you enumerate it, but none of the built-in implementations do that; that's quite a low bar, as postconditions go.
+	</p>
+	<p>
+		To summarise the postconditions: None, apart from a well-behaved implementation of <code>IReadOnlyCollection&lt;Reservation&gt;</code>.
+	</p>
+	<h3 id="1b02cb07547e405b86e2d42d889b7bef">
+		SQL implementation <a href="#1b02cb07547e405b86e2d42d889b7bef" title="permalink">#</a>
+	</h3>
+	<p>
+		According to the LSP, a subtype should be allowed to weaken preconditions. Keep in mind that I consider an interface implementation a subtype, so every implementation of <code>ReadReservations</code> constitutes a subtype. Consider the SQL Server-based implementation:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">async</span>&nbsp;Task&lt;IReadOnlyCollection&lt;Reservation&gt;&gt;&nbsp;<span style="color:#74531f;">ReadReservations</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">int</span>&nbsp;<span style="color:#1f377f;">restaurantId</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;DateTime&nbsp;<span style="color:#1f377f;">min</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;DateTime&nbsp;<span style="color:#1f377f;">max</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">result</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;List&lt;Reservation&gt;();
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">using</span>&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">conn</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;SqlConnection(ConnectionString);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">using</span>&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">cmd</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;SqlCommand(readByRangeSql,&nbsp;conn);
+&nbsp;&nbsp;&nbsp;&nbsp;cmd.Parameters.AddWithValue(<span style="color:#a31515;">&quot;@RestaurantId&quot;</span>,&nbsp;restaurantId);
+&nbsp;&nbsp;&nbsp;&nbsp;cmd.Parameters.AddWithValue(<span style="color:#a31515;">&quot;@Min&quot;</span>,&nbsp;min);
+&nbsp;&nbsp;&nbsp;&nbsp;cmd.Parameters.AddWithValue(<span style="color:#a31515;">&quot;@Max&quot;</span>,&nbsp;max);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">await</span>&nbsp;conn.OpenAsync().ConfigureAwait(<span style="color:blue;">false</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">using</span>&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">rdr</span>&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">await</span>&nbsp;cmd.ExecuteReaderAsync().ConfigureAwait(<span style="color:blue;">false</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">while</span>&nbsp;(<span style="color:blue;">await</span>&nbsp;rdr.ReadAsync().ConfigureAwait(<span style="color:blue;">false</span>))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;result.Add(ReadReservationRow(rdr));
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;result.AsReadOnly();
+}
+ 
+<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">const</span>&nbsp;<span style="color:blue;">string</span>&nbsp;readByRangeSql&nbsp;=&nbsp;<span style="color:maroon;">@&quot;
+&nbsp;&nbsp;&nbsp;&nbsp;SELECT&nbsp;[PublicId],&nbsp;[At],&nbsp;[Name],&nbsp;[Email],&nbsp;[Quantity]
+&nbsp;&nbsp;&nbsp;&nbsp;FROM&nbsp;[dbo].[Reservations]
+&nbsp;&nbsp;&nbsp;&nbsp;WHERE&nbsp;[RestaurantId]&nbsp;=&nbsp;@RestaurantId&nbsp;AND
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;@Min&nbsp;&lt;=&nbsp;[At]&nbsp;AND&nbsp;[At]&nbsp;&lt;=&nbsp;@Max&quot;</span>;</pre>
+	</p>
+	<p>
+		This implementation actually doesn't enforce the precondition that <code>min</code> ought to be less than <code>max</code>. It doesn't have to, since the code will run even if that's not the case - the result set, if <code>min</code> is greater than <code>max</code>, will always be empty.
+	</p>
+	<p>
+		While perhaps not useful, weakening this precondition doesn't adversely affect well-behaved clients, and buggy clients are always going to receive empty results. If this implementation also fulfils all postconditions, it's already LSP-compliant.
+	</p>
+	<p>
+		Still, could it weaken preconditions even more, or in a different way?
+	</p>
+	<h3 id="a7427e15a9614179939911f25959e093">
+		Weakening of preconditions <a href="#a7427e15a9614179939911f25959e093" title="permalink">#</a>
+	</h3>
+	<p>
+		As <a href="https://en.wikipedia.org/wiki/Robustness_principle">Postel's law</a> suggests, a method should be <em>liberal in what it accepts</em>. If it understands 'what the caller meant', it should perform the desired operation instead of insisting on the letter of the law.
+	</p>
+	<p>
+		Imagine that you receive a call where <code>min</code> is midnight June 6 and <code>max</code> is midnight June 5. While wrong, what do you think that the caller 'meant'?
+	</p>
+	<p>
+		The caller probably wanted to retrieve the reservations for June 5.
+	</p>
+	<p>
+		You could weaken that precondition by swapping back <code>min</code> and <code>max</code> if you detect that they've been swapped.
+	</p>
+	<p>
+		Let's assume, for the sake of argument, that we make the above <code>ReadReservations</code> implementation <code>virtual</code>. This enables us to inherit from <code>SqlReservationsRepository</code> and override the method:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">override</span>&nbsp;Task&lt;IReadOnlyCollection&lt;Reservation&gt;&gt;&nbsp;<span style="color:#74531f;">ReadReservations</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">int</span>&nbsp;<span style="color:#1f377f;">restaurantId</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;DateTime&nbsp;<span style="color:#1f377f;">min</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;DateTime&nbsp;<span style="color:#1f377f;">max</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">if</span>&nbsp;(max&nbsp;&lt;&nbsp;min)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">base</span>.ReadReservations(restaurantId,&nbsp;max,&nbsp;min);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">base</span>.ReadReservations(restaurantId,&nbsp;min,&nbsp;max);
+}</pre>
+	</p>
+	<p>
+		While this weakens preconditions, it breaks no existing clients because they all 'know' that they must pass the lesser value before the greater value.
+	</p>
+	<h3 id="1e73ce9509ed4004a9c26c23ea186e7c">
+		Strengthening of postconditions <a href="#1e73ce9509ed4004a9c26c23ea186e7c" title="permalink">#</a>
+	</h3>
+	<p>
+		Postel's law also suggests that a method should be <em>conservative in what it sends</em>. What could that mean?
+	</p>
+	<p>
+		In the case of <code>ReadReservations</code>, you may notice that the result set isn't explicitly sorted. Perhaps we'd like to also sort it on the date and time:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">override</span>&nbsp;<span style="color:blue;">async</span>&nbsp;Task&lt;IReadOnlyCollection&lt;Reservation&gt;&gt;&nbsp;<span style="color:#74531f;">ReadReservations</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">int</span>&nbsp;<span style="color:#1f377f;">restaurantId</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;DateTime&nbsp;<span style="color:#1f377f;">min</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;DateTime&nbsp;<span style="color:#1f377f;">max</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">query</span>&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;min&nbsp;&lt;&nbsp;max&nbsp;?
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">base</span>.ReadReservations(restaurantId,&nbsp;min,&nbsp;max)&nbsp;:
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">base</span>.ReadReservations(restaurantId,&nbsp;max,&nbsp;min);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">reservations</span>&nbsp;=&nbsp;<span style="color:blue;">await</span>&nbsp;query.ConfigureAwait(<span style="color:blue;">false</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;reservations.OrderBy(<span style="color:#1f377f;">r</span>&nbsp;=&gt;&nbsp;r.At).ToList();
+}</pre>
+	</p>
+	<p>
+		This implementation retains the weakened precondition from before, but now it also explicitly sorts the reservations on <code>At</code>.
+	</p>
+	<p>
+		Since no client code relies on sorting, this breaks no existing clients.
+	</p>
+	<p>
+		While the behaviour changes, it does so in a way that doesn't violate the original contract.
+	</p>
+	<h3 id="e254e40ed8634bdeb144ac4f6711409c">
+		Profunctor <a href="#e254e40ed8634bdeb144ac4f6711409c" title="permalink">#</a>
+	</h3>
+	<p>
+		While we've used terms such as <em>weaken preconditions</em> and <em>strengthen postconditions</em>, doesn't this look an awful lot like co- and contravariance?
+	</p>
+	<p>
+		I think it does, so let's rewrite the above implementation using the <a href="">Reader profunctor</a>.
+	</p>
+	<p>
+		First, we'll need to express the original method in the shape of a function like <code>a -&gt; b</code> - that is: a function that takes a single input and returns a single output. While <code>ReadReservations</code> return a single value (a <code>Task</code>), it takes three input arguments. To make it fit the <code>a -&gt; b</code> mould, we have to <a href="/2018/01/29/argument-list-isomorphisms">convert those three parameters to a Parameter Object</a>.
+	</p>
+	<p>
+		This enables us to write the original implementation as a function:
+	</p>
+	<p>
+		<pre>Func&lt;QueryParameters,&nbsp;Task&lt;IReadOnlyCollection&lt;Reservation&gt;&gt;&gt;&nbsp;<span style="color:#1f377f;">imp</span>&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#1f377f;">q</span>&nbsp;=&gt;&nbsp;<span style="color:blue;">base</span>.ReadReservations(q.RestaurantId,&nbsp;q.Min,&nbsp;q.Max);</pre>
+	</p>
+	<p>
+		If we didn't want to weaken any preconditions or strengthen any postconditions, we could simply call <code>imp</code> and return its output.
+	</p>
+	<p>
+		The above precondition can be expressed like this:
+	</p>
+	<p>
+		<pre>Func&lt;QueryParameters,&nbsp;QueryParameters&gt;&nbsp;<span style="color:#1f377f;">pre</span>&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#1f377f;">q</span>&nbsp;=&gt;&nbsp;q.Min&nbsp;&lt;&nbsp;q.Max&nbsp;?
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;QueryParameters(q.RestaurantId,&nbsp;q.Min,&nbsp;q.Max)&nbsp;:
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;QueryParameters(q.RestaurantId,&nbsp;q.Max,&nbsp;q.Min);</pre>
+	</p>
+	<p>
+		Notice that this is a function from <code>QueryParameters</code> to <code>QueryParameters</code>. As above, it simply swaps <code>Min</code> and <code>Max</code> if required.
+	</p>
+	<p>
+		Likewise, we can express the strengthened postcondition as a function:
+	</p>
+	<p>
+		<pre>Func&lt;Task&lt;IReadOnlyCollection&lt;Reservation&gt;&gt;,&nbsp;Task&lt;IReadOnlyCollection&lt;Reservation&gt;&gt;&gt;&nbsp;<span style="color:#1f377f;">post</span>&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#1f377f;">t</span>&nbsp;=&gt;&nbsp;t.Select(<span style="color:#1f377f;">rs</span>&nbsp;=&gt;&nbsp;rs.OrderBy(<span style="color:#1f377f;">r</span>&nbsp;=&gt;&nbsp;r.At).ToReadOnly());</pre>
+	</p>
+	<p>
+		The <code>Select</code> method exists because <code>Task</code> forms an <a href="/2018/09/24/asynchronous-functors">asynchronous functor</a>.
+	</p>
+	<p>
+		It's now possible to compose <code>imp</code> with <code>pre</code> and <code>post</code> using <code>DiMap</code>:
+	</p>
+	<p>
+		<pre>Func&lt;QueryParameters,&nbsp;Task&lt;IReadOnlyCollection&lt;Reservation&gt;&gt;&gt;&nbsp;<span style="color:#1f377f;">composition</span>&nbsp;=&nbsp;imp.DiMap(pre,&nbsp;post);</pre>
+	</p>
+	<p>
+		You can now call <code>composition</code> with the original arguments:
+	</p>
+	<p>
+		<pre>composition(<span style="color:blue;">new</span>&nbsp;QueryParameters(restaurantId,&nbsp;min,&nbsp;max))</pre>
+	</p>
+	<p>
+		The output of such a function call is entirely equivalent to the above, subtyped <code>ReadReservations</code> implementation.
+	</p>
+	<p>
+		In case you've forgotten, the presence of a lawful <code>DiMap</code> function is what makes something a profunctor. We <a href="">already knew that functions are profunctors</a>, but now we've also seen that we can use this knowledge to weaken preconditions and strengthen postconditions.
+	</p>
+	<p>
+		It seems reasonable to conjecture that the LSP actually describes a profunctor.
+	</p>
+	<p>
+		It seems to me that the profunctor composition involved with the LSP always takes the specialised form where, for a function <code>a -&gt; b</code>, the preprocessor (the contravariant mapping) always takes the form <code>a -&gt; a</code>, and the postprocessor (the covariant mapping) always takes the form <code>b -&gt; b</code>. This is because polymorphism must preserve the shape of the original function (<code>a -&gt; b</code>).
+	</p>
+	<h3 id="bca3373857e246a280bce24c83f2e8ac">
+		Conclusion <a href="#bca3373857e246a280bce24c83f2e8ac" title="permalink">#</a>
+	</h3>
+	<p>
+		We already know that something contravariant in input and covariant in output is a profunctor candidate, but the Liskov Substitution Principle is usually expressed in terms of pre- and postconditions. Subtypes may weaken preconditions and strengthen postconditions, but not the other way around.
+	</p>
+	<p>
+		Evidence suggests that you can phrase these rules as a profunctor specialisation.
+	</p>
+</div>
