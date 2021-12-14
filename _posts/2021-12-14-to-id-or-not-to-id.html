@@ -1,0 +1,376 @@
+---
+layout: post
+title: "To ID or not to ID"
+description: "How to model an ID that sometimes must be present, and sometimes not."
+date: 2021-12-14 8:32 UTC
+tags: [Software Design, F#]
+---
+{% include JB/setup %}
+
+<div id="post">
+	<p>
+		<em>{{ page.description }}</em>
+	</p>
+	<p>
+		I'm currently writing a client library for <a href="https://www.criipto.com">Criipto</a> that partially implements the actions available on the <a href="https://fusebit.io/docs/reference/fusebit-http-api/">Fusebit API</a>. This article, however, isn't about the Fusebit API, so even if you don't know what that is, read on. The Fusebit API is just an example.
+	</p>
+	<p>
+		This article, rather, is about how to model the absence or presence of an <code>Id</code> property.
+	</p>
+	<h3 id="76bfa54c15f346689e7210a9e5dc9852">
+		User example <a href="#76bfa54c15f346689e7210a9e5dc9852" title="permalink">#</a>
+	</h3>
+	<p>
+		The Fusebit API is an HTTP API that, as these things usually do, enables you to create, read, update, and delete resources. One of these is a <em>user</em>. When you create a user, you supply such data as <code>firstName</code>, <code>lastName</code>, and <code>primaryEmail</code>:
+	</p>
+	<p>
+		<pre>POST /v1/account/acc-123/user HTTP/2
+authorization: Bearer 938[...]
+content-type: application/json
+{
+&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;firstName&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;Rhea&quot;</span>,
+&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;lastName&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;Curran&quot;</span>,
+&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;primaryEmail&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;recurring@example.net&quot;</span>
+}
+
+HTTP/2 200
+content-type: application/json; charset=utf-8
+{
+&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;id&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;usr-8babf0cb95d94e6f&quot;</span>,
+&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;firstName&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;Rhea&quot;</span>,
+&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;lastName&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;Curran&quot;</span>,
+&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;primaryEmail&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;recurring@example.net&quot;</span>
+}</pre>
+	</p>
+	<p>
+		Notice that you're supposed to <code>POST</code> the user representation <em>without</em> an ID. The response, however, contains an updated representation of the resource that now includes an <code>id</code>. The <code>id</code> (in this example <code>usr-8babf0cb95d94e6f</code>) was created by the service.
+	</p>
+	<p>
+		To summarise: when you create a new user, you can's supply an ID, but once the user is created, it does have an ID.
+	</p>
+	<p>
+		I wanted to capture this rule with the <a href="https://fsharp.org">F#</a> type system.
+	</p>
+	<h3 id="2f67ed9643b74c11b12054176540f9ea">
+		Inheritance <a href="#2f67ed9643b74c11b12054176540f9ea" title="permalink">#</a>
+	</h3>
+	<p>
+		Before we get to the F# code, let's take a detour around some typical C# code.
+	</p>
+	<p>
+		At times, I've seen people address this kind of problem by having two types: <code>UserForCreation</code> and <code>CreatedUser</code>, or something like that. The only difference would be that <code>CreatedUser</code> would have an <code>Id</code> property, whereas <code>UserForCreation</code> wouldn't. While, at this time, the <a href="https://en.wikipedia.org/wiki/Rule_of_three_(computer_programming)">rule of three</a> doesn't apply yet, such duplication still seems frivolous.
+	</p>
+	<p>
+		How does an object-oriented programmer address such a problem? By deriving <code>CreatedUser</code> from <code>UserForCreation</code>, of course!
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">CreatedUser</span>&nbsp;:&nbsp;UserForCreation
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">string</span>&nbsp;Id&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;<span style="color:blue;">set</span>;&nbsp;}
+}</pre>
+	</p>
+	<p>
+		I'm not too fond of inheritance, and such a design also comes with a built-in flaw: Imagine a method with the signature <code>public CreatedUser Create(UserForCreation user)</code>. While such an API design clearly indicates that you don't <em>have</em> to supply an ID, you still can. You can call such a <code>Create</code> method with a <code>CreatedUser</code> object, since <code>CreatedUser</code> derives from <code>UserForCreation</code>.
+	</p>
+	<p>
+		<pre>CreatedUser&nbsp;<span style="color:#1f377f;">user</span>&nbsp;=&nbsp;resource.Create(<span style="color:blue;">new</span>&nbsp;CreatedUser
+{
+&nbsp;&nbsp;&nbsp;&nbsp;Id&nbsp;=&nbsp;<span style="color:#a31515;">&quot;123&quot;</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;FirstName&nbsp;=&nbsp;<span style="color:#a31515;">&quot;Sue&quot;</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;LastName&nbsp;=&nbsp;<span style="color:#a31515;">&quot;Flay&quot;</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;Email&nbsp;=&nbsp;<span style="color:#a31515;">&quot;suoffle@example.org&quot;</span>
+});</pre>
+	</p>
+	<p>
+		Since <code>CreatedUser</code> contains an ID, this seems to suggest that you can call the <code>Create</code> method with a user with an ID. What would you expected from such a possibility? In the above code example, what would you expect the value of <code>user.Id</code> to be?
+	</p>
+	<p>
+		It'd be reasonable to expect <code>user.Id</code> to be <code>"123"</code>. This seems to indicate that it'd be possible to supply a client-generated user ID, which would then be used instead of a server-generated user ID. The HTTP API, however, doesn't allow that.
+	</p>
+	<p>
+		Such a design is misleading. It suggests that <code>CreatedUser</code> can be used where <code>UserForCreation</code> is required. This isn't true.
+	</p>
+	<h3 id="cf4f25d849d7436686852f177cff2578">
+		Generic user <a href="#cf4f25d849d7436686852f177cff2578" title="permalink">#</a>
+	</h3>
+	<p>
+		I was aware of the above problem, so I didn't even attempt to go there. Besides, I was writing the library in F#, not C#, and while F# enables inheritance as well, it's not the first modelling option you'd typically reach for.
+	</p>
+	<p>
+		Instead, my first attempt was to define user data as a generic record type:
+	</p>
+	<p>
+		<pre><span style="color:blue;">type</span>&nbsp;UserData&lt;&#39;a&gt;&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Id&nbsp;:&nbsp;&#39;a
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;FirstName&nbsp;:&nbsp;string&nbsp;option
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;LastName&nbsp;:&nbsp;string&nbsp;option
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Email&nbsp;:&nbsp;MailAddress&nbsp;option
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Identities&nbsp;:&nbsp;Identity&nbsp;list
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Permissions&nbsp;:&nbsp;Permission&nbsp;list
+&nbsp;&nbsp;&nbsp;&nbsp;}</pre>
+	</p>
+	<p>
+		(The Fusebit API also enables you to supply <code>Identities</code> and <code>Permissions</code> when creating a user. I omitted them from the above C# example code because this detail is irrelevant to the example.)
+	</p>
+	<p>
+		This enabled me to define an impure action to create a user:
+	</p>
+	<p>
+		<pre><span style="color:green;">//&nbsp;ApiClient&nbsp;-&gt;&nbsp;UserData&lt;unit&gt;&nbsp;-&gt;&nbsp;Task&lt;Result&lt;UserData&lt;string&gt;,&nbsp;HttpResponseMessage&gt;&gt;</span>
+<span style="color:blue;">let</span>&nbsp;create&nbsp;client&nbsp;(userData&nbsp;:&nbsp;UserData&lt;unit&gt;)&nbsp;=&nbsp;task&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;jobj&nbsp;=&nbsp;JObject&nbsp;()
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;userData.FirstName
+&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;Option.iter&nbsp;(<span style="color:blue;">fun</span>&nbsp;fn&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;jobj.[<span style="color:#a31515;">&quot;firstName&quot;</span>]&nbsp;<span style="color:blue;">&lt;-</span>&nbsp;JValue&nbsp;fn)
+&nbsp;&nbsp;&nbsp;&nbsp;userData.LastName
+&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;Option.iter&nbsp;(<span style="color:blue;">fun</span>&nbsp;ln&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;jobj.[<span style="color:#a31515;">&quot;lastName&quot;</span>]&nbsp;<span style="color:blue;">&lt;-</span>&nbsp;JValue&nbsp;ln)
+&nbsp;&nbsp;&nbsp;&nbsp;userData.Email
+&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;Option.iter
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(<span style="color:blue;">fun</span>&nbsp;email&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;jobj.[<span style="color:#a31515;">&quot;primaryEmail&quot;</span>]&nbsp;<span style="color:blue;">&lt;-</span>&nbsp;email&nbsp;|&gt;&nbsp;string&nbsp;|&gt;&nbsp;JValue)
+&nbsp;&nbsp;&nbsp;&nbsp;jobj.[<span style="color:#a31515;">&quot;identities&quot;</span>]&nbsp;<span style="color:blue;">&lt;-</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;userData.Identities
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;List.map&nbsp;Identity.toJToken
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;List.toArray
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;JArray
+&nbsp;&nbsp;&nbsp;&nbsp;jobj.[<span style="color:#a31515;">&quot;access&quot;</span>]&nbsp;<span style="color:blue;">&lt;-</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;aobj&nbsp;=&nbsp;JObject&nbsp;()
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;aobj.[<span style="color:#a31515;">&quot;allow&quot;</span>]&nbsp;<span style="color:blue;">&lt;-</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;userData.Permissions
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;List.map&nbsp;Permission.toJToken
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;List.toArray
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;JArray
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;aobj
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;json&nbsp;=&nbsp;jobj.ToString&nbsp;Formatting.None
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;relativeUrl&nbsp;=&nbsp;Uri&nbsp;(<span style="color:#a31515;">&quot;user&quot;</span>,&nbsp;UriKind.Relative)
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;resp&nbsp;=&nbsp;Api.post&nbsp;client&nbsp;relativeUrl&nbsp;json
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;resp.IsSuccessStatusCode
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">then</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;content&nbsp;=&nbsp;resp.Content.ReadAsStringAsync&nbsp;()
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;jtok&nbsp;=&nbsp;JToken.Parse&nbsp;content
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;createdUser&nbsp;=&nbsp;parseUser&nbsp;jtok
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;Ok&nbsp;createdUser
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">else</span>&nbsp;<span style="color:blue;">return</span>&nbsp;Error&nbsp;resp&nbsp;}</pre>
+	</p>
+	<p>
+		Where <code>parseUser</code> is defined like this:
+	</p>
+	<p>
+		<pre><span style="color:green;">//&nbsp;JToken&nbsp;-&gt;&nbsp;UserData&lt;string&gt;</span>
+<span style="color:blue;">let</span>&nbsp;<span style="color:blue;">private</span>&nbsp;parseUser&nbsp;(jobj&nbsp;:&nbsp;JToken)&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;uid&nbsp;=&nbsp;jobj.[<span style="color:#a31515;">&quot;id&quot;</span>]&nbsp;|&gt;&nbsp;string
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;fn&nbsp;=&nbsp;jobj.[<span style="color:#a31515;">&quot;firstName&quot;</span>]&nbsp;|&gt;&nbsp;Option.ofObj&nbsp;|&gt;&nbsp;Option.map&nbsp;string
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;ln&nbsp;=&nbsp;jobj.[<span style="color:#a31515;">&quot;lastName&quot;</span>]&nbsp;|&gt;&nbsp;Option.ofObj&nbsp;|&gt;&nbsp;Option.map&nbsp;string
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;email&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;jobj.[<span style="color:#a31515;">&quot;primaryEmail&quot;</span>]
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;Option.ofObj
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;Option.map&nbsp;(string&nbsp;&gt;&gt;&nbsp;MailAddress)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Id&nbsp;=&nbsp;uid
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;FirstName&nbsp;=&nbsp;fn
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;LastName&nbsp;=&nbsp;ln
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Email&nbsp;=&nbsp;email
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Identities&nbsp;=&nbsp;[]
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Permissions&nbsp;=&nbsp;[]
+&nbsp;&nbsp;&nbsp;&nbsp;}</pre>
+	</p>
+	<p>
+		Notice that, if we strip away all the noise from the <code>User.create</code> action, it takes a <code>UserData&lt;unit&gt;</code> as input and returns a <code>UserData&lt;string&gt;</code> as output.
+	</p>
+	<p>
+		Creating a value of a type like <code>UserData&lt;unit&gt;</code> seems a little odd:
+	</p>
+	<p>
+		<pre><span style="color:blue;">let</span>&nbsp;user&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Id&nbsp;=&nbsp;()
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;FirstName&nbsp;=&nbsp;Some&nbsp;<span style="color:#a31515;">&quot;Helen&quot;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;LastName&nbsp;=&nbsp;Some&nbsp;<span style="color:#a31515;">&quot;Back&quot;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Email&nbsp;=&nbsp;Some&nbsp;(MailAddress&nbsp;<span style="color:#a31515;">&quot;hellnback@example.net&quot;</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Identities&nbsp;=&nbsp;[]
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Permissions&nbsp;=&nbsp;[]
+&nbsp;&nbsp;&nbsp;&nbsp;}</pre>
+	</p>
+	<p>
+		It gets the point across, though. In order to call <code>User.create</code> you must supply a <code>UserData&lt;unit&gt;</code>, and the only way you can do that is by setting <code>Id</code> to <code>()</code>.
+	</p>
+	<h3 id="6b269340404e4dbeaba049d65886edf2">
+		Not quite there... <a href="#6b269340404e4dbeaba049d65886edf2" title="permalink">#</a>
+	</h3>
+	<p>
+		In the Fusebit API, however, the <em>user</em> resource isn't the only resource that exhibits the pattern of requiring no ID on creation, but having an ID after creation. Another example is a resource called a <em>client</em>. Adopting the above design as a template, I also defined <code>ClientData</code> as a generic record type:
+	</p>
+	<p>
+		<pre><span style="color:blue;">type</span>&nbsp;ClientData&lt;&#39;a&gt;&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Id&nbsp;:&nbsp;&#39;a
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;DisplayName&nbsp;:&nbsp;string&nbsp;option
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Identities&nbsp;:&nbsp;Identity&nbsp;list
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Permissions&nbsp;:&nbsp;Permission&nbsp;list
+&nbsp;&nbsp;&nbsp;&nbsp;}</pre>
+	</p>
+	<p>
+		In both cases, I also realised that the record types gave rise to <a href="/2018/03/22/functors">functors</a>. A <code>map</code> function turned out to be useful in certain unit tests, so I added such functions as well:
+	</p>
+	<p>
+		<pre><span style="color:blue;">module</span>&nbsp;Client&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;map&nbsp;f&nbsp;c&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Id&nbsp;=&nbsp;f&nbsp;c.Id
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;DisplayName&nbsp;=&nbsp;c.DisplayName
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Identities&nbsp;=&nbsp;c.Identities
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Permissions&nbsp;=&nbsp;c.Permissions
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;}</pre>
+	</p>
+	<p>
+		The corresponding <code>User.map</code> function was similar, so I began to realise that I had some boilerplate on my hands.
+	</p>
+	<p>
+		Besides, a type like <code>UserData&lt;'a&gt;</code> seems to indicate that the type argument <code>'a</code> could be anything. The <code>map</code> function implies that as well. In reality, though, the only constructed types you'd be likely to run into are <code>UserData&lt;unit&gt;</code> and <code>UserData&lt;string&gt;</code>.
+	</p>
+	<p>
+		I wasn't quite happy with this design, after all...
+	</p>
+	<h3 id="c74641d5b7fc49849d671f233f77bf37">
+		Identifiable <a href="#c74641d5b7fc49849d671f233f77bf37" title="permalink">#</a>
+	</h3>
+	<p>
+		After thinking about this, I decided to move the generics around. Instead of making the ID generic, I instead made the payload generic by introducing this container type:
+	</p>
+	<p>
+		<pre><span style="color:blue;">type</span>&nbsp;Identifiable&lt;&#39;a&gt;&nbsp;=&nbsp;{&nbsp;Id&nbsp;:&nbsp;string;&nbsp;Item&nbsp;:&nbsp;&#39;a&nbsp;}</pre>
+	</p>
+	<p>
+		The <code>User.create</code> action now looks like this:
+	</p>
+	<p>
+		<pre><span style="color:green;">//&nbsp;ApiClient&nbsp;-&gt;&nbsp;UserData&nbsp;-&gt;&nbsp;Task&lt;Result&lt;Identifiable&lt;UserData&gt;,&nbsp;HttpResponseMessage&gt;&gt;</span>
+<span style="color:blue;">let</span>&nbsp;create&nbsp;client&nbsp;userData&nbsp;=&nbsp;task&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;jobj&nbsp;=&nbsp;JObject&nbsp;()
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;userData.FirstName
+&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;Option.iter&nbsp;(<span style="color:blue;">fun</span>&nbsp;fn&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;jobj.[<span style="color:#a31515;">&quot;firstName&quot;</span>]&nbsp;<span style="color:blue;">&lt;-</span>&nbsp;JValue&nbsp;fn)
+&nbsp;&nbsp;&nbsp;&nbsp;userData.LastName
+&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;Option.iter&nbsp;(<span style="color:blue;">fun</span>&nbsp;ln&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;jobj.[<span style="color:#a31515;">&quot;lastName&quot;</span>]&nbsp;<span style="color:blue;">&lt;-</span>&nbsp;JValue&nbsp;ln)
+&nbsp;&nbsp;&nbsp;&nbsp;userData.Email
+&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;Option.iter
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(<span style="color:blue;">fun</span>&nbsp;email&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;jobj.[<span style="color:#a31515;">&quot;primaryEmail&quot;</span>]&nbsp;<span style="color:blue;">&lt;-</span>&nbsp;email&nbsp;|&gt;&nbsp;string&nbsp;|&gt;&nbsp;JValue)
+&nbsp;&nbsp;&nbsp;&nbsp;jobj.[<span style="color:#a31515;">&quot;identities&quot;</span>]&nbsp;<span style="color:blue;">&lt;-</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;userData.Identities
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;List.map&nbsp;Identity.toJToken
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;List.toArray
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;JArray
+&nbsp;&nbsp;&nbsp;&nbsp;jobj.[<span style="color:#a31515;">&quot;access&quot;</span>]&nbsp;<span style="color:blue;">&lt;-</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;aobj&nbsp;=&nbsp;JObject&nbsp;()
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;aobj.[<span style="color:#a31515;">&quot;allow&quot;</span>]&nbsp;<span style="color:blue;">&lt;-</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;userData.Permissions
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;List.map&nbsp;Permission.toJToken
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;List.toArray
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;JArray
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;aobj
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;json&nbsp;=&nbsp;jobj.ToString&nbsp;Formatting.None
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;relativeUrl&nbsp;=&nbsp;Uri&nbsp;(<span style="color:#a31515;">&quot;user&quot;</span>,&nbsp;UriKind.Relative)
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;resp&nbsp;=&nbsp;Api.post&nbsp;client&nbsp;relativeUrl&nbsp;json
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;resp.IsSuccessStatusCode
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">then</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;content&nbsp;=&nbsp;resp.Content.ReadAsStringAsync&nbsp;()
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;jtok&nbsp;=&nbsp;JToken.Parse&nbsp;content
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;createdUser&nbsp;=&nbsp;parseUser&nbsp;jtok
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;Ok&nbsp;createdUser
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">else</span>&nbsp;<span style="color:blue;">return</span>&nbsp;Error&nbsp;resp&nbsp;}</pre>
+	</p>
+	<p>
+		Where <code>parseUser</code> is defined as:
+	</p>
+	<p>
+		<pre><span style="color:green;">//&nbsp;JToken&nbsp;-&gt;&nbsp;Identifiable&lt;UserData&gt;</span>
+<span style="color:blue;">let</span>&nbsp;<span style="color:blue;">private</span>&nbsp;parseUser&nbsp;(jtok&nbsp;:&nbsp;JToken)&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;uid&nbsp;=&nbsp;jtok.[<span style="color:#a31515;">&quot;id&quot;</span>]&nbsp;|&gt;&nbsp;string
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;fn&nbsp;=&nbsp;jtok.[<span style="color:#a31515;">&quot;firstName&quot;</span>]&nbsp;|&gt;&nbsp;Option.ofObj&nbsp;|&gt;&nbsp;Option.map&nbsp;string
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;ln&nbsp;=&nbsp;jtok.[<span style="color:#a31515;">&quot;lastName&quot;</span>]&nbsp;|&gt;&nbsp;Option.ofObj&nbsp;|&gt;&nbsp;Option.map&nbsp;string
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;email&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;jtok.[<span style="color:#a31515;">&quot;primaryEmail&quot;</span>]
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;Option.ofObj
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;Option.map&nbsp;(string&nbsp;&gt;&gt;&nbsp;MailAddress)
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;ids&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">match</span>&nbsp;jtok.[<span style="color:#a31515;">&quot;identities&quot;</span>]&nbsp;<span style="color:blue;">with</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:blue;">null</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;[]
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;x&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;x&nbsp;:?&gt;&nbsp;JArray&nbsp;|&gt;&nbsp;Seq.map&nbsp;Identity.parse&nbsp;|&gt;&nbsp;Seq.toList
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;perms&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;jtok.[<span style="color:#a31515;">&quot;access&quot;</span>]
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;Option.ofObj
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;Option.toList
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;List.collect&nbsp;(<span style="color:blue;">fun</span>&nbsp;j&nbsp;<span style="color:blue;">-&gt;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;j.[<span style="color:#a31515;">&quot;allow&quot;</span>]&nbsp;:?&gt;&nbsp;JArray
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;Seq.choose&nbsp;Permission.tryParse
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;Seq.toList)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Id&nbsp;=&nbsp;uid
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Item&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;FirstName&nbsp;=&nbsp;fn
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;LastName&nbsp;=&nbsp;ln
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Email&nbsp;=&nbsp;email
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Identities&nbsp;=&nbsp;ids
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Permissions&nbsp;=&nbsp;perms
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;}</pre>
+	</p>
+	<p>
+		The required input to <code>User.create</code> is now a simple, non-generic <code>UserData</code> value, and the successful return value an <code>Identifiable&lt;UserData&gt;</code>. There's no more arbitrary ID data types. The ID is either there as a <code>string</code> or it's absent.
+	</p>
+	<p>
+		You could also turn the <code>Identifiable</code> container into a functor if you need it, but I've found no need for it so far. Wrapping and unwrapping the payload from the container is easy without supporting machinery like that.
+	</p>
+	<p>
+		This design is still reusable. The equivalent <code>Client.create</code> action takes a non-generic <code>ClientData</code> value as input and returns a <code>Identifiable&lt;ClientData&gt;</code> value when successful.
+	</p>
+	<h3 id="9ff91e0a956147c796329551aa91bd1d">
+		C# translation <a href="#9ff91e0a956147c796329551aa91bd1d" title="permalink">#</a>
+	</h3>
+	<p>
+		There's nothing F#-specific about the above solution. You can easily define <code>Identifiable</code> in C#:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">sealed</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">Identifiable</span>&lt;<span style="color:#2b91af;">T</span>&gt;
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">Identifiable</span>(<span style="color:blue;">string</span>&nbsp;<span style="color:#1f377f;">id</span>,&nbsp;T&nbsp;<span style="color:#1f377f;">item</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Id&nbsp;=&nbsp;id;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Item&nbsp;=&nbsp;item;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">string</span>&nbsp;Id&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;T&nbsp;Item&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">override</span>&nbsp;<span style="color:blue;">bool</span>&nbsp;<span style="color:#74531f;">Equals</span>(<span style="color:blue;">object</span>&nbsp;<span style="color:#1f377f;">obj</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;obj&nbsp;<span style="color:blue;">is</span>&nbsp;Identifiable&lt;T&gt;&nbsp;<span style="color:#1f377f;">identifiable</span>&nbsp;&amp;&amp;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Id&nbsp;==&nbsp;identifiable.Id&nbsp;&amp;&amp;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;EqualityComparer&lt;T&gt;.Default.Equals(Item,&nbsp;identifiable.Item);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">override</span>&nbsp;<span style="color:blue;">int</span>&nbsp;<span style="color:#74531f;">GetHashCode</span>()
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;HashCode.Combine(Id,&nbsp;Item);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+	</p>
+	<p>
+		I've here used the explicit <code>class</code>-based syntax to define an immutable class. In C# 9 and later, you can simplify this quite a bit using <code>record</code> syntax instead (which gets you closer to the F# example), but I chose to use the more verbose syntax for the benefit of readers who may encounter this example and wish to understand how it relates to a less specific C-based language.
+	</p>
+	<h3 id="8df883ff44924387aafe519c5e83a178">
+		Conclusion <a href="#8df883ff44924387aafe519c5e83a178" title="permalink">#</a>
+	</h3>
+	<p>
+		When you need to model interactions where you <em>must not</em> supply an ID on create, but representations have IDs when you query the resources, don't reach for inheritance. Wrap the data in a generic container that contains the ID and a generic payload. You can do this in languages that support parametric polymorphism (AKA <em>generics</em>).
+	</p>
+</div>
