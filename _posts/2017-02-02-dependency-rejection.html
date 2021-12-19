@@ -699,6 +699,7 @@ tryAcceptComposition r = runMaybeT $ do
 		</div>
 		<div class="comment-date">2020-06-03 5:46 UTC</div>
 	</div>
+
 	<div class="comment" id="a24bf916c0e941b1b932b39284ea1d53">
 		<div class="comment-author"><a href="https://github.com/chrischen">Chris Chen</a></div>
 		<div class="comment-content">
@@ -709,5 +710,99 @@ tryAcceptComposition r = runMaybeT $ do
 			<p>Suppose the readRervations didn't just get <em>all</em> reservations from the dabatase just to process for one restaurant or on one day. Thus the restaurant ID and date may be needed to fetch the correct reservations, and this logic would have to happen outside of the unit. I think you touched on this complication in a response above, but I'd like to confirm if I am understanding your responses correctly: you simply perform this logic outside of the unit and have an integration test for the entire workflow?</p>
 		</div>
 		<div class="comment-date">2021-12-15 22:11 UTC</div>
+	</div>
+
+	<div class="comment" id="a0c775671d224b48b894293eeb05dff9">
+		<div class="comment-author"><a href="{{ HOME_PATH }}">Mark Seemann</a></div>
+		<div class="comment-content">
+			<p>
+				Chris, thank you for writing. There are more nuances to that question than might be immediately apparent. At least, I'll answer the question in several ways.
+			</p>
+			<p>
+				First, I'd like to challenge the implicit assumption that one must always test everything. <a href="/2018/11/12/what-to-test-and-not-to-test">What to test and what not to test</a> depend on multiple independent forces, such as how costly an error might be, how likely an error is to occur, and so on.
+			</p>
+			<p>
+				Take, as an example, the code base that accompanies my book <a href="/code-that-fits-in-your-head">Code That Fits in Your Head</a>. This code base is also a restaurant reservation system, but has a realistic level of complexity, so I think it might better highlight the sort of considerations that might be warranted. The code that is most relevant to the question is this snippet from <code>ReservationsController.TryCreate</code>:
+			</p>
+			<p>
+				<pre><span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">reservations</span>&nbsp;=&nbsp;<span style="color:blue;">await</span>&nbsp;Repository
+&nbsp;&nbsp;&nbsp;&nbsp;.ReadReservations(restaurant.Id,&nbsp;reservation.At)
+&nbsp;&nbsp;&nbsp;&nbsp;.ConfigureAwait(<span style="color:blue;">false</span>);
+<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">now</span>&nbsp;=&nbsp;Clock.GetCurrentDateTime();
+<span style="color:#8f08c4;">if</span>&nbsp;(!restaurant.MaitreD.WillAccept(now,&nbsp;reservations,&nbsp;reservation))
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;NoTables500InternalServerError();
+ 
+<span style="color:blue;">await</span>&nbsp;Repository.Create(restaurant.Id,&nbsp;reservation)
+&nbsp;&nbsp;&nbsp;&nbsp;.ConfigureAwait(<span style="color:blue;">false</span>);</pre>
+			</p>
+			<p>
+				How likely is it that the code changes in such a way that it calls <code>ReadReservations</code> with the <em>wrong</em> input? Either because the original programmer who wrote the code made a mistake, or because a later developer introduced a change in which this code calls <code>ReadReservations</code> with incorrect input?
+			</p>
+			<p>
+				Now, such errors certainly do occur. Programmers are human, and to err is human.
+			</p>
+			<p>
+				Still, it's important to keep in mind that the risk of introducing an error into a code base is proportional to the amount of code. The more code, the more errors you'll have. This goes for test code as well. You can also, inadvertently, introduce errors into a test.
+			</p>
+			<p>
+				You can counteract some of that by writing the test first. That's the reasons it's so important to see a test fail. Only by seeing it fail can you feel confident that it verifies something real.
+			</p>
+			<p>
+				So, depending on circumstances, it may be relevant and important to write a test that verifies that <code>ReadReservations</code> is called with the correct arguments. Still, I think it's important to weigh advantages and disadvantages before blindly insisting that it's necessary to protect against such a contingency.
+			</p>
+			<p>
+				When I originally wrote the above code, I wrote no unit test that explicitly verify whether <code>ReadReservations</code> is called with the correct arguments. After all, in that context, there's only one <code>DateTime</code> value in scope: <code>reservation.At</code>. (This is not entirely true, because <code>now</code> is also a <code>DateTime</code> value, but as the code is written, it's not available for <code>ReadReservations</code> because it's retrieved <em>after</em> the <code>ReadReservations</code> call. But see below.)
+			</p>
+			<p>
+				In a context like this, you'd have to go out of your way to call <code>ReadReservations</code> with the wrong date. You <em>could</em> create a value on the spot, like this:
+			</p>
+			<p>
+				<pre><span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">reservations</span>&nbsp;=&nbsp;<span style="color:blue;">await</span>&nbsp;Repository
+&nbsp;&nbsp;&nbsp;&nbsp;.ReadReservations(restaurant.Id,&nbsp;<span style="color:blue;">new</span>&nbsp;DateTime(2021,&nbsp;12,&nbsp;19,&nbsp;18,&nbsp;30,&nbsp;0))
+&nbsp;&nbsp;&nbsp;&nbsp;.ConfigureAwait(<span style="color:blue;">false</span>);</pre>
+			</p>
+			<p>
+				or this:
+			</p>
+			<p>
+				<pre><span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">reservations</span>&nbsp;=&nbsp;<span style="color:blue;">await</span>&nbsp;Repository
+&nbsp;&nbsp;&nbsp;&nbsp;.ReadReservations(restaurant.Id,&nbsp;reservation.At.AddDays(1))
+&nbsp;&nbsp;&nbsp;&nbsp;.ConfigureAwait(<span style="color:blue;">false</span>);</pre>
+			</p>
+			<p>
+				None of these are <em>impossible</em>, but I do consider them to be <em>conspicuous</em>. You don't easily make those kinds of mistakes. You'd almost have to go out of your way to make these mistakes, and a good pairing partner or code review ought to catch such a mistake.
+			</p>
+			<p>
+				Another option is if someone finds a good reason to reorder the code:
+			</p>
+			<p>
+				<pre><span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">now</span>&nbsp;=&nbsp;Clock.GetCurrentDateTime();
+<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">reservations</span>&nbsp;=&nbsp;<span style="color:blue;">await</span>&nbsp;Repository
+&nbsp;&nbsp;&nbsp;&nbsp;.ReadReservations(restaurant.Id,&nbsp;now)
+&nbsp;&nbsp;&nbsp;&nbsp;.ConfigureAwait(<span style="color:blue;">false</span>);</pre>
+			</p>
+			<p>
+				In this example, <code>now</code> is available to <code>ReadReservations</code>, and perhaps a later edit might introduce the error of calling it with <code>now</code>.
+			</p>
+			<p>
+				This is perhaps a more realistic, honest mistake.
+			</p>
+			<p>
+				None of the 171 unit tests in the code base catch any of the above three mistakes.
+			</p>
+			<p>
+				Is the code base unsafe, then?
+			</p>
+			<p>
+				No, because as luck would have it, an integration test (<code>NoOverbookingRace</code>) fails on any of these three edits. I admit that this is just a fortunate accident. I added that particular integration test for another reason: to reproduce an unrelated bug that occurred in 'production'.
+			</p>
+			<p>
+				I usually try to base the amount of testing I ask from a team on the quality of the team. The more I trust that they pair-program or perform regular code reviews, the less I insist on test coverage, and vice versa.
+			</p>
+			<p>
+				In summary, though, if I find that it's important to verify that <code>ReadReservations</code> was called with the correct arguments, I'd favour a <a href="/2019/02/18/from-interaction-based-to-state-based-testing">state-based integration test</a>.
+			</p>
+		</div>
+		<div class="comment-date">2021-12-19 12:24 UTC</div>
 	</div>
 </div>
