@@ -1,0 +1,116 @@
+---
+layout: post
+title: "Type-safe DI composition"
+description: "DI Containers aren't type-safe. What are the alternatives?"
+date: 2021-12-22 15:06 UTC
+tags: [Dependency Injection, Article Series]
+---
+{% include JB/setup %}
+
+<div id="post">
+	<p>
+		<em>{{ page.description }}</em>
+	</p>
+	<p>
+		In April 2020 I published an article called <a href="/2020/04/20/unit-bias-against-collections">Unit bias against collections</a>. My goal with the article was to point out a common <a href="https://en.wikipedia.org/wiki/Cognitive_bias">cognitive bias</a>. I just happened to use .NET's built-in DI Container as an example because I'd recently encountered a piece of documentation that exhibited the kind of bias I wanted to write about.
+	</p>
+	<p>
+		This lead to a discussion about the mental model of the DI Container:
+	</p>
+	<blockquote>
+		<p>
+			"Yeah, I wasn't explicit and clarified in a second tweet. I didn't mean in the services example, but in general where it helps if the reader's mental model of the code has 1 item from the collection, because that's how it is in real life. SingleOrDefault would enforce this."
+		</p>
+		<footer><cite><a href="https://twitter.com/bogdangaliceanu/status/1252210213211582477">Bogdan Galiceanu</a></cite></footer>
+	</blockquote>
+	<p>
+		The point Bogdan Galiceanu makes highlights the incongruity between the container's API and the mental model required to work with it.
+	</p>
+	<h3 id="56c89a345b534a7d9cc4f90cd1779b89">
+		IServiceCollection recap <a href="#56c89a345b534a7d9cc4f90cd1779b89" title="permalink">#</a>
+	</h3>
+	<p>
+		The API in case belongs to <a href="https://docs.microsoft.com/dotnet/api/microsoft.extensions.dependencyinjection.iservicecollection">IServiceCollection</a>, which is little more than a collection of <a href="https://docs.microsoft.com/dotnet/api/microsoft.extensions.dependencyinjection.servicedescriptor">ServiceDescriptor</a> objects. Each <code>ServiceDescriptor</code> describes a service, as the name implies.
+	</p>
+	<p>
+		Given an <code>IServiceCollection</code> you can, for example, <a href="/2010/09/29/TheRegisterResolveReleasepattern">register</a> an <code>IReservationsRepository</code> instance:
+	</p>
+	<p>
+		<pre><span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">connStr</span>&nbsp;=&nbsp;Configuration.GetConnectionString(<span style="color:#a31515;">&quot;Restaurant&quot;</span>);
+services.AddSingleton&lt;IReservationsRepository&gt;(<span style="color:#1f377f;">sp</span>&nbsp;=&gt;
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">logger</span>&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;sp.GetService&lt;ILogger&lt;LoggingReservationsRepository&gt;&gt;();
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">postOffice</span>&nbsp;=&nbsp;sp.GetService&lt;IPostOffice&gt;();
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;EmailingReservationsRepository(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;postOffice,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;LoggingReservationsRepository(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;logger,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;SqlReservationsRepository(connStr)));
+});</pre>
+	</p>
+	<p>
+		This adds a <code>ServiceDescriptor</code> entry to the collection. (Code examples are from <a href="/code-that-fits-in-your-head">Code That Fits in Your Head</a>.)
+	</p>
+	<p>
+		Later, you can <a href="/2020/04/20/unit-bias-against-collections">remove and replace the service</a> for test purposes:
+	</p>
+	<p>
+		<pre><span style="color:blue;">internal</span>&nbsp;<span style="color:blue;">sealed</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">SelfHostedApi</span>&nbsp;:&nbsp;WebApplicationFactory&lt;Startup&gt;
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">protected</span>&nbsp;<span style="color:blue;">override</span>&nbsp;<span style="color:blue;">void</span>&nbsp;<span style="color:#74531f;">ConfigureWebHost</span>(IWebHostBuilder&nbsp;<span style="color:#1f377f;">builder</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;builder.ConfigureServices(<span style="color:#1f377f;">services</span>&nbsp;=&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;services.RemoveAll&lt;IReservationsRepository&gt;();
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;services.AddSingleton&lt;IReservationsRepository&gt;(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;FakeDatabase());
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;});
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+	</p>
+	<p>
+		Here I use <code>RemoveAll</code>, even though I 'know' there's only one service of that type. Bogdan Galiceanu's argument, if I understand it correctly, is that it'd be more honest to use <code>SingleOrDefault</code>, since we 'know' that there's only one such service.
+	</p>
+	<p>
+		I don't bring this up to bash on either Bogdan Galiceanu or the <code>IServiceCollection</code> API, but this exchange of ideas provided another example that <a href="/2012/11/06/WhentouseaDIContainer">DI Containers aren't as helpful as you'd think</a>. While they do provide some services, they require significant mental overhead. You have to 'know' that this service has only one instance, while another service may have two implementations, and so on. As the size of both code base and team grows, keeping all such knowledge in your head becomes increasingly difficult.
+	</p>
+	<p>
+		The promise of object-orientation was always that you <em>shouldn't</em> have to remember implementation details.
+	</p>
+	<p>
+		Particularly with statically typed programming languages you should be able to surface such knowledge as static type information. What would a more honest, statically typed DI Container look like?
+	</p>
+	<h3 id="5c487718a2f84c4c9f68f71871bf15e1">
+		Statically typed containers <a href="#5c487718a2f84c4c9f68f71871bf15e1" title="permalink">#</a>
+	</h3>
+	<p>
+		Over a series of articles I'll explore how a statically typed DI Container might look:
+	</p>
+	<ul>
+		<li>Type-level DI Container prototype</li>
+		<li>A type-safe DI Container C# example</li>
+		<li>Nested type-safe DI Containers</li>
+		<li>A type-safe DI Container as a functor</li>
+		<li>A type-safe DI Container as a tuple</li>
+		<li>Type-safe DI Containers are redundant</li>
+	</ul>
+	<p>
+		The first of these articles show a <a href="https://www.haskell.org">Haskell</a> prototype, while the rest of the articles use C#. If you don't care about Haskell, you can skip the first article.
+	</p>
+	<p>
+		As the title of the last article implies, this exploration only concludes that type-safe DI Containers are isomorphic to <a href="/2014/06/10/pure-di">Pure DI</a>. I consider Pure DI the simplest of these approaches, suggesting that there's no point in type-safe DI Containers of the kinds shown here.
+	</p>
+	<h3 id="10a5db047d7d4bc1b397214ba6db6137">
+		Conclusion <a href="#10a5db047d7d4bc1b397214ba6db6137" title="permalink">#</a>
+	</h3>
+	<p>
+		Some people like DI Containers. I don't, because they take away type-safety without providing much benefit to warrant the trade-off. A commonly suggested benefit of DI Containers is lifetime management, but you can <a href="/2014/06/03/compile-time-lifetime-matching">trivially implement type-safe lifetime management with Pure DI</a>. I don't find that argument compelling.
+	</p>
+	<p>
+		This article series examines if it's possible to create a 'better' DI Container by making it more type-safe, but I ultimately conclude that there's no point in doing so.
+	</p>
+	<p>
+		<strong>Next:</strong> Type-level DI Container prototype.
+	</p>
+</div>
