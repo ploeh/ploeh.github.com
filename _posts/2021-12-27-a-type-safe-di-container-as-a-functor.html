@@ -1,0 +1,251 @@
+---
+layout: post
+title: "A type-safe DI Container as a functor"
+description: "Decoupling the registry of services from the container. An ongoing C# example."
+date: 2021-12-27 19:25 UTC
+tags: [Dependency Injection, Software Design]
+---
+{% include JB/setup %}
+
+<div id="post">
+	<p>
+		<em>{{ page.description }}</em>
+	</p>
+	<p>
+		This article is part of a series called <a href="">Type-safe DI composition</a>. In the previous article, you saw <a href="">a C# example of a type-safe, nested DI Container</a>. In case it's not clear from the article that introduces the series, there's really no point to any of this. My motivation for writing the article is that readers sometimes ask me about topics such as DI Containers versus type safety, or DI Containers in functional programming. The goal of these articles is to make it painfully clear why I find such ideas moot.
+	</p>
+	<p>
+		In the previous article, you saw how you can use container nesting to implement a type-safe container of arbitrary arity. You only need these generic containers:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">sealed</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">Container</span>
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">sealed</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">Container</span>&lt;<span style="color:#2b91af;">T1</span>&gt;
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">sealed</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">Container</span>&lt;<span style="color:#2b91af;">T1</span>,&nbsp;<span style="color:#2b91af;">T2</span>&gt;</pre>
+	</p>
+	<p>
+		You can achieve higher arities than two by nesting containers. For example, you can <a href="/2010/09/29/TheRegisterResolveReleasepattern">register</a> three services by nesting one container inside another: <code>Container&lt;T1,&nbsp;Container&lt;T2,&nbsp;T3&gt;&gt;</code>. Higher arities require more nesting. See the <a href="">previous article</a> for an example with five services.
+	</p>
+	<h3 id="c0c1df1b436c49a79f1ea5aef2a9d251">
+		Decoupling the container from the registry <a href="#c0c1df1b436c49a79f1ea5aef2a9d251" title="permalink">#</a>
+	</h3>
+	<p>
+		How did I get the idea of nesting the containers?
+	</p>
+	<p>
+		It started as I was examining the constructor of the <code>CompositionRoot</code> class:
+	</p>
+	<p>
+		<pre><span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;Container&lt;IConfiguration,&nbsp;Container&lt;Container&lt;Container&lt;IRestaurantDatabase,&nbsp;IPostOffice&gt;,&nbsp;IClock&gt;,&nbsp;IReservationsRepository&gt;&gt;&nbsp;container;
+ 
+<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">CompositionRoot</span>(Container&lt;IConfiguration,&nbsp;Container&lt;Container&lt;Container&lt;IRestaurantDatabase,&nbsp;IPostOffice&gt;,&nbsp;IClock&gt;,&nbsp;IReservationsRepository&gt;&gt;&nbsp;<span style="color:#1f377f;">container</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.container&nbsp;=&nbsp;container;
+}</pre>
+	</p>
+	<p>
+		Those are, indeed, wide lines of code. No <a href="/2019/11/04/the-80-24-rule">80x24 box</a> here. If you ignore all the container nesting, you can tell that the container contains five services:
+		<ul>
+			<li><code>IConfiguration</code></li>
+			<li><code>IRestaurantDatabase</code></li>
+			<li><code>IPostOffice</code></li>
+			<li><code>IClock</code></li>
+			<li><code>IReservationsRepository</code></li>
+		</ul>
+		What may not be immediately clear, however, is that only three of those are required by <code>CompositionRoot</code>:
+		<ul>
+			<li><code>IRestaurantDatabase</code></li>
+			<li><code>IClock</code></li>
+			<li><code>IReservationsRepository</code></li>
+		</ul>
+		The <code>IConfiguration</code> and <code>IPostOffice</code> services are only present because they were required to create some of the other services. <code>CompositionRoot</code> never uses these two services. In other words, this container definition is a leaky abstraction.
+	</p>
+	<p>
+		It'd be more in spirit with the <a href="https://en.wikipedia.org/wiki/Dependency_inversion_principle">Dependency Inversion Principle</a> (DIP) and the <a href="https://en.wikipedia.org/wiki/Interface_segregation_principle">Interface Segregation Principle</a> (ISP) if the constructor were to require only the services it needs.
+	</p>
+	<p>
+		On the other hand, it's easiest to create the container from its constituent elements if you can pass already-registered services along when registering other services:
+	</p>
+	<p>
+		<pre><span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">container</span>&nbsp;=&nbsp;Container.Empty
+&nbsp;&nbsp;&nbsp;&nbsp;.Register(Configuration)
+&nbsp;&nbsp;&nbsp;&nbsp;.Register(CompositionRoot.CreateRestaurantDatabase)
+&nbsp;&nbsp;&nbsp;&nbsp;.Register(CompositionRoot.CreatePostOffice)
+&nbsp;&nbsp;&nbsp;&nbsp;.Register(CompositionRoot.CreateClock())
+&nbsp;&nbsp;&nbsp;&nbsp;.Register((<span style="color:#1f377f;">conf</span>,&nbsp;<span style="color:#1f377f;">cont</span>)&nbsp;=&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;CompositionRoot.CreateRepository(conf,&nbsp;cont.Item1.Item2));
+<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">compositionRoot</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;CompositionRoot(container);
+services.AddSingleton&lt;IControllerActivator&gt;(compositionRoot);</pre>
+	</p>
+	<p>
+		I realised that the container needed a way to remove services from the public API. And it hit me that it'd be easier if I separated the container from its registry of services. If I did that, I could define a <em>single</em> generic <code>Container&lt;T&gt;</code> and even make it a <a href="/2018/03/22/functors">functor</a>. The payload could be a custom Parameter Object, but could also just be a tuple of services.
+	</p>
+	<p>
+		From <a href="https://thinkingwithtypes.com">Thinking with Types</a> I knew that you can reduce all <a href="https://en.wikipedia.org/wiki/Algebraic_data_type">algebraic data types</a> to canonical representations of <a href="/2018/06/11/church-encoded-either">Eithers</a> and tuples.
+	</p>
+	<p>
+		A triple, for example, can be modelled as a <code>Tuple&lt;T1, Tuple&lt;T2, T3&gt;&gt;</code> or <code>Tuple&lt;Tuple&lt;T1, T2&gt;, T3&gt;</code>, a quadruple as e.g. <code>Tuple&lt;Tuple&lt;T1, T2&gt;, Tuple&lt;T3, T4&gt;&gt;</code>, etcetera.
+	</p>
+	<p>
+		Connecting those dots, I also realised that as an intermediary step I could nest the containers. It's really unnecessary, though, so let's proceed to simplify the code.
+	</p>
+	<h3 id="6e6880e3ca98497d87473981d084d43f">
+		A Container functor <a href="#6e6880e3ca98497d87473981d084d43f" title="permalink">#</a>
+	</h3>
+	<p>
+		Instead of a <code>Container&lt;T1, T2&gt;</code> in addition to a <code>Container&lt;T1&gt;</code>, you only need the single-arity container:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">sealed</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">Container</span>&lt;<span style="color:#2b91af;">T</span>&gt;
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">Container</span>(T&nbsp;<span style="color:#1f377f;">item</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Item&nbsp;=&nbsp;item;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;T&nbsp;Item&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;More&nbsp;members&nbsp;to&nbsp;follow...</span></pre>
+	</p>
+	<p>
+		Apart from overriding <code>Equals</code> and <code>GetHashCode</code>, the only member is <code>Select</code>:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;Container&lt;TResult&gt;&nbsp;<span style="color:#74531f;">Select</span>&lt;<span style="color:#2b91af;">TResult</span>&gt;(Func&lt;T,&nbsp;TResult&gt;&nbsp;<span style="color:#1f377f;">selector</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">if</span>&nbsp;(selector&nbsp;<span style="color:blue;">is</span>&nbsp;<span style="color:blue;">null</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">throw</span>&nbsp;<span style="color:blue;">new</span>&nbsp;ArgumentNullException(nameof(selector));
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;Container&lt;TResult&gt;(selector(Item));
+}</pre>
+	</p>
+	<p>
+		This is a straightforward <code>Select</code> implementation, making <code>Container&lt;T&gt;</code> a functor.
+	</p>
+	<h3 id="140bf408620c4c9aa3bd2d4480f333a2">
+		Usage <a href="#140bf408620c4c9aa3bd2d4480f333a2" title="permalink">#</a>
+	</h3>
+	<p>
+		You can use the <code>Select</code> method to incrementally build the desired container:
+	</p>
+	<p>
+		<pre><span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">container</span>&nbsp;=&nbsp;Container.Empty.Register(Configuration)
+&nbsp;&nbsp;&nbsp;&nbsp;.Select(<span style="color:#1f377f;">conf</span>&nbsp;=&gt;&nbsp;(conf,&nbsp;rdb:&nbsp;CompositionRoot.CreateRestaurantDatabase(conf)))
+&nbsp;&nbsp;&nbsp;&nbsp;.Select(<span style="color:#1f377f;">t</span>&nbsp;=&gt;&nbsp;(t.conf,&nbsp;t.rdb,&nbsp;po:&nbsp;CompositionRoot.CreatePostOffice(t.conf,&nbsp;t.rdb)))
+&nbsp;&nbsp;&nbsp;&nbsp;.Select(<span style="color:#1f377f;">t</span>&nbsp;=&gt;&nbsp;(t.conf,&nbsp;t.rdb,&nbsp;t.po,&nbsp;clock:&nbsp;CompositionRoot.CreateClock()))
+&nbsp;&nbsp;&nbsp;&nbsp;.Select(<span style="color:#1f377f;">t</span>&nbsp;=&gt;&nbsp;(t.conf,&nbsp;t.rdb,&nbsp;t.po,&nbsp;t.clock,&nbsp;repo:&nbsp;CompositionRoot.CreateRepository(t.conf,&nbsp;t.po)));
+<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">compositionRoot</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;CompositionRoot(container);
+services.AddSingleton&lt;IControllerActivator&gt;(compositionRoot);</pre>
+	</p>
+	<p>
+		The syntax is awkward, since you need to pass a tuple along to the next step, in which you need to access each of the tuple's elements, only to create a bigger tuple, and so on.
+	</p>
+	<p>
+		While it does get the job done, we can do better.
+	</p>
+	<h3 id="176a52591fd8439e90e747ee96edc695">
+		Query syntax <a href="#176a52591fd8439e90e747ee96edc695" title="permalink">#</a>
+	</h3>
+	<p>
+		Instead of using method-call syntax to chain all these service registrations together, you can take advantage of C#'s <em>query syntax</em> which lights up for any functor:
+	</p>
+	<p>
+		<pre><span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">container</span>&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">from</span>&nbsp;conf&nbsp;<span style="color:blue;">in</span>&nbsp;Container.Empty.Register(Configuration)
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;rdb&nbsp;=&nbsp;CompositionRoot.CreateRestaurantDatabase(conf)
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;po&nbsp;=&nbsp;CompositionRoot.CreatePostOffice(conf,&nbsp;rdb)
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;clock&nbsp;=&nbsp;CompositionRoot.CreateClock()
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;repo&nbsp;=&nbsp;CompositionRoot.CreateRepository(conf,&nbsp;po)
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">select</span>&nbsp;(conf,&nbsp;rdb,&nbsp;po,&nbsp;clock,&nbsp;repo);
+<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">compositionRoot</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;CompositionRoot(container);
+services.AddSingleton&lt;IControllerActivator&gt;(compositionRoot);</pre>
+	</p>
+	<p>
+		In both cases, the <code>container</code> object has the type <code>Container&lt;(IConfiguration&nbsp;conf,&nbsp;IRestaurantDatabase&nbsp;rdb,&nbsp;IPostOffice&nbsp;po,&nbsp;IClock&nbsp;clock,&nbsp;IReservationsRepository&nbsp;repo)&gt;</code>, which is still quite the mouthful. Now, however, we can do something about it.
+	</p>
+	<h3 id="dea37fc7697046bc8d8c6ba881d34890">
+		DIP and ISP applied <a href="#dea37fc7697046bc8d8c6ba881d34890" title="permalink">#</a>
+	</h3>
+	<p>
+		The <code>CompositionRoot</code> class only needs three services, so its constructor should ask for those, and no more:
+	</p>
+	<p>
+		<pre><span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;Container&lt;(IRestaurantDatabase&nbsp;rdb,&nbsp;IClock&nbsp;clock,&nbsp;IReservationsRepository&nbsp;repo)&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;container;
+ 
+<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">CompositionRoot</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;Container&lt;(IRestaurantDatabase&nbsp;rdb,&nbsp;IClock&nbsp;clock,&nbsp;IReservationsRepository&nbsp;repo)&gt;&nbsp;<span style="color:#1f377f;">container</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.container&nbsp;=&nbsp;container;
+}</pre>
+	</p>
+	<p>
+		With that injected <code>container</code> it can implement <code>Create</code> like this:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">object</span>&nbsp;<span style="color:#74531f;">Create</span>(ControllerContext&nbsp;<span style="color:#1f377f;">context</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">if</span>&nbsp;(context&nbsp;<span style="color:blue;">is</span>&nbsp;<span style="color:blue;">null</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">throw</span>&nbsp;<span style="color:blue;">new</span>&nbsp;ArgumentNullException(nameof(context));
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">t</span>&nbsp;=&nbsp;context.ActionDescriptor.ControllerTypeInfo;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">if</span>&nbsp;(t&nbsp;==&nbsp;<span style="color:blue;">typeof</span>(CalendarController))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;CalendarController(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;container.Item.rdb,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;container.Item.repo);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">else</span>&nbsp;<span style="color:#8f08c4;">if</span>&nbsp;(t&nbsp;==&nbsp;<span style="color:blue;">typeof</span>(HomeController))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;HomeController(container.Item.rdb);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">else</span>&nbsp;<span style="color:#8f08c4;">if</span>&nbsp;(t&nbsp;==&nbsp;<span style="color:blue;">typeof</span>(ReservationsController))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;ReservationsController(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;container.Item.clock,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;container.Item.rdb,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;container.Item.repo);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">else</span>&nbsp;<span style="color:#8f08c4;">if</span>&nbsp;(t&nbsp;==&nbsp;<span style="color:blue;">typeof</span>(RestaurantsController))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;RestaurantsController(container.Item.rdb);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">else</span>&nbsp;<span style="color:#8f08c4;">if</span>&nbsp;(t&nbsp;==&nbsp;<span style="color:blue;">typeof</span>(ScheduleController))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;ScheduleController(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;container.Item.rdb,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;container.Item.repo,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;AccessControlList.FromUser(context.HttpContext.User));
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">else</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">throw</span>&nbsp;<span style="color:blue;">new</span>&nbsp;ArgumentException(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#a31515;">$&quot;Unexpected&nbsp;controller&nbsp;type:&nbsp;</span>{t}<span style="color:#a31515;">.&quot;</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;nameof(context));
+}</pre>
+	</p>
+	<p>
+		That's more readable, although the intermediary <code>Item</code> object doesn't seem to do much work...
+	</p>
+	<p>
+		You can create a <code>container</code> with the desired type like this:
+	</p>
+	<p>
+		<pre>Container&lt;(IRestaurantDatabase&nbsp;rdb,&nbsp;IClock&nbsp;clock,&nbsp;IReservationsRepository&nbsp;repo)&gt;&nbsp;<span style="color:#1f377f;">container</span>&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">from</span>&nbsp;conf&nbsp;<span style="color:blue;">in</span>&nbsp;Container.Empty.Register(Configuration)
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;rdb&nbsp;=&nbsp;CompositionRoot.CreateRestaurantDatabase(conf)
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;po&nbsp;=&nbsp;CompositionRoot.CreatePostOffice(conf,&nbsp;rdb)
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;clock&nbsp;=&nbsp;CompositionRoot.CreateClock()
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;repo&nbsp;=&nbsp;CompositionRoot.CreateRepository(conf,&nbsp;po)
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">select</span>&nbsp;(rdb,&nbsp;clock,&nbsp;repo);
+<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">compositionRoot</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;CompositionRoot(container);
+services.AddSingleton&lt;IControllerActivator&gt;(compositionRoot);</pre>
+	</p>
+	<p>
+		Notice that the only difference compared to earlier is that the <code>select</code> expression only involves the three required services: <code>rdb</code>, <code>clock</code>, and <code>repo</code>.
+	</p>
+	<h3 id="0cf421420e044b6fb66292689f987d13">
+		Conclusion <a href="#0cf421420e044b6fb66292689f987d13" title="permalink">#</a>
+	</h3>
+	<p>
+		This seems cleaner than before, but perhaps you're left with a nagging doubt: Why is the <code>Container&lt;T&gt;</code> class even required? What value does its <code>Item</code> property provide?
+	</p>
+	<p>
+		And perhaps another question is also in order: Does the <code>Select</code> method shown even define a lawful functor?
+	</p>
+	<p>
+		Read on.
+	</p>
+	<p>
+		<strong>Next:</strong> A type-safe DI Container as a tuple.
+	</p>
+</div>
