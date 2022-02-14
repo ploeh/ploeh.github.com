@@ -1,0 +1,449 @@
+---
+layout: post
+title: "A conditional sandwich example"
+description: "An F# example of reducing a workflow to an impureim sandwich."
+date: 2022-01-21 6:58 UTC
+tags: [Functional Programming, F#]
+image: "/content/binary/flowchart-to-create-fusebit-user.png"
+image_alt: "Flowchart that illustrates how to provision a Fusebit user."
+---
+{% include JB/setup %}
+
+<div id="post">
+	<p>
+		<em>{{ page.description }}</em>
+	</p>
+	<p>
+		The most common reaction to the <a href="/2020/03/02/impureim-sandwich">impureim sandwich</a> architecture (also known as <a href="https://www.destroyallsoftware.com/screencasts/catalog/functional-core-imperative-shell">functional core, imperative shell</a>) is one of incredulity. How does this way of organising code generalise to arbitrary complexity?
+	</p>
+	<p>
+		The short answer is that it doesn't. Given <em>sufficient complexity</em>, you may not be able to 1. gather all data with impure queries, 2. call a pure function, and 3. apply the return value via impure actions. The question is: How much complexity is required before you have to give up on the impureim sandwich?
+	</p>
+	<p>
+		<img src="/content/binary/sandwich-transition-free.png" alt="Axis with sandwich to the left, free monad to the right, and a tentative transition zone in between, but biased to the right.">
+	</p>
+	<p>
+		There's probably a fuzzy transition zone where the sandwich may still apply, but where it begins to be questionable whether it's beneficial. In my experience, this transition seems to lie further to the right than most people think.
+	</p>
+	<p>
+		Once you have to give up on the impureim sandwich, in functional programming you may resort to using <a href="/2017/08/07/f-free-monad-recipe">free monads</a>. In object-oriented programming, you may use <a href="/dippp">Dependency Injection</a>. Depending on language and paradigm, still more options may be available.
+	</p>
+	<p>
+		My experience is mostly with web-based systems, but in that context, I find that a surprisingly large proportion of problems can be rephrased and organised in such a way that the impureim sandwich architecture applies. Actually, I'd say that <em>most</em> problems can be addressed in that way.
+	</p>
+	<p>
+		I am, however, often looking for good examples. As I wrote in <a href="/2017/02/02/dependency-rejection#36c724b49f614104842c47909cd9c916">a comment</a> to <a href="/2017/02/02/dependency-rejection">Dependency rejection</a>:
+	</p>
+	<blockquote>
+		<p>
+			"I'd welcome a simplified, but still concrete example where the impure/pure/impure sandwich described here isn't going to be possible."
+		</p>
+	</blockquote>
+	<p>
+		Such examples are, unfortunately, rare. While real production code may seem like an endless supply of examples, production code often contains irrelevant details that obscure the essence of the case. Additionally, production code is often proprietary, so I can't share it.
+	</p>
+	<p>
+		In 2019 <a href="https://www.relativisticramblings.com/">Christer van der Meeren</a> kindly supplied an example problem that <a href="/2019/12/02/refactoring-registration-flow-to-functional-architecture">I could refactor</a>. Since then, there's been a dearth of more examples. Until now.
+	</p>
+	<p>
+		I recently ran into another fine example of a decision flow that at first glance seemed a poor fit for the <em>functional core, imperative shell</em> architecture. What follows is, actually, production code, here reproduced with the kind permission of <a href="https://www.criipto.com/">Criipto</a>.
+	</p>
+	<h3 id="e90c1b9373854c988f5c7d4fe21f90ee">
+		Create a user if it doesn't exist <a href="#e90c1b9373854c988f5c7d4fe21f90ee" title="permalink">#</a>
+	</h3>
+	<p>
+		As I've <a href="/2022/01/03/to-id-or-not-to-id">previously touched on</a>, I'm helping Criipto integrate with the <a href="https://fusebit.io/docs/reference/fusebit-http-api/">Fusebit API</a>. This API has a user model where you can create users in the Fusebit services. Once you've created a user, a client can log on as that user and access the resources available to her, him, or it. There's an underlying security model that controls all of that.
+	</p>
+	<p>
+		Criipto's users may not all be provisioned as users in the Fusebit API. If they need to use the Fusebit system, we'll provision them just in time. On the other hand, there's no reason to create the user if it already exists.
+	</p>
+	<p>
+		But it gets more complicated than that. To fit our requirements, the user must have an associated <em>issuer</em>. This is another Fusebit resource that we may have to provision if it doesn't already exist.
+	</p>
+	<p>
+		The desired logic may be easier to follow if visualised as a flowchart.
+	</p>
+	<p>
+		<img src="/content/binary/flowchart-to-create-fusebit-user.png" alt="Flowchart that illustrates how to provision a Fusebit user.">
+	</p>
+	<p>
+		The user must have an <em>issuer</em>, but an appropriate issuer may already exist. If it doesn't, we must create the issuer before we create the user.
+	</p>
+	<p>
+		At first blush this seems like a workflow that doesn't fit the impureim sandwich architecture. After all, you should only check for the existence of the issuer if you find that the user doesn't exist. There's a decision between the first and second impure query.
+	</p>
+	<p>
+		Can we resolve this problem and implement the functionality as an impureim sandwich?
+	</p>
+	<h3 id="26f6a40a12534d349f556fb67c41e945">
+		Speculative prefetching <a href="#26f6a40a12534d349f556fb67c41e945" title="permalink">#</a>
+	</h3>
+	<p>
+		When looking for ways to apply the <em>functional core, imperative shell</em> architecture, it often pays to take a step back and look at a slightly larger picture. Another way to put it is that you should think less procedurally, and more declaratively. A flowchart like the above is essentially procedural. It may prevent you from seeing other opportunities.
+	</p>
+	<p>
+		One of the reasons I like functional programming is that it forces me to think in a more declarative way. This helps me identify better abstractions than I might otherwise be able to think of.
+	</p>
+	<p>
+		The above flowchart is representative of the most common counterargument I hear: The impureim sandwich doesn't work if the code has to make a decision about a secondary query based on the result of an initial query. This is also what's at stake here. The result of the <em>user exists</em> query determines whether the program should query about the issuer.
+	</p>
+	<p>
+		The assumption is that since the user is supposed to have an issuer, if the user exists, the issuer must also exist.
+	</p>
+	<p>
+		Even so, would it hurt so much to query the Fusebit API up front about the issuer?
+	</p>
+	<p>
+		Perhaps you react to such a suggestion with distaste. After all, it seems wasteful. Why query a web service if you don't need the result? And what about performance?
+	</p>
+	<p>
+		Whether or not this is wasteful depends on what kind of waste you measure. If you measure bits transmitted over the network, then yes, you may see this measure increase.
+	</p>
+	<p>
+		It may not be as bad as you think, though. Perhaps the HTTP <code>GET</code> request you're about to make has a cacheable result. Perhaps the result is already waiting in your proxy server's RAM.
+	</p>
+	<p>
+		Neither the Fusebit HTTP API's <em>user</em> resources nor its <em>issuer</em> resources, however, come with cache headers, so this last argument doesn't apply here. I still included it above because it's worth taking into account.
+	</p>
+	<p>
+		Another typical performance consideration is that this kind of potentially redundant traffic will degrade performance. Perhaps. As usual, if that's a concern: measure.
+	</p>
+	<p>
+		Querying the API whether a user exists is independent of the query to check if an issuer exists. This means that you could perform the two queries in parallel. Depending on the total load on the system, the difference between one HTTP request and two concurrent requests may be negligible. (It could still impact overall system performance if the system is already running close to capacity, so this isn't always a good strategy. Often, however, it's not really an issue.)
+	</p>
+	<p>
+		A third consideration is the statistical distribution of pathways through the system. If you consider the flowchart above, it indicates a <a href="https://en.wikipedia.org/wiki/Cyclomatic_complexity">cyclomatic complexity</a> of <em>3</em>; there are three distinct pathways.
+	</p>
+	<p>
+		If, however, it turns out that in 95 percent of cases the user <em>doesn't</em> exist, you're going to have to perform the second query (for issuer) anyway, then the difference between prefetching and conditional querying is minimal.
+	</p>
+	<p>
+		While some would consider this 'cheating', when aiming for the impureim sandwich architecture, these are all relevant questions to ponder. It often turns out that you <em>can</em> fetch all the data before passing them to a pure function. It may entail 'wasting' some electrons on queries that turn out to be unnecessary, but it may still be worth doing.
+	</p>
+	<p>
+		There's another kind of waste worth considering. This is the waste in <em>developer hours</em> if you write code that's harder to maintain than it has to be. As I recently described in an article titled <a href="https://stackoverflow.blog/2022/01/03/favor-real-dependencies-for-unit-testing/">Favor real dependencies for unit testing</a>, the more you use functional programming, the less test maintenance you'll have.
+	</p>
+	<p>
+		Keep in mind that the scenario in this article is a server-to-server interaction. How much would a bit of extra bandwidth cost, versus wasted programmer hours?
+	</p>
+	<p>
+		If you can substantially simplify the code at the cost of a few dollars of hardware or network infrastructure, it's often a good trade-off.
+	</p>
+	<h3 id="284c71bc67ef4958b855f57b892fd842">
+		Referential integrity <a href="#284c71bc67ef4958b855f57b892fd842" title="permalink">#</a>
+	</h3>
+	<p>
+		The above flowchart implies a more subtle assumption that turns out to not hold in practice. The assumption is that all users in the system have been created the same: that all users are associated with an issuer. Thus, according to this assumption, if the user exists, then so must the issuer.
+	</p>
+	<p>
+		This turns out to be a false assumption. The Fusebit HTTP API doesn't enforce <a href="https://en.wikipedia.org/wiki/Referential_integrity">referential integrity</a>. You can create a user with an issuer that doesn't exist. When creating a user, you supply only the issuer ID (a string), but the API doesn't check that an issuer with that ID exists.
+	</p>
+	<p>
+		Thus, just because a user exists you can't be sure that its associated issuer exists. To be sure, you'd have to check.
+	</p>
+	<p>
+		But this means that you'll have to perform two queries after all. The angst from the previous section turns out to be irrelevant. The flowchart is wrong.
+	</p>
+	<p>
+		Instead, you have two independent, but potentially parallelisable, processes:
+	</p>
+	<p>
+		<img src="/content/binary/parallel-flowchart-to-create-fusebit-user-and-issuer.png" alt="Flowchart showing the actual parallel nature of Fusebit user provisioning.">
+	</p>
+	<p>
+		You can't always be that lucky when you consider how to make requirements fit the impureim sandwich mould, but this is beginning to look really promising. Each of these two processes is near-trivial.
+	</p>
+	<h3 id="6622f662e19243a198475bde42d624bd">
+		Idempotence <a href="#6622f662e19243a198475bde42d624bd" title="permalink">#</a>
+	</h3>
+	<p>
+		Really, what's actually required is an <a href="https://en.wikipedia.org/wiki/Idempotence">idempotent</a> <em>create</em> action. As the <a href="/ref/rest-cookbook">RESTful Web Services Cookbook</a> describes, all HTTP verbs <em>except</em> <code>POST</code> should be regarded as idempotent in a well-designed API. Alas, creating users and issuers are (naturally) done with <code>POST</code> requests, so these operations aren't naturally idempotent.
+	</p>
+	<p>
+		In functional programming you often <a href="/2016/09/26/decoupling-decisions-from-effects">decouple decisions from effects</a>. In order to be able to do that here, I created this <a href="https://docs.microsoft.com/dotnet/fsharp/language-reference/discriminated-unions">discriminated union</a>:
+	</p>
+	<p>
+		<pre><span style="color:blue;">type</span>&nbsp;Idempotent&lt;&#39;a&gt;&nbsp;=&nbsp;UpToDate&nbsp;|&nbsp;Update&nbsp;<span style="color:blue;">of</span>&nbsp;&#39;a</pre>
+	</p>
+	<p>
+		This type is isomorphic to <a href="https://docs.microsoft.com/dotnet/fsharp/language-reference/options">option</a>, but I found it worthwhile to introduce a distinct type for this particular purpose. Usually, if a query returns, say <code>UserData option</code>, you'd interpret the <code>Some</code> case as indicating that the user exists, and the <code>None</code> case as indicating that the user doesn't exist.
+	</p>
+	<p>
+		Here, I wanted the 'populated' case to indicate that an <code>Update</code> action is required. If I'd used <code>option</code>, then I would have had to map the user-doesn't-exist case to a <code>Some</code> value, and the user-exists case to a <code>None</code> value. I though that this might be confusing to other programmers, since it'd go against the usual <a href="/2015/08/03/idiomatic-or-idiosyncratic">idiomatic</a> use of the type.
+	</p>
+	<p>
+		That's the reason I created a custom type.
+	</p>
+	<p>
+		The <code>UpToDate</code> case indicates that the value exists and is up to date. The <code>Update</code> case is worded in the imperative to indicate that the value (of type <code>'a</code>) should be updated.
+	</p>
+	<h3 id="6c8043d3335840919df68562d57a91e5">
+		Establish <a href="#6c8043d3335840919df68562d57a91e5" title="permalink">#</a>
+	</h3>
+	<p>
+		The purpose of this entire exercise is to <em>establish</em> that a user (and issuer) exists. It's okay if the user already exists, but if it doesn't, we should create it.
+	</p>
+	<p>
+		I mulled over the terminology and liked the verb <em>establish</em>, to the consternation of many Twitter users.
+	</p>
+	<blockquote>
+		<p>
+			CreateUserIfNotExists is a crude name 🤢
+		</p>
+		<p>
+			How about EstablishUser instead?
+		</p>
+		<p>
+			"Establish" can both mean to "set up on a firm or permanent basis" and "show (something) to be true or certain by determining the facts". That seems to say the same in a more succinct way 👌
+		</p>
+		<footer><cite><a href="https://twitter.com/ploeh/status/1471123230203199491">Me, on Twitter</a></cite></footer>
+	</blockquote>
+	<p>
+		Just read the comments to see how divisive that little idea is. Still, I decided to define a function called <code>establish</code> to convert a Boolean and an <code>'a</code> value to an <code>Idempotent&lt;&#39;a&gt;</code> value.
+	</p>
+	<p>
+		Don't forget the purpose of this entire exercise. The benefit that the impureim sandwich architecture can bring is that it enables you to drain the impure parts of the sandwich of logic. <a href="/2015/05/07/functional-design-is-intrinsically-testable">Pure functions are intrinsically testable</a>, so the more you define decisions and algorithms as pure functions, the more testable the code will be.
+	</p>
+	<p>
+		It's even better when you can make the testable functions generic, because reusable functions has the potential to reduce cognitive load. Once you've learned and understand an abstraction, it stops being much of a cognitive load.
+	</p>
+	<p>
+		The functions to create and manipulate <code>Idempotent&lt;&#39;a&gt;</code> values should be covered by automated tests. The behaviour is quite trivial, though, so to increase coverage we can write the tests as properties. The code base in question already uses <a href="https://fscheck.github.io/FsCheck/">FsCheck</a>, so I just went with that:
+	</p>
+	<p>
+		<pre>[&lt;Property(QuietOnSuccess&nbsp;=&nbsp;<span style="color:blue;">true</span>)&gt;]
+<span style="color:blue;">let</span>&nbsp;``Idempotent.establish&nbsp;returns&nbsp;UpToDate``&nbsp;(x&nbsp;:&nbsp;int)&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;actual&nbsp;=&nbsp;Idempotent.establish&nbsp;x&nbsp;<span style="color:blue;">true</span>
+&nbsp;&nbsp;&nbsp;&nbsp;UpToDate&nbsp;=!&nbsp;actual
+ 
+[&lt;Property(QuietOnSuccess&nbsp;=&nbsp;<span style="color:blue;">true</span>)&gt;]
+<span style="color:blue;">let</span>&nbsp;``Idempotent.establish&nbsp;returns&nbsp;Update``&nbsp;(x&nbsp;:&nbsp;string)&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;actual&nbsp;=&nbsp;Idempotent.establish&nbsp;x&nbsp;<span style="color:blue;">false</span>
+&nbsp;&nbsp;&nbsp;&nbsp;Update&nbsp;x&nbsp;=!&nbsp;actual</pre>
+	</p>
+	<p>
+		These two properties also use <a href="https://github.com/SwensenSoftware/Unquote">Unquote</a> for assertions. The <code>=!</code> operator means <em>should equal</em>, so you can read an expression like <code>UpToDate&nbsp;=!&nbsp;actual</code> as <em>UpToDate should equal actual</em>.
+	</p>
+	<p>
+		This describes the entire behaviour of the <code>establish</code> function, which is implemented this way:
+	</p>
+	<p>
+		<pre><span style="color:green;">//&nbsp;&#39;a&nbsp;-&gt;&nbsp;bool&nbsp;-&gt;&nbsp;Idempotent&lt;&#39;a&gt;</span>
+<span style="color:blue;">let</span>&nbsp;establish&nbsp;x&nbsp;isUpToDate&nbsp;=&nbsp;<span style="color:blue;">if</span>&nbsp;isUpToDate&nbsp;<span style="color:blue;">then</span>&nbsp;UpToDate&nbsp;<span style="color:blue;">else</span>&nbsp;Update&nbsp;x</pre>
+	</p>
+	<p>
+		About as trivial as it can be. Unsurprising code is good.
+	</p>
+	<h3 id="af0781e5c14f4044bb46a885c7960870">
+		Fold <a href="#af0781e5c14f4044bb46a885c7960870" title="permalink">#</a>
+	</h3>
+	<p>
+		The <code>establish</code> function affords a way to create <code>Idempotent</code> values. It'll also be useful with a function to <a href="/2019/02/04/how-to-get-the-value-out-of-the-monad">get the value out of the container</a>, so to speak. While you can always <a href="https://docs.microsoft.com/dotnet/fsharp/language-reference/pattern-matching">pattern match</a> on an <code>Idempotent</code> value, that'd introduce decision logic into the code that does that.
+	</p>
+	<p>
+		The goal is to cover as much decision logic as possible by tests so that we can leave the overall impureim sandwich as an untested declarative composition - a <a href="http://xunitpatterns.com/Humble%20Object.html">Humble Object</a>, if you will. It'd be appropriate to introduce a reusable function (covered by tests) that can fulfil that role.
+	</p>
+	<p>
+		We need the so-called <em>case analysis</em> of <code>Idempotent&lt;&#39;a&gt;</code>. In other terminology, this is also known as the <a href="/2019/04/29/catamorphisms">catamorphism</a>. Since <code>Idempotent&lt;&#39;a&gt;</code> is isomorphic to <code>option</code> (also known as <em>Maybe</em>), the catamorphism is also isomorphic to the <a href="/2019/05/20/maybe-catamorphism">Maybe catamorphism</a>. While we expect no surprises, we can still cover the function with automated tests:
+	</p>
+	<p>
+		<pre>[&lt;Property(QuietOnSuccess&nbsp;=&nbsp;<span style="color:blue;">true</span>)&gt;]
+<span style="color:blue;">let</span>&nbsp;``Idempotent.fold&nbsp;when&nbsp;up-to-date``&nbsp;(expected&nbsp;:&nbsp;DateTimeOffset)&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;actual&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Idempotent.fold&nbsp;(<span style="color:blue;">fun</span>&nbsp;_&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;DateTimeOffset.MinValue)&nbsp;expected&nbsp;UpToDate
+&nbsp;&nbsp;&nbsp;&nbsp;expected&nbsp;=!&nbsp;actual
+ 
+[&lt;Property(QuietOnSuccess&nbsp;=&nbsp;<span style="color:blue;">true</span>)&gt;]
+<span style="color:blue;">let</span>&nbsp;``Idempotent.fold&nbsp;when&nbsp;update&nbsp;required``&nbsp;(x&nbsp;:&nbsp;TimeSpan)&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;f&nbsp;(ts&nbsp;:&nbsp;TimeSpan)&nbsp;=&nbsp;ts.TotalHours&nbsp;+&nbsp;float&nbsp;ts.Minutes
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;actual&nbsp;=&nbsp;Update&nbsp;x&nbsp;|&gt;&nbsp;Idempotent.fold&nbsp;f&nbsp;1.1
+&nbsp;&nbsp;&nbsp;&nbsp;f&nbsp;x&nbsp;=!&nbsp;actual</pre>
+	</p>
+	<p>
+		The most common catamorphisms are idiomatically called <code>fold</code> in F#, so that's what I called it as well.
+	</p>
+	<p>
+		The first property states that when the the <code>Idempotent</code> value is already <code>UpToDate</code>, <code>fold</code> simply returns the 'fallback value' (here called <code>expected</code>) and the function doesn't run.
+	</p>
+	<p>
+		When the <code>Idempotent</code> is an <code>Update</code> value, the function <code>f</code> runs over the contained value <code>x</code>.
+	</p>
+	<p>
+		The implementation hardly comes as a surprise:
+	</p>
+	<p>
+		<pre><span style="color:green;">//&nbsp;(&#39;a&nbsp;-&gt;&nbsp;&#39;b)&nbsp;-&gt;&nbsp;&#39;b&nbsp;-&gt;&nbsp;Idempotent&lt;&#39;a&gt;&nbsp;-&gt;&nbsp;&#39;b</span>
+<span style="color:blue;">let</span>&nbsp;fold&nbsp;f&nbsp;onUpToDate&nbsp;=&nbsp;<span style="color:blue;">function</span>
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;UpToDate&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;onUpToDate
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;Update&nbsp;x&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;f&nbsp;x</pre>
+	</p>
+	<p>
+		Both <code>establish</code> and <code>fold</code> are general-purpose functions. I needed one more specialised function before I could compose a workflow to create a Fusebit user if it doesn't exist.
+	</p>
+	<h3 id="d0dada3f342f42df93197f777ac94712">
+		Checking whether an issuer exists <a href="#d0dada3f342f42df93197f777ac94712" title="permalink">#</a>
+	</h3>
+	<p>
+		As I've <a href="/2022/01/03/to-id-or-not-to-id">previously mentioned</a>, I'd already developed a set of modules to interact with the Fusebit API. One of these was a function to read an issuer. This <code>Issuer.get</code> action returns a <code>Task&lt;Result&lt;IssuerData, HttpResponseMessage&gt;&gt;</code>.
+	</p>
+	<p>
+		The <code>Result</code> value will only be an <code>Ok</code> value if the issuer exists, but we can't conclude that any <code>Error</code> value indicates a missing resource. An <code>Error</code> may also indicate a genuine HTTP error.
+	</p>
+	<p>
+		A function to translate a <code>Result&lt;IssuerData, HttpResponseMessage&gt;</code> value to a <code>Result&lt;bool, HttpResponseMessage&gt;</code> by examining the <code>HttpResponseMessage</code> is just complex enough (cyclomatic complexity <em>3</em>) to warrant unit test coverage. Here I just went with some parametrised tests rather than FsCheck properties
+	</p>
+	<p>
+		The first test asserts that when the result is <code>Ok</code> it translates to <code>Ok true</code>:
+	</p>
+	<p>
+		<pre>[&lt;Theory&gt;]
+[&lt;InlineData&nbsp;(<span style="color:#a31515;">&quot;https://example.com&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;DN&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;https://example.net&quot;</span>)&gt;]
+[&lt;InlineData&nbsp;(<span style="color:#a31515;">&quot;https://example.org/id&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;lga&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;https://example.gov/jwks&quot;</span>)&gt;]
+[&lt;InlineData&nbsp;(<span style="color:#a31515;">&quot;https://example.com/id&quot;</span>,&nbsp;<span style="color:blue;">null</span>,&nbsp;<span style="color:#a31515;">&quot;https://example.org/.jwks&quot;</span>)&gt;]
+<span style="color:blue;">let</span>&nbsp;``Issuer&nbsp;exists``&nbsp;iid&nbsp;dn&nbsp;jwks&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;issuer&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Id&nbsp;=&nbsp;Uri&nbsp;iid
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;DisplayName&nbsp;=&nbsp;dn&nbsp;|&gt;&nbsp;Option.ofObj
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;PKA&nbsp;=&nbsp;JwksEndpoint&nbsp;(Uri&nbsp;jwks)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;result&nbsp;=&nbsp;Ok&nbsp;issuer
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;actual&nbsp;=&nbsp;Fusebit.issuerExists&nbsp;result
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;Ok&nbsp;<span style="color:blue;">true</span>&nbsp;=!&nbsp;actual</pre>
+	</p>
+	<p>
+		All tests here are structured according to the <a href="/2013/06/24/a-heuristic-for-formatting-code-according-to-the-aaa-pattern">AAA formatting heuristic</a>. This particular test may seem so obvious that you may wonder how there's actually any logic to test. Perhaps the next test throws a little more light on that question:
+	</p>
+	<p>
+		<pre>[&lt;Fact&gt;]
+<span style="color:blue;">let</span>&nbsp;``Issuer&nbsp;doesn&#39;t&nbsp;exist``&nbsp;()&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">use</span>&nbsp;resp&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;HttpResponseMessage&nbsp;(HttpStatusCode.NotFound)
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;result&nbsp;=&nbsp;Error&nbsp;resp
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;actual&nbsp;=&nbsp;Fusebit.issuerExists&nbsp;result
+&nbsp;&nbsp;&nbsp;&nbsp;
+&nbsp;&nbsp;&nbsp;&nbsp;Ok&nbsp;<span style="color:blue;">false</span>&nbsp;=!&nbsp;actual</pre>
+	</p>
+	<p>
+		How do we know that the requested issuer doesn't exist? It's not just any <code>Error</code> result that indicates that, but a particular <code>404 Not Found</code> result. Notice that this particular <code>Error</code> result translates to an <code>Ok</code> result: <code>Ok false</code>.
+	</p>
+	<p>
+		All other kinds of <code>Error</code> results, on the other hand, should remain <code>Error</code> values:
+	</p>
+	<p>
+		<pre>[&lt;Theory&gt;]
+[&lt;InlineData&nbsp;(HttpStatusCode.BadRequest)&gt;]
+[&lt;InlineData&nbsp;(HttpStatusCode.Unauthorized)&gt;]
+[&lt;InlineData&nbsp;(HttpStatusCode.Forbidden)&gt;]
+[&lt;InlineData&nbsp;(HttpStatusCode.InternalServerError)&gt;]
+<span style="color:blue;">let</span>&nbsp;``Issuer&nbsp;error``&nbsp;statusCode&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">use</span>&nbsp;resp&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;HttpResponseMessage&nbsp;(statusCode)
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;expected&nbsp;=&nbsp;Error&nbsp;resp
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;actual&nbsp;=&nbsp;Fusebit.issuerExists&nbsp;expected
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;expected&nbsp;=!&nbsp;actual</pre>
+	</p>
+	<p>
+		All together, these tests indicate an implementation like this:
+	</p>
+	<p>
+		<pre><span style="color:green;">//&nbsp;Result&lt;&#39;a,&nbsp;HttpResponseMessage&gt;&nbsp;-&gt;&nbsp;Result&lt;bool,&nbsp;HttpResponseMessage&gt;</span>
+<span style="color:blue;">let</span>&nbsp;issuerExists&nbsp;=&nbsp;<span style="color:blue;">function</span>
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;Ok&nbsp;_&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;Ok&nbsp;<span style="color:blue;">true</span>
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;Error&nbsp;(resp&nbsp;:&nbsp;HttpResponseMessage)&nbsp;<span style="color:blue;">-&gt;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;resp.StatusCode&nbsp;=&nbsp;HttpStatusCode.NotFound
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">then</span>&nbsp;Ok&nbsp;<span style="color:blue;">false</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">else</span>&nbsp;Error&nbsp;resp</pre>
+	</p>
+	<p>
+		Once again, I've managed to write a function more generic than its name implies. This seems to happen to me a lot.
+	</p>
+	<p>
+		In this context, what matters more is that this is another <a href="https://en.wikipedia.org/wiki/Pure_function">pure function</a> - which also explains why it was so easy to unit test.
+	</p>
+	<h3 id="ea0ca01fa88143e3adb23c5d883b6125">
+		Composition <a href="#ea0ca01fa88143e3adb23c5d883b6125" title="permalink">#</a>
+	</h3>
+	<p>
+		It turned out that I'd now managed to extract all complexity to pure, testable functions. What remained was composing them together.
+	</p>
+	<p>
+		First, a couple of private helper functions:
+	</p>
+	<p>
+		<pre><span style="color:green;">//&nbsp;Task&lt;Result&lt;&#39;a,&nbsp;&#39;b&gt;&gt;&nbsp;-&gt;&nbsp;Task&lt;Result&lt;unit,&nbsp;&#39;b&gt;&gt;</span>
+<span style="color:blue;">let</span>&nbsp;ignoreOk&nbsp;x&nbsp;=&nbsp;TaskResult.map&nbsp;(<span style="color:blue;">fun</span>&nbsp;_&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;())&nbsp;x
+ 
+<span style="color:green;">//&nbsp;(&#39;a&nbsp;-&gt;&nbsp;Task&lt;Result&lt;&#39;b,&nbsp;&#39;c&gt;&gt;)&nbsp;-&gt;&nbsp;Idempotent&lt;&#39;a&gt;&nbsp;-&gt;&nbsp;Task&lt;Result&lt;unit,&nbsp;&#39;c&gt;&gt;</span>
+<span style="color:blue;">let</span>&nbsp;whenMissing&nbsp;f&nbsp;=&nbsp;Idempotent.fold&nbsp;(f&nbsp;&gt;&gt;&nbsp;ignoreOk)&nbsp;(task&nbsp;{&nbsp;<span style="color:blue;">return</span>&nbsp;Ok&nbsp;()&nbsp;})</pre>
+	</p>
+	<p>
+		These only exist to make the ensuing composition more readable. Since they both have a cyclomatic complexity of <em>1</em>, I found that <a href="/2018/11/12/what-to-test-and-not-to-test">it was okay to skip unit testing</a>.
+	</p>
+	<p>
+		The same is true for the final composition:
+	</p>
+	<p>
+		<pre><span style="color:blue;">let!</span>&nbsp;comp&nbsp;=&nbsp;taskResult&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;(issuer,&nbsp;identity,&nbsp;user)&nbsp;=&nbsp;gatherData&nbsp;dto
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;issuerExists&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Issuer.get&nbsp;client&nbsp;issuer.Id&nbsp;|&gt;&nbsp;Task.map&nbsp;Fusebit.issuerExists
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;userExists&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;User.find&nbsp;client&nbsp;(IdentityCriterion&nbsp;identity)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;TaskResult.map&nbsp;(not&nbsp;&lt;&lt;&nbsp;List.isEmpty)
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">do!</span>&nbsp;Idempotent.establish&nbsp;issuer&nbsp;issuerExists
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;whenMissing&nbsp;(Issuer.create&nbsp;client)
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">do!</span>&nbsp;Idempotent.establish&nbsp;user&nbsp;userExists
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;whenMissing&nbsp;(User.create&nbsp;client)&nbsp;}</pre>
+	</p>
+	<p>
+		The <code>comp</code> composition starts by gathering data from an incoming <code>dto</code> value. This code snippet is part of a slightly larger Controller Action that I'm not showing here. The rest of the surrounding method is irrelevant to the present example, since it only deals with translation of the input <a href="https://en.wikipedia.org/wiki/Data_transfer_object">Data Transfer Object</a> and from <code>comp</code> back to an <code>IHttpActionResult</code> object.
+	</p>
+	<p>
+		After a little pure hors d'œuvre the sandwich arrives with the first impure actions: Retrieving the <code>issuerExists</code> and <code>userExists</code> values from the Fusebit API. After that, the sandwich does fall apart a bit, I admit. Perhaps it's more like a piece of <a href="https://en.wikipedia.org/wiki/Sm%C3%B8rrebr%C3%B8d">smørrebrød</a>...
+	</p>
+	<p>
+		I could have written this composition with a more explicit sandwich structure, starting by exclusively calling <code>Issuer.get</code> and <code>User.find</code>. That would have been the first impure layer of the sandwich.
+	</p>
+	<p>
+		As the pure centre, I could then have composed a pure function from <code>Fusebit.issuerExists</code>, <code>not &lt;&lt; List.isEmpty</code> and <code>Idempotent.establish</code>.
+	</p>
+	<p>
+		Finally, I could have completed the sandwich with the second impure layer that'd call <code>whenMissing</code>.
+	</p>
+	<p>
+		I admit that I didn't actually structure the code exactly like that. I mixed some of the pure functions (<code>Fusebit.issuerExists</code> and <code>not &lt;&lt; List.isEmpty</code>) with the initial queries by adding them as continuations with <code>Task.map</code> and <code>TaskResult.map</code>. Likewise, I decided to immediately pipe the results of <code>Idempotent.establish</code> to <code>whenMissing</code>. My motivation was that this made the code more readable, since I wanted to highlight the symmetry of the two actions. That mattered more to me, as a writer, than highlighting any sandwich structure.
+	</p>
+	<p>
+		I'm not insisting I was right in making that choice. Perhaps I was; perhaps not. I'm only reporting what motivated me.
+	</p>
+	<p>
+		Could the code be further improved? I wouldn't be surprised, but at this time I felt that it was good enough to submit to a code review, which it survived.
+	</p>
+	<p>
+		One possible improvement, however, might be to parallelise the two actions, so that they could execute concurrently. I'm not sure it's worth the (small?) effort, though.
+	</p>
+	<h3 id="328d685313fd4141b3c9ea8f03e4c944">
+		Conclusion <a href="#328d685313fd4141b3c9ea8f03e4c944" title="permalink">#</a>
+	</h3>
+	<p>
+		I'm always keen on examples that challenge the notion of the impureim sandwich architecture. Usually, I find that by taking a slightly more holistic view of what has to happen, I can make most problems fit the pattern.
+	</p>
+	<p>
+		The most common counterargument is that subsequent impure queries may depend on decisions taken earlier. Thus, the argument goes, you can't gather all impure data up front.
+	</p>
+	<p>
+		I'm sure that such situation genuinely exist, but I also think that they are rarer than most people think. In most cases I've experienced, even when I initially think that I've encountered such a situation, after a bit of reflection I find that I can structure the code to fit the <em>functional core, imperative shell</em> architecture. Not only that, but the code becomes simpler in the process.
+	</p>
+	<p>
+		This happened in the example I've covered in this article. Initially, I though that ensuring that a Fusebit user exists would involve a process as illustrated in the first of the above flowcharts. Then, after thinking it over, I realised that defining a simple discriminated union would simplify matters <em>and</em> make the code testable.
+	</p>
+	<p>
+		I thought it was worthwhile sharing that journey of discovery with others.
+	</p>
+</div>
