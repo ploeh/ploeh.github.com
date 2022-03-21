@@ -1,0 +1,212 @@
+---
+layout: post
+title: "Contravariant Dependency Injection"
+description: "How to use a DI Container in FP... or not."
+date: 2021-12-28 10:12 UTC
+tags: [Dependency Injection, F#, Functional Programming, Software Design]
+---
+{% include JB/setup %}
+
+<div id="post">
+	<p>
+		<em>{{ page.description }}</em>
+	</p>
+	<p>
+		This article is an instalment in <a href="/2021/09/02/contravariant-functors">an article series about contravariant functors</a>. It assumes that you've read the introduction, and a few of the examples.
+	</p>
+	<p>
+		People sometimes ask me how to do Dependency Injection (DI) in Functional Programming (FP). The short answer is that <a href="/2017/01/27/from-dependency-injection-to-dependency-rejection">you don't, because dependencies make functions impure</a>. If you're having the discussion on Twitter, you may get some drive-by comments to the effect that <em>DI is just a contravariant functor</em>. (I've seen such interactions take place, but currently can't find any examples.)
+	</p>
+	<p>
+		What might people mean by that?
+	</p>
+	<p>
+		In this article, I'll explain. You'll also see how this doesn't address the underlying problem that DI makes everything impure. Ultimately, then, it doesn't really matter. It's still not functional.
+	</p>
+	<h3 id="43f01ded1bbd42e28a90f398152518ff">
+		Partial application as Dependency Injection <a href="#43f01ded1bbd42e28a90f398152518ff" title="permalink">#</a>
+	</h3>
+	<p>
+		As example code, let's revisit the code from the article <a href="/2017/01/30/partial-application-is-dependency-injection">Partial application is dependency injection</a>. You may have an impure action like this:
+	</p>
+	<p>
+		<pre><span style="color:green;">//&nbsp;int&nbsp;-&gt;&nbsp;(DateTimeOffset&nbsp;-&gt;&nbsp;Reservation&nbsp;list)&nbsp;-&gt;&nbsp;(Reservation&nbsp;-&gt;&nbsp;int)&nbsp;-&gt;&nbsp;Reservation</span>
+<span style="color:green;">//&nbsp;-&gt;&nbsp;int&nbsp;option</span>
+<span style="color:blue;">let</span>&nbsp;tryAccept&nbsp;capacity&nbsp;readReservations&nbsp;createReservation&nbsp;reservation&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;reservedSeats&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;readReservations&nbsp;reservation.Date&nbsp;|&gt;&nbsp;List.sumBy&nbsp;(<span style="color:blue;">fun</span>&nbsp;x&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;x.Quantity)
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;reservedSeats&nbsp;+&nbsp;reservation.Quantity&nbsp;&lt;=&nbsp;capacity
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">then</span>&nbsp;createReservation&nbsp;{&nbsp;reservation&nbsp;<span style="color:blue;">with</span>&nbsp;IsAccepted&nbsp;=&nbsp;<span style="color:blue;">true</span>&nbsp;}&nbsp;|&gt;&nbsp;Some
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">else</span>&nbsp;None</pre>
+	</p>
+	<p>
+		The <code>readReservations</code> and <code>createReservation</code> 'functions' will in reality be impure actions that read from and write to a database. Since they are impure, the entire <code>tryAccept</code> action is impure. That's the result from that article.
+	</p>
+	<p>
+		In this example the 'dependencies' are pushed to the left. This enables you to partially apply the 'function' with the dependencies:
+	</p>
+	<p>
+		<pre><span style="color:blue;">let</span>&nbsp;sut&nbsp;=&nbsp;tryAccept&nbsp;capacity&nbsp;readReservations&nbsp;createReservation</pre>
+	</p>
+	<p>
+		This code example is from a unit test, which is the reason that I've <a href="https://docs.microsoft.com/en-us/archive/blogs/ploeh/naming-sut-test-variables">named the partially applied 'function' <code>sut</code></a>. It has the type <code>Reservation -&gt; int option</code>. Keep in mind that while it looks like a regular function, in practice it'll be an impure action.
+	</p>
+	<p>
+		You can invoke <code>sut</code> like another other function:
+	</p>
+	<p>
+		<pre><span style="color:blue;">let</span>&nbsp;actual&nbsp;=&nbsp;sut&nbsp;reservation</pre>
+	</p>
+	<p>
+		When you do this, <code>tryAccept</code> will execute, interact with the partially applied dependencies, and return a result.
+	</p>
+	<p>
+		Partial application is a standard practice in FP, and in itself it's useful. Using it for Dependency Injection, however, doesn't magically make DI functional. DI remains impure, which also means that the entire <code>sut</code> composition is impure.
+	</p>
+	<h3 id="88c2633d1dd34a979aaca1a223ff665b">
+		Moving dependencies to the right <a href="#88c2633d1dd34a979aaca1a223ff665b" title="permalink">#</a>
+	</h3>
+	<p>
+		Pushing dependencies to the left enables partial application. Dependencies are typically more long-lived than run-time values like <code>reservation</code>. Thus, partially applying the dependencies as shown above makes sense. If all dependencies are thread-safe, you can let an action like <code>sut</code>, above, have Singleton lifetime. In other words, just keep a single, stateless <code>Reservation -&gt; int option</code> action around for the lifetime of the application, and pass it <code>Reservation</code> values as they arrive.
+	</p>
+	<p>
+		Moving dependencies to the right seems, then, counterproductive.
+	</p>
+	<p>
+		<pre><span style="color:green;">//&nbsp;Reservation&nbsp;-&gt;&nbsp;int&nbsp;-&gt;&nbsp;(DateTimeOffset&nbsp;-&gt;&nbsp;Reservation&nbsp;list)&nbsp;-&gt;&nbsp;(Reservation&nbsp;-&gt;&nbsp;int)</span>
+<span style="color:green;">//&nbsp;-&gt;&nbsp;int&nbsp;option</span>
+<span style="color:blue;">let</span>&nbsp;tryAccept&nbsp;reservation&nbsp;capacity&nbsp;readReservations&nbsp;createReservation&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;reservedSeats&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;readReservations&nbsp;reservation.Date&nbsp;|&gt;&nbsp;List.sumBy&nbsp;(<span style="color:blue;">fun</span>&nbsp;x&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;x.Quantity)
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;reservedSeats&nbsp;+&nbsp;reservation.Quantity&nbsp;&lt;=&nbsp;capacity
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">then</span>&nbsp;createReservation&nbsp;{&nbsp;reservation&nbsp;<span style="color:blue;">with</span>&nbsp;IsAccepted&nbsp;=&nbsp;<span style="color:blue;">true</span>&nbsp;}&nbsp;|&gt;&nbsp;Some
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">else</span>&nbsp;None</pre>
+	</p>
+	<p>
+		If you move the dependencies to the right, you can no longer partially apply them, so what would be the point of that?
+	</p>
+	<p>
+		As given above, it seems that you'll have to supply all arguments in one go:
+	</p>
+	<p>
+		<pre><span style="color:blue;">let</span>&nbsp;actual&nbsp;=&nbsp;tryAccept&nbsp;reservation&nbsp;capacity&nbsp;readReservations&nbsp;createReservation</pre>
+	</p>
+	<p>
+		If, on the other hand, you turn all the dependencies into a tuple, some new options arise:
+	</p>
+	<p>
+		<pre><span style="color:green;">//&nbsp;Reservation&nbsp;-&gt;&nbsp;(int&nbsp;*&nbsp;(DateTimeOffset&nbsp;-&gt;&nbsp;Reservation&nbsp;list)&nbsp;*&nbsp;(Reservation&nbsp;-&gt;&nbsp;int))</span>
+<span style="color:green;">//&nbsp;-&gt;&nbsp;int&nbsp;option</span>
+<span style="color:blue;">let</span>&nbsp;tryAccept&nbsp;reservation&nbsp;(capacity,&nbsp;readReservations,&nbsp;createReservation)&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;reservedSeats&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;readReservations&nbsp;reservation.Date&nbsp;|&gt;&nbsp;List.sumBy&nbsp;(<span style="color:blue;">fun</span>&nbsp;x&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;x.Quantity)
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;reservedSeats&nbsp;+&nbsp;reservation.Quantity&nbsp;&lt;=&nbsp;capacity
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">then</span>&nbsp;createReservation&nbsp;{&nbsp;reservation&nbsp;<span style="color:blue;">with</span>&nbsp;IsAccepted&nbsp;=&nbsp;<span style="color:blue;">true</span>&nbsp;}&nbsp;|&gt;&nbsp;Some
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">else</span>&nbsp;None</pre>
+	</p>
+	<p>
+		I decided to count <code>capacity</code> as a dependency, since this is most likely a value that originates from a configuration setting somewhere. Thus, it'd tend to have a singleton lifetime equivalent to <code>readReservations</code> and <code>createReservation</code>.
+	</p>
+	<p>
+		It still seems that you have to supply all the arguments, though:
+	</p>
+	<p>
+		<pre><span style="color:blue;">let</span>&nbsp;actual&nbsp;=&nbsp;tryAccept&nbsp;reservation&nbsp;(capacity,&nbsp;readReservations,&nbsp;createReservation)</pre>
+	</p>
+	<p>
+		What's the point, then?
+	</p>
+	<h3 id="8bf311e8b5184d1396e7f49b5b9d9b48">
+		Reader <a href="#8bf311e8b5184d1396e7f49b5b9d9b48" title="permalink">#</a>
+	</h3>
+	<p>
+		You can view all functions as values of the <a href="/2021/11/08/reader-as-a-profunctor">Reader profunctor</a>. This, then, is also true for <code>tryAccept</code>. It's an (impure) function that takes a <code>Reservation</code> as input, and returns a Reader value as output. The 'Reader environment' is a tuple of dependencies, and the output is <code>int option</code>.
+	</p>
+	<p>
+		First, add an explicit <code>Reader</code> module:
+	</p>
+	<p>
+		<pre><span style="color:green;">//&nbsp;&#39;a&nbsp;-&gt;&nbsp;(&#39;a&nbsp;-&gt;&nbsp;&#39;b)&nbsp;-&gt;&nbsp;&#39;b</span>
+<span style="color:blue;">let</span>&nbsp;run&nbsp;env&nbsp;rdr&nbsp;=&nbsp;rdr&nbsp;env
+ 
+<span style="color:green;">//&nbsp;(&#39;a&nbsp;-&gt;&nbsp;&#39;b)&nbsp;-&gt;&nbsp;(&#39;c&nbsp;-&gt;&nbsp;&#39;d)&nbsp;-&gt;&nbsp;(&#39;b&nbsp;-&gt;&nbsp;&#39;c)&nbsp;-&gt;&nbsp;&#39;a&nbsp;-&gt;&nbsp;&#39;d</span>
+<span style="color:blue;">let</span>&nbsp;dimap&nbsp;f&nbsp;g&nbsp;rdr&nbsp;=&nbsp;<span style="color:blue;">fun</span>&nbsp;env&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;g&nbsp;(rdr&nbsp;(f&nbsp;env))
+ 
+<span style="color:green;">//&nbsp;(&#39;a&nbsp;-&gt;&nbsp;&#39;b)&nbsp;-&gt;&nbsp;(&#39;c&nbsp;-&gt;&nbsp;&#39;a)&nbsp;-&gt;&nbsp;&#39;c&nbsp;-&gt;&nbsp;&#39;b</span>
+<span style="color:blue;">let</span>&nbsp;map&nbsp;g&nbsp;=&nbsp;dimap&nbsp;id&nbsp;g
+ 
+<span style="color:green;">//&nbsp;(&#39;a&nbsp;-&gt;&nbsp;&#39;b)&nbsp;-&gt;&nbsp;(&#39;b&nbsp;-&gt;&nbsp;&#39;c)&nbsp;-&gt;&nbsp;&#39;a&nbsp;-&gt;&nbsp;&#39;c</span>
+<span style="color:blue;">let</span>&nbsp;contraMap&nbsp;f&nbsp;=&nbsp;dimap&nbsp;f&nbsp;id</pre>
+	</p>
+	<p>
+		The <code>run</code> function is mostly there to make the Reader concept more explicit. The <code>dimap</code> implementation is what makes Reader a <a href="/2021/11/01/profunctors">profunctor</a>. You can use <code>dimap</code> to implement <code>map</code> and <code>contraMap</code>. In the following, we're not going to need <code>map</code>, but I still included it for good measure.
+	</p>
+	<p>
+		You can partially apply the last version of <code>tryAccept</code> with a <code>reservation</code>:
+	</p>
+	<p>
+		<pre><span style="color:green;">//&nbsp;sut&nbsp;:&nbsp;(int&nbsp;*&nbsp;(DateTimeOffset&nbsp;-&gt;&nbsp;Reservation&nbsp;list)&nbsp;*&nbsp;(Reservation&nbsp;-&gt;&nbsp;int))&nbsp;-&gt;&nbsp;int&nbsp;option</span>
+<span style="color:blue;">let</span>&nbsp;sut&nbsp;=&nbsp;tryAccept&nbsp;reservation</pre>
+	</p>
+	<p>
+		You can view the <code>sut</code> value as a Reader. The 'environment' is the tuple of dependencies, and the output is still <code>int option</code>. Since we can <a href="">view a tuple as a type-safe DI Container</a>, we've now introduced a DI Container to the 'function'. We can say that the action is a Reader of the DI Container.
+	</p>
+	<p>
+		You can <code>run</code> the action by supplying a <code>container</code>:
+	</p>
+	<p>
+		<pre><span style="color:blue;">let</span>&nbsp;container&nbsp;=&nbsp;(capacity,&nbsp;readReservations,&nbsp;createReservation)
+<span style="color:blue;">let</span>&nbsp;sut&nbsp;=&nbsp;tryAccept&nbsp;reservation
+<span style="color:blue;">let</span>&nbsp;actual&nbsp;=&nbsp;sut&nbsp;|&gt;&nbsp;Reader.run&nbsp;container</pre>
+	</p>
+	<p>
+		This <code>container</code>, however, is specialised to fit <code>tryAccept</code>. What if other actions require other dependencies?
+	</p>
+	<h3 id="ada91148e72f45e3b274d89e19644f50">
+		Contravariant mapping <a href="#ada91148e72f45e3b274d89e19644f50" title="permalink">#</a>
+	</h3>
+	<p>
+		In a larger system, you're likely to have more than the three dependencies shown above. Other actions require other dependencies, and may not need <code>capacity</code>, <code>readReservations</code>, or <code>createReservation</code>.
+	</p>
+	<p>
+		To make the point, perhaps the <code>container</code> looks like this:
+	</p>
+	<p>
+		<pre><span style="color:blue;">let</span>&nbsp;container&nbsp;=&nbsp;(capacity,&nbsp;readReservations,&nbsp;createReservation,&nbsp;someOtherService,&nbsp;yetAnotherService)</pre>
+	</p>
+	<p>
+		If you try to <code>run</code> a partially applied Reader like <code>sut</code> with this action, your code doesn't compile. <code>sut</code> needs a triple of a specific type, but <code>container</code> is now a pentuple. Should you change <code>tryAccept</code> so that it takes the bigger pentuple as a parameter?
+	</p>
+	<p>
+		That would compile, but would be a leaky abstraction. It would also violate the <a href="https://en.wikipedia.org/wiki/Dependency_inversion_principle">Dependency Inversion Principle</a> and the <a href="https://en.wikipedia.org/wiki/Interface_segregation_principle">Interface Segregation Principle</a> because <code>tryAccept</code> would require callers to supply a bigger argument than is needed.
+	</p>
+	<p>
+		Instead, you can <code>contraMap</code> the pentuple:
+	</p>
+	<p>
+		<pre><span style="color:blue;">let</span>&nbsp;container&nbsp;=&nbsp;(capacity,&nbsp;readReservations,&nbsp;createReservation,&nbsp;someOtherService,&nbsp;yetAnotherService)
+<span style="color:blue;">let</span>&nbsp;sut&nbsp;=&nbsp;tryAccept&nbsp;reservation&nbsp;|&gt;&nbsp;Reader.contraMap&nbsp;(<span style="color:blue;">fun</span>&nbsp;(c,&nbsp;rr,&nbsp;cr,&nbsp;_,&nbsp;_)&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;(c,&nbsp;rr,&nbsp;cr))
+<span style="color:blue;">let</span>&nbsp;actual&nbsp;=&nbsp;sut&nbsp;|&gt;&nbsp;Reader.run&nbsp;container</pre>
+	</p>
+	<p>
+		This turns <code>sut</code> into a Reader of the pentuple, instead of a Reader of the triple. You can now <code>run</code> it with the pentuple <code>container</code>. <code>tryAccept</code> remains a Reader of the triple.
+	</p>
+	<h3 id="e8cb20a7be2342f7802f6522fa5edd5a">
+		Conclusion <a href="#e8cb20a7be2342f7802f6522fa5edd5a" title="permalink">#</a>
+	</h3>
+	<p>
+		Keep in mind that <code>tryAccept</code> remains impure. While this may look impressively functional, it really isn't. It doesn't address the original problem that <a href="/2021/07/28/referential-transparency-fits-in-your-head">composition of impure actions creates larger impure actions that don't fit in your head</a>.
+	</p>
+	<p>
+		Why, then, make things more complicated than they have to be?
+	</p>
+	<p>
+		In FP, I'd look long and hard for a better alternative - one that obeys <a href="/2018/11/19/functional-architecture-a-definition">the functional architecture law</a>. If, for various reasons, I was unable to produce a purely functional design, I'd prefer composing impure actions with partial application. It's simpler.
+	</p>
+	<p>
+		This article isn't an endorsement of using contravariant DI in FP. It's only meant as an explanation of a phrase like <em>DI is just a contravariant functor</em>.
+	</p>
+	<p>
+		<strong>Next:</strong> <a href="/2021/11/01/profunctors">Profunctors</a>.
+	</p>
+</div>
