@@ -1,0 +1,362 @@
+---
+layout: post
+title: "The State monad"
+description: "Stateful computations as a monad. An example for object-oriented programmers."
+date: 2022-03-23 13:24 UTC
+tags: [Software Design, Functional Programming]
+---
+{% include JB/setup %}
+
+<div id="post">
+	<p>
+		<em>{{ page.description }}</em>
+	</p>
+	<p>
+		This article is an instalment in <a href="">an article series about monads</a>. A previous article described <a href="/2021/07/19/the-state-functor">the State functor</a>. As is the case with many (but not all) <a href="/2018/03/22/functors">functors</a>, this one also forms a monad.
+	</p>
+	<p>
+		This article continues where the State functor article stopped. It uses the same code base.
+	</p>
+	<h3 id="0309f41b7a434781a1640f18ac7cea30">
+		SelectMany <a href="#0309f41b7a434781a1640f18ac7cea30" title="permalink">#</a>
+	</h3>
+	<p>
+		A monad must define either a <em>bind</em> or <em>join</em> function. In C#, monadic bind is called <code>SelectMany</code>. Given the <code>IState&lt;S, T&gt;</code> interface defined in the State functor article, you can implement <code>SelectMany</code> like this:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;IState&lt;S,&nbsp;T1&gt;&nbsp;<span style="color:#74531f;">SelectMany</span>&lt;<span style="color:#2b91af;">S</span>,&nbsp;<span style="color:#2b91af;">T</span>,&nbsp;<span style="color:#2b91af;">T1</span>&gt;(
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>&nbsp;IState&lt;S,&nbsp;T&gt;&nbsp;<span style="color:#1f377f;">source</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;Func&lt;T,&nbsp;IState&lt;S,&nbsp;T1&gt;&gt;&nbsp;<span style="color:#1f377f;">selector</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;SelectManyState&lt;S,&nbsp;T,&nbsp;T1&gt;(source,&nbsp;selector);
+}
+ 
+<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">SelectManyState</span>&lt;<span style="color:#2b91af;">S</span>,&nbsp;<span style="color:#2b91af;">T</span>,&nbsp;<span style="color:#2b91af;">T1</span>&gt;&nbsp;:&nbsp;IState&lt;S,&nbsp;T1&gt;
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;IState&lt;S,&nbsp;T&gt;&nbsp;source;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;Func&lt;T,&nbsp;IState&lt;S,&nbsp;T1&gt;&gt;&nbsp;selector;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">SelectManyState</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;IState&lt;S,&nbsp;T&gt;&nbsp;<span style="color:#1f377f;">source</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Func&lt;T,&nbsp;IState&lt;S,&nbsp;T1&gt;&gt;&nbsp;<span style="color:#1f377f;">selector</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.source&nbsp;=&nbsp;source;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.selector&nbsp;=&nbsp;selector;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;Tuple&lt;T1,&nbsp;S&gt;&nbsp;<span style="color:#74531f;">Run</span>(S&nbsp;<span style="color:#1f377f;">state</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Tuple&lt;T,&nbsp;S&gt;&nbsp;<span style="color:#1f377f;">tuple</span>&nbsp;=&nbsp;source.Run(state);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;IState&lt;S,&nbsp;T1&gt;&nbsp;<span style="color:#1f377f;">projection</span>&nbsp;=&nbsp;selector(tuple.Item1);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;projection.Run(tuple.Item2);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+	</p>
+	<p>
+		As <code>SelectMany</code> implementations go, this is easily the most complex so far in this article series. While it looks complex, it really isn't. It's only complicated.
+	</p>
+	<p>
+		The three lines of code in the <code>Run</code> method does most of the work. The rest is essentially <a href="/2019/12/16/zone-of-ceremony">ceremony</a> required because C# doesn't have language features like object expressions.
+	</p>
+	<p>
+		To be fair, part of the boilerplate is also caused by using an interface instead of functions. In <a href="https://fsharp.org">F#</a> you could get by with as little as this:
+	</p>
+	<p>
+		<pre><span style="color:blue;">let</span>&nbsp;bind&nbsp;(f&nbsp;:&nbsp;&#39;a&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;State&lt;&#39;b,&nbsp;&#39;s&gt;)&nbsp;(x&nbsp;:&nbsp;State&lt;&#39;a,&nbsp;&#39;s&gt;)&nbsp;state&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;x&#39;,&nbsp;newState&nbsp;=&nbsp;run&nbsp;state&nbsp;x
+&nbsp;&nbsp;&nbsp;&nbsp;run&nbsp;newState&nbsp;(f&nbsp;x&#39;)</pre>
+	</p>
+	<p>
+		I found an F# State implementation on my hard drive that turned out to originate from <a href="https://codereview.stackexchange.com/a/139652/3878">this Code Review answer</a>. You can go there to see it in context.
+	</p>
+	<p>
+		The <code>SelectMany</code> method first runs the <code>source</code> with the supplied <code>state</code>. This produces a tuple with a value and a new state. The value is <code>tuple.Item1</code>, which has the type <code>T</code>. The method proceeds to apply that value to the <code>selector</code>, which produces a new State value. Finally, the method runs the <code>projection</code> with the new state (<code>tuple.Item2</code>).
+	</p>
+	<p>
+		Monadic bind becomes useful when you have more than one function that returns a monadic value. Consider a code snippet like this:
+	</p>
+	<p>
+		<pre>IState&lt;<span style="color:blue;">int</span>,&nbsp;<span style="color:blue;">string</span>&gt;&nbsp;<span style="color:#1f377f;">s</span>&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;Switch(<span style="color:#a31515;">&quot;foo&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;bar&quot;</span>).SelectMany(<span style="color:#1f377f;">txt</span>&nbsp;=&gt;&nbsp;<span style="color:blue;">new</span>&nbsp;VowelExpander(txt));</pre>
+	</p>
+	<p>
+		This uses the silly <code>VowelExpander</code> class from <a href="/2021/07/19/the-state-functor">the State functor article</a>, as well as this new frivolous State implementation:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">sealed</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">Switch</span>&nbsp;:&nbsp;IState&lt;<span style="color:blue;">int</span>,&nbsp;<span style="color:blue;">string</span>&gt;
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;<span style="color:blue;">string</span>&nbsp;option1;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;<span style="color:blue;">string</span>&nbsp;option2;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">Switch</span>(<span style="color:blue;">string</span>&nbsp;<span style="color:#1f377f;">option1</span>,&nbsp;<span style="color:blue;">string</span>&nbsp;<span style="color:#1f377f;">option2</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.option1&nbsp;=&nbsp;option1;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.option2&nbsp;=&nbsp;option2;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;Tuple&lt;<span style="color:blue;">string</span>,&nbsp;<span style="color:blue;">int</span>&gt;&nbsp;<span style="color:#74531f;">Run</span>(<span style="color:blue;">int</span>&nbsp;<span style="color:#1f377f;">state</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">if</span>&nbsp;(0&nbsp;&lt;=&nbsp;state)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;Tuple.Create(option1,&nbsp;state);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">newState</span>&nbsp;=&nbsp;0;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;Tuple.Create(option2,&nbsp;newState);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+	</p>
+	<p>
+		Both <code>Switch</code> and <code>VowelExpander</code> are State objects. If <code>SelectMany</code> didn't flatten as it goes, composition would have resulted in a nested State value. You'll see an example later in this article.
+	</p>
+	<h3 id="edc7d11f7fbd4b72b6b16858617fbbab">
+		Query syntax <a href="#edc7d11f7fbd4b72b6b16858617fbbab" title="permalink">#</a>
+	</h3>
+	<p>
+		Monads also enable query syntax in C# (just like they enable other kinds of syntactic sugar in languages like F# and <a href="https://www.haskell.org">Haskell</a>). As outlined in the <a href="">monad introduction</a>, however, you must add a special <code>SelectMany</code> overload:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;IState&lt;S,&nbsp;T1&gt;&nbsp;<span style="color:#74531f;">SelectMany</span>&lt;<span style="color:#2b91af;">S</span>,&nbsp;<span style="color:#2b91af;">T</span>,&nbsp;<span style="color:#2b91af;">U</span>,&nbsp;<span style="color:#2b91af;">T1</span>&gt;(
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>&nbsp;IState&lt;S,&nbsp;T&gt;&nbsp;<span style="color:#1f377f;">source</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;Func&lt;T,&nbsp;IState&lt;S,&nbsp;U&gt;&gt;&nbsp;<span style="color:#1f377f;">k</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;Func&lt;T,&nbsp;U,&nbsp;T1&gt;&nbsp;<span style="color:#1f377f;">s</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;source.SelectMany(<span style="color:#1f377f;">x</span>&nbsp;=&gt;&nbsp;k(x).Select(<span style="color:#1f377f;">y</span>&nbsp;=&gt;&nbsp;s(x,&nbsp;y)));
+}</pre>
+	</p>
+	<p>
+		As already predicted in the <a href="">monad introduction</a>, this boilerplate overload is always implemented in the same way. Only the signature changes. With it, you could instead write the above composition of <code>Switch</code> and <code>VowelExpander</code> like this:
+	</p>
+	<p>
+		<pre>IState&lt;<span style="color:blue;">int</span>,&nbsp;<span style="color:blue;">string</span>&gt;&nbsp;<span style="color:#1f377f;">s</span>&nbsp;=&nbsp;<span style="color:blue;">from</span>&nbsp;txt&nbsp;<span style="color:blue;">in</span>&nbsp;<span style="color:blue;">new</span>&nbsp;Switch(<span style="color:#a31515;">&quot;foo&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;bar&quot;</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">from</span>&nbsp;txt1&nbsp;<span style="color:blue;">in</span>&nbsp;<span style="color:blue;">new</span>&nbsp;VowelExpander(txt)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">select</span>&nbsp;txt1;</pre>
+	</p>
+	<p>
+		That example requires a new variable (<code>txt1</code>). Given that it's often difficult to come up with good variable names, this doesn't look like much of an improvement. Still, it's possible.
+	</p>
+	<h3 id="048b4a03e28a4f7baca996319ca54627">
+		Join <a href="#048b4a03e28a4f7baca996319ca54627" title="permalink">#</a>
+	</h3>
+	<p>
+		In <a href="">the introduction</a> you learned that if you have a <code>Flatten</code> or <code>Join</code> function, you can implement <code>SelectMany</code>, and the other way around. Since we've already defined <code>SelectMany</code> for <code>IState&lt;S, T&gt;</code>, we can use that to implement <code>Join</code>. In this article I use the name <code>Join</code> rather than <code>Flatten</code>. This is an arbitrary choice that doesn't impact behaviour. Perhaps you find it confusing that I'm inconsistent, but I do it in order to demonstrate that the behaviour is the same even if the name is different.
+	</p>
+	<p>
+		The concept of a monad is universal, but the names used to describe its components differ from language to language. What C# calls <code>SelectMany</code>, Scala calls <code>flatMap</code>, and what Haskell calls <code>join</code>, other languages may call <code>Flatten</code>.
+	</p>
+	<p>
+		You can always implement <code>Join</code> by using <code>SelectMany</code> with the identity function.
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;IState&lt;S,&nbsp;T&gt;&nbsp;<span style="color:#74531f;">Join</span>&lt;<span style="color:#2b91af;">S</span>,&nbsp;<span style="color:#2b91af;">T</span>&gt;(<span style="color:blue;">this</span>&nbsp;IState&lt;S,&nbsp;IState&lt;S,&nbsp;T&gt;&gt;&nbsp;<span style="color:#1f377f;">source</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;source.SelectMany(<span style="color:#1f377f;">x</span>&nbsp;=&gt;&nbsp;x);
+}</pre>
+	</p>
+	<p>
+		Here's a way you can use it:
+	</p>
+	<p>
+		<pre>IState&lt;<span style="color:blue;">int</span>,&nbsp;IState&lt;<span style="color:blue;">int</span>,&nbsp;<span style="color:blue;">string</span>&gt;&gt;&nbsp;<span style="color:#1f377f;">nested</span>&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;Switch(<span style="color:#a31515;">&quot;foo&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;bar&quot;</span>).Select(<span style="color:#1f377f;">txt</span>&nbsp;=&gt;&nbsp;(IState&lt;<span style="color:blue;">int</span>,&nbsp;<span style="color:blue;">string</span>&gt;)<span style="color:blue;">new</span>&nbsp;VowelExpander(txt));
+IState&lt;<span style="color:blue;">int</span>,&nbsp;<span style="color:blue;">string</span>&gt;&nbsp;<span style="color:#1f377f;">flattened</span>&nbsp;=&nbsp;nested.Join();</pre>
+	</p>
+	<p>
+		Of the three examples involving <code>Switch</code> and <code>VowelExpander</code>, this one most clearly emphasises the idea that a monad is a functor you can flatten. Using <code>Select</code> (instead of <code>SelectMany</code>) creates a nested State value when you try to compose the two together. With <code>Join</code> you can flatten them.
+	</p>
+	<p>
+		Not that doing it this way is better in any way. In practice, you'll mostly use either <code>SelectMany</code> or query syntax. It's a rare case when I use something like <code>Join</code>.
+	</p>
+	<h3 id="57fff60c94da4624965da2eb87e46f17">
+		Return <a href="#57fff60c94da4624965da2eb87e46f17" title="permalink">#</a>
+	</h3>
+	<p>
+		Apart from monadic bind, a monad must also define a way to put a normal value into the monad. Conceptually, I call this function <em>return</em> (because that's the name that Haskell uses):
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;IState&lt;S,&nbsp;T&gt;&nbsp;<span style="color:#74531f;">Return</span>&lt;<span style="color:#2b91af;">S</span>,&nbsp;<span style="color:#2b91af;">T</span>&gt;(T&nbsp;<span style="color:#1f377f;">x</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;ReturnState&lt;S,&nbsp;T&gt;(x);
+}
+ 
+<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">ReturnState</span>&lt;<span style="color:#2b91af;">S</span>,&nbsp;<span style="color:#2b91af;">T</span>&gt;&nbsp;:&nbsp;IState&lt;S,&nbsp;T&gt;
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;T&nbsp;x;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">ReturnState</span>(T&nbsp;<span style="color:#1f377f;">x</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.x&nbsp;=&nbsp;x;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;Tuple&lt;T,&nbsp;S&gt;&nbsp;<span style="color:#74531f;">Run</span>(S&nbsp;<span style="color:#1f377f;">state</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;Tuple.Create(x,&nbsp;state);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+	</p>
+	<p>
+		Like the above <code>SelectMany</code> implementation, this is easily the most complicated <code>Return</code> implementation so far shown in this article series. Again, however, most of it is just boilerplate necessitated by C#'s lack of certain language features (most notably object expressions). And again, this is also somewhat unfair because I could have chosen to demonstrate the State monad using <code>Func&lt;S, Tuple&lt;T, S&gt;&gt;</code> instead of an interface. (This would actually be a good exercise; try it!)
+	</p>
+	<p>
+		If you strip away all the boilerplate, the implementation is a trivial one-liner (the <code>Run</code> method), as also witnessed by this equivalent F# function that just returns a tuple:
+	</p>
+	<p>
+		<pre><span style="color:blue;">let</span>&nbsp;lift&nbsp;x&nbsp;state&nbsp;=&nbsp;x,&nbsp;state</pre>
+	</p>
+	<p>
+		When partially applied (<code>State.lift&nbsp;x</code>) that function returns a State value (i.e. a <code>&#39;s&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;&#39;a&nbsp;*&nbsp;&#39;s</code> function).
+	</p>
+	<p>
+		Again, you can see that F# code in context in <a href="https://codereview.stackexchange.com/a/139652/3878">this Code Review answer</a>.
+	</p>
+	<h3 id="7cff668e401e40a4b7ee005683e341f6">
+		Left identity <a href="#7cff668e401e40a4b7ee005683e341f6" title="permalink">#</a>
+	</h3>
+	<p>
+		We need to identify the <em>return</em> function in order to examine <a href="">the monad laws</a>. Now that this is done, let's see what the laws look like for the State monad, starting with the left identity law.
+	</p>
+	<p>
+		<pre>[Theory]
+[InlineData(DayOfWeek.Monday,&nbsp;2)]
+[InlineData(DayOfWeek.Tuesday,&nbsp;0)]
+[InlineData(DayOfWeek.Wednesday,&nbsp;19)]
+[InlineData(DayOfWeek.Thursday,&nbsp;42)]
+[InlineData(DayOfWeek.Friday,&nbsp;2112)]
+[InlineData(DayOfWeek.Saturday,&nbsp;90)]
+[InlineData(DayOfWeek.Sunday,&nbsp;210)]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;<span style="color:#74531f;">LeftIdentity</span>(DayOfWeek&nbsp;<span style="color:#1f377f;">a</span>,&nbsp;<span style="color:blue;">int</span>&nbsp;<span style="color:#1f377f;">state</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;Func&lt;DayOfWeek,&nbsp;IState&lt;<span style="color:blue;">int</span>,&nbsp;DayOfWeek&gt;&gt;&nbsp;<span style="color:#1f377f;">@return</span>&nbsp;=&nbsp;State.Return&lt;<span style="color:blue;">int</span>,&nbsp;DayOfWeek&gt;;
+&nbsp;&nbsp;&nbsp;&nbsp;Func&lt;DayOfWeek,&nbsp;IState&lt;<span style="color:blue;">int</span>,&nbsp;<span style="color:blue;">string</span>&gt;&gt;&nbsp;<span style="color:#1f377f;">h</span>&nbsp;=&nbsp;<span style="color:#1f377f;">dow</span>&nbsp;=&gt;&nbsp;<span style="color:blue;">new</span>&nbsp;VowelExpander(dow.ToString());
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;Assert.Equal(@return(a).SelectMany(h).Run(state),&nbsp;h(a).Run(state));
+}</pre>
+	</p>
+	<p>
+		In order to compare the two State values, the test has to <code>Run</code> them and then compare the return values.
+	</p>
+	<h3 id="e47c76d943214e0399bf1ab4ad1e843c">
+		Right identity <a href="#e47c76d943214e0399bf1ab4ad1e843c" title="permalink">#</a>
+	</h3>
+	<p>
+		In a similar manner, we can showcase the right identity law as a test.
+	</p>
+	<p>
+		<pre>[Theory]
+[InlineData(&nbsp;<span style="color:blue;">true</span>,&nbsp;0)]
+[InlineData(&nbsp;<span style="color:blue;">true</span>,&nbsp;1)]
+[InlineData(&nbsp;<span style="color:blue;">true</span>,&nbsp;8)]
+[InlineData(<span style="color:blue;">false</span>,&nbsp;0)]
+[InlineData(<span style="color:blue;">false</span>,&nbsp;2)]
+[InlineData(<span style="color:blue;">false</span>,&nbsp;7)]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;<span style="color:#74531f;">RightIdentity</span>(<span style="color:blue;">bool</span>&nbsp;<span style="color:#1f377f;">a</span>,&nbsp;<span style="color:blue;">int</span>&nbsp;<span style="color:#1f377f;">state</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;Func&lt;<span style="color:blue;">bool</span>,&nbsp;IState&lt;<span style="color:blue;">int</span>,&nbsp;<span style="color:blue;">string</span>&gt;&gt;&nbsp;<span style="color:#1f377f;">f</span>&nbsp;=&nbsp;<span style="color:#1f377f;">b</span>&nbsp;=&gt;&nbsp;<span style="color:blue;">new</span>&nbsp;VowelExpander(b.ToString());
+&nbsp;&nbsp;&nbsp;&nbsp;Func&lt;<span style="color:blue;">string</span>,&nbsp;IState&lt;<span style="color:blue;">int</span>,&nbsp;<span style="color:blue;">string</span>&gt;&gt;&nbsp;<span style="color:#1f377f;">@return</span>&nbsp;=&nbsp;State.Return&lt;<span style="color:blue;">int</span>,&nbsp;<span style="color:blue;">string</span>&gt;;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;IState&lt;<span style="color:blue;">int</span>,&nbsp;<span style="color:blue;">string</span>&gt;&nbsp;<span style="color:#1f377f;">m</span>&nbsp;=&nbsp;f(a);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;Assert.Equal(m.SelectMany(@return).Run(state),&nbsp;m.Run(state));
+}</pre>
+	</p>
+	<p>
+		As always, even a parametrised test constitutes no <em>proof</em> that the law holds. I show the tests to illustrate what the laws look like in 'real' code.
+	</p>
+	<h3 id="4a3a29ab66304776b7bc6676d1675762">
+		Associativity <a href="#4a3a29ab66304776b7bc6676d1675762" title="permalink">#</a>
+	</h3>
+	<p>
+		The last monad law is the associativity law that describes how (at least) three functions compose. We're going to need three functions. For the purpose of demonstrating the law, any three pure functions will do. While the following functions are silly and not at all 'realistic', they have the virtue of being as simple as they can be (while still providing a bit of variety). They don't 'mean' anything, so don't worry too much about their behaviour. It is, as far as I can tell, nonsensical. Later articles will show some more realistic examples of the State monad in action.
+	</p>
+	<p>
+		<pre><span style="color:blue;">private</span>&nbsp;<span style="color:blue;">sealed</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">F</span>&nbsp;:&nbsp;IState&lt;DateTime,&nbsp;<span style="color:blue;">int</span>&gt;
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;<span style="color:blue;">string</span>&nbsp;s;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">F</span>(<span style="color:blue;">string</span>&nbsp;<span style="color:#1f377f;">s</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.s&nbsp;=&nbsp;s;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;Tuple&lt;<span style="color:blue;">int</span>,&nbsp;DateTime&gt;&nbsp;<span style="color:#74531f;">Run</span>(DateTime&nbsp;<span style="color:#1f377f;">state</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">i</span>&nbsp;=&nbsp;s.Length;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">newState</span>&nbsp;=&nbsp;state.AddDays(i);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">newValue</span>&nbsp;=&nbsp;i&nbsp;+&nbsp;state.Month;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;Tuple.Create(newValue,&nbsp;newState);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}
+ 
+<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">sealed</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">G</span>&nbsp;:&nbsp;IState&lt;DateTime,&nbsp;TimeSpan&gt;
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;<span style="color:blue;">int</span>&nbsp;i;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">G</span>(<span style="color:blue;">int</span>&nbsp;<span style="color:#1f377f;">i</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.i&nbsp;=&nbsp;i;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;Tuple&lt;TimeSpan,&nbsp;DateTime&gt;&nbsp;<span style="color:#74531f;">Run</span>(DateTime&nbsp;<span style="color:#1f377f;">state</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">newState</span>&nbsp;=&nbsp;state.AddYears(i&nbsp;-&nbsp;state.Year);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">newValue</span>&nbsp;=&nbsp;TimeSpan.FromMinutes(i);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;Tuple.Create(newValue,&nbsp;newState);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}
+ 
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">sealed</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">H</span>&nbsp;:&nbsp;IState&lt;DateTime,&nbsp;<span style="color:blue;">bool</span>&gt;
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;TimeSpan&nbsp;duration;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">H</span>(TimeSpan&nbsp;<span style="color:#1f377f;">duration</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.duration&nbsp;=&nbsp;duration;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;Tuple&lt;<span style="color:blue;">bool</span>,&nbsp;DateTime&gt;&nbsp;<span style="color:#74531f;">Run</span>(DateTime&nbsp;<span style="color:#1f377f;">state</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">newState</span>&nbsp;=&nbsp;state&nbsp;-&nbsp;duration;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">bool</span>&nbsp;<span style="color:#1f377f;">newValue</span>&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;newState.DayOfWeek&nbsp;==&nbsp;DayOfWeek.Saturday&nbsp;||&nbsp;newState.DayOfWeek&nbsp;==&nbsp;DayOfWeek.Sunday;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;Tuple.Create(newValue,&nbsp;newState);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+	</p>
+	<p>
+		Armed with these three classes, we can now demonstrate the Associativity law:
+	</p>
+	<p>
+		<pre>[Theory]
+[InlineData(<span style="color:#a31515;">&quot;foo&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;2022-03-23&quot;</span>)]
+[InlineData(<span style="color:#a31515;">&quot;bar&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;2021-12-23T18:05&quot;</span>)]
+[InlineData(<span style="color:#a31515;">&quot;baz&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;1984-01-06T00:33&quot;</span>)]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;<span style="color:#74531f;">Associativity</span>(<span style="color:blue;">string</span>&nbsp;<span style="color:#1f377f;">a</span>,&nbsp;DateTime&nbsp;<span style="color:#1f377f;">state</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;Func&lt;<span style="color:blue;">string</span>,&nbsp;IState&lt;DateTime,&nbsp;<span style="color:blue;">int</span>&gt;&gt;&nbsp;<span style="color:#1f377f;">f</span>&nbsp;=&nbsp;<span style="color:#1f377f;">s</span>&nbsp;=&gt;&nbsp;<span style="color:blue;">new</span>&nbsp;F(s);
+&nbsp;&nbsp;&nbsp;&nbsp;Func&lt;<span style="color:blue;">int</span>,&nbsp;IState&lt;DateTime,&nbsp;TimeSpan&gt;&gt;&nbsp;<span style="color:#1f377f;">g</span>&nbsp;=&nbsp;<span style="color:#1f377f;">i</span>&nbsp;=&gt;&nbsp;<span style="color:blue;">new</span>&nbsp;G(i);
+&nbsp;&nbsp;&nbsp;&nbsp;Func&lt;TimeSpan,&nbsp;IState&lt;DateTime,&nbsp;<span style="color:blue;">bool</span>&gt;&gt;&nbsp;<span style="color:#1f377f;">h</span>&nbsp;=&nbsp;<span style="color:#1f377f;">ts</span>&nbsp;=&gt;&nbsp;<span style="color:blue;">new</span>&nbsp;H(ts);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;IState&lt;DateTime,&nbsp;<span style="color:blue;">int</span>&gt;&nbsp;<span style="color:#1f377f;">m</span>&nbsp;=&nbsp;f(a);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;Assert.Equal(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;m.SelectMany(g).SelectMany(h).Run(state),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;m.SelectMany(<span style="color:#1f377f;">x</span>&nbsp;=&gt;&nbsp;g(x).SelectMany(h)).Run(state));
+}</pre>
+	</p>
+	<p>
+		The version of <a href="https://xunit.net">xUnit.net</a> I'm using for these examples (xUnit.net 2.2.0 on .NET Framework 4.6.1 - I may already have hinted that this is an old code base I had lying around) comes with a converter between <code>string</code> and <code>DateTime</code>, which explains why the <code>[InlineData]</code> can supply <code>DateTime</code> values as <code>string</code>s.
+	</p>
+	<h3 id="bf812a647a5c412da53f52f63989ca1d">
+		Conclusion <a href="#bf812a647a5c412da53f52f63989ca1d" title="permalink">#</a>
+	</h3>
+	<p>
+		For people coming from an imperative or object-oriented background, it can often be difficult to learn how to think 'functionally'. It took me years before I felt that I was on firm ground, and even so, I'm still learning new techniques today. As an imperative programmer, one often thinks in terms of state mutation.
+	</p>
+	<p>
+		In Functional Programming, there are often other ways to solve problems than in object-oriented programming, but if you can't think of a way, you can often reach for the fairly blunt hammer than the State monad is. It enables you to implement ostensibly state-based algorithms in a functional way.
+	</p>
+	<p>
+		This article was abstract, because I wanted to focus on the monad nature itself, rather than on practical applications. Future articles will provide more useful examples.
+	</p>
+	<p>
+		<strong>Next:</strong> The Reader monad.
+	</p>
+</div>
