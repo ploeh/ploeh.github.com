@@ -1,0 +1,295 @@
+---
+layout: post
+title: "Waiting to never happen"
+description: "An example of how non-deterministic code can cause test cases to wither."
+date: 2022-03-30 11:05 UTC
+tags: [Unit Testing]
+image: "/content/binary/some-test-paths-through-complex-unit.png"
+image_alt: "Diagram that shows several unit tests exercising one fewer paths through a unit that before."
+---
+{% include JB/setup %}
+
+<div id="post">
+	<p>
+		<em>{{ page.description }}</em>
+	</p>
+	<p>
+		It seems to me that when people discuss functional programming, they spend much time discussing side effects and how to avoid them. Sometimes, they almost forget that non-deterministic behaviour is also something to avoid.
+	</p>
+	<p>
+		On the other hand, we've known for a long time that we should <a href="https://martinfowler.com/articles/nonDeterminism.html">eradicate non-determinism in tests</a>. Martin Fowler's article, however, mostly discusses <a href="https://en.wikipedia.org/wiki/False_positives_and_false_negatives">false positives</a> - tests that fail even when no defect is manifest.
+	</p>
+	<p>
+		Unit tests may also exhibit <a href="http://xunitpatterns.com/false%20negative.html">false negatives</a>. This can happen for a variety of reason. In my article <a href="/2019/10/14/tautological-assertion">Tautological assertion</a> I describe one example.
+	</p>
+	<p>
+		The passing of time, however, has a tendency to introduce decay. This may apply to test suites as well. If a test or the System Under Test depends on the current time, a test may over time transition from a proper test to one that still passes, but for the wrong reason.
+	</p>
+	<h3 id="68269f84da2845d2994b378001326bac">
+		A test example <a href="#68269f84da2845d2994b378001326bac" title="permalink">#</a>
+	</h3>
+	<p>
+		I was recently looking at this test:
+	</p>
+	<p>
+		<pre>[Fact]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">async</span>&nbsp;Task&nbsp;<span style="color:#74531f;">ChangeDateToSoldOutDate</span>()
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">r1</span>&nbsp;=&nbsp;Some.Reservation;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">r2</span>&nbsp;=&nbsp;Some.Reservation
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.WithId(Guid.NewGuid())
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.TheDayAfter()
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.WithQuantity(10);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">db</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;FakeDatabase();
+&nbsp;&nbsp;&nbsp;&nbsp;db.Grandfather.Add(r1);
+&nbsp;&nbsp;&nbsp;&nbsp;db.Grandfather.Add(r2);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">sut</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;ReservationsController(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;SystemClock(),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;InMemoryRestaurantDatabase(Grandfather.Restaurant),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;db);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">dto</span>&nbsp;=&nbsp;r1.WithDate(r2.At).ToDto();
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">actual</span>&nbsp;=&nbsp;<span style="color:blue;">await</span>&nbsp;sut.Put(r1.Id.ToString(<span style="color:#a31515;">&quot;N&quot;</span>),&nbsp;dto);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">oRes</span>&nbsp;=&nbsp;Assert.IsAssignableFrom&lt;ObjectResult&gt;(actual);
+&nbsp;&nbsp;&nbsp;&nbsp;Assert.Equal(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;StatusCodes.Status500InternalServerError,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;oRes.StatusCode);
+}</pre>
+	</p>
+	<p>
+		It's from the code base that accompanies my book <a href="/code-that-fits-in-your-head">Code That Fits in Your Head</a>. It's a false negative waiting to happen. What's the problem?
+	</p>
+	<p>
+		Before I start describing the problem, I think that I owe you a short explanation of what you're looking at. The book has a single example code base that it uses to showcase various heuristics and techniques. The code base implements an online restaurant reservation REST API. I've <a href="/2021/06/14/new-book-code-that-fits-in-your-head">previously discussed that code base on this blog</a>.
+	</p>
+	<p>
+		This particular test exercises the following test case: A client can use the REST API to change an existing reservation. When it does that, the API should check that all business rules apply. Particularly, in this case, if you have an existing reservation (<code>r1</code>), but try to change it to another date, and that other date is already sold out, the update should be refused.
+	</p>
+	<p>
+		The test uses <a href="http://xunitpatterns.com/Back%20Door%20Manipulation.html">backdoor manipulation</a> to establish the initial state. It's a <a href="/2019/02/18/from-interaction-based-to-state-based-testing">state-based integration test</a> that uses an in-memory <a href="http://xunitpatterns.com/Fake%20Object.html">Fake</a> database. It adds two reservations (<code>r1</code> and <code>r2</code>) to the database, on two different days.
+	</p>
+	<p>
+		What's not at all clear from the above code is that that <code>10</code> is the <code>Grandfather.Restaurant</code>'s maximum capacity. (This is a fair criticism against this test, but not what this article is about.) It effectively means that the restaurant is sold out that day.
+	</p>
+	<p>
+		The test then, in <a href="/2013/06/24/a-heuristic-for-formatting-code-according-to-the-aaa-pattern">the act phase</a>, tries to change <code>r1</code> to the date that's sold out and <code>Put</code> that change.
+	</p>
+	<p>
+		The assertion checks that this isn't possible.
+	</p>
+	<h3 id="994d6756ca4f444bbeba236980914a23">
+		A false negative waiting to happen <a href="#994d6756ca4f444bbeba236980914a23" title="permalink">#</a>
+	</h3>
+	<p>
+		What's the problem with the above test?
+	</p>
+	<p>
+		The problem is that <em>when I wrote it</em>, it exercised the above test case, but now it no longer does.
+	</p>
+	<p>
+		At this point, you're probably wondering. The test case is supposed to change the date of <code>r1</code> to the date of <code>r2</code>, but no dates are visible in the test. Which dates does the test use?
+	</p>
+	<p>
+		The answer may be found in the <code>Some</code> class:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;<span style="color:blue;">static</span>&nbsp;Reservation&nbsp;Reservation&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;Reservation(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;Guid(0x81416928,&nbsp;0xC236,&nbsp;0x4EBF,&nbsp;0xA4,&nbsp;0x50,&nbsp;0x24,&nbsp;0x95,&nbsp;0xA4,&nbsp;0xDA,&nbsp;0x92,&nbsp;0x30),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Now,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;Email(<span style="color:#a31515;">&quot;x@example.net&quot;</span>),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;Name(<span style="color:#a31515;">&quot;&quot;</span>),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;1);</pre>
+	</p>
+	<p>
+		<code>Some.Reservation</code> is an <a href="/2017/09/11/test-data-without-builders">immutable test datum</a>. It's intended to be used as a representative example of a <code>Reservation</code> value. The reservation date and time (the <code>At</code> property) is another immutable test datum:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;<span style="color:blue;">static</span>&nbsp;DateTime&nbsp;Now&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;DateTime(2022,&nbsp;4,&nbsp;1,&nbsp;20,&nbsp;15,&nbsp;0);</pre>
+	</p>
+	<p>
+		I wrote most of that code base in 2020. April 1st 2022 seemed far in the future, and I needed a value that could represent 'approximately' the current time. It didn't have to be the day the code would run, but (as it turns out) it's important that this date isn't in the past. Which it now is.
+	</p>
+	<p>
+		What happens now that <code>Some.Reservation</code> is in the past?
+	</p>
+	<p>
+		Nothing, and that's exactly what is the problem.
+	</p>
+	<h3 id="af00b9fef7124afd93b3b80bac4efbf5">
+		A new path <a href="#af00b9fef7124afd93b3b80bac4efbf5" title="permalink">#</a>
+	</h3>
+	<p>
+		Once the clock rolled over from 2022-04-02 20:14:59 to 2022-04-02 20:15:00, the pathway through the code changed. Why April 2 and not April 1? Because the date of importance in the test is <code>TheDayAfter</code>, and <code>TheDayAfter</code> is defined like this:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;Reservation&nbsp;<span style="color:#74531f;">TheDayAfter</span>(<span style="color:blue;">this</span>&nbsp;Reservation&nbsp;<span style="color:#1f377f;">reservation</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;reservation.AddDate(TimeSpan.FromDays(1));
+}</pre>
+	</p>
+	<p>
+		So <code>r2.At</code> is 20:15 April 2, 2022.
+	</p>
+	<p>
+		Before 2022-04-02 20:15:00 the test would exercise the test case it was supposed to. After all, I did write the test <em>before</em> I wrote the implementation, and I did <a href="/2019/10/21/a-red-green-refactor-checklist">see it fail before I saw it pass</a>.
+	</p>
+	<p>
+		Once, however, <code>dto</code> is in the past, another pathway takes over. The <a href="/2020/01/27/the-maitre-d-kata">Maître d's</a> core decision logic (<a href="/2020/11/30/name-by-role">WillAccept</a>) contains this Guard Clause:
+	</p>
+	<p>
+		<pre><span style="color:#8f08c4;">if</span>&nbsp;(candidate.At&nbsp;&lt;&nbsp;now)
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">false</span>;</pre>
+	</p>
+	<p>
+		Long before the domain model investigates whether it can accommodate a reservation, it rejects all reservations in the past. The calling code, however, only sees that the return value is <code>false</code>. In other words, the externally observable behaviour is the same. This also means that test's assertion still passes. From the outside, you can't tell the difference.
+	</p>
+	<h3 id="8a3330c5362c47cbb5431a20a90f1278">
+		Coverage decay <a href="#8a3330c5362c47cbb5431a20a90f1278" title="permalink">#</a>
+	</h3>
+	<p>
+		If the behaviour is stable, then why is this a problem?
+	</p>
+	<p>
+		This is a problem because this decreases test coverage. While <a href="/2015/11/16/code-coverage-is-a-useless-target-measure">code coverage is a useless target measure</a>, it's not a completely useless metric. The absolute percentage is less relevant than the trend. If code coverage decreases, one should at least investigate.
+	</p>
+	<p>
+		Here, specifically, it means that I thought I had a particular test case covered, and in reality it turns out that that's no longer the case. Now the test just verifies that you can't update past reservations, regardless of application state. Other tests already verify that, however, so this test now became redundant.
+	</p>
+	<p>
+		As I've <a href="/2018/11/12/what-to-test-and-not-to-test">described before</a>, each unit test exercises a particular path through the System Under Test:
+	</p>
+	<p>
+		<img src="/content/binary/one-test-path-through-complex-unit.png" alt="Diagram that shows a unit test exercising one path through a unit.">
+	</p>
+	<p>
+		If you have high code coverage, an aggregate diagram might look like this:
+	</p>
+	<p>
+		<img src="/content/binary/most-test-paths-through-complex-unit.png" alt="Diagram that shows several unit tests exercising most paths through a unit.">
+	</p>
+	<p>
+		Notice that the top box now says <em>Unit tests</em> in plural. Together, the tests exercise most pathways through the code. There's one pathway not exercised: The path from the light blue node to the orange node. The point is that this diagram illustrates <em>high</em> code coverage, not complete code coverage. The following argument applies to that general situation.
+	</p>
+	<p>
+		What happened with the above test is that coverage <em>decayed</em>.
+	</p>
+	<p>
+		<img src="/content/binary/some-test-paths-through-complex-unit.png" alt="Diagram that shows several unit tests exercising one fewer paths through a unit that before.">
+	</p>
+	<p>
+		In this figure, the green pathway is no longer exercised.
+	</p>
+	<p>
+		Not only did coverage decrease: Unless you're monitoring code coverage, you probably didn't notice. The code didn't change. Time just passed.
+	</p>
+	<h3 id="c8a7facb117247baaddceca8ae45ffc6">
+		Threat to refactoring <a href="#c8a7facb117247baaddceca8ae45ffc6" title="permalink">#</a>
+	</h3>
+	<p>
+		Why is this a problem? After all, code coverage isn't a goal; it's just a measure.
+	</p>
+	<p>
+		As <a href="https://martinfowler.com">Martin Fowler</a> writes:
+	</p>
+	<blockquote>
+		<p>
+			"to refactor, the essential precondition is [...] solid tests"
+		</p>
+		<footer><cite>Martin Fowler, <a href="/ref/refactoring">Refactoring</a></cite></footer>
+	</blockquote>
+	<p>
+		A good test suite verifies that the behaviour of your software doesn't change as you reorganise the code. The underlying assumption is that the test suite exercises important use cases and protects against regressions.
+	</p>
+	<p>
+		The above test is an example of a test case that silently disappears. If you think that your tests cover all important use cases, you may feel confident refactoring. After all, if all tests pass, you didn't break any existing behaviour.
+	</p>
+	<p>
+		Unbeknownst to you, however, the test suite may become less trustworthy. As time passes, test cases may disappear, as exemplified by the above test. While the test suite may be passing, a refactoring could introduce a regression - of behaviour you believed to be already covered.
+	</p>
+	<h3 id="ad442fa0b7dd4c7a9d46a71771d75184">
+		Under the radar <a href="#ad442fa0b7dd4c7a9d46a71771d75184" title="permalink">#</a>
+	</h3>
+	<p>
+		Why didn't I catch this earlier? After all, <a href="/2021/01/11/waiting-to-happen">I'd already identified the problem</a> in the code base. Once I realised the problem, I took steps to remedy it. I loaded the code base on a spare computer and changed the machine's year to a future year (<a href="https://en.wikipedia.org/wiki/Year_2038_problem">2038</a>, if I recall correctly). Then I ran the tests to see which ones failed.
+	</p>
+	<p>
+		I examined each failing test to verify that it actually failed because of the time and date. Then I corrected the test to make it relative to the system clock.
+	</p>
+	<p>
+		That took care of all the tests that would eventually break. On the other hand, it didn't unearth any of the tests that over time silently would become false negatives.
+	</p>
+	<h3 id="c5bcb89e54714544b48c5cfbd7974e47">
+		Make it relative <a href="#c5bcb89e54714544b48c5cfbd7974e47" title="permalink">#</a>
+	</h3>
+	<p>
+		Fixing the above test was easy:
+	</p>
+	<p>
+		<pre>[Fact]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">async</span>&nbsp;Task&nbsp;<span style="color:#74531f;">ChangeDateToSoldOutDate</span>()
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">r1</span>&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Some.Reservation.WithDate(DateTime.Now.AddDays(8).At(20,&nbsp;15));
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">r2</span>&nbsp;=&nbsp;r1
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.WithId(Guid.NewGuid())
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.TheDayAfter()
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.WithQuantity(10);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">db</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;FakeDatabase();
+&nbsp;&nbsp;&nbsp;&nbsp;db.Grandfather.Add(r1);
+&nbsp;&nbsp;&nbsp;&nbsp;db.Grandfather.Add(r2);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">sut</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;ReservationsController(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;SystemClock(),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;InMemoryRestaurantDatabase(Grandfather.Restaurant),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;db);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">dto</span>&nbsp;=&nbsp;r1.WithDate(r2.At).ToDto();
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">actual</span>&nbsp;=&nbsp;<span style="color:blue;">await</span>&nbsp;sut.Put(r1.Id.ToString(<span style="color:#a31515;">&quot;N&quot;</span>),&nbsp;dto);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">oRes</span>&nbsp;=&nbsp;Assert.IsAssignableFrom&lt;ObjectResult&gt;(actual);
+&nbsp;&nbsp;&nbsp;&nbsp;Assert.Equal(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;StatusCodes.Status500InternalServerError,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;oRes.StatusCode);
+}</pre>
+	</p>
+	<p>
+		The only change is to the creation of <code>r1</code> and <code>r2</code>. The test now explicitly sets the <code>r1</code> date eight days in the future. It also derives <code>r2</code> from <code>r1</code>, which makes the relationship between the two values more explicit. This in itself is a small improvement, I think.
+	</p>
+	<h3 id="7caaa6f5a1874d23a4712af241a2b87d">
+		Deterministic behaviour <a href="#7caaa6f5a1874d23a4712af241a2b87d" title="permalink">#</a>
+	</h3>
+	<p>
+		More than one person has told me that I obsess over details to a degree that can't be expected of most developers. If that's true, problems like this are likely to go unnoticed. After all, I discovered the problem because I was carefully reviewing each test more than a year after I originally wrote it. While I had a reason to do that, we can't expect developers to do that.
+	</p>
+	<p>
+		Are we doomed to suffer this kind of error, then? I don't have a <a href="/2019/07/01/yes-silver-bullet">silver bullet</a> for you, but I don't think that all is lost. A little discipline may help. As I write in <a href="/code-that-fits-in-your-head">Code That Fits in Your Head</a>, pair programming or code reviews can help raise awareness of issues.
+	</p>
+	<p>
+		On the tactical level, you might want to consider a policy that discourages absolute dates and times in unit tests.
+	</p>
+	<p>
+		On the strategic level, you may want to adopt the <a href="https://www.destroyallsoftware.com/screencasts/catalog/functional-core-imperative-shell">Functional Core, Imperative Shell</a> architecture. After all, <a href="/2015/05/07/functional-design-is-intrinsically-testable">pure functions are intrinsically testable</a>.
+	</p>
+	<p>
+		As I wrote in the beginning of this article, most people tend to focus on how to avoid side effects when discussing functional programming. A <a href="https://en.wikipedia.org/wiki/Pure_function">pure function</a>, however, must be <em>both</em> side-effect-free and deterministic.
+	</p>
+	<p>
+		This means that instead of learning many specific rules (such as not using absolute time in unit tests), you may focus on one general rule: Write and test pure functions.
+	</p>
+	<p>
+		To be honest, though, this rule doesn't solve all problems. Even in a functional-core-imperative-shell architecture, the imperative shell isn't pure. The above integration test is, unfortunately, a test of the imperative shell. It's already using the <code>SystemClock</code>, and that's no oversight on my part. While I do favour the <a href="https://martinfowler.com/bliki/TestPyramid.html">test pyramid</a>, I also write integration tests - just as the test pyramid encourages me to do. I find it valuable that integration tests integrate as many components as possible. The more real components an integration test uses, the better the chance that it uncovers problems.
+	</p>
+	<p>
+		With integration tests, then, diligence is required to keep tests deterministic. In that context you can't rely on a universal rule like <em>just write pure functions</em>, because <a href="">at the boundaries, programs aren't functional</a>. Instead, some diligence and discipline is required. At least, I don't see other alternatives, but perhaps you do?
+	</p>
+	<h3 id="d92d984d1c064aa1ac11d5bc01854e57">
+		Conclusion <a href="#d92d984d1c064aa1ac11d5bc01854e57" title="permalink">#</a>
+	</h3>
+	<p>
+		If you use absolute dates in unit tests, what was once a future date may some day become a past date. This can change which pathways of the System Under Test an automated test exercises.
+	</p>
+	<p>
+		Is this important? It's probably not the most pressing problem you may run into. Even if test coverage silently decays, it may not be a problem if you never refactor the code in question. It's only if, during a refactoring, you introduce a defect that goes unnoticed that this may become a problem. It doesn't seem like the most likely of errors, but on the other hand, these kinds of unexpected problems have a tendency to occur at the most inopportune moments.
+	</p>
+</div>
