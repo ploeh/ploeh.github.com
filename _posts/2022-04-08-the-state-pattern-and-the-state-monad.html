@@ -1,0 +1,573 @@
+---
+layout: post
+title: "The State pattern and the State monad"
+description: "The names are the same. Is there a connection? An article for object-oriented programmers."
+date: 2022-04-08 12:49 UTC
+tags: [Software Design, Design Patterns, Functional Programming]
+image: "/content/binary/state-monad-venn.png"
+image_alt: "Venn diagram with the two sets state monad and polymorphism. The intersection is labelled state."
+---
+{% include JB/setup %}
+
+<div id="post">
+	<p>
+		<em>{{ page.description }}</em>
+	</p>
+	<p>
+		This article is part of <a href="/2018/03/05/some-design-patterns-as-universal-abstractions">a series of articles about specific design patterns and their category theory counterparts</a>. In this article I compare the <a href="https://en.wikipedia.org/wiki/State_pattern">State design pattern</a> to the <a href="">State monad</a>.
+	</p>
+	<p>
+		Since the design pattern and the monad share the name <em>State</em> you'd think that they might be <a href="/2018/01/08/software-design-isomorphisms">isomorphic</a>, but it's not quite that easy. I find it more likely that the name is an example of <a href="https://en.wikipedia.org/wiki/Parallel_evolution">parallel evolution</a>. Monads were discovered by <a href="https://en.wikipedia.org/wiki/Eugenio_Moggi">Eugenio Moggi</a> in the early nineties, and <a href="/ref/dp">Design Patterns</a> is from 1994. That's close enough in time that I find it more likely that whoever came up with the names found them independently. <em>State</em>, after all, is hardly an exotic word.
+	</p>
+	<p>
+		Thus, it's possible that the choice of the same name is coincidental. If this is true (which is only my conjecture), does the State pattern have anything in common with the State monad? I find that the answer is a tentative <em>yes</em>. The State design pattern describes an open polymorphic stateful computation. That kind of computation can also be described with the State monad.
+	</p>
+	<p>
+		This article contains a significant amount of code, and it's all quite abstract. It examines the abstract shape of the pattern, so there's little prior intuition on which to build an understanding. While later articles will show more concrete examples, if you want to follow along, you can use the <a href="">GitHub repository</a>.
+	</p>
+	<h3 id="320763be103b49018debc64b45069e3c">
+		Shape <a href="#320763be103b49018debc64b45069e3c" title="permalink">#</a>
+	</h3>
+	<p>
+		<a href="/ref/dp">Design Patterns</a> is a little vague when it comes to represent the essential form of the pattern. What one can deduce from the diagram in the <em>Structure</em> section describing the pattern, you have an abstract <code>State</code> class with a <code>Handle</code> method like this:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">virtual</span>&nbsp;<span style="color:blue;">void</span>&nbsp;<span style="color:#74531f;">Handle</span>(Context&nbsp;<span style="color:#1f377f;">context</span>)
+{
+}</pre>
+	</p>
+	<p>
+		This, however, doesn't capture all scenarios. What if you need to pass more arguments to the method? What if the method returns a result? What if there's more than one method?
+	</p>
+	<p>
+		Taking into account all those concerns, you might arrive at a more generalised description of the State pattern where an abstract <code>State</code> class might define methods like these:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">abstract</span>&nbsp;Out1&nbsp;<span style="color:#74531f;">Handle1</span>(Context&nbsp;<span style="color:#1f377f;">context</span>,&nbsp;In1&nbsp;<span style="color:#1f377f;">in1</span>);
+ 
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">abstract</span>&nbsp;Out2&nbsp;<span style="color:#74531f;">Handle2</span>(Context&nbsp;<span style="color:#1f377f;">context</span>,&nbsp;In2&nbsp;<span style="color:#1f377f;">in2</span>);</pre>
+	</p>
+	<p>
+		There might be an arbitrary number of <code>Handle</code> methods, from <code>Handle1</code> to <code>HandleN</code>, each with their own input and return types.
+	</p>
+	<p>
+		The idea behind the State pattern is that clients don't interact directly with <code>State</code> objects. Instead, they interact with a <code>Context</code> object that delegates operations to a <code>State</code> object, passing itself as an argument:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;Out1&nbsp;<span style="color:#74531f;">Request1</span>(In1&nbsp;<span style="color:#1f377f;">in1</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;State.Handle1(<span style="color:blue;">this</span>,&nbsp;in1);
+}
+ 
+<span style="color:blue;">public</span>&nbsp;Out2&nbsp;<span style="color:#74531f;">Request2</span>(In2&nbsp;<span style="color:#1f377f;">in2</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;State.Handle2(<span style="color:blue;">this</span>,&nbsp;in2);
+}</pre>
+	</p>
+	<p>
+		Classes that derive from the abstract <code>State</code> may then mutate <code>context.State</code>.
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">override</span>&nbsp;Out2&nbsp;<span style="color:#74531f;">Handle2</span>(Context&nbsp;<span style="color:#1f377f;">context</span>,&nbsp;In2&nbsp;<span style="color:#1f377f;">in2</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">if</span>&nbsp;(in2&nbsp;==&nbsp;In2.Epsilon)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;context.State&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;ConcreteStateB();
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;Out2.Eta;
+}</pre>
+	</p>
+	<p>
+		Clients interact with the <code>Context</code> object and aren't aware of this internal machinery:
+	</p>
+	<p>
+		<pre><span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">actual</span>&nbsp;=&nbsp;ctx.Request2(in2);</pre>
+	</p>
+	<p>
+		With such state mutation going on, is it possible to refactor to a design that uses immutable data and <a href="https://en.wikipedia.org/wiki/Pure_function">pure functions</a>?
+	</p>
+	<h3 id="463f29ae1f8240ec8de7ed18cd429b9f">
+		State pair <a href="#463f29ae1f8240ec8de7ed18cd429b9f" title="permalink">#</a>
+	</h3>
+	<p>
+		When you have a <code>void</code> method that mutates state, you can refactor it to a pure function by leaving the existing state unchanged and instead returning the new state. What do you do, however, when the method in question already returns a value?
+	</p>
+	<p>
+		This is the case with the generalised <code>Handle</code> methods, above.
+	</p>
+	<p>
+		One way to resolve this problem is to introduce a more complex type to return. To avoid too much duplication or boilerplate code, you could make it a generic type:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">sealed</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">StatePair</span>&lt;<span style="color:#2b91af;">T</span>&gt;
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">StatePair</span>(T&nbsp;<span style="color:#1f377f;">value</span>,&nbsp;State&nbsp;<span style="color:#1f377f;">state</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Value&nbsp;=&nbsp;value;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;State&nbsp;=&nbsp;state;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;T&nbsp;Value&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;State&nbsp;State&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">override</span>&nbsp;<span style="color:blue;">bool</span>&nbsp;<span style="color:#74531f;">Equals</span>(<span style="color:blue;">object</span>&nbsp;<span style="color:#1f377f;">obj</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;obj&nbsp;<span style="color:blue;">is</span>&nbsp;StatePair&lt;T&gt;&nbsp;<span style="color:#1f377f;">result</span>&nbsp;&amp;&amp;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;EqualityComparer&lt;T&gt;.Default.Equals(Value,&nbsp;result.Value)&nbsp;&amp;&amp;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;EqualityComparer&lt;State&gt;.Default.Equals(State,&nbsp;result.State);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">override</span>&nbsp;<span style="color:blue;">int</span>&nbsp;<span style="color:#74531f;">GetHashCode</span>()
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;HashCode.Combine(Value,&nbsp;State);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+	</p>
+	<p>
+		This enables you to change the signatures of the <code>Handle</code> methods:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">abstract</span>&nbsp;StatePair&lt;Out1&gt;&nbsp;<span style="color:#74531f;">Handle1</span>(Context&nbsp;<span style="color:#1f377f;">context</span>,&nbsp;In1&nbsp;<span style="color:#1f377f;">in1</span>);
+ 
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">abstract</span>&nbsp;StatePair&lt;Out2&gt;&nbsp;<span style="color:#74531f;">Handle2</span>(Context&nbsp;<span style="color:#1f377f;">context</span>,&nbsp;In2&nbsp;<span style="color:#1f377f;">in2</span>);</pre>
+	</p>
+	<p>
+		This refactoring is always possible. Even if the original return type of a method was <code>void</code>, you can <a href="/2018/01/15/unit-isomorphisms">use a <em>unit</em> type as a replacement for <em>void</em></a>. While redundant but consistent, a method could return <code>StatePair&lt;Unit&gt;</code>.
+	</p>
+	<h3 id="e2ca8d320e684cf89407880d06256b64">
+		Generic pair <a href="#e2ca8d320e684cf89407880d06256b64" title="permalink">#</a>
+	</h3>
+	<p>
+		The above <code>StatePair</code> type is so coupled to a particular <code>State</code> class that it's not reusable. If you had more than one implementation of the State pattern in your code base, you'd have to duplicate that effort. That seems wasteful, so why not make the type generic in the state dimension as well?
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">sealed</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">StatePair</span>&lt;<span style="color:#2b91af;">TState</span>,&nbsp;<span style="color:#2b91af;">T</span>&gt;
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">StatePair</span>(T&nbsp;<span style="color:#1f377f;">value</span>,&nbsp;TState&nbsp;<span style="color:#1f377f;">state</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Value&nbsp;=&nbsp;value;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;State&nbsp;=&nbsp;state;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;T&nbsp;Value&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;TState&nbsp;State&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">override</span>&nbsp;<span style="color:blue;">bool</span>&nbsp;<span style="color:#74531f;">Equals</span>(<span style="color:blue;">object</span>&nbsp;<span style="color:#1f377f;">obj</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;obj&nbsp;<span style="color:blue;">is</span>&nbsp;StatePair&lt;TState,&nbsp;T&gt;&nbsp;<span style="color:#1f377f;">pair</span>&nbsp;&amp;&amp;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;EqualityComparer&lt;T&gt;.Default.Equals(Value,&nbsp;pair.Value)&nbsp;&amp;&amp;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;EqualityComparer&lt;TState&gt;.Default.Equals(State,&nbsp;pair.State);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">override</span>&nbsp;<span style="color:blue;">int</span>&nbsp;<span style="color:#74531f;">GetHashCode</span>()
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;HashCode.Combine(Value,&nbsp;State);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+	</p>
+	<p>
+		When you do that then clearly you'd also need to modify the <code>Handle</code> methods accordingly:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">abstract</span>&nbsp;StatePair&lt;State,&nbsp;Out1&gt;&nbsp;<span style="color:#74531f;">Handle1</span>(Context&nbsp;<span style="color:#1f377f;">context</span>,&nbsp;In1&nbsp;<span style="color:#1f377f;">in1</span>);
+ 
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">abstract</span>&nbsp;StatePair&lt;State,&nbsp;Out2&gt;&nbsp;<span style="color:#74531f;">Handle2</span>(Context&nbsp;<span style="color:#1f377f;">context</span>,&nbsp;In2&nbsp;<span style="color:#1f377f;">in2</span>);</pre>
+	</p>
+	<p>
+		Notice that, as is the case with <a href="/2021/07/19/the-state-functor">the State functor</a>, the <em>type</em> declares the type with <code>TState</code> before <code>T</code>, while the <em>constructor</em> takes <code>T</code> before <code>TState</code>. While odd and potentially confusing, I've done this to stay consistent with my previous articles, which again do this to stay consistent with prior art (mainly <a href="https://www.haskell.org/">Haskell</a>).
+	</p>
+	<p>
+		With <code>StatePair</code> you can make the methods pure.
+	</p>
+	<h3 id="cacad33b630d4529b4f703337b9b0a61">
+		Pure functions <a href="#cacad33b630d4529b4f703337b9b0a61" title="permalink">#</a>
+	</h3>
+	<p>
+		Since <code>Handle</code> methods can now return a new state instead of mutating objects, they can be pure functions. Here's an example:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">override</span>&nbsp;StatePair&lt;State,&nbsp;Out2&gt;&nbsp;<span style="color:#74531f;">Handle2</span>(Context&nbsp;<span style="color:#1f377f;">context</span>,&nbsp;In2&nbsp;<span style="color:#1f377f;">in2</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">if</span>&nbsp;(in2&nbsp;==&nbsp;In2.Epsilon)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;StatePair&lt;State,&nbsp;Out2&gt;(Out2.Eta,&nbsp;<span style="color:blue;">new</span>&nbsp;ConcreteStateB());
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;StatePair&lt;State,&nbsp;Out2&gt;(Out2.Eta,&nbsp;<span style="color:blue;">this</span>);
+}</pre>
+	</p>
+	<p>
+		The same is true for <code>Context</code>:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;StatePair&lt;Context,&nbsp;Out1&gt;&nbsp;<span style="color:#74531f;">Request1</span>(In1&nbsp;<span style="color:#1f377f;">in1</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">pair</span>&nbsp;=&nbsp;State.Handle1(<span style="color:blue;">this</span>,&nbsp;in1);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;StatePair&lt;Context,&nbsp;Out1&gt;(pair.Value,&nbsp;<span style="color:blue;">new</span>&nbsp;Context(pair.State));
+}
+ 
+<span style="color:blue;">public</span>&nbsp;StatePair&lt;Context,&nbsp;Out2&gt;&nbsp;<span style="color:#74531f;">Request2</span>(In2&nbsp;<span style="color:#1f377f;">in2</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">pair</span>&nbsp;=&nbsp;State.Handle2(<span style="color:blue;">this</span>,&nbsp;in2);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;StatePair&lt;Context,&nbsp;Out2&gt;(pair.Value,&nbsp;<span style="color:blue;">new</span>&nbsp;Context(pair.State));
+}</pre>
+	</p>
+	<p>
+		Does this begin to look familiar?
+	</p>
+	<h3 id="bf25630a0d324f628f400c73ddaa78fa">
+		Monad <a href="#bf25630a0d324f628f400c73ddaa78fa" title="permalink">#</a>
+	</h3>
+	<p>
+		The <code>StatePair</code> class is nothing but a glorified tuple. Armed with that knowledge, you can introduce a variation of <a href="/2021/07/19/the-state-functor">the IState interface I used to introduce the State functor</a>:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">interface</span>&nbsp;<span style="color:#2b91af;">IState</span>&lt;<span style="color:#2b91af;">TState</span>,&nbsp;<span style="color:#2b91af;">T</span>&gt;
+{
+&nbsp;&nbsp;&nbsp;&nbsp;StatePair&lt;TState,&nbsp;T&gt;&nbsp;<span style="color:#74531f;">Run</span>(TState&nbsp;<span style="color:#1f377f;">state</span>);
+}</pre>
+	</p>
+	<p>
+		This variation uses the explicit <code>StatePair</code> class as the return type of <code>Run</code>, rather than a more anonymous tuple. These representations are isomorphic. (That might be a good exercise: Write functions that convert from one to the other, and vice versa.)
+	</p>
+	<p>
+		You can write the usual <code>Select</code> and <code>SelectMany</code> implementations to make <code>IState</code> a functor and monad. Since I have already shown these in previous articles, I'm also going to skip those. (Again, it might be a good exercise to implement them if you're in doubt of how they work.)
+	</p>
+	<p>
+		You can now, for example, use C# query syntax to run the same computation multiple times:
+	</p>
+	<p>
+		<pre>IState&lt;Context,&nbsp;(Out1&nbsp;a,&nbsp;Out1&nbsp;b)&gt;&nbsp;<span style="color:#1f377f;">s</span>&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">from</span>&nbsp;a&nbsp;<span style="color:blue;">in</span>&nbsp;in1.Request1()
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">from</span>&nbsp;b&nbsp;<span style="color:blue;">in</span>&nbsp;in1.Request1()
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">select</span>&nbsp;(a,&nbsp;b);
+StatePair&lt;Context,&nbsp;(Out1&nbsp;a,&nbsp;Out1&nbsp;b)&gt;&nbsp;<span style="color:#1f377f;">t</span>&nbsp;=&nbsp;s.Run(ctx);</pre>
+	</p>
+	<p>
+		This example calls <code>Request1</code> twice, and collects both return values in a tuple. Running the computation with a <code>Context</code> will produce both a result (the two outputs <code>a</code> and <code>b</code>) as well as the 'current' <code>Context</code> (state).
+	</p>
+	<p>
+		<code>Request1</code> is a State-valued extension method on <code>In1</code>:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;IState&lt;Context,&nbsp;Out1&gt;&nbsp;<span style="color:#74531f;">Request1</span>(<span style="color:blue;">this</span>&nbsp;In1&nbsp;<span style="color:#1f377f;">in1</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">from</span>&nbsp;ctx&nbsp;<span style="color:blue;">in</span>&nbsp;Get&lt;Context&gt;()
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;p&nbsp;=&nbsp;ctx.Request1(in1)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">from</span>&nbsp;_&nbsp;<span style="color:blue;">in</span>&nbsp;Put(p.State)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">select</span>&nbsp;p.Value;
+}</pre>
+	</p>
+	<p>
+		Notice the abstraction level in play. This extension method doesn't return a <code>StatePair</code>, but rather an <code>IState</code> computation, defined by using <a href="">the State monad's Get and Put functions</a>. Since the computation is running with a <code>Context</code> state, the computation can <code>Get</code> a <code>ctx</code> object and call its <code>Request1</code> method. This method returns a pair <code>p</code>. The computation can then <code>Put</code> the pair's <code>State</code> (here, a <code>Context</code> object) and return the pair's <code>Value</code>.
+	</p>
+	<p>
+		This stateful computation is composed from the building blocks of the State monad, including query syntax supported by <code>SelectMany</code>, <code>Get</code>, and <code>Put</code>.
+	</p>
+	<p>
+		This does, however, still feel unsatisfactory. After all, you have to know enough of the details of the State monad to know that <code>ctx.Request1</code> returns a pair of which you must remember to <code>Put</code> the <code>State</code>. Would it be possible to also express the underlying <code>Handle</code> methods as stateful computations?
+	</p>
+	<h3 id="f8c4147c58924cd19f1d0bdae8fc05a5">
+		StatePair bifunctor <a href="#f8c4147c58924cd19f1d0bdae8fc05a5" title="permalink">#</a>
+	</h3>
+	<p>
+		The <code>StatePair</code> class is isomorphic to a <em>pair</em> (a <em>two-tuple</em>), and we know that <a href="/2018/12/31/tuple-bifunctor">a pair gives rise to a bifunctor</a>:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;StatePair&lt;TState1,&nbsp;T1&gt;&nbsp;<span style="color:#74531f;">SelectBoth</span>&lt;<span style="color:#2b91af;">TState1</span>,&nbsp;<span style="color:#2b91af;">T1</span>&gt;(
+&nbsp;&nbsp;&nbsp;&nbsp;Func&lt;T,&nbsp;T1&gt;&nbsp;<span style="color:#1f377f;">selectValue</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;Func&lt;TState,&nbsp;TState1&gt;&nbsp;<span style="color:#1f377f;">selectState</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;StatePair&lt;TState1,&nbsp;T1&gt;(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;selectValue(Value),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;selectState(State));
+}</pre>
+	</p>
+	<p>
+		You can use <code>SelectBoth</code> to implement both <code>Select</code> and <code>SelectState</code>. In the following we're only going to need <code>SelectState</code>:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;StatePair&lt;TState1,&nbsp;T&gt;&nbsp;<span style="color:#74531f;">SelectState</span>&lt;<span style="color:#2b91af;">TState1</span>&gt;(Func&lt;TState,&nbsp;TState1&gt;&nbsp;<span style="color:#1f377f;">selectState</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;SelectBoth(<span style="color:#1f377f;">x</span>&nbsp;=&gt;&nbsp;x,&nbsp;selectState);
+}</pre>
+	</p>
+	<p>
+		This enables us to slightly simplify the <code>Context</code> methods:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;StatePair&lt;Context,&nbsp;Out1&gt;&nbsp;<span style="color:#74531f;">Request1</span>(In1&nbsp;<span style="color:#1f377f;">in1</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;State.Handle1(<span style="color:blue;">this</span>,&nbsp;in1).SelectState(<span style="color:#1f377f;">s</span>&nbsp;=&gt;&nbsp;<span style="color:blue;">new</span>&nbsp;Context(s));
+}
+ 
+<span style="color:blue;">public</span>&nbsp;StatePair&lt;Context,&nbsp;Out2&gt;&nbsp;<span style="color:#74531f;">Request2</span>(In2&nbsp;<span style="color:#1f377f;">in2</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;State.Handle2(<span style="color:blue;">this</span>,&nbsp;in2).SelectState(<span style="color:#1f377f;">s</span>&nbsp;=&gt;&nbsp;<span style="color:blue;">new</span>&nbsp;Context(s));
+}</pre>
+	</p>
+	<p>
+		Keep in mind that <code>Handle1</code> returns a <code>StatePair&lt;State,&nbsp;Out1&gt;</code>, <code>Handle2</code> returns <code>StatePair&lt;State,&nbsp;Out2&gt;</code>, and so on. While <code>Request1</code> calls <code>Handle1</code>, it must return a <code>StatePair&lt;Context,&nbsp;Out1&gt;</code> rather than a <code>StatePair&lt;State,&nbsp;Out1&gt;</code>. Since <code>StatePair</code> is a bifunctor, the <code>Request1</code> method can use <code>SelectState</code> to map the <code>State</code> to a <code>Context</code>.
+	</p>
+	<p>
+		Unfortunately, this doesn't seem to move us much closer to being able to express the underlying functions as stateful computations. It does, however, set up the code so that the next change is a little easier to follow.
+	</p>
+	<h3 id="21f08903569d4c1a898914092f2bf3f9">
+		State computations <a href="#21f08903569d4c1a898914092f2bf3f9" title="permalink">#</a>
+	</h3>
+	<p>
+		Is it possible to express the <code>Handle</code> methods on <code>State</code> as <code>IState</code> computations? One option is to write another extension method:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;IState&lt;State,&nbsp;Out1&gt;&nbsp;<span style="color:#74531f;">Request1S</span>(<span style="color:blue;">this</span>&nbsp;In1&nbsp;<span style="color:#1f377f;">in1</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">from</span>&nbsp;s&nbsp;<span style="color:blue;">in</span>&nbsp;Get&lt;State&gt;()
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;ctx&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;Context(s)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;p&nbsp;=&nbsp;s.Handle1(ctx,&nbsp;in1)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">from</span>&nbsp;_&nbsp;<span style="color:blue;">in</span>&nbsp;Put(p.State)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">select</span>&nbsp;p.Value;
+}</pre>
+	</p>
+	<p>
+		I had to add an <code>S</code> suffix to the name, since it only differs from the above <code>Request1</code> extension method on its return type, and C# doesn't allow method overloading on return types.
+	</p>
+	<p>
+		You can add a similar <code>Request2S</code> extension method. It feels like boilerplate code, but enables us to express the <code>Context</code> methods in terms of running stateful computations:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;StatePair&lt;Context,&nbsp;Out1&gt;&nbsp;<span style="color:#74531f;">Request1</span>(In1&nbsp;<span style="color:#1f377f;">in1</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;in1.Request1S().Run(State).SelectState(<span style="color:#1f377f;">s</span>&nbsp;=&gt;&nbsp;<span style="color:blue;">new</span>&nbsp;Context(s));
+}
+ 
+<span style="color:blue;">public</span>&nbsp;StatePair&lt;Context,&nbsp;Out2&gt;&nbsp;<span style="color:#74531f;">Request2</span>(In2&nbsp;<span style="color:#1f377f;">in2</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;in2.Request2S().Run(State).SelectState(<span style="color:#1f377f;">s</span>&nbsp;=&gt;&nbsp;<span style="color:blue;">new</span>&nbsp;Context(s));
+}</pre>
+	</p>
+	<p>
+		This still isn't entirely satisfactory, since the return types of these <code>Request</code> methods are state pairs, and not <code>IState</code> values. The above <code>Request1S</code> function, however, contains a clue about how to proceed. Notice how it can create a <code>Context</code> object from the underlying <code>State</code>, and convert that <code>Context</code> object back to a <code>State</code> object. That's a generalizable idea.
+	</p>
+	<h3 id="6ec1667fe3354e8bb9b5f7b3540b74f9">
+		Invariant functor <a href="#6ec1667fe3354e8bb9b5f7b3540b74f9" title="permalink">#</a>
+	</h3>
+	<p>
+		While it's possible to map the <code>TState</code> dimension of the state pair, it seems harder to do it on <code><span style="color:#2b91af;">IState</span>&lt;<span style="color:#2b91af;">TState</span>,&nbsp;<span style="color:#2b91af;">T</span>&gt;</code>. A tuple, after all, is covariant in both dimensions. The State monad, on the other hand, is neither co- nor contravariant in the state dimension. You can deduce this with positional variance analysis (which I've learned from <a href="https://thinkingwithtypes.com/">Thinking with Types</a>). In short, this is because <code>TState</code> appears as both input and output in <code>StatePair&lt;TState,&nbsp;T&gt;&nbsp;<span style="color:#74531f;">Run</span>(TState&nbsp;<span style="color:#1f377f;">state</span>)</code> - it's neither co- nor contravariant, but rather <em>invariant</em>.
+	</p>
+	<p>
+		What little option is left us, then, is to make <code>IState</code> an <a href="">invariant functor</a> in the state dimension:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;IState&lt;TState1,&nbsp;T&gt;&nbsp;<span style="color:#74531f;">SelectState</span>&lt;<span style="color:#2b91af;">TState</span>,&nbsp;<span style="color:#2b91af;">TState1</span>,&nbsp;<span style="color:#2b91af;">T</span>&gt;(
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>&nbsp;IState&lt;TState,&nbsp;T&gt;&nbsp;<span style="color:#1f377f;">state</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;Func&lt;TState,&nbsp;TState1&gt;&nbsp;<span style="color:#1f377f;">forward</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;Func&lt;TState1,&nbsp;TState&gt;&nbsp;<span style="color:#1f377f;">back</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">from</span>&nbsp;s1&nbsp;<span style="color:blue;">in</span>&nbsp;Get&lt;TState1&gt;()
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;s&nbsp;=&nbsp;back(s1)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;p&nbsp;=&nbsp;state.Run(s)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">from</span>&nbsp;_&nbsp;<span style="color:blue;">in</span>&nbsp;Put(forward(p.State))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">select</span>&nbsp;p.Value;
+}</pre>
+	</p>
+	<p>
+		Given an <code>IState&lt;TState,&nbsp;T&gt;</code> the <code>SelectState</code> function enables us to turn it into a <code>IState&lt;TState1,&nbsp;T&gt;</code>. This is, however, only possible if you can translate both <code>forward</code> and <code>back</code> between two representations. When we have two such translations, we can produce a new computation that runs in <code>TState1</code> by first using <code>Get</code> to retrieve a <code>TState1</code> value from the new environment, translate it <code>back</code> to <code>TState</code>, which enables the expression to <code>Run</code> the <code>state</code>. Then translate the resulting <code>p.State</code> <code>forward</code> and <code>Put</code> it. Finally, return the <code>Value</code>.
+	</p>
+	<p>
+		As <a href="https://reasonablypolymorphic.com/">Sandy Maguire</a> explains:
+	</p>
+	<blockquote>
+		<p>
+			"... an invariant type <code>T</code> allows you to map from <code>a</code> to <code>b</code> if and only if <code>a</code> and <code>b</code> are isomorphic. [...] an isomorphism between <code>a</code> and <code>b</code> means they're already the same thing to begin with."
+		</p>
+		<footer><cite>Sandy Maguire, <a href="https://thinkingwithtypes.com/">Thinking with Types</a></cite></footer>
+	</blockquote>
+	<p>
+		This may seem limiting, but is enough in this case. The <code>Context</code> class is only a wrapper of a <code>State</code> object:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">Context</span>(State&nbsp;<span style="color:#1f377f;">state</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;State&nbsp;=&nbsp;state;
+}
+ 
+<span style="color:blue;">public</span>&nbsp;State&nbsp;State&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;}</pre>
+	</p>
+	<p>
+		If you have a <code>State</code> object, you can create a <code>Context</code> object via the <code>Context</code> constructor. On the other hand, if you have a <code>Context</code> object, you can get the wrapped <code>State</code> object by reading the <code>State</code> property.
+	</p>
+	<p>
+		The first improvement this offers is simplification of the <code>Request1</code> extension method:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;IState&lt;Context,&nbsp;Out1&gt;&nbsp;<span style="color:#74531f;">Request1</span>(<span style="color:blue;">this</span>&nbsp;In1&nbsp;<span style="color:#1f377f;">in1</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;in1.Request1S().SelectState(<span style="color:#1f377f;">s</span>&nbsp;=&gt;&nbsp;<span style="color:blue;">new</span>&nbsp;Context(s),&nbsp;<span style="color:#1f377f;">ctx</span>&nbsp;=&gt;&nbsp;ctx.State);
+}</pre>
+	</p>
+	<p>
+		Recall that <code>Request1S</code> returns a <code>IState&lt;State,&nbsp;Out1&gt;</code>. Since a two-way translation between <code>State</code> and <code>Context</code> exists, <code>SelectState</code> can translate <code>IState&lt;State,&nbsp;Out1&gt;</code> to <code>IState&lt;Context,&nbsp;Out1&gt;</code>.
+	</p>
+	<p>
+		The same applies to the equivalent <code>Request2</code> extension method.
+	</p>
+	<p>
+		This, again, enables us to rewrite the <code>Context</code> methods:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;StatePair&lt;Context,&nbsp;Out1&gt;&nbsp;<span style="color:#74531f;">Request1</span>(In1&nbsp;<span style="color:#1f377f;">in1</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;in1.Request1().Run(<span style="color:blue;">this</span>);
+}
+ 
+<span style="color:blue;">public</span>&nbsp;StatePair&lt;Context,&nbsp;Out2&gt;&nbsp;<span style="color:#74531f;">Request2</span>(In2&nbsp;<span style="color:#1f377f;">in2</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;in2.Request2().Run(<span style="color:blue;">this</span>);
+}</pre>
+	</p>
+	<p>
+		While this may seem like an insignificant change, one result has been gained: This last refactoring pushed the <code>Run</code> call to the right. It's now clear that each expression is a stateful computation, and that the only role that the <code>Request</code> methods play is to <code>Run</code> the computations.
+	</p>
+	<p>
+		This illustrates that the <code>Request</code> methods can be decomposed into two decoupled steps:
+		<ol>
+			<li>A stateful computation expression</li>
+			<li>Running the expression</li>
+		</ol>
+		The question now becomes: How useful is the <code>Context</code> wrapper class now?
+	</p>
+	<h3 id="4fc39c9d7bd647cb9773344082468051">
+		Eliminating the Context <a href="#4fc39c9d7bd647cb9773344082468051" title="permalink">#</a>
+	</h3>
+	<p>
+		A reasonable next refactoring might be to remove the <code>context</code> parameter from each of the <code>Handle</code> methods. After all, this parameter is a remnant of the State design pattern. Its original purpose was to enable <code>State</code> implementers to mutate the <code>context</code> by changing its <code>State</code>.
+	</p>
+	<p>
+		After refactoring to immutable functions, the <code>context</code> parameter no longer needs to be there - for that reason. Do we need it for other reasons? Does it carry other information that a <code>State</code> implementer might need?
+	</p>
+	<p>
+		In the form that the code now has, it doesn't. Even if it did, we could consider moving that data to the other input parameter: <code>In1</code>, <code>In2</code>, etcetera.
+	</p>
+	<p>
+		Therefore, it seems sensible to remove the <code>context</code> parameter from the <code>State</code> methods:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">abstract</span>&nbsp;StatePair&lt;State,&nbsp;Out1&gt;&nbsp;<span style="color:#74531f;">Handle1</span>(In1&nbsp;<span style="color:#1f377f;">in1</span>);
+ 
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">abstract</span>&nbsp;StatePair&lt;State,&nbsp;Out2&gt;&nbsp;<span style="color:#74531f;">Handle2</span>(In2&nbsp;<span style="color:#1f377f;">in2</span>);</pre>
+	</p>
+	<p>
+		This also means that a function like <code>Request1S</code> becomes simpler:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;IState&lt;State,&nbsp;Out1&gt;&nbsp;<span style="color:#74531f;">Request1S</span>(<span style="color:blue;">this</span>&nbsp;In1&nbsp;<span style="color:#1f377f;">in1</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">from</span>&nbsp;s&nbsp;<span style="color:blue;">in</span>&nbsp;Get&lt;State&gt;()
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;p&nbsp;=&nbsp;s.Handle1(in1)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">from</span>&nbsp;_&nbsp;<span style="color:blue;">in</span>&nbsp;Put(p.State)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">select</span>&nbsp;p.Value;
+}</pre>
+	</p>
+	<p>
+		Since <code>Context</code> and <code>State</code> are isomorphic, you can rewrite all callers of <code>Context</code> to instead use <code>State</code>, like the above example:
+	</p>
+	<p>
+		<pre>IState&lt;State,&nbsp;(Out1&nbsp;a,&nbsp;Out1&nbsp;b)&gt;&nbsp;<span style="color:#1f377f;">s</span>&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">from</span>&nbsp;a&nbsp;<span style="color:blue;">in</span>&nbsp;in1.Request1()
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">from</span>&nbsp;b&nbsp;<span style="color:blue;">in</span>&nbsp;in1.Request1()
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">select</span>&nbsp;(a,&nbsp;b);
+<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">t</span>&nbsp;=&nbsp;s.Run(csa);</pre>
+	</p>
+	<p>
+		Do this consistently, and you can eventually delete the <code>Context</code> class.
+	</p>
+	<h3 id="c92292ad071c4b468fa223d764d89ab8">
+		Further possible refactorings <a href="#c92292ad071c4b468fa223d764d89ab8" title="permalink">#</a>
+	</h3>
+	<p>
+		With the <code>Context</code> class gone, you're left with the abstract <code>State</code> class and its implementers:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">abstract</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">State</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">abstract</span>&nbsp;StatePair&lt;State,&nbsp;Out1&gt;&nbsp;<span style="color:#74531f;">Handle1</span>(In1&nbsp;<span style="color:#1f377f;">in1</span>);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">abstract</span>&nbsp;StatePair&lt;State,&nbsp;Out2&gt;&nbsp;<span style="color:#74531f;">Handle2</span>(In2&nbsp;<span style="color:#1f377f;">in2</span>);
+}</pre>
+	</p>
+	<p>
+		One further change worth considering might be to change the abstract base class to an interface.
+	</p>
+	<p>
+		In this article, I've considered the general case where the <code>State</code> class supports an arbitrary number of independent state transitions, symbolised by the methods <code>Handle1</code> and <code>Handle2</code>. With an arbitrary number of such state transitions, you would have additional methods up to <code>HandleN</code> for <em>N</em> independent state transitions.
+	</p>
+	<p>
+		At the other extreme, you may have just a single polymorphic state transition function. My intuition tells me that that's more likely to be the case than one would think at first.
+	</p>
+	<h3 id="c53b386a92b04575b675272d2dc85365">
+		Relationship between pattern and monad <a href="#c53b386a92b04575b675272d2dc85365" title="permalink">#</a>
+	</h3>
+	<p>
+		You can view the State design pattern as a combination of two common practices in object-oriented programming: Mutation and polymorphism.
+	</p>
+	<p>
+		<img src="/content/binary/state-pattern-venn.png" alt="Venn diagram with the two sets mutation and polymorphism. The intersection is labelled state.">
+	</p>
+	<p>
+		The patterns in <em>Design Patterns</em> rely heavily on mutation of object state. Most other 'good' object-oriented code tends to do likewise.
+	</p>
+	<p>
+		Proper object-oriented code also makes good use of polymorphism. Again, refer to <em>Design Patterns</em> or a book like <a href="https://blog.ploeh.dk/ref/refactoring">Refactoring</a> for copious examples.
+	</p>
+	<p>
+		I view the State pattern as the intersection of these two common practices. The problem to solve is this:
+	</p>
+	<blockquote>
+		<p>
+			"Allow an object to alter its behavior when its internal state changes."
+		</p>
+		<footer><cite><a href="/ref/dp">Design Patterns</a></cite></footer>
+	</blockquote>
+	<p>
+		The State pattern achieves that goal by having an inner polymorphic object (<code>State</code>) wrapped by an container object (<code>Context</code>). The <code>State</code> objects can mutate the <code>Context</code>, which enables them to replace themselves with other states.
+	</p>
+	<p>
+		While functional programming also has notions of polymorphism, a pure function can't mutate state. Instead, a pure function must return a new state, leaving the old state unmodified. If there's nothing else to return, you can model such state-changing behaviour as an <a href="https://en.wikipedia.org/wiki/Endomorphism">endomorphism</a>. The article <a href="/2021/05/31/from-state-tennis-to-endomorphism">From State tennis to endomorphism</a> gives a quite literal example of that.
+	</p>
+	<p>
+		Sometimes, however, an object-oriented method does more than one thing: It both mutates state and returns a value. (This, by the way, violates <a href="https://en.wikipedia.org/wiki/Command%E2%80%93query_separation">the Command Query Separation principle</a>.) The State monad is the functional way of doing that: Return both the result and the new state.
+	</p>
+	<p>
+		Essentially, you replace mutation with the State monad.
+	</p>
+	<p>
+		<img src="/content/binary/state-monad-venn.png" alt="Venn diagram with the two sets state monad and polymorphism. The intersection is labelled state.">
+	</p>
+	<p>
+		From a functional perspective, then, we can view the State pattern as the intersection of polymorphism and the State monad.
+	</p>
+	<h3 id="d31601e4146d4f48ae30228f697de0a0">
+		Examples <a href="#d31601e4146d4f48ae30228f697de0a0" title="permalink">#</a>
+	</h3>
+	<p>
+		This article is both long and abstract. Some examples might be helpful, so I'll give a few in separate articles:
+		<ul>
+			<li>Refactoring the TCP State pattern example to pure functions</li>
+			<li>Refactoring a saga from the State pattern to the State monad</li>
+		</ul>
+		The first one uses the example from <em>Design Patterns</em>. That example is, unfortunately not that illuminating, since none of the book's methods return data. Thus, the endomorphism-based refactoring is enough, and you don't need the State monad. Therefore, another example is warranted.
+	</p>
+	<h3 id="1b5dead7f5c84f3896d639837314f17d">
+		Conclusion <a href="#1b5dead7f5c84f3896d639837314f17d" title="permalink">#</a>
+	</h3>
+	<p>
+		You can view the State design pattern as the intersection of polymorphism and mutation. Both are object-oriented staples. The pattern uses polymorphism to model state, and mutation to change from one polymorphic state to another.
+	</p>
+	<p>
+		In functional programming pure functions can't mutate state. You can often design around that problem, but if all else fails, the State monad offers a general-purpose alternative to both return a value and change object state. Thus, you can view the functional equivalent of the State pattern as the intersection of polymorphism and the State monad.
+	</p>
+	<p>
+		<strong>Next:</strong> Refactoring the TCP State pattern example to pure functions.
+	</p>
+</div>
