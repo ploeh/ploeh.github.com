@@ -1,0 +1,236 @@
+---
+layout: post
+title: "Asynchronous monads"
+description: "Asynchronous computations form monads. An article for object-oriented programmers."
+date: 2022-03-22 16:07
+tags: [Software Design, Functional Programming]
+---
+{% include JB/setup %}
+
+<div id="post">
+	<p>
+		<em>{{ page.description }}</em>
+	</p>
+	<p>
+		This article is an instalment in <a href="">an article series about monads</a>. A previous article described how <a href="/2018/09/24/asynchronous-functors">asynchronous computations form functors</a>. In this article, you'll see that asynchronous computations also form monads. You'll learn about closely related monads: .NET Tasks and <a href="https://fsharp.org">F#</a> <a href="https://docs.microsoft.com/en-us/dotnet/fsharp/language-reference/asynchronous-workflows">asynchronous workflows</a>.
+	</p>
+	<p>
+		Before we start, I'm going to repeat the warning from the article about asynchronous functors. .NET Tasks aren't <a href="https://en.wikipedia.org/wiki/Referential_transparency">referentially transparent</a>, whereas F# asynchronous computations are. You could argue, then, that .NET Tasks aren't proper monads, but you mostly observe the difference when you perform impure operations. As a general observation, when impure operations are allowed, the conclusions of <a href="/2017/10/04/from-design-patterns-to-category-theory">this overall article series</a> are precarious. We can't radically change how the .NET languages work, so we'll have to soldier on, pretending that impure operations are delegated to other parts of our system. Under this undue assumption, we can pretend that <a href="https://docs.microsoft.com/en-us/dotnet/api/system.threading.tasks.task-1">Task&lt;T&gt;</a> forms a monad. Also, while there are differences, <a href="/2020/07/27/task-asynchronous-programming-as-an-io-surrogate">it sometimes helps to think of <code>Task&lt;T&gt;</code> as a sort of poor man's IO monad</a>.
+	</p>
+	<h3 id="1ab27adfb0194a10a2fa02690b49343b">
+		Monadic bind <a href="#1ab27adfb0194a10a2fa02690b49343b" title="permalink">#</a>
+	</h3>
+	<p>
+		A monad must define either a <em>bind</em> or <em>join</em> function. In C#, monadic bind is called <code>SelectMany</code>. You can define one as an extension method on the <a href="https://docs.microsoft.com/dotnet/api/system.threading.tasks.task-1">Task&lt;T&gt;</a> class:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">async</span>&nbsp;<span style="color:blue;">static</span>&nbsp;Task&lt;TResult&gt;&nbsp;<span style="color:#74531f;">SelectMany</span>&lt;<span style="color:#2b91af;">T</span>,&nbsp;<span style="color:#2b91af;">TResult</span>&gt;(
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>&nbsp;Task&lt;T&gt;&nbsp;<span style="color:#1f377f;">source</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;Func&lt;T,&nbsp;Task&lt;TResult&gt;&gt;&nbsp;<span style="color:#1f377f;">selector</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;T&nbsp;<span style="color:#1f377f;">x</span>&nbsp;=&nbsp;<span style="color:blue;">await</span>&nbsp;source;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">await</span>&nbsp;selector(x);
+}</pre>
+	</p>
+	<p>
+		With <code>SelectMany</code>, you can compose various tasks and flatten as you go:
+	</p>
+	<p>
+		<pre>Task&lt;<span style="color:blue;">int</span>&gt;&nbsp;<span style="color:#1f377f;">x</span>&nbsp;=&nbsp;AsyncValue(&nbsp;&nbsp;42);
+Task&lt;<span style="color:blue;">int</span>&gt;&nbsp;<span style="color:#1f377f;">y</span>&nbsp;=&nbsp;AsyncValue(1337);
+Task&lt;<span style="color:blue;">int</span>&gt;&nbsp;<span style="color:#1f377f;">z</span>&nbsp;=&nbsp;x.SelectMany(<span style="color:blue;">async</span>&nbsp;<span style="color:#1f377f;">i</span>&nbsp;=&gt;&nbsp;i&nbsp;+&nbsp;<span style="color:blue;">await</span>&nbsp;y);</pre>
+	</p>
+	<p>
+		If you're wondering how this is useful, since C# already has <code>async</code> and <code>await</code> keywords for that purpose, I can understand you. Had you not had that language feature, monadic bind would have been helpful, but now it feels a little odd. (I haven't been deep into the bowels of how that language feature works, but from what little I've seen, monads play a central role - just as they do in the LINQ language feature.)
+	</p>
+	<p>
+		In F# you can define a <code>bind</code> function that works on <code>Async&lt;'a&gt;</code> values:
+	</p>
+	<p>
+		<pre><span style="color:green;">//&nbsp;(&#39;a&nbsp;-&gt;&nbsp;Async&lt;&#39;b&gt;)&nbsp;-&gt;&nbsp;Async&lt;&#39;a&gt;&nbsp;-&gt;&nbsp;Async&lt;&#39;b&gt;</span>
+<span style="color:blue;">let</span>&nbsp;bind&nbsp;f&nbsp;x&nbsp;=&nbsp;async&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;x&#39;&nbsp;=&nbsp;x
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return!</span>&nbsp;f&nbsp;x&#39;&nbsp;}</pre>
+	</p>
+	<p>
+		For both the C# and the F# examples, the exercise seems a little redundant, since they're both based on language features. The C# <code>SelectMany</code> implementation uses the <code>async</code> and <code>await</code> keywords, and the F# <code>bind</code> function uses the built-in <code>async</code> <a href="https://docs.microsoft.com/dotnet/fsharp/language-reference/computation-expressions">computation expression</a>. For that reason, I'll also skip the section on syntactic sugar that I've included in the previous articles in this article series. Syntactic sugar is already built into the languages.
+	</p>
+	<h3 id="e27cbc4c22ac4f66a311cb41584f971c">
+		Flatten <a href="#e27cbc4c22ac4f66a311cb41584f971c" title="permalink">#</a>
+	</h3>
+	<p>
+		In <a href="">the introduction</a> you learned that if you have a <code>Flatten</code> or <code>Join</code> function, you can implement <code>SelectMany</code>, and the other way around. Since we've already defined <code>SelectMany</code> for <code>Task&lt;T&gt;</code>, we can use that to implement <code>Flatten</code>. In this article I use the name <code>Flatten</code> rather than <code>Join</code>. This is an arbitrary choice that doesn't impact behaviour. Perhaps you find it confusing that I'm inconsistent, but I do it in order to demonstrate that the behaviour is the same even if the name is different.
+	</p>
+	<p>
+		The concept of a monad is universal, but the names used to describe its components differ from language to language. What C# calls <code>SelectMany</code>, Scala calls <code>flatMap</code>, and what Haskell calls <code>join</code>, other languages may call <code>Flatten</code>.
+	</p>
+	<p>
+		You can always implement <code>Flatten</code> by using <code>SelectMany</code> with the identity function.
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;Task&lt;T&gt;&nbsp;<span style="color:#74531f;">Flatten</span>&lt;<span style="color:#2b91af;">T</span>&gt;(<span style="color:blue;">this</span>&nbsp;Task&lt;Task&lt;T&gt;&gt;&nbsp;<span style="color:#1f377f;">source</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;source.SelectMany(<span style="color:#1f377f;">x</span>&nbsp;=&gt;&nbsp;x);
+}</pre>
+	</p>
+	<p>
+		The F# version uses the same implementation - it's just a bit terser:
+	</p>
+	<p>
+		<pre><span style="color:green;">//&nbsp;Async&lt;Async&lt;&#39;a&gt;&gt;&nbsp;-&gt;&nbsp;Async&lt;&#39;a&gt;</span>
+<span style="color:blue;">let</span>&nbsp;flatten&nbsp;x&nbsp;=&nbsp;bind&nbsp;id&nbsp;x</pre>
+	</p>
+	<p>
+		In F#, <code>id</code> is a built-in function.
+	</p>
+	<h3 id="99a8068b063e416daf4e8383fda97331">
+		Return <a href="#99a8068b063e416daf4e8383fda97331" title="permalink">#</a>
+	</h3>
+	<p>
+		Apart from monadic bind, a monad must also define a way to put a normal value into the monad. Conceptually, I call this function <em>return</em> (because that's the name that Haskell uses). You don't, however, have to define a static method called <code>Return</code>. What's of importance is that the capability exists. For <code>Task&lt;T&gt;</code> this function already exists: It's called <a href="https://docs.microsoft.com/dotnet/api/system.threading.tasks.task.fromresult">FromResult</a>.
+	</p>
+	<p>
+		In F#, it's not built-in, but easy to implement:
+	</p>
+	<p>
+		<pre><span style="color:green;">//&nbsp;&#39;a&nbsp;-&gt;&nbsp;Async&lt;&#39;a&gt;</span>
+<span style="color:blue;">let</span>&nbsp;fromValue&nbsp;x&nbsp;=&nbsp;async&nbsp;{&nbsp;<span style="color:blue;">return</span>&nbsp;x&nbsp;}</pre>
+	</p>
+	<p>
+		I called it <code>fromValue</code> inspired by the C# method name (and also because <code>return</code> is a reserved keyword in F#).
+	</p>
+	<h3 id="f6b42483d4454e8a8e3e6d580b0595db">
+		Left identity <a href="#f6b42483d4454e8a8e3e6d580b0595db" title="permalink">#</a>
+	</h3>
+	<p>
+		We need to identify the <em>return</em> function in order to examine <a href="">the monad laws</a>. Now that this is done, let's see what the laws look like for the asynchronous monads, starting with the left identity law.
+	</p>
+	<p>
+		<pre>[Property(QuietOnSuccess&nbsp;=&nbsp;<span style="color:blue;">true</span>)]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;<span style="color:#74531f;">TaskHasLeftIdentity</span>(Func&lt;<span style="color:blue;">int</span>,&nbsp;<span style="color:blue;">string</span>&gt;&nbsp;<span style="color:#1f377f;">h_</span>,&nbsp;<span style="color:blue;">int</span>&nbsp;<span style="color:#1f377f;">a</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;Func&lt;<span style="color:blue;">int</span>,&nbsp;Task&lt;<span style="color:blue;">int</span>&gt;&gt;&nbsp;<span style="color:#1f377f;">@return</span>&nbsp;=&nbsp;Task.FromResult;
+&nbsp;&nbsp;&nbsp;&nbsp;Task&lt;<span style="color:blue;">string</span>&gt;&nbsp;<span style="color:#74531f;">h</span>(<span style="color:blue;">int</span>&nbsp;<span style="color:#1f377f;">x</span>)&nbsp;=&gt;&nbsp;Task.FromResult(h_(x));
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;Assert.Equal(@return(a).SelectMany(h).Result,&nbsp;h(a).Result);
+}</pre>
+	</p>
+	<p>
+		Like in <a href="">the previous article</a> the test uses <a href="https://fscheck.github.io/FsCheck/">FsCheck</a> 2.11.0 and <a href="https://xunit.net/">xUnit.net</a> 2.4.0. FScheck can generate arbitrary functions in addition to arbitrary values, but it unfortunately, it can't generate asynchronous computations. Instead, I've asked FsCheck to generate a function that I then convert to an asynchronous computation.
+	</p>
+	<p>
+		The code I'm using for this article is quite old, and neither FsCheck 2.11.0 nor xUnit.net 2.4.0 can handle asynchronous unit tests (a capability that later versions do have). Thus, the assertion has to force the computations to run by accessing the <code>Result</code> property. Not modern best practice, but it gets the point across, I hope.
+	</p>
+	<p>
+		In F# I wrote monad law examples using <a href="">Kleisli composition</a>. I first defined a function called <code>fish</code>:
+	</p>
+	<p>
+		<pre><span style="color:green;">//&nbsp;(&#39;a&nbsp;-&gt;&nbsp;Async&lt;&#39;b&gt;)&nbsp;-&gt;&nbsp;(&#39;b&nbsp;-&gt;&nbsp;Async&lt;&#39;c&gt;)&nbsp;-&gt;&nbsp;&#39;a&nbsp;-&gt;&nbsp;Async&lt;&#39;c&gt;</span>
+<span style="color:blue;">let</span>&nbsp;fish&nbsp;f&nbsp;g&nbsp;x&nbsp;=&nbsp;async&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;x&#39;&nbsp;=&nbsp;f&nbsp;x
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return!</span>&nbsp;g&nbsp;x&#39;&nbsp;}</pre>
+	</p>
+	<p>
+		Keep in mind that <em>fish</em> is also a verb, so that's okay for a function name. The function then implements the <em>fish operator:</em>
+	</p>
+	<p>
+		<pre><span style="color:blue;">let</span>&nbsp;(&gt;=&gt;)&nbsp;=&nbsp;Async.fish</pre>
+	</p>
+	<p>
+		This enables us to give an example of the left identity law using Kleisli composition:
+	</p>
+	<p>
+		<pre>[&lt;Property(QuietOnSuccess&nbsp;=&nbsp;<span style="color:blue;">true</span>)&gt;]
+<span style="color:blue;">let</span>&nbsp;``Async&nbsp;fish&nbsp;has&nbsp;left&nbsp;identity``&nbsp;(h&#39;&nbsp;:&nbsp;int&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;string)&nbsp;a&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;h&nbsp;x&nbsp;=&nbsp;async&nbsp;{&nbsp;<span style="color:blue;">return</span>&nbsp;h&#39;&nbsp;x&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;&nbsp;left&nbsp;=&nbsp;Async.fromValue&nbsp;&gt;=&gt;&nbsp;h
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;right&nbsp;=&nbsp;h
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;Async.RunSynchronously&nbsp;(left&nbsp;a)&nbsp;=!&nbsp;Async.RunSynchronously&nbsp;(right&nbsp;a)</pre>
+	</p>
+	<p>
+		The <code>=!</code> operator is an <a href="https://github.com/SwensenSoftware/Unquote">Unquote</a> operator that I usually read as <em>must equal</em>. It's a test assertion that'll throw an exception if the left and right sides aren't equal.
+	</p>
+	<h3 id="ef0d98230ec6429c855f15a7a876fdad">
+		Right identity <a href="#ef0d98230ec6429c855f15a7a876fdad" title="permalink">#</a>
+	</h3>
+	<p>
+		In a similar manner, we can showcase the right identity law as a test - first in C#:
+	</p>
+	<p>
+		<pre>[Property(QuietOnSuccess&nbsp;=&nbsp;<span style="color:blue;">true</span>)]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;<span style="color:#74531f;">TaskHasRightIdentity</span>(<span style="color:blue;">int</span>&nbsp;<span style="color:#1f377f;">a</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;Func&lt;<span style="color:blue;">int</span>,&nbsp;Task&lt;<span style="color:blue;">int</span>&gt;&gt;&nbsp;<span style="color:#1f377f;">@return</span>&nbsp;=&nbsp;Task.FromResult;
+&nbsp;&nbsp;&nbsp;&nbsp;Task&lt;<span style="color:blue;">int</span>&gt;&nbsp;<span style="color:#1f377f;">m</span>&nbsp;=&nbsp;Task.FromResult(a);
+&nbsp;&nbsp;&nbsp;&nbsp;Assert.Equal(m.SelectMany(@return).Result,&nbsp;m.Result);
+}</pre>
+	</p>
+	<p>
+		Here's a Kleisli-composition-based F# property that demonstrates the right identity law for asynchronous workflows:
+	</p>
+	<p>
+		<pre>[&lt;Property(QuietOnSuccess&nbsp;=&nbsp;<span style="color:blue;">true</span>)&gt;]
+<span style="color:blue;">let</span>&nbsp;``Async&nbsp;fish&nbsp;has&nbsp;right&nbsp;identity``&nbsp;(f&#39;&nbsp;:&nbsp;int&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;string)&nbsp;a&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;f&nbsp;x&nbsp;=&nbsp;async&nbsp;{&nbsp;<span style="color:blue;">return</span>&nbsp;f&#39;&nbsp;x&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;&nbsp;left&nbsp;=&nbsp;f
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;right&nbsp;=&nbsp;f&nbsp;&gt;=&gt;&nbsp;Async.fromValue
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;Async.RunSynchronously&nbsp;(left&nbsp;a)&nbsp;=!&nbsp;Async.RunSynchronously&nbsp;(right&nbsp;a)</pre>
+	</p>
+	<p>
+		As always, even a property-based test constitutes no <em>proof</em> that the law holds. I show it only to illustrate what the laws look like in 'real' code.
+	</p>
+	<h3 id="cc6f13f397574584b0c3dbb55cb15726">
+		Associativity <a href="#cc6f13f397574584b0c3dbb55cb15726" title="permalink">#</a>
+	</h3>
+	<p>
+		The last monad law is the associativity law that describes how (at least) three functions compose.
+	</p>
+	<p>
+		<pre>[Property(QuietOnSuccess&nbsp;=&nbsp;<span style="color:blue;">true</span>)]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;<span style="color:#74531f;">TaskIsAssociative</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;Func&lt;DateTime,&nbsp;<span style="color:blue;">int</span>&gt;&nbsp;<span style="color:#1f377f;">f_</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;Func&lt;<span style="color:blue;">int</span>,&nbsp;<span style="color:blue;">string</span>&gt;&nbsp;<span style="color:#1f377f;">g_</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;Func&lt;<span style="color:blue;">string</span>,&nbsp;<span style="color:blue;">byte</span>&gt;&nbsp;<span style="color:#1f377f;">h_</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;DateTime&nbsp;<span style="color:#1f377f;">a</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;Task&lt;<span style="color:blue;">int</span>&gt;&nbsp;<span style="color:#74531f;">f</span>(DateTime&nbsp;<span style="color:#1f377f;">x</span>)&nbsp;=&gt;&nbsp;Task.FromResult(f_(x));
+&nbsp;&nbsp;&nbsp;&nbsp;Task&lt;<span style="color:blue;">string</span>&gt;&nbsp;<span style="color:#74531f;">g</span>(<span style="color:blue;">int</span>&nbsp;<span style="color:#1f377f;">x</span>)&nbsp;=&gt;&nbsp;Task.FromResult(g_(x));
+&nbsp;&nbsp;&nbsp;&nbsp;Task&lt;<span style="color:blue;">byte</span>&gt;&nbsp;<span style="color:#74531f;">h</span>(<span style="color:blue;">string</span>&nbsp;<span style="color:#1f377f;">x</span>)&nbsp;=&gt;&nbsp;Task.FromResult(h_(x));
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;Task&lt;<span style="color:blue;">int</span>&gt;&nbsp;<span style="color:#1f377f;">m</span>&nbsp;=&nbsp;f(a);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;Assert.Equal(m.SelectMany(g).SelectMany(h).Result,&nbsp;m.SelectMany(<span style="color:#1f377f;">x</span>&nbsp;=&gt;&nbsp;g(x).SelectMany(h)).Result);
+}</pre>
+	</p>
+	<p>
+		This property once more relies on FsCheck's ability to generate arbitrary <a href="https://en.wikipedia.org/wiki/Pure_function">pure functions</a>, which it then converts to asynchronous computations. The same does the Kleisli-composition-based F# property:
+	</p>
+	<p>
+		<pre>[&lt;Property(QuietOnSuccess&nbsp;=&nbsp;<span style="color:blue;">true</span>)&gt;]
+<span style="color:blue;">let</span>&nbsp;``Async&nbsp;fish&nbsp;is&nbsp;associative``&nbsp;(f&#39;&nbsp;:&nbsp;int&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;string)&nbsp;(g&#39;&nbsp;:&nbsp;string&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;byte)&nbsp;(h&#39;&nbsp;:&nbsp;byte&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;bool)&nbsp;a&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;f&nbsp;x&nbsp;=&nbsp;async&nbsp;{&nbsp;<span style="color:blue;">return</span>&nbsp;f&#39;&nbsp;x&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;g&nbsp;x&nbsp;=&nbsp;async&nbsp;{&nbsp;<span style="color:blue;">return</span>&nbsp;g&#39;&nbsp;x&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;h&nbsp;x&nbsp;=&nbsp;async&nbsp;{&nbsp;<span style="color:blue;">return</span>&nbsp;h&#39;&nbsp;x&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;&nbsp;left&nbsp;=&nbsp;(f&nbsp;&gt;=&gt;&nbsp;&nbsp;g)&nbsp;&gt;=&gt;&nbsp;h
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;right&nbsp;=&nbsp;&nbsp;f&nbsp;&gt;=&gt;&nbsp;(g&nbsp;&nbsp;&gt;=&gt;&nbsp;h)
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;Async.RunSynchronously&nbsp;(left&nbsp;a)&nbsp;=!&nbsp;Async.RunSynchronously&nbsp;(right&nbsp;a)</pre>
+	</p>
+	<p>
+		It's easier to see the associativity that the law is named after when using Kleisli composition, but as <a href="">the article about the monad laws</a> explained, the two variations are equivalent.
+	</p>
+	<h3 id="c7e119135d3243e9b29dae38ab6969bd">
+		Conclusion <a href="#c7e119135d3243e9b29dae38ab6969bd" title="permalink">#</a>
+	</h3>
+	<p>
+		Whether you do asynchronous programming with <code>Task&lt;T&gt;</code> or <code>Async&lt;'a&gt;</code>, asynchronous computations form monads. This enables you to piecemeal compose asynchronous workflows.
+	</p>
+	<p>
+		<strong>Next:</strong> The State monad.
+	</p>
+</div>
