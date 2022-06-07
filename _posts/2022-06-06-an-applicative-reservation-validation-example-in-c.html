@@ -1,0 +1,418 @@
+---
+layout: post
+title: "An applicative reservation validation example in C#"
+description: "How to return all relevant error messages in a composable way."
+date: 2022-06-06 15:39 UTC
+tags: [Functional Programming, Software Design]
+---
+{% include JB/setup %}
+
+<div id="post">
+	<p>
+		<em>{{ page.description }}</em>
+	</p>
+	<p>
+		I've previously suggested that <a href="/2020/12/14/validation-a-solved-problem">I consider validation a solved problem</a>. I still do, until someone disproves me with a counterexample. Here's a fairly straightforward <a href="/2018/11/05/applicative-validation">applicative validation</a> example in C#.
+	</p>
+	<p>
+		After corresponding and speaking with readers of <a href="/code-that-fits-in-your-head">Code That Fits in Your Head</a> I've learned that some readers have objections to the following lines of code:
+	</p>
+	<p>
+		<pre>Reservation?&nbsp;<span style="color:#1f377f;">reservation</span>&nbsp;=&nbsp;dto.Validate(id);
+<span style="color:#8f08c4;">if</span>&nbsp;(reservation&nbsp;<span style="color:blue;">is</span>&nbsp;<span style="color:blue;">null</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;BadRequestResult();</pre>
+	</p>
+	<p>
+		This code snippet demonstrates how to <a href="https://lexi-lambda.github.io/blog/2019/11/05/parse-don-t-validate/">parse, don't validate</a> an incoming Data Transfer Object (DTO). This code base uses C#'s <a href="https://docs.microsoft.com/dotnet/csharp/nullable-references">nullable reference types</a> feature to distinguish between null and non-null objects. Other languages (and earlier versions of C#) can instead use <a href="/2022/04/25/the-maybe-monad">the Maybe monad</a>. Nothing in this article or the book hinges on the <em>nullable reference types</em> feature.
+	</p>
+	<p>
+		If the <code>Validate</code> method (which I really should have called <code>TryParse</code> instead) returns a null value, the Controller from which this code snippet is taken returns a <code>400 Bad Request</code> response.
+	</p>
+	<p>
+		The <code>Validate</code> method is an instance method on the DTO class:
+	</p>
+	<p>
+		<pre><span style="color:blue;">internal</span>&nbsp;Reservation?&nbsp;<span style="color:#74531f;">Validate</span>(Guid&nbsp;<span style="color:#1f377f;">id</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">if</span>&nbsp;(!DateTime.TryParse(At,&nbsp;<span style="color:blue;">out</span>&nbsp;var&nbsp;<span style="color:#1f377f;">d</span>))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">null</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">if</span>&nbsp;(Email&nbsp;<span style="color:blue;">is</span>&nbsp;<span style="color:blue;">null</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">null</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">if</span>&nbsp;(Quantity&nbsp;&lt;&nbsp;1)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">null</span>;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;Reservation(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;id,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;d,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;Email(Email),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;Name(Name&nbsp;??&nbsp;<span style="color:#a31515;">&quot;&quot;</span>),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Quantity);
+}</pre>
+	</p>
+	<p>
+		What irks some readers is the loss of information. While <code>Validate</code> 'knows' why it's rejecting a candidate, that information is lost and no error message is communicated to unfortunate HTTP clients.
+	</p>
+	<p>
+		One email from a reader went on about this for quite some time and I got the impression that the sender considered this such a grave flaw that it invalidated the entire book.
+	</p>
+	<p>
+		That's not the case.
+	</p>
+	<h3 id="26803ee560dd42be825ec266694d0211">
+		Rabbit hole, evaded <a href="#26803ee560dd42be825ec266694d0211" title="permalink">#</a>
+	</h3>
+	<p>
+		When I wrote the code like above, I was fully aware of trade-offs and priorities. I understood that this particular design would mean that clients get no information about <em>why</em> a particular reservation JSON document is rejected - only that it is.
+	</p>
+	<p>
+		This was a simplification that I explicitly decided to make for educational reasons.
+	</p>
+	<p>
+		The above design is based on something as simple as a null check. I expect all my readers to be able to follow that code. As hinted above, you could also model a method like <code>Validate</code> with the Maybe monad, but while Maybe preserves success cases, it throws away all information about errors. In a production system, this is rarely acceptable, but I found it acceptable for the example code in the book, since this isn't the main topic.
+	</p>
+	<p>
+		Instead of basing the design on nullable reference types or the Maybe monad, you can instead base parsing on applicative validation. In order to explain that, I'd first need to explain <a href="/2018/03/22/functors">functors</a>, <a href="/2018/10/01/applicative-functors">applicative functors</a>, and applicative validation. It might also prove helpful to the reader to explain <a href="/2018/05/22/church-encoding">Church encodings</a>, <a href="/2018/12/24/bifunctors">bifunctors</a>, and <a href="/2017/11/27/semigroups">semigroups</a>. That's quite a rabbit hole to fall into, and I felt that it would be such a big digression from the themes of the book that I decided not to go there.
+	</p>
+	<p>
+		On this blog, however, I have all the space and time I'd like. I can digress as much as I'd like. Most of that digression has already happened. Those articles are already on the blog. I'm going to assume that you've read all of the articles I just linked, or that you understand these concepts.
+	</p>
+	<p>
+		In this article, I'm going to rewrite the DTO parser to also return error messages. It's an entirely local change that breaks no existing tests.
+	</p>
+	<h3 id="5f6a7326fb484c1d8b4402b24e49d13b">
+		Validated <a href="#5f6a7326fb484c1d8b4402b24e49d13b" title="permalink">#</a>
+	</h3>
+	<p>
+		Most functional programmers are already aware of the <a href="/2022/05/09/an-either-monad">Either monad</a>. They often reach for it when they need to expand the Maybe monad with <a href="https://fsharpforfunandprofit.com/posts/recipe-part2/">an error track</a>.
+	</p>
+	<p>
+		The problem with the Either monad is, however, that it short-circuits error handling. It's like throwing exceptions. As soon as an Either composition hits the first error, it stops processing the rest of the data. As a caller, you only get one error message, even if there's more than one thing wrong with your input value.
+	</p>
+	<p>
+		In a distributed system where a client posts a document to a service, you'd like to respond with a collection of errors.
+	</p>
+	<p>
+		You can do this with a data type that's isomorphic with Either, but behaves differently as an applicative functor. Instead of short-circuiting on the first error, it collects them. This, however, turns out to be incompatible to the Either monad's short-circuiting behaviour, so this data structure is usually not given monadic features.
+	</p>
+	<p>
+		This data type is usually called <code>Validation</code>, but when I translated that to C# various static code analysis rules lit up, claiming that there was already a referenced namespace called <code>Validation</code>. Instead, I decided to call the type <code><span style="color:#2b91af;">Validated</span>&lt;<span style="color:#2b91af;">F</span>,&nbsp;<span style="color:#2b91af;">S</span>&gt;</code>, which I like better anyway.
+	</p>
+	<p>
+		The type arguments are <code>F</code> for <em>failure</em> and <code>S</code> for <em>success</em>. I've put <code>F</code> before <code>S</code> because by convention that's how Either works.
+	</p>
+	<p>
+		I'm using an encapsulated variation of a Church encoding and a series of <code>Apply</code> overloads as described in the article <a href="/2018/10/15/an-applicative-password-list">An applicative password list</a>. There's quite a bit of boilerplate, so I'll just dump the entire contents of the file here instead of tiring you with a detailed walk-through:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">sealed</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">Validated</span>&lt;<span style="color:#2b91af;">F</span>,&nbsp;<span style="color:#2b91af;">S</span>&gt;
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">interface</span>&nbsp;<span style="color:#2b91af;">IValidation</span>
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;T&nbsp;<span style="color:#74531f;">Match</span>&lt;<span style="color:#2b91af;">T</span>&gt;(Func&lt;F,&nbsp;T&gt;&nbsp;<span style="color:#1f377f;">onFailure</span>,&nbsp;Func&lt;S,&nbsp;T&gt;&nbsp;<span style="color:#1f377f;">onSuccess</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;IValidation&nbsp;imp;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:#2b91af;">Validated</span>(IValidation&nbsp;<span style="color:#1f377f;">imp</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.imp&nbsp;=&nbsp;imp;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">internal</span>&nbsp;<span style="color:blue;">static</span>&nbsp;Validated&lt;F,&nbsp;S&gt;&nbsp;<span style="color:#74531f;">Succeed</span>(S&nbsp;<span style="color:#1f377f;">success</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;Validated&lt;F,&nbsp;S&gt;(<span style="color:blue;">new</span>&nbsp;Success(success));
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">internal</span>&nbsp;<span style="color:blue;">static</span>&nbsp;Validated&lt;F,&nbsp;S&gt;&nbsp;<span style="color:#74531f;">Fail</span>(F&nbsp;<span style="color:#1f377f;">failure</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;Validated&lt;F,&nbsp;S&gt;(<span style="color:blue;">new</span>&nbsp;Failure(failure));
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;T&nbsp;<span style="color:#74531f;">Match</span>&lt;<span style="color:#2b91af;">T</span>&gt;(Func&lt;F,&nbsp;T&gt;&nbsp;<span style="color:#1f377f;">onFailure</span>,&nbsp;Func&lt;S,&nbsp;T&gt;&nbsp;<span style="color:#1f377f;">onSuccess</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;imp.Match(onFailure,&nbsp;onSuccess);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;Validated&lt;F1,&nbsp;S1&gt;&nbsp;<span style="color:#74531f;">SelectBoth</span>&lt;<span style="color:#2b91af;">F1</span>,&nbsp;<span style="color:#2b91af;">S1</span>&gt;(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Func&lt;F,&nbsp;F1&gt;&nbsp;<span style="color:#1f377f;">selectFailure</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Func&lt;S,&nbsp;S1&gt;&nbsp;<span style="color:#1f377f;">selectSuccess</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;Match(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#1f377f;">f</span>&nbsp;=&gt;&nbsp;Validated.Fail&lt;F1,&nbsp;S1&gt;(selectFailure(f)),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#1f377f;">s</span>&nbsp;=&gt;&nbsp;Validated.Succeed&lt;F1,&nbsp;S1&gt;(selectSuccess(s)));
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;Validated&lt;F1,&nbsp;S&gt;&nbsp;<span style="color:#74531f;">SelectFailure</span>&lt;<span style="color:#2b91af;">F1</span>&gt;(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Func&lt;F,&nbsp;F1&gt;&nbsp;<span style="color:#1f377f;">selectFailure</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;SelectBoth(selectFailure,&nbsp;<span style="color:#1f377f;">s</span>&nbsp;=&gt;&nbsp;s);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;Validated&lt;F,&nbsp;S1&gt;&nbsp;<span style="color:#74531f;">SelectSuccess</span>&lt;<span style="color:#2b91af;">S1</span>&gt;(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Func&lt;S,&nbsp;S1&gt;&nbsp;<span style="color:#1f377f;">selectSuccess</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;SelectBoth(<span style="color:#1f377f;">f</span>&nbsp;=&gt;&nbsp;f,&nbsp;selectSuccess);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;Validated&lt;F,&nbsp;S1&gt;&nbsp;<span style="color:#74531f;">Select</span>&lt;<span style="color:#2b91af;">S1</span>&gt;(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Func&lt;S,&nbsp;S1&gt;&nbsp;<span style="color:#1f377f;">selector</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;SelectSuccess(selector);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">sealed</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">Success</span>&nbsp;:&nbsp;IValidation
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;S&nbsp;success;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">Success</span>(S&nbsp;<span style="color:#1f377f;">success</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.success&nbsp;=&nbsp;success;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;T&nbsp;<span style="color:#74531f;">Match</span>&lt;<span style="color:#2b91af;">T</span>&gt;(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Func&lt;F,&nbsp;T&gt;&nbsp;<span style="color:#1f377f;">onFailure</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Func&lt;S,&nbsp;T&gt;&nbsp;<span style="color:#1f377f;">onSuccess</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;onSuccess(success);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">sealed</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">Failure</span>&nbsp;:&nbsp;IValidation
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;F&nbsp;failure;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">Failure</span>(F&nbsp;<span style="color:#1f377f;">failure</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.failure&nbsp;=&nbsp;failure;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;T&nbsp;<span style="color:#74531f;">Match</span>&lt;<span style="color:#2b91af;">T</span>&gt;(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Func&lt;F,&nbsp;T&gt;&nbsp;<span style="color:#1f377f;">onFailure</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Func&lt;S,&nbsp;T&gt;&nbsp;<span style="color:#1f377f;">onSuccess</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;onFailure(failure);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}
+ 
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">Validated</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;Validated&lt;F,&nbsp;S&gt;&nbsp;<span style="color:#74531f;">Succeed</span>&lt;<span style="color:#2b91af;">F</span>,&nbsp;<span style="color:#2b91af;">S</span>&gt;(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;S&nbsp;<span style="color:#1f377f;">success</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;Validated&lt;F,&nbsp;S&gt;.Succeed(success);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;Validated&lt;F,&nbsp;S&gt;&nbsp;<span style="color:#74531f;">Fail</span>&lt;<span style="color:#2b91af;">F</span>,&nbsp;<span style="color:#2b91af;">S</span>&gt;(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;F&nbsp;<span style="color:#1f377f;">failure</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;Validated&lt;F,&nbsp;S&gt;.Fail(failure);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;Validated&lt;F,&nbsp;S&gt;&nbsp;<span style="color:#74531f;">Apply</span>&lt;<span style="color:#2b91af;">F</span>,&nbsp;<span style="color:#2b91af;">T</span>,&nbsp;<span style="color:#2b91af;">S</span>&gt;(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>&nbsp;Validated&lt;F,&nbsp;Func&lt;T,&nbsp;S&gt;&gt;&nbsp;<span style="color:#1f377f;">selector</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Validated&lt;F,&nbsp;T&gt;&nbsp;<span style="color:#1f377f;">source</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Func&lt;F,&nbsp;F,&nbsp;F&gt;&nbsp;<span style="color:#1f377f;">combine</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">if</span>&nbsp;(selector&nbsp;<span style="color:blue;">is</span>&nbsp;<span style="color:blue;">null</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">throw</span>&nbsp;<span style="color:blue;">new</span>&nbsp;ArgumentNullException(nameof(selector));
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;selector.Match(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#1f377f;">f1</span>&nbsp;=&gt;&nbsp;source.Match(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#1f377f;">f2</span>&nbsp;=&gt;&nbsp;Fail&lt;F,&nbsp;S&gt;(combine(f1,&nbsp;f2)),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#1f377f;">_</span>&nbsp;&nbsp;=&gt;&nbsp;Fail&lt;F,&nbsp;S&gt;(f1)),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#1f377f;">map</span>&nbsp;=&gt;&nbsp;source.Match(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#1f377f;">f2</span>&nbsp;=&gt;&nbsp;Fail&lt;F,&nbsp;S&gt;(f2),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#1f377f;">x</span>&nbsp;&nbsp;=&gt;&nbsp;Succeed&lt;F,&nbsp;S&gt;(map(x))));
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;Validated&lt;F,&nbsp;Func&lt;T2,&nbsp;S&gt;&gt;&nbsp;<span style="color:#74531f;">Apply</span>&lt;<span style="color:#2b91af;">F</span>,&nbsp;<span style="color:#2b91af;">T1</span>,&nbsp;<span style="color:#2b91af;">T2</span>,&nbsp;<span style="color:#2b91af;">S</span>&gt;(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>&nbsp;Validated&lt;F,&nbsp;Func&lt;T1,&nbsp;T2,&nbsp;S&gt;&gt;&nbsp;<span style="color:#1f377f;">selector</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Validated&lt;F,&nbsp;T1&gt;&nbsp;<span style="color:#1f377f;">source</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Func&lt;F,&nbsp;F,&nbsp;F&gt;&nbsp;<span style="color:#1f377f;">combine</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">if</span>&nbsp;(selector&nbsp;<span style="color:blue;">is</span>&nbsp;<span style="color:blue;">null</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">throw</span>&nbsp;<span style="color:blue;">new</span>&nbsp;ArgumentNullException(nameof(selector));
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;selector.Match(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#1f377f;">f1</span>&nbsp;=&gt;&nbsp;source.Match(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#1f377f;">f2</span>&nbsp;=&gt;&nbsp;Fail&lt;F,&nbsp;Func&lt;T2,&nbsp;S&gt;&gt;(combine(f1,&nbsp;f2)),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#1f377f;">_</span>&nbsp;&nbsp;=&gt;&nbsp;Fail&lt;F,&nbsp;Func&lt;T2,&nbsp;S&gt;&gt;(f1)),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#1f377f;">map</span>&nbsp;=&gt;&nbsp;source.Match(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#1f377f;">f2</span>&nbsp;=&gt;&nbsp;Fail&lt;F,&nbsp;Func&lt;T2,&nbsp;S&gt;&gt;(f2),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#1f377f;">x</span>&nbsp;&nbsp;=&gt;&nbsp;Succeed&lt;F,&nbsp;Func&lt;T2,&nbsp;S&gt;&gt;(<span style="color:#1f377f;">y</span>&nbsp;=&gt;&nbsp;map(x,&nbsp;y))));
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;Validated&lt;F,&nbsp;Func&lt;T2,&nbsp;T3,&nbsp;S&gt;&gt;&nbsp;<span style="color:#74531f;">Apply</span>&lt;<span style="color:#2b91af;">F</span>,&nbsp;<span style="color:#2b91af;">T1</span>,&nbsp;<span style="color:#2b91af;">T2</span>,&nbsp;<span style="color:#2b91af;">T3</span>,&nbsp;<span style="color:#2b91af;">S</span>&gt;(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>&nbsp;Validated&lt;F,&nbsp;Func&lt;T1,&nbsp;T2,&nbsp;T3,&nbsp;S&gt;&gt;&nbsp;<span style="color:#1f377f;">selector</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Validated&lt;F,&nbsp;T1&gt;&nbsp;<span style="color:#1f377f;">source</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Func&lt;F,&nbsp;F,&nbsp;F&gt;&nbsp;<span style="color:#1f377f;">combine</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">if</span>&nbsp;(selector&nbsp;<span style="color:blue;">is</span>&nbsp;<span style="color:blue;">null</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">throw</span>&nbsp;<span style="color:blue;">new</span>&nbsp;ArgumentNullException(nameof(selector));
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;selector.Match(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#1f377f;">f1</span>&nbsp;=&gt;&nbsp;source.Match(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#1f377f;">f2</span>&nbsp;=&gt;&nbsp;Fail&lt;F,&nbsp;Func&lt;T2,&nbsp;T3,&nbsp;S&gt;&gt;(combine(f1,&nbsp;f2)),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#1f377f;">_</span>&nbsp;&nbsp;=&gt;&nbsp;Fail&lt;F,&nbsp;Func&lt;T2,&nbsp;T3,&nbsp;S&gt;&gt;(f1)),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#1f377f;">map</span>&nbsp;=&gt;&nbsp;source.Match(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#1f377f;">f2</span>&nbsp;=&gt;&nbsp;Fail&lt;F,&nbsp;Func&lt;T2,&nbsp;T3,&nbsp;S&gt;&gt;(f2),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#1f377f;">x</span>&nbsp;&nbsp;=&gt;&nbsp;Succeed&lt;F,&nbsp;Func&lt;T2,&nbsp;T3,&nbsp;S&gt;&gt;((<span style="color:#1f377f;">y</span>,&nbsp;<span style="color:#1f377f;">z</span>)&nbsp;=&gt;&nbsp;map(x,&nbsp;y,&nbsp;z))));
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;Validated&lt;F,&nbsp;Func&lt;T2,&nbsp;T3,&nbsp;S&gt;&gt;&nbsp;<span style="color:#74531f;">Apply</span>&lt;<span style="color:#2b91af;">F</span>,&nbsp;<span style="color:#2b91af;">T1</span>,&nbsp;<span style="color:#2b91af;">T2</span>,&nbsp;<span style="color:#2b91af;">T3</span>,&nbsp;<span style="color:#2b91af;">S</span>&gt;(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>&nbsp;Func&lt;T1,&nbsp;T2,&nbsp;T3,&nbsp;S&gt;&nbsp;<span style="color:#1f377f;">map</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Validated&lt;F,&nbsp;T1&gt;&nbsp;<span style="color:#1f377f;">source</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Func&lt;F,&nbsp;F,&nbsp;F&gt;&nbsp;<span style="color:#1f377f;">combine</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;Apply(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Succeed&lt;F,&nbsp;Func&lt;T1,&nbsp;T2,&nbsp;T3,&nbsp;S&gt;&gt;((<span style="color:#1f377f;">x</span>,&nbsp;<span style="color:#1f377f;">y</span>,&nbsp;<span style="color:#1f377f;">z</span>)&nbsp;=&gt;&nbsp;map(x,&nbsp;y,&nbsp;z)),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;source,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;combine);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+	</p>
+	<p>
+		I only added the <code>Apply</code> overloads that I needed for the following demo code. As stated above, I'm not going to launch into a detailed walk-through, since the code follows the concepts lined out in the various articles I've already mentioned. If there's something that you'd like me to explain then please <a href="https://github.com/ploeh/ploeh.github.com#comments">leave a comment</a>.
+	</p>
+	<p>
+		Notice that <code><span style="color:#2b91af;">Validated</span>&lt;<span style="color:#2b91af;">F</span>,&nbsp;<span style="color:#2b91af;">S</span>&gt;</code> has no <code>SelectMany</code> method. It's deliberately not a <a href="/2022/03/28/monads">monad</a>, because monadic <em>bind</em> (<code>SelectMany</code>) would conflict with the applicative functor implementation.
+	</p>
+	<h3 id="533e728019834b22b323ffab10f4cae8">
+		Individual parsers <a href="#533e728019834b22b323ffab10f4cae8" title="permalink">#</a>
+	</h3>
+	<p>
+		An essential quality of applicative validation is that it's composable. This means that you can compose a larger, more complex parser from smaller ones. Parsing a <code><span style="color:#2b91af;">ReservationDto</span></code> object, for example, involves parsing the date and time of the reservation, the email address, and the quantity. Here's how to parse the date and time:
+	</p>
+	<p>
+		<pre><span style="color:blue;">private</span>&nbsp;Validated&lt;<span style="color:blue;">string</span>,&nbsp;DateTime&gt;&nbsp;<span style="color:#74531f;">TryParseAt</span>()
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">if</span>&nbsp;(!DateTime.TryParse(At,&nbsp;<span style="color:blue;">out</span>&nbsp;var&nbsp;<span style="color:#1f377f;">d</span>))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;Validated.Fail&lt;<span style="color:blue;">string</span>,&nbsp;DateTime&gt;(<span style="color:#a31515;">$&quot;Invalid&nbsp;date&nbsp;or&nbsp;time:&nbsp;</span>{At}<span style="color:#a31515;">.&quot;</span>);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;Validated.Succeed&lt;<span style="color:blue;">string</span>,&nbsp;DateTime&gt;(d);
+}</pre>
+	</p>
+	<p>
+		In order to keep things simple I'm going to use strings for error messages. You could instead decide to encode error conditions as a <a href="https://en.wikipedia.org/wiki/Tagged_union">sum type</a> or other polymorphic type. This would be appropriate if you also need to be able to make programmatic decisions based on individual error conditions, or if you need to translate the error messages to more than one language.
+	</p>
+	<p>
+		The <code><span style="color:#74531f;">TryParseAt</span></code> function only attempts to parse the <code>At</code> property to a <code>DateTime</code> value. If parsing fails, it returns a <code><span style="color:#2b91af;">Failure</span></code> value with a helpful error message; otherwise, it wraps the parsed date and time in a <code><span style="color:#2b91af;">Success</span></code> value.
+	</p>
+	<p>
+		Parsing the email address is similar:
+	</p>
+	<p>
+		<pre><span style="color:blue;">private</span>&nbsp;Validated&lt;<span style="color:blue;">string</span>,&nbsp;Email&gt;&nbsp;<span style="color:#74531f;">TryParseEmail</span>()
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">if</span>&nbsp;(Email&nbsp;<span style="color:blue;">is</span>&nbsp;<span style="color:blue;">null</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;Validated.Fail&lt;<span style="color:blue;">string</span>,&nbsp;Email&gt;(<span style="color:#a31515;">$&quot;Email&nbsp;address&nbsp;is&nbsp;missing.&quot;</span>);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;Validated.Succeed&lt;<span style="color:blue;">string</span>,&nbsp;Email&gt;(<span style="color:blue;">new</span>&nbsp;Email(Email));
+}</pre>
+	</p>
+	<p>
+		As is parsing the quantity:
+	</p>
+	<p>
+		<pre><span style="color:blue;">private</span>&nbsp;Validated&lt;<span style="color:blue;">string</span>,&nbsp;<span style="color:blue;">int</span>&gt;&nbsp;<span style="color:#74531f;">TryParseQuantity</span>()
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">if</span>&nbsp;(Quantity&nbsp;&lt;&nbsp;1)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;Validated.Fail&lt;<span style="color:blue;">string</span>,&nbsp;<span style="color:blue;">int</span>&gt;(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#a31515;">$&quot;Quantity&nbsp;must&nbsp;be&nbsp;a&nbsp;positive&nbsp;integer,&nbsp;but&nbsp;was:&nbsp;</span>{Quantity}<span style="color:#a31515;">.&quot;</span>);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;Validated.Succeed&lt;<span style="color:blue;">string</span>,&nbsp;<span style="color:blue;">int</span>&gt;(Quantity);
+}</pre>
+	</p>
+	<p>
+		There's no reason to create a parser for the reservation name, because if the name doesn't exist, instead use the empty string. That operation can't fail.
+	</p>
+	<h3 id="48f0650702f1490392838bf3c5c88cd1">
+		Composition <a href="#48f0650702f1490392838bf3c5c88cd1" title="permalink">#</a>
+	</h3>
+	<p>
+		You can now use applicative composition to reuse those individual parsers in a more complex parser:
+	</p>
+	<p>
+		<pre><span style="color:blue;">internal</span>&nbsp;Validated&lt;<span style="color:blue;">string</span>,&nbsp;Reservation&gt;&nbsp;<span style="color:#74531f;">TryParse</span>(Guid&nbsp;<span style="color:#1f377f;">id</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;Func&lt;DateTime,&nbsp;Email,&nbsp;<span style="color:blue;">int</span>,&nbsp;Reservation&gt;&nbsp;<span style="color:#1f377f;">createReservation</span>&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(<span style="color:#1f377f;">at</span>,&nbsp;<span style="color:#1f377f;">email</span>,&nbsp;<span style="color:#1f377f;">quantity</span>)&nbsp;=&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;Reservation(id,&nbsp;at,&nbsp;email,&nbsp;<span style="color:blue;">new</span>&nbsp;Name(Name&nbsp;??&nbsp;<span style="color:#a31515;">&quot;&quot;</span>),&nbsp;quantity);
+&nbsp;&nbsp;&nbsp;&nbsp;Func&lt;<span style="color:blue;">string</span>,&nbsp;<span style="color:blue;">string</span>,&nbsp;<span style="color:blue;">string</span>&gt;&nbsp;<span style="color:#1f377f;">combine</span>&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(<span style="color:#1f377f;">x</span>,&nbsp;<span style="color:#1f377f;">y</span>)&nbsp;=&gt;&nbsp;<span style="color:blue;">string</span>.Join(Environment.NewLine,&nbsp;x,&nbsp;y);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;createReservation
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.Apply(TryParseAt(),&nbsp;combine)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.Apply(TryParseEmail(),&nbsp;combine)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.Apply(TryParseQuantity(),&nbsp;combine);
+}</pre>
+	</p>
+	<p>
+		<code><span style="color:#1f377f;">createReservation</span></code> is a local function that closes over <code>id</code> and <code>Name</code>. Specifically, it uses the null coalescing operator (<code>??</code>) to turn a null name into the empty string. On the other hand, it takes <code>at</code>, <code>email</code>, and <code>quantity</code> as inputs, since these are the values that must first be parsed.
+	</p>
+	<p>
+		A type like <code><span style="color:#2b91af;">Validated</span>&lt;<span style="color:#2b91af;">F</span>,&nbsp;<span style="color:#2b91af;">S</span>&gt;</code> is only an applicative functor when the failure dimension (<code>F</code>) gives rise to a semigroup. The way I've modelled it here is as a binary operation that you need to pass as a parameter to each <code>Apply</code> overload. This seems awkward, but is good enough for a proof of concept.
+	</p>
+	<p>
+		The <code><span style="color:#1f377f;">combine</span></code> function joins two strings together, separated by a line break.
+	</p>
+	<p>
+		The <code><span style="color:#74531f;">TryParse</span></code> function composes <code><span style="color:#1f377f;">createReservation</span></code> with <code>TryParseAt</code>, <code>TryParseEmail</code>, and <code>TryParseQuantity</code> using the various <code>Apply</code> overloads. The combination is a <code>Validated</code> value that's either a failure string or a properly encapsulated <code>Reservation</code> object.
+	</p>
+	<h3 id="04091776345e4f4b8ba4d446d8d80376">
+		Using the parser <a href="#04091776345e4f4b8ba4d446d8d80376" title="permalink">#</a>
+	</h3>
+	<p>
+		Client code can now invoke the <code>TryParse</code> function on the DTO. Here is the code inside its <code><span style="color:#74531f;">Post</span></code> method on the <code><span style="color:#2b91af;">ReservationsController</span></code> class:
+	</p>
+	<p>
+		<pre>[HttpPost(<span style="color:#a31515;">&quot;restaurants/{restaurantId}/reservations&quot;</span>)]
+<span style="color:blue;">public</span>&nbsp;Task&lt;ActionResult&gt;&nbsp;<span style="color:#74531f;">Post</span>(<span style="color:blue;">int</span>&nbsp;<span style="color:#1f377f;">restaurantId</span>,&nbsp;ReservationDto&nbsp;<span style="color:#1f377f;">dto</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">if</span>&nbsp;(dto&nbsp;<span style="color:blue;">is</span>&nbsp;<span style="color:blue;">null</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">throw</span>&nbsp;<span style="color:blue;">new</span>&nbsp;ArgumentNullException(nameof(dto));
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">id</span>&nbsp;=&nbsp;dto.ParseId()&nbsp;??&nbsp;Guid.NewGuid();
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">parseResult</span>&nbsp;=&nbsp;dto.TryParse(id);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;parseResult.Match(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#1f377f;">msgs</span>&nbsp;=&gt;&nbsp;Task.FromResult&lt;ActionResult&gt;(<span style="color:blue;">new</span>&nbsp;BadRequestObjectResult(msgs)),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#1f377f;">reservation</span>&nbsp;=&gt;&nbsp;TryCreate(restaurantId,&nbsp;reservation));
+}</pre>
+	</p>
+	<p>
+		When the <code>parseResult</code> matches a failure, it returns a <code><span style="color:blue;">new</span>&nbsp;BadRequestObjectResult</code> with all collected error messages. When, on the other hand, it matches a success, it invokes the <code><span style="color:#74531f;">TryCreate</span></code> helper method with the parsed <code>reservation</code>.
+	</p>
+	<h3 id="d260c38d1dd444e291868e377732fd24">
+		HTTP request and response <a href="#d260c38d1dd444e291868e377732fd24" title="permalink">#</a>
+	</h3>
+	<p>
+		A client will now receive all relevant error messages if it posts a malformed reservation:
+	</p>
+	<p>
+		<pre>POST /restaurants/1/reservations?sig=1WiLlS5705bfsffPzaFYLwntrS4FCjE5CLdaeYTHxxg%3D HTTP/1.1
+Content-Type: application/json
+{&nbsp;<span style="color:#2e75b6;">&quot;at&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;large&quot;</span>,&nbsp;<span style="color:#2e75b6;">&quot;name&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;Kerry&nbsp;Onn&quot;</span>,&nbsp;<span style="color:#2e75b6;">&quot;quantity&quot;</span>:&nbsp;-1&nbsp;}
+
+HTTP/1.1 400 Bad Request
+Invalid date or time: large.
+Email address is missing.
+Quantity must be a positive integer, but was: -1.</pre>
+	</p>
+	<p>
+		Of course, if only a single element is wrong, only that error message will appear.
+	</p>
+	<h3 id="fada4ef8e64648b5a2d90e47082acfde">
+		Conclusion <a href="#fada4ef8e64648b5a2d90e47082acfde" title="permalink">#</a>
+	</h3>
+	<p>
+		The changes described in this article were entirely local to the two involved types: <code><span style="color:#2b91af;">ReservationsController</span></code> and <code><span style="color:#2b91af;">ReservationDto</span></code>. Once I'd expanded <code><span style="color:#2b91af;">ReservationDto</span></code> with the <code><span style="color:#74531f;">TryParse</span></code> function and its helper functions, and changed <code><span style="color:#2b91af;">ReservationsController</span></code> accordingly, the rest of the code base compiled and all tests passed. The point is that this isn't a big change, and that's why I believe that the original design (returning null or non-null) doesn't invalidate anything else I had to say in the book.
+	</p>
+	<p>
+		The change did, however, take quite a bit of boilerplate code, as witnessed by the <code>Validated</code> code dump. That API is, on the other hand, completely reusable, and you can find packages on the internet that already implement this functionality. It's not much of a burden in terms of extra code, but it would have taken a couple of extra chapters to explain in the book. It could easily have been double the size if I had to include material about functors, applicative functors, semigroups, Church encoding, etcetera.
+	</p>
+	<p>
+		To fix two lines of code, I didn't think that was warranted. After all, it's not a major blocker. On the contrary, validation is a solved problem.
+	</p>
+</div>
