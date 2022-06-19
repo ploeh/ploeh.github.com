@@ -1,0 +1,364 @@
+---
+layout: post
+title: "Test Double clocks"
+description: "A short exploration of replacing the system clock with Test Doubles."
+date: 2022-06-19 4:24 UTC
+tags: [Unit Testing]
+---
+{% include JB/setup %}
+
+<div id="post">
+	<p>
+		<em>{{ page.description }}</em>
+	</p>
+	<p>
+		In a comment to my article <a href="/2022/05/23/waiting-to-never-happen">Waiting to never happen</a>, <a href="https://github.com/ladeak">Laszlo</a> asks:
+	</p>
+	<blockquote>
+		<p>
+			"Why have you decided to make the date of the reservation relative to the SystemClock, and not the other way around? Would it be more deterministic to use a faked system clock instead?"
+		</p>
+		<footer><cite><a href="/2022/05/23/waiting-to-never-happen#c0b2e0bd555b5d5c5555c60bf11bff69">Laszlo</a></cite></footer>
+	</blockquote>
+	<p>
+		The short answer is that I hadn't thought of the alternative. Not in this context, at least.
+	</p>
+	<p>
+		It's a question worth exploring, which I will now proceed to do.
+	</p>
+	<h3 id="d7283861d9494c478b2bd8bb90218208">
+		Why IClock? <a href="#d7283861d9494c478b2bd8bb90218208" title="permalink">#</a>
+	</h3>
+	<p>
+		The article in question discusses a unit test, which ultimately arrives at this:
+	</p>
+	<p>
+		<pre>[Fact]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">async</span>&nbsp;Task&nbsp;<span style="color:#74531f;">ChangeDateToSoldOutDate</span>()
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">r1</span>&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Some.Reservation.WithDate(DateTime.Now.AddDays(8).At(20,&nbsp;15));
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">r2</span>&nbsp;=&nbsp;r1
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.WithId(Guid.NewGuid())
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.TheDayAfter()
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.WithQuantity(10);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">db</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;FakeDatabase();
+&nbsp;&nbsp;&nbsp;&nbsp;db.Grandfather.Add(r1);
+&nbsp;&nbsp;&nbsp;&nbsp;db.Grandfather.Add(r2);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">sut</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;ReservationsController(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;SystemClock(),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;InMemoryRestaurantDatabase(Grandfather.Restaurant),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;db);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">dto</span>&nbsp;=&nbsp;r1.WithDate(r2.At).ToDto();
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">actual</span>&nbsp;=&nbsp;<span style="color:blue;">await</span>&nbsp;sut.Put(r1.Id.ToString(<span style="color:#a31515;">&quot;N&quot;</span>),&nbsp;dto);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">oRes</span>&nbsp;=&nbsp;Assert.IsAssignableFrom&lt;ObjectResult&gt;(actual);
+&nbsp;&nbsp;&nbsp;&nbsp;Assert.Equal(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;StatusCodes.Status500InternalServerError,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;oRes.StatusCode);
+}</pre>
+	</p>
+	<p>
+		The keen reader may notice that the test passes a <code><span style="color:blue;">new</span>&nbsp;SystemClock()</code> to the <code>sut</code>. In case you're wondering what that is, here's the definition:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">sealed</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">SystemClock</span>&nbsp;:&nbsp;IClock
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;DateTime&nbsp;<span style="color:#74531f;">GetCurrentDateTime</span>()
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;DateTime.Now;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+	</p>
+	<p>
+		While it should be able to extrapolate the <code>IClock</code> interface from this code snippet, here it is for the sake of completeness:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">interface</span>&nbsp;<span style="color:#2b91af;">IClock</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;DateTime&nbsp;<span style="color:#74531f;">GetCurrentDateTime</span>();
+}</pre>
+	</p>
+	<p>
+		Since such an interface exists, why not use it in unit tests?
+	</p>
+	<p>
+		That's possible, but I think it's worth highlighting what motivated this interface in the first place. If you're used to a certain style of test-driven development (TDD), you may think that interfaces exist in order to support TDD. They may. That's how I did TDD 15 years ago, but <a href="/2019/02/18/from-interaction-based-to-state-based-testing">not how I do it today</a>.
+	</p>
+	<p>
+		The motivation for the <code>IClock</code> is another. It's there because the system clock is a source of impurity, just like random number generators, database queries, and web service invocations. In order to support <a href="/2020/03/23/repeatable-execution">repeatable execution</a>, it's useful to log the inputs and outputs of impure actions. This includes the system clock.
+	</p>
+	<p>
+		The <code>IClock</code> interface doesn't exist in order to support unit testing, but in order to enable logging via the <a href="https://en.wikipedia.org/wiki/Decorator_pattern">Decorator</a> pattern:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">sealed</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">LoggingClock</span>&nbsp;:&nbsp;IClock
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">LoggingClock</span>(ILogger&lt;LoggingClock&gt;&nbsp;<span style="color:#1f377f;">logger</span>,&nbsp;IClock&nbsp;<span style="color:#1f377f;">inner</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Logger&nbsp;=&nbsp;logger;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Inner&nbsp;=&nbsp;inner;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;ILogger&lt;LoggingClock&gt;&nbsp;Logger&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;IClock&nbsp;Inner&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;DateTime&nbsp;<span style="color:#74531f;">GetCurrentDateTime</span>()
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">output</span>&nbsp;=&nbsp;Inner.GetCurrentDateTime();
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Logger.LogInformation(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#a31515;">&quot;{method}()&nbsp;=&gt;&nbsp;{output}&quot;</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;nameof(GetCurrentDateTime),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;output);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;output;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+	</p>
+	<p>
+		All code in this article originates from the code base that accompanies <a href="/code-that-fits-in-your-head">Code That Fits in Your Head</a>.
+	</p>
+	<p>
+		The web application is configured to decorate the <code>SystemClock</code> with the <code>LoggingClock</code>:
+	</p>
+	<p>
+		<pre>services.AddSingleton&lt;IClock&gt;(<span style="color:#1f377f;">sp</span>&nbsp;=&gt;
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">logger</span>&nbsp;=&nbsp;sp.GetService&lt;ILogger&lt;LoggingClock&gt;&gt;();
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;LoggingClock(logger,&nbsp;<span style="color:blue;">new</span>&nbsp;SystemClock());
+});</pre>
+	</p>
+	<p>
+		While the motivation for the <code>IClock</code> interface wasn't to support testing, now that it exists, would it be useful for unit testing as well?
+	</p>
+	<h3 id="3bf52db0c892409dbc372a83293a8992">
+		A Stub clock <a href="#3bf52db0c892409dbc372a83293a8992" title="permalink">#</a>
+	</h3>
+	<p>
+		As a first effort, we might try to add a <a href="http://xunitpatterns.com/Test%20Stub.html">Stub</a> clock:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">sealed</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">ConstantClock</span>&nbsp;:&nbsp;IClock
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;DateTime&nbsp;dateTime;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">ConstantClock</span>(DateTime&nbsp;<span style="color:#1f377f;">dateTime</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.dateTime&nbsp;=&nbsp;dateTime;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;This&nbsp;default&nbsp;value&nbsp;is&nbsp;more&nbsp;or&nbsp;less&nbsp;arbitrary.&nbsp;I&nbsp;chose&nbsp;it&nbsp;as&nbsp;the&nbsp;date</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;and&nbsp;time&nbsp;I&nbsp;wrote&nbsp;these&nbsp;lines&nbsp;of&nbsp;code,&nbsp;which&nbsp;also&nbsp;has&nbsp;the&nbsp;implication</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;that&nbsp;it&nbsp;was&nbsp;immediately&nbsp;a&nbsp;time&nbsp;in&nbsp;the&nbsp;past.&nbsp;The&nbsp;actual&nbsp;value&nbsp;is,</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;however,&nbsp;irrelevant.</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;<span style="color:blue;">static</span>&nbsp;IClock&nbsp;Default&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;ConstantClock(<span style="color:blue;">new</span>&nbsp;DateTime(2022,&nbsp;6,&nbsp;19,&nbsp;9,&nbsp;25,&nbsp;0));
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;DateTime&nbsp;<span style="color:#74531f;">GetCurrentDateTime</span>()
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;dateTime;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+	</p>
+	<p>
+		This implementation always returns the same date and time. I called it <code>ConstantClock</code> for that reason.
+	</p>
+	<p>
+		It's trivial to replace the <code>SystemClock</code> with a <code>ConstantClock</code> in the above test:
+	</p>
+	<p>
+		<pre>[Fact]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">async</span>&nbsp;Task&nbsp;<span style="color:#74531f;">ChangeDateToSoldOutDate</span>()
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">clock</span>&nbsp;=&nbsp;ConstantClock.Default;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">r1</span>&nbsp;=&nbsp;Some.Reservation.WithDate(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;clock.GetCurrentDateTime().AddDays(8).At(20,&nbsp;15));
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">r2</span>&nbsp;=&nbsp;r1
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.WithId(Guid.NewGuid())
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.TheDayAfter()
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.WithQuantity(10);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">db</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;FakeDatabase();
+&nbsp;&nbsp;&nbsp;&nbsp;db.Grandfather.Add(r1);
+&nbsp;&nbsp;&nbsp;&nbsp;db.Grandfather.Add(r2);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">sut</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;ReservationsController(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;clock,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;InMemoryRestaurantDatabase(Grandfather.Restaurant),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;db);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">dto</span>&nbsp;=&nbsp;r1.WithDate(r2.At).ToDto();
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">actual</span>&nbsp;=&nbsp;<span style="color:blue;">await</span>&nbsp;sut.Put(r1.Id.ToString(<span style="color:#a31515;">&quot;N&quot;</span>),&nbsp;dto);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">oRes</span>&nbsp;=&nbsp;Assert.IsAssignableFrom&lt;ObjectResult&gt;(actual);
+&nbsp;&nbsp;&nbsp;&nbsp;Assert.Equal(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;StatusCodes.Status500InternalServerError,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;oRes.StatusCode);
+}</pre>
+	</p>
+	<p>
+		As you can see, however, it doesn't seem to be enabling any simplification of the test. It still needs to establish that <code>r1</code> and <code>r2</code> relates to each other as required by the test case, as well as establish that they are valid reservations in the future.
+	</p>
+	<p>
+		You may protest that this is straw man argument, and that it would make the test both simpler and more readable if it would, instead, use explicit, hard-code values. That's a fair criticism, so I'll get back to that later.
+	</p>
+	<h3 id="58fe168e8266401990d62641020db9ac">
+		Fragility <a href="#58fe168e8266401990d62641020db9ac" title="permalink">#</a>
+	</h3>
+	<p>
+		Before examining the above criticism, there's something more fundamental that I want to get out of the way. I find a Stub clock icky.
+	</p>
+	<p>
+		It works in this case, but may lead to fragile tests. What happens, for example, if another programmer comes by and adds code like this to the System Under Test (SUT)?
+	</p>
+	<p>
+		<pre><span style="color:green;">//&nbsp;Sabotage:</span>
+<span style="color:#8f08c4;">while</span>&nbsp;(Clock.GetCurrentDateTime()&nbsp;-&nbsp;now&nbsp;&lt;&nbsp;TimeSpan.FromMilliseconds(1))
+{&nbsp;}</pre>
+	</p>
+	<p>
+		As the comment suggests, in this case it's pure sabotage. I don't think that anyone would deliberately do something like this. This code snippet even sits in an asynchronous method, and in .NET 'everyone' knows that if you want to suspend execution in an asynchronous method, you should use <a href="https://docs.microsoft.com/dotnet/api/system.threading.tasks.task.delay">Task.Delay</a>. I rather intend this code snippet to indicate that keeping time constant, as <code>ConstantClock</code> does, can be fatal.
+	</p>
+	<p>
+		If someone comes by and attempts to implement any kind of time-sensitive logic based on an injected <code>IClock</code>, the consequences could be dire. With the above sabotage, for example, the test hangs forever.
+	</p>
+	<p>
+		When I originally <a href="/2021/01/11/waiting-to-happen">refactored time-sensitive tests</a>, it was because I didn't appreciate having such ticking bombs lying around. A <code>ConstantClock</code> isn't <em>ticking</em> (that's the problem), but it still seems like a booby trap.
+	</p>
+	<h3 id="d58309147ef6450589ed0b5c69b33b30">
+		Offset clock <a href="#d58309147ef6450589ed0b5c69b33b30" title="permalink">#</a>
+	</h3>
+	<p>
+		It seems intuitive that a clock that doesn't go isn't very useful. Perhaps we can address that problem by setting the clock back. Not just a few hours, but days or years:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">sealed</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">OffsetClock</span>&nbsp;:&nbsp;IClock
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;TimeSpan&nbsp;offset;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:#2b91af;">OffsetClock</span>(DateTime&nbsp;<span style="color:#1f377f;">origin</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;offset&nbsp;=&nbsp;DateTime.Now&nbsp;-&nbsp;origin;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;IClock&nbsp;<span style="color:#74531f;">Start</span>(DateTime&nbsp;<span style="color:#1f377f;">at</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;OffsetClock(at);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;This&nbsp;default&nbsp;value&nbsp;is&nbsp;more&nbsp;or&nbsp;less&nbsp;arbitrary.&nbsp;I&nbsp;just&nbsp;picked&nbsp;the&nbsp;same</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;date&nbsp;and&nbsp;time&nbsp;as&nbsp;ConstantClock&nbsp;(which&nbsp;see).</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;<span style="color:blue;">static</span>&nbsp;IClock&nbsp;Default&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Start(at:&nbsp;<span style="color:blue;">new</span>&nbsp;DateTime(2022,&nbsp;6,&nbsp;19,&nbsp;9,&nbsp;25,&nbsp;0));
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;DateTime&nbsp;<span style="color:#74531f;">GetCurrentDateTime</span>()
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;DateTime.Now&nbsp;-&nbsp;offset;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+	</p>
+	<p>
+		An <code>OffsetClock</code> object starts ticking as soon as it's created, but it ticks at the same pace as the system clock. Time still passes. Rather than a Stub, I think that this implementation qualifies as a <a href="http://xunitpatterns.com/Fake%20Object.html">Fake</a>.
+	</p>
+	<p>
+		Using it in a test is as easy as using the <code>ConstantClock</code>:
+	</p>
+	<p>
+		<pre>[Fact]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">async</span>&nbsp;Task&nbsp;<span style="color:#74531f;">ChangeDateToSoldOutDate</span>()
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">clock</span>&nbsp;=&nbsp;OffsetClock.Default;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">r1</span>&nbsp;=&nbsp;Some.Reservation.WithDate(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;clock.GetCurrentDateTime().AddDays(8).At(20,&nbsp;15));
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">r2</span>&nbsp;=&nbsp;r1
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.WithId(Guid.NewGuid())
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.TheDayAfter()
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.WithQuantity(10);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">db</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;FakeDatabase();
+&nbsp;&nbsp;&nbsp;&nbsp;db.Grandfather.Add(r1);
+&nbsp;&nbsp;&nbsp;&nbsp;db.Grandfather.Add(r2);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">sut</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;ReservationsController(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;clock,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;InMemoryRestaurantDatabase(Grandfather.Restaurant),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;db);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">dto</span>&nbsp;=&nbsp;r1.WithDate(r2.At).ToDto();
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">actual</span>&nbsp;=&nbsp;<span style="color:blue;">await</span>&nbsp;sut.Put(r1.Id.ToString(<span style="color:#a31515;">&quot;N&quot;</span>),&nbsp;dto);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">oRes</span>&nbsp;=&nbsp;Assert.IsAssignableFrom&lt;ObjectResult&gt;(actual);
+&nbsp;&nbsp;&nbsp;&nbsp;Assert.Equal(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;StatusCodes.Status500InternalServerError,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;oRes.StatusCode);
+}</pre>
+	</p>
+	<p>
+		The only change from the version that uses <code>ConstantClock</code> is the definition of the <code>clock</code> variable.
+	</p>
+	<p>
+		This test can withstand the above sabotage, because time still passes at normal pace.
+	</p>
+	<h3 id="06f0ace3806e41139e30106aeb77e0e1">
+		Explicit dates <a href="#06f0ace3806e41139e30106aeb77e0e1" title="permalink">#</a>
+	</h3>
+	<p>
+		Above, I promised to return to the criticism that the test is overly abstract. Now that it's possible to directly control time, perhaps it'd simplify the test if we could use hard-coded dates and times, instead of all that relative-time machinery:
+	</p>
+	<p>
+		<pre>[Fact]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">async</span>&nbsp;Task&nbsp;<span style="color:#74531f;">ChangeDateToSoldOutDate</span>()
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">r1</span>&nbsp;=&nbsp;Some.Reservation.WithDate(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;DateTime(2022,&nbsp;6,&nbsp;27,&nbsp;20,&nbsp;15,&nbsp;0));
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">r2</span>&nbsp;=&nbsp;r1
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.WithId(Guid.NewGuid())
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.WithDate(<span style="color:blue;">new</span>&nbsp;DateTime(2022,&nbsp;6,&nbsp;28,&nbsp;20,&nbsp;15,&nbsp;0))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.WithQuantity(10);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">db</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;FakeDatabase();
+&nbsp;&nbsp;&nbsp;&nbsp;db.Grandfather.Add(r1);
+&nbsp;&nbsp;&nbsp;&nbsp;db.Grandfather.Add(r2);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">sut</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;ReservationsController(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;OffsetClock.Start(at:&nbsp;<span style="color:blue;">new</span>&nbsp;DateTime(2022,&nbsp;6,&nbsp;19,&nbsp;13,&nbsp;43,&nbsp;0)),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;InMemoryRestaurantDatabase(Grandfather.Restaurant),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;db);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">dto</span>&nbsp;=&nbsp;r1.WithDate(r2.At).ToDto();
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">actual</span>&nbsp;=&nbsp;<span style="color:blue;">await</span>&nbsp;sut.Put(r1.Id.ToString(<span style="color:#a31515;">&quot;N&quot;</span>),&nbsp;dto);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">oRes</span>&nbsp;=&nbsp;Assert.IsAssignableFrom&lt;ObjectResult&gt;(actual);
+&nbsp;&nbsp;&nbsp;&nbsp;Assert.Equal(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;StatusCodes.Status500InternalServerError,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;oRes.StatusCode);
+}</pre>
+	</p>
+	<p>
+		Yeah, not really. This isn't worse, but neither is it better. It's the same size of code, and while the dates are now explicit (<a href="https://peps.python.org/pep-0020/">which, ostensibly, is better</a>), the reader now has to deduce the relationship between the clock offset, <code>r1</code>, and <code>r2</code>. I'm not convinced that this is an improvement.
+	</p>
+	<h3 id="62ae3d8257b64496ae7e82930438daa5">
+		Determinism <a href="#62ae3d8257b64496ae7e82930438daa5" title="permalink">#</a>
+	</h3>
+	<p>
+		In the original comment, Laszlo asked if it would be more deterministic to use a Fake system clock instead. This seems to imply that using the system clock is nondeterministic. Granted, it is when not used with care.
+	</p>
+	<p>
+		On the other hand, when used as shown in the initial test, it's <em>almost</em> deterministic. What time-related circumstances would have to come around for the test to fail?
+	</p>
+	<p>
+		The important precondition is that both reservations are in the future. The test picks a date eight days in the future. How might the precondition fail?
+	</p>
+	<p>
+		The only failure condition I can think of is if test execution somehow gets suspended <em>after</em> <code>r1</code> and <code>r2</code> are initialised, but <em>before</em> calling <code>sut.Put</code>. If you run the test on a laptop and put it to sleep for more than eight days, you may be so extremely lucky (or unlucky, depending on how you look at it) that this turns out to be the case. When execution resumes, the reservations are now in the past, and <code>sut.Put</code> will fail because of that.
+	</p>
+	<p>
+		I'm not convinced that this is at all likely, and it's not a scenario that I'm inclined to take into account.
+	</p>
+	<p>
+		And in any case, the test variation that uses <code>OffsetClock</code> is as 'vulnerable' to that scenario as the <code>SystemClock</code>. The only <a href="https://martinfowler.com/bliki/TestDouble.html">Test Double</a> not susceptible to such a scenario is <code>ConstantClock</code>, but as you have seen, this has more immediate problems.
+	</p>
+	<h3 id="0d09375b62d94fc287cb70568e0b7f1a">
+		Conclusion <a href="#0d09375b62d94fc287cb70568e0b7f1a" title="permalink">#</a>
+	</h3>
+	<p>
+		If you've read or seen a sufficient amount of time-travel science fiction, you know that it's not a good idea to try to change time. This also seems to be the case here. At least, I can see a few disadvantages to using Test Double clocks, but no clear advantages.
+	</p>
+	<p>
+		The above is, of course, only one example, but the concern of how to control the passing of time in unit testing isn't new to me. This is something that have been an issue on and off since I started with TDD in 2003. I keep coming back to the notion that the simplest solution is to use as many <a href="https://en.wikipedia.org/wiki/Pure_function">pure functions</a> as possible, combined with a few impure actions that may require explicit use of dates and times relative to the system clock, as shown in previous articles.
+	</p>
+</div>
