@@ -1,0 +1,1021 @@
+---
+layout: post
+title: "Refactoring a saga from the State pattern to the State monad"
+description: "A slightly less unrealistic example in C#."
+date: 2022-08-05 11:05 UTC
+tags: [Software Design, Design Patterns, Functional Programming]
+image: "/content/binary/shipping-policy-state-diagram.png"
+image_alt: "Shipping policy state diagram."
+---
+{% include JB/setup %}
+
+<div id="post">
+	<p>
+		<em>{{ page.description }}</em>
+	</p>
+	<p>
+		This article is one of the examples that I promised in the earlier article <a href="">The State pattern and the State monad</a>. That article examines the relationship between the <a href="https://en.wikipedia.org/wiki/State_pattern">State design pattern</a> and the <a href="/2022/06/20/the-state-monad">State monad</a>. It's deliberately abstract, so one or more examples are in order.
+	</p>
+	<p>
+		In the <a href="">previous example</a> you saw how to refactor <a href="/ref/dp">Design Patterns</a>' <em>TCP connection</em> example. That example is, unfortunately, hardly illuminating due to its nature, so a second example is warranted.
+	</p>
+	<p>
+		This second example shows how to refactor a stateful asynchronous message handler from the State pattern to the State monad.
+	</p>
+	<h3 id="20b0274c10b14a84a07ebd2086ab1fa0">
+		Shipping policy <a href="#20b0274c10b14a84a07ebd2086ab1fa0" title="permalink">#</a>
+	</h3>
+	<p>
+		Instead of inventing an example from scratch, I decided to use <a href="https://docs.particular.net/tutorials/nservicebus-sagas/1-saga-basics/">an NServiceBus saga tutorial</a> as a foundation. Read on even if you don't know <a href="https://particular.net/nservicebus">NServiceBus</a>. You don't have to know anything about NServiceBus in order to follow along. I just thought that I'd embed the example code in a context that actually executes and does something, instead of faking it with a bunch of unit tests. Hopefully this will help make the example a bit more realistic and relatable.
+	</p>
+	<p>
+		The example is a simple demo of asynchronous message handling. In a web store shipping department, you should only ship an item once you've received the order and a billing confirmation. When working with asynchronous messaging, you can't, however, rely on message ordering, so perhaps the <code>OrderBilled</code> message arrives before the <code>OrderPlaced</code> message, and sometimes it's the other way around.
+	</p>
+	<p>
+		<img src="/content/binary/shipping-policy-state-diagram.png" alt="Shipping policy state diagram.">
+	</p>
+	<p>
+		Only when you've received both messages may you ship the item.
+	</p>
+	<p>
+		It's a simple workflow, and you don't <em>really</em> need the State pattern. So much is clear from the sample code implementation:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">ShippingPolicy</span>&nbsp;:&nbsp;Saga&lt;ShippingPolicyData&gt;,
+&nbsp;&nbsp;&nbsp;&nbsp;IAmStartedByMessages&lt;OrderBilled&gt;,
+&nbsp;&nbsp;&nbsp;&nbsp;IAmStartedByMessages&lt;OrderPlaced&gt;
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">static</span>&nbsp;ILog&nbsp;log&nbsp;=&nbsp;LogManager.GetLogger&lt;ShippingPolicy&gt;();
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">protected</span>&nbsp;<span style="color:blue;">override</span>&nbsp;<span style="color:blue;">void</span>&nbsp;ConfigureHowToFindSaga(SagaPropertyMapper&lt;ShippingPolicyData&gt;&nbsp;mapper)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;mapper.MapSaga(sagaData&nbsp;=&gt;&nbsp;sagaData.OrderId)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.ToMessage&lt;OrderPlaced&gt;(message&nbsp;=&gt;&nbsp;message.OrderId)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.ToMessage&lt;OrderBilled&gt;(message&nbsp;=&gt;&nbsp;message.OrderId);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;Task&nbsp;Handle(OrderPlaced&nbsp;message,&nbsp;IMessageHandlerContext&nbsp;context)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;log.Info(<span style="color:#a31515;">$&quot;OrderPlaced&nbsp;message&nbsp;received.&quot;</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Data.IsOrderPlaced&nbsp;=&nbsp;<span style="color:blue;">true</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;ProcessOrder(context);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;Task&nbsp;Handle(OrderBilled&nbsp;message,&nbsp;IMessageHandlerContext&nbsp;context)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;log.Info(<span style="color:#a31515;">$&quot;OrderBilled&nbsp;message&nbsp;received.&quot;</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Data.IsOrderBilled&nbsp;=&nbsp;<span style="color:blue;">true</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;ProcessOrder(context);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">async</span>&nbsp;Task&nbsp;ProcessOrder(IMessageHandlerContext&nbsp;context)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;(Data.IsOrderPlaced&nbsp;&amp;&amp;&nbsp;Data.IsOrderBilled)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">await</span>&nbsp;context.SendLocal(<span style="color:blue;">new</span>&nbsp;ShipOrder()&nbsp;{&nbsp;OrderId&nbsp;=&nbsp;Data.OrderId&nbsp;});
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;MarkAsComplete();
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+	</p>
+	<p>
+		I don't expect you to be familiar with the NServiceBus API, so don't worry about the base class, the interfaces, or the <code>ConfigureHowToFindSaga</code> method. What you need to know is that this class handles two types of messages: <code>OrderPlaced</code> and <code>OrderBilled</code>. What the base class and the framework does is handling message correlation, hydration and dehydration, and so on.
+	</p>
+	<p>
+		For the purposes of this demo, all you need to know about the <code>context</code> object is that it enables you to send and publish messages. The code sample uses <code>context.SendLocal</code> to send a new <code>ShipOrder</code> Command.
+	</p>
+	<p>
+		Messages arrive asynchronously and conceptually with long wait times between them. You can't just rely on in-memory object state because a <code>ShippingPolicy</code> instance may receive one message and then risk that the server it's running on shuts down before the next message arrives. The NServiceBus framework handles message correlation and hydration and dehydration of state data. The latter is modelled by the <code>ShippingPolicyData</code> class:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">ShippingPolicyData</span>&nbsp;:&nbsp;ContainSagaData
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">string</span>&nbsp;OrderId&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;<span style="color:blue;">set</span>;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">bool</span>&nbsp;IsOrderPlaced&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;<span style="color:blue;">set</span>;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">bool</span>&nbsp;IsOrderBilled&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;<span style="color:blue;">set</span>;&nbsp;}
+}</pre>
+	</p>
+	<p>
+		Notice that the above sample code inspects and manipulates the <code>Data</code> property defined by the <code>Saga&lt;ShippingPolicyData&gt;</code> base class.
+	</p>
+	<p>
+		When the <code>ShippingPolicy</code> methods are called by the NServiceBus framework, the <code>Data</code> is automatically populated. When you modify the <code>Data</code>, the state data is automatically persisted when the message handler shuts down to wait for the next message.
+	</p>
+	<h3 id="0edda65734e64a6a99a865c43d6de5be">
+		Characterisation tests <a href="#0edda65734e64a6a99a865c43d6de5be" title="permalink">#</a>
+	</h3>
+	<p>
+		While you can draw an explicit state diagram like the one above, the sample code doesn't explicitly model the various states as objects. Instead, it relies on reading and writing two Boolean values.
+	</p>
+	<p>
+		There's nothing wrong with this implementation. It's the simplest thing that could possibly work, so why make it more complicated?
+	</p>
+	<p>
+		In this article, I <em>am</em> going to make it more complicated. First, I'm going to refactor the above sample code to use the State design pattern, and then I'm going to refactor that code to use the State monad. From a perspective of maintainability, this isn't warranted, but on the other hand, I hope it's educational. The sample code is just complex enough to showcase the structures of the State pattern and the State monad, yet simple enough that the implementation logic doesn't get in the way.
+	</p>
+	<p>
+		Simplicity can be deceiving, however, and no refactoring is without risk.
+	</p>
+	<blockquote>
+		<p>
+			"to refactor, the essential precondition is [...] solid tests"
+		</p>
+		<footer><cite><a href="https://martinfowler.com/">Martin Fowler</a>, <a href="/ref/refactoring">Refactoring</a></cite></footer>
+	</blockquote>
+	<p>
+		I found it safest to first add a few <a href="https://en.wikipedia.org/wiki/Characterization_test">Characterisation Tests</a> to make sure I didn't introduce any errors as I changed the code. It did catch a few copy-paste goofs that I made, so adding tests turned out to be a good idea.
+	</p>
+	<p>
+		Testing NServiceBus message handlers isn't too hard. All the tests I wrote look similar, so one should be enough to give you an idea.
+	</p>
+	<p>
+		<pre>[Theory]
+[InlineData(<span style="color:#a31515;">&quot;1337&quot;</span>)]
+[InlineData(<span style="color:#a31515;">&quot;baz&quot;</span>)]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">async</span>&nbsp;Task&nbsp;OrderPlacedAndBilled(<span style="color:blue;">string</span>&nbsp;orderId)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;sut&nbsp;=&nbsp;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;ShippingPolicy&nbsp;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Data&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;ShippingPolicyData&nbsp;{&nbsp;OrderId&nbsp;=&nbsp;orderId&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;};
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;ctx&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;TestableMessageHandlerContext();
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">await</span>&nbsp;sut.Handle(<span style="color:blue;">new</span>&nbsp;OrderPlaced&nbsp;{&nbsp;OrderId&nbsp;=&nbsp;orderId&nbsp;},&nbsp;ctx);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">await</span>&nbsp;sut.Handle(<span style="color:blue;">new</span>&nbsp;OrderBilled&nbsp;{&nbsp;OrderId&nbsp;=&nbsp;orderId&nbsp;},&nbsp;ctx);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;Assert.True(sut.Completed);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;msg&nbsp;=&nbsp;Assert.Single(ctx.SentMessages.Containing&lt;ShipOrder&gt;());
+&nbsp;&nbsp;&nbsp;&nbsp;Assert.Equal(orderId,&nbsp;msg.Message.OrderId);
+}</pre>
+	</p>
+	<p>
+		The tests use <a href="https://xunit.net/">xUnit.net</a> 2.4.2. When I downloaded the <a href="https://docs.particular.net/tutorials/nservicebus-sagas/1-saga-basics/">NServiceBus saga sample code</a> it targeted .NET Framework 4.8, and I didn't bother to change the version.
+	</p>
+	<p>
+		While the NServiceBus framework will automatically hydrate and populate <code>Data</code>, in a unit test you have to remember to explicitly populate it. The <code>TestableMessageHandlerContext</code> class is a <a href="http://xunitpatterns.com/Test%20Spy.html">Test Spy</a> that is part of <a href="https://docs.particular.net/nservicebus/testing/">NServiceBus testing API</a>.
+	</p>
+	<p>
+		You'd think I was paid by <a href="https://particular.net/">Particular Software</a> to write this article, but I'm not. All this is really just the introduction. You're excused if you've forgotten the topic of this article, but my goal is to show a State pattern example. Only now can we begin in earnest.
+	</p>
+	<h3 id="7b1878c85e134ac5a24e9ce13ba064d2">
+		State pattern implementation <a href="#7b1878c85e134ac5a24e9ce13ba064d2" title="permalink">#</a>
+	</h3>
+	<p>
+		Refactoring to the State pattern, I chose to let the <code>ShippingPolicy</code> class fill the role of the pattern's <code>Context</code>. Instead of a base class with virtual method, I used an interface to define the <code>State</code> object, as that's more <a href="/2015/08/03/idiomatic-or-idiosyncratic">Idiomatic</a> in C#:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">interface</span>&nbsp;<span style="color:#2b91af;">IShippingState</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;Task&nbsp;OrderPlaced(OrderPlaced&nbsp;message,&nbsp;IMessageHandlerContext&nbsp;context,&nbsp;ShippingPolicy&nbsp;policy);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;Task&nbsp;OrderBilled(OrderBilled&nbsp;message,&nbsp;IMessageHandlerContext&nbsp;context,&nbsp;ShippingPolicy&nbsp;policy);
+}</pre>
+	</p>
+	<p>
+		The State pattern only shows examples where the <code>State</code> methods take a single argument: The <code>Context</code>. In this case, that's the <code>ShippingPolicy</code>. The two other parameters, <code>message</code> and <code>context</code>, are run-time values passed on from the <code>ShippingPolicy</code>'s <code>Handle</code> methods:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;IShippingState&nbsp;State&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;<span style="color:blue;">internal</span>&nbsp;<span style="color:blue;">set</span>;&nbsp;}
+ 
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">async</span>&nbsp;Task&nbsp;Handle(OrderPlaced&nbsp;message,&nbsp;IMessageHandlerContext&nbsp;context)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;log.Info(<span style="color:#a31515;">$&quot;OrderPlaced&nbsp;message&nbsp;received.&quot;</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;Hydrate();
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">await</span>&nbsp;State.OrderPlaced(message,&nbsp;context,&nbsp;<span style="color:blue;">this</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;Dehydrate();
+}
+ 
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">async</span>&nbsp;Task&nbsp;Handle(OrderBilled&nbsp;message,&nbsp;IMessageHandlerContext&nbsp;context)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;log.Info(<span style="color:#a31515;">$&quot;OrderBilled&nbsp;message&nbsp;received.&quot;</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;Hydrate();
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">await</span>&nbsp;State.OrderBilled(message,&nbsp;context,&nbsp;<span style="color:blue;">this</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;Dehydrate();
+}</pre>
+	</p>
+	<p>
+		The <code>Hydrate</code> method isn't part of the State pattern, but finds an appropriate state based on <code>Data</code>:
+	</p>
+	<p>
+		<pre><span style="color:blue;">private</span>&nbsp;<span style="color:blue;">void</span>&nbsp;Hydrate()
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;(!Data.IsOrderPlaced&nbsp;&amp;&amp;&nbsp;!Data.IsOrderBilled)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;State&nbsp;=&nbsp;InitialShippingState.Instance;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">else</span>&nbsp;<span style="color:blue;">if</span>&nbsp;(Data.IsOrderPlaced&nbsp;&amp;&amp;&nbsp;!Data.IsOrderBilled)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;State&nbsp;=&nbsp;AwaitingBillingState.Instance;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">else</span>&nbsp;<span style="color:blue;">if</span>&nbsp;(!Data.IsOrderPlaced&nbsp;&amp;&amp;&nbsp;Data.IsOrderBilled)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;State&nbsp;=&nbsp;AwaitingPlacementState.Instance;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">else</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;State&nbsp;=&nbsp;CompletedShippingState.Instance;
+}</pre>
+	</p>
+	<p>
+		In more recent versions of C# you'd be able to use more succinct pattern matching, but since this code base is on .NET Framework 4.8 I'm constrained to C# 7.3 and this is as good as I cared to make it. It's not important to the topic of the State pattern, but I'm showing it in case you where wondering. It's typical that you need to translate between data that exists in the 'external world' and your object-oriented, polymorphic code, since <a href="/2011/05/31/AttheBoundaries,ApplicationsareNotObject-Oriented">at the boundaries, applications aren't object-oriented</a>.
+	</p>
+	<p>
+		Likewise, the <code>Dehydrate</code> method translates the other way:
+	</p>
+	<p>
+		<pre><span style="color:blue;">private</span>&nbsp;<span style="color:blue;">void</span>&nbsp;Dehydrate()
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;(State&nbsp;<span style="color:blue;">is</span>&nbsp;AwaitingBillingState)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Data.IsOrderPlaced&nbsp;=&nbsp;<span style="color:blue;">true</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Data.IsOrderBilled&nbsp;=&nbsp;<span style="color:blue;">false</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;(State&nbsp;<span style="color:blue;">is</span>&nbsp;AwaitingPlacementState)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Data.IsOrderPlaced&nbsp;=&nbsp;<span style="color:blue;">false</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Data.IsOrderBilled&nbsp;=&nbsp;<span style="color:blue;">true</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;(State&nbsp;<span style="color:blue;">is</span>&nbsp;CompletedShippingState)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Data.IsOrderPlaced&nbsp;=&nbsp;<span style="color:blue;">true</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Data.IsOrderBilled&nbsp;=&nbsp;<span style="color:blue;">true</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;Data.IsOrderPlaced&nbsp;=&nbsp;<span style="color:blue;">false</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;Data.IsOrderBilled&nbsp;=&nbsp;<span style="color:blue;">false</span>;
+}</pre>
+	</p>
+	<p>
+		In any case, <code>Hydrate</code> and <code>Dehydrate</code> are distractions. The important part is that the <code>ShippingPolicy</code> (the State <em>Context</em>) now delegates execution to its <code>State</code>, which performs the actual work and updates the <code>State</code>.
+	</p>
+	<h3 id="0ad9f36d329d45cda95fc92630e65eed">
+		Initial state <a href="#0ad9f36d329d45cda95fc92630e65eed" title="permalink">#</a>
+	</h3>
+	<p>
+		The first time the saga runs, both <code>Data.IsOrderPlaced</code> and <code>Data.IsOrderBilled</code> are <code>false</code>, which means that the <code>State</code> is <code>InitialShippingState</code>:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">sealed</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">InitialShippingState</span>&nbsp;:&nbsp;IShippingState
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;<span style="color:blue;">static</span>&nbsp;InitialShippingState&nbsp;Instance&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;InitialShippingState();
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:#2b91af;">InitialShippingState</span>()
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;Task&nbsp;OrderPlaced(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;OrderPlaced&nbsp;message,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;IMessageHandlerContext&nbsp;context,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;ShippingPolicy&nbsp;policy)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;policy.State&nbsp;=&nbsp;AwaitingBillingState.Instance;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;Task.CompletedTask;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;Task&nbsp;OrderBilled(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;OrderBilled&nbsp;message,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;IMessageHandlerContext&nbsp;context,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;ShippingPolicy&nbsp;policy)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;policy.State&nbsp;=&nbsp;AwaitingPlacementState.Instance;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;Task.CompletedTask;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+	</p>
+	<p>
+		As the above state transition diagram indicates, the only thing that each of the methods do is that they transition to the next appropriate state: <code>AwaitingBillingState</code> if the first event was <code>OrderPlaced</code>, and <code>AwaitingPlacementState</code> when the event was <code>OrderBilled</code>.
+	</p>
+	<blockquote>
+		<p>
+			"State object are often Singletons"
+		</p>
+		<footer><cite><a href="/ref/dp">Design Patterns</a></cite></footer>
+	</blockquote>
+	<p>
+		Like in the <a href="">previous example</a> I've made all the State objects <a href="https://en.wikipedia.org/wiki/Singleton_pattern">Singletons</a>. It's not that important, but since they are all stateless, we might as well. At least, it's in the spirit of the book.
+	</p>
+	<h3 id="1a3c6882c82d444fb4dff0cb9ffee2e5">
+		Awaiting billing <a href="#1a3c6882c82d444fb4dff0cb9ffee2e5" title="permalink">#</a>
+	</h3>
+	<p>
+		<code>AwaitingBillingState</code> is another <code>IShippingState</code> implementation:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">sealed</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">AwaitingBillingState</span>&nbsp;:&nbsp;IShippingState
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;<span style="color:blue;">static</span>&nbsp;IShippingState&nbsp;Instance&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;AwaitingBillingState();
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:#2b91af;">AwaitingBillingState</span>()
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;Task&nbsp;OrderPlaced(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;OrderPlaced&nbsp;message,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;IMessageHandlerContext&nbsp;context,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;ShippingPolicy&nbsp;policy)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;Task.CompletedTask;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">async</span>&nbsp;Task&nbsp;OrderBilled(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;OrderBilled&nbsp;message,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;IMessageHandlerContext&nbsp;context,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;ShippingPolicy&nbsp;policy)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">await</span>&nbsp;context.SendLocal(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;ShipOrder()&nbsp;{&nbsp;OrderId&nbsp;=&nbsp;policy.Data.OrderId&nbsp;});
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;policy.Complete();
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;policy.State&nbsp;=&nbsp;CompletedShippingState.Instance;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+	</p>
+	<p>
+		This State doesn't react to <code>OrderPlaced</code> because it assumes that an order has already been placed. It only reacts to an <code>OrderBilled</code> event. When that happens, all requirements have been fulfilled to ship the item, so it sends a <code>ShipOrder</code> Command, marks the saga as completed, and changes the <code>State</code> to <code>CompletedShippingState</code>.
+	</p>
+	<p>
+		The <code>Complete</code> method is a little wrapper method I had to add to the <code>ShippingPolicy</code> class, since <code>MarkAsComplete</code> is a <code>protected</code> method:
+	</p>
+	<p>
+		<pre><span style="color:blue;">internal</span>&nbsp;<span style="color:blue;">void</span>&nbsp;Complete()
+{
+&nbsp;&nbsp;&nbsp;&nbsp;MarkAsComplete();
+}</pre>
+	</p>
+	<p>
+		The <code>AwaitingPlacementState</code> class is similar to <code>AwaitingBillingState</code>, except that it reacts to <code>OrderPlaced</code> rather than <code>OrderBilled</code>.
+	</p>
+	<h3 id="503262f1d69a4042bb3f93b16aa04d44">
+		Terminal state <a href="#503262f1d69a4042bb3f93b16aa04d44" title="permalink">#</a>
+	</h3>
+	<p>
+		The fourth and final state is the <code>CompletedShippingState</code>:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">sealed</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">CompletedShippingState</span>&nbsp;:&nbsp;IShippingState
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;<span style="color:blue;">static</span>&nbsp;IShippingState&nbsp;Instance&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;CompletedShippingState();
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:#2b91af;">CompletedShippingState</span>()
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;Task&nbsp;OrderPlaced(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;OrderPlaced&nbsp;message,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;IMessageHandlerContext&nbsp;context,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;ShippingPolicy&nbsp;policy)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;Task.CompletedTask;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;Task&nbsp;OrderBilled(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;OrderBilled&nbsp;message,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;IMessageHandlerContext&nbsp;context,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;ShippingPolicy&nbsp;policy)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;Task.CompletedTask;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+	</p>
+	<p>
+		In this state, the saga is completed, so it ignores both events.
+	</p>
+	<h3 id="3769c2c7504548c884cdc38d788a8f46">
+		Move Commands to output <a href="#3769c2c7504548c884cdc38d788a8f46" title="permalink">#</a>
+	</h3>
+	<p>
+		The saga now uses the State pattern to manage state-specific behaviour as well as state transitions. To be clear, this complexity isn't warranted for the simple requirements. This is, after all, an example. All tests still pass, and ad-hoc testing also indicates that everything still works as it's supposed to.
+	</p>
+	<p>
+		The goal of this article is now to refactor the State pattern implementation to <a href="https://en.wikipedia.org/wiki/Pure_function">pure functions</a>. When the saga runs it has an observable side effect: It eventually sends a <code>ShipOrder</code> Command. During processing it also updates its internal state. Both of these are sources of impurity that we have to <a href="/2016/09/26/decoupling-decisions-from-effects">decouple from the decision logic</a>.
+	</p>
+	<p>
+		I'll do this in several steps. The first impure action I'll address is the externally observable message transmission. A common functional-programming trick is to turn a side effect into a return value. So far, the <code>IShippingState</code> methods don't return anything. (This is strictly not true; they each return <a href="https://docs.microsoft.com/dotnet/api/system.threading.tasks.task">Task</a>, but we can regard <code>Task</code> as 'asynchronous <code>void</code>'.) Thus, return values are still available as a communications channel.
+	</p>
+	<p>
+		Refactor the <code>IShippingState</code> methods to return Commands instead of actually sending them. Each method may send an arbitrary number of Commands, including none, so the return type has to be a collection:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">interface</span>&nbsp;<span style="color:#2b91af;">IShippingState</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;IReadOnlyCollection&lt;ICommand&gt;&nbsp;OrderPlaced(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;OrderPlaced&nbsp;message,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;IMessageHandlerContext&nbsp;context,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;ShippingPolicy&nbsp;policy);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;IReadOnlyCollection&lt;ICommand&gt;&nbsp;OrderBilled(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;OrderBilled&nbsp;message,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;IMessageHandlerContext&nbsp;context,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;ShippingPolicy&nbsp;policy);
+}</pre>
+	</p>
+	<p>
+		When you change the interface you also have to change all the implementing classes, including <code>AwaitingBillingState</code>:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">sealed</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">AwaitingBillingState</span>&nbsp;:&nbsp;IShippingState
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;<span style="color:blue;">static</span>&nbsp;IShippingState&nbsp;Instance&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;AwaitingBillingState();
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:#2b91af;">AwaitingBillingState</span>()
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;IReadOnlyCollection&lt;ICommand&gt;&nbsp;OrderPlaced(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;OrderPlaced&nbsp;message,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;IMessageHandlerContext&nbsp;context,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;ShippingPolicy&nbsp;policy)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;Array.Empty&lt;ICommand&gt;();
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;IReadOnlyCollection&lt;ICommand&gt;&nbsp;OrderBilled(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;OrderBilled&nbsp;message,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;IMessageHandlerContext&nbsp;context,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;ShippingPolicy&nbsp;policy)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;policy.Complete();
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;policy.State&nbsp;=&nbsp;CompletedShippingState.Instance;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:blue;">new</span>[]&nbsp;{&nbsp;<span style="color:blue;">new</span>&nbsp;ShipOrder()&nbsp;{&nbsp;OrderId&nbsp;=&nbsp;policy.Data.OrderId&nbsp;}&nbsp;};
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+	</p>
+	<p>
+		In order to do nothing a method like <code>OrderPlaced</code> now has to return an empty collection of Commands. In order to 'send' a Command, <code>OrderBilled</code> now returns it instead of using the <code>context</code> to send it. The <code>context</code> is already redundant, but since I prefer to <a href="https://stackoverflow.blog/2022/04/06/use-git-tactically/">move in small steps</a>, I'll remove it in a separate step.
+	</p>
+	<p>
+		It's now the responsibility of the <code>ShippingPolicy</code> class to do something with the Commands returned by the <code>State</code>:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">async</span>&nbsp;Task&nbsp;Handle(OrderBilled&nbsp;message,&nbsp;IMessageHandlerContext&nbsp;context)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;log.Info(<span style="color:#a31515;">$&quot;OrderBilled&nbsp;message&nbsp;received.&quot;</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;Hydrate();
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;result&nbsp;=&nbsp;State.OrderBilled(message,&nbsp;context,&nbsp;<span style="color:blue;">this</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">await</span>&nbsp;Interpret(result,&nbsp;context);
+&nbsp;&nbsp;&nbsp;&nbsp;Dehydrate();
+}
+ 
+<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">async</span>&nbsp;Task&nbsp;Interpret(
+&nbsp;&nbsp;&nbsp;&nbsp;IReadOnlyCollection&lt;ICommand&gt;&nbsp;commands,
+&nbsp;&nbsp;&nbsp;&nbsp;IMessageHandlerContext&nbsp;context)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">foreach</span>&nbsp;(var&nbsp;cmd&nbsp;<span style="color:blue;">in</span>&nbsp;commands)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">await</span>&nbsp;context.SendLocal(cmd);
+}</pre>
+	</p>
+	<p>
+		In functional programming, you often run an interpreter over the instructions returned by a pure function. Here the interpreter is just a private helper method.
+	</p>
+	<p>
+		The <code>IShippingState</code> methods are no longer asynchronous. Now they just return collections. I consider that a simplification.
+	</p>
+	<h3 id="31ef1f01413143359d91e067da9d9a35">
+		Remove context parameter <a href="#31ef1f01413143359d91e067da9d9a35" title="permalink">#</a>
+	</h3>
+	<p>
+		The <code>context</code> parameter is now redundant, so remove it from the <code>IShippingState</code> interface:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">interface</span>&nbsp;<span style="color:#2b91af;">IShippingState</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;IReadOnlyCollection&lt;ICommand&gt;&nbsp;OrderPlaced(OrderPlaced&nbsp;message,&nbsp;ShippingPolicy&nbsp;policy);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;IReadOnlyCollection&lt;ICommand&gt;&nbsp;OrderBilled(OrderBilled&nbsp;message,&nbsp;ShippingPolicy&nbsp;policy);
+}</pre>
+	</p>
+	<p>
+		I used Visual Studio's built-in refactoring tools to remove the parameter, which automatically removed it from all the call sites and implementations.
+	</p>
+	<p>
+		This takes us part of the way towards implementing the states as pure functions, but there's still work to be done.
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;IReadOnlyCollection&lt;ICommand&gt;&nbsp;OrderBilled(OrderBilled&nbsp;message,&nbsp;ShippingPolicy&nbsp;policy)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;policy.Complete();
+&nbsp;&nbsp;&nbsp;&nbsp;policy.State&nbsp;=&nbsp;CompletedShippingState.Instance;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:blue;">new</span>[]&nbsp;{&nbsp;<span style="color:blue;">new</span>&nbsp;ShipOrder()&nbsp;{&nbsp;OrderId&nbsp;=&nbsp;policy.Data.OrderId&nbsp;}&nbsp;};
+}</pre>
+	</p>
+	<p>
+		The above <code>OrderBilled</code> implementation calls <code>policy.Complete</code> to indicate that the saga has completed. That's another state mutation that must be eliminated to make this a pure function.
+	</p>
+	<h3 id="51ae5d89697b47fe8611b58b4540163e">
+		Return complex result <a href="#51ae5d89697b47fe8611b58b4540163e" title="permalink">#</a>
+	</h3>
+	<p>
+		How do you refactor from state mutation to pure function? You turn the mutation statement into an instruction, which is a value that you return. In this case you might want to return a Boolean value: True to complete the saga. False otherwise.
+	</p>
+	<p>
+		There seems to be a problem, though. The <code>IShippingState</code> methods already return data: They return a collection of Commands. How do we get around this conundrum?
+	</p>
+	<p>
+		Introduce a complex object:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">sealed</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">ShippingStateResult</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">ShippingStateResult</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;IReadOnlyCollection&lt;ICommand&gt;&nbsp;commands,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">bool</span>&nbsp;completeSaga)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Commands&nbsp;=&nbsp;commands;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;CompleteSaga&nbsp;=&nbsp;completeSaga;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;IReadOnlyCollection&lt;ICommand&gt;&nbsp;Commands&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">bool</span>&nbsp;CompleteSaga&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">override</span>&nbsp;<span style="color:blue;">bool</span>&nbsp;Equals(<span style="color:blue;">object</span>&nbsp;obj)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;obj&nbsp;<span style="color:blue;">is</span>&nbsp;ShippingStateResult&nbsp;result&nbsp;&amp;&amp;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;EqualityComparer&lt;IReadOnlyCollection&lt;ICommand&gt;&gt;.Default
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.Equals(Commands,&nbsp;result.Commands)&nbsp;&amp;&amp;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;CompleteSaga&nbsp;==&nbsp;result.CompleteSaga;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">override</span>&nbsp;<span style="color:blue;">int</span>&nbsp;GetHashCode()
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">int</span>&nbsp;hashCode&nbsp;=&nbsp;-1668187231;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;hashCode&nbsp;=&nbsp;hashCode&nbsp;*&nbsp;-1521134295&nbsp;+&nbsp;EqualityComparer&lt;IReadOnlyCollection&lt;ICommand&gt;&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.Default.GetHashCode(Commands);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;hashCode&nbsp;=&nbsp;hashCode&nbsp;*&nbsp;-1521134295&nbsp;+&nbsp;CompleteSaga.GetHashCode();
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;hashCode;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+	</p>
+	<p>
+		That looks rather horrible, but most of the code is generated by Visual Studio. The only thing I wrote myself was the class declaration and the two read-only properties. I then used Visual Studio's <em>Generate constructor</em> and <em>Generate Equals and GetHashCode</em> Quick Actions to produce the rest of the code.
+	</p>
+	<p>
+		With more modern versions of C# I could have used a <a href="https://docs.microsoft.com/dotnet/csharp/language-reference/builtin-types/record">record</a>, but as I've already mentioned, I'm on C# 7.3 here.
+	</p>
+	<p>
+		The <code>IShippingState</code> interface can now define its methods with this new return type:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">interface</span>&nbsp;<span style="color:#2b91af;">IShippingState</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;ShippingStateResult&nbsp;OrderPlaced(OrderPlaced&nbsp;message,&nbsp;ShippingPolicy&nbsp;policy);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;ShippingStateResult&nbsp;OrderBilled(OrderBilled&nbsp;message,&nbsp;ShippingPolicy&nbsp;policy);
+}</pre>
+	</p>
+	<p>
+		This change reminds me of the <a href="https://refactoring.com/catalog/introduceParameterObject.html">Introduce Parameter Object</a> refactoring, but instead applied to the return value instead of input.
+	</p>
+	<p>
+		Implementers now have to return values of this new type:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">sealed</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">AwaitingBillingState</span>&nbsp;:&nbsp;IShippingState
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;<span style="color:blue;">static</span>&nbsp;IShippingState&nbsp;Instance&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;AwaitingBillingState();
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:#2b91af;">AwaitingBillingState</span>()
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;ShippingStateResult&nbsp;OrderPlaced(OrderPlaced&nbsp;message,&nbsp;ShippingPolicy&nbsp;policy)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;ShippingStateResult(Array.Empty&lt;ICommand&gt;(),&nbsp;<span style="color:blue;">false</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;ShippingStateResult&nbsp;OrderBilled(OrderBilled&nbsp;message,&nbsp;ShippingPolicy&nbsp;policy)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;policy.State&nbsp;=&nbsp;CompletedShippingState.Instance;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;ShippingStateResult(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>[]&nbsp;{&nbsp;<span style="color:blue;">new</span>&nbsp;ShipOrder()&nbsp;{&nbsp;OrderId&nbsp;=&nbsp;policy.Data.OrderId&nbsp;}&nbsp;},
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">true</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+	</p>
+	<p>
+		Moving a statement to an output value implies that the effect must happen somewhere else. It seems natural to put it in the <code>ShippingPolicy</code> class' <code>Interpret</code> method:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">async</span>&nbsp;Task&nbsp;Handle(OrderBilled&nbsp;message,&nbsp;IMessageHandlerContext&nbsp;context)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;log.Info(<span style="color:#a31515;">$&quot;OrderBilled&nbsp;message&nbsp;received.&quot;</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;Hydrate();
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;result&nbsp;=&nbsp;State.OrderBilled(message,&nbsp;<span style="color:blue;">this</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">await</span>&nbsp;Interpret(result,&nbsp;context);
+&nbsp;&nbsp;&nbsp;&nbsp;Dehydrate();
+}
+ 
+<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">async</span>&nbsp;Task&nbsp;Interpret(ShippingStateResult&nbsp;result,&nbsp;IMessageHandlerContext&nbsp;context)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">foreach</span>&nbsp;(var&nbsp;cmd&nbsp;<span style="color:blue;">in</span>&nbsp;result.Commands)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">await</span>&nbsp;context.SendLocal(cmd);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;(result.CompleteSaga)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;MarkAsComplete();
+}</pre>
+	</p>
+	<p>
+		Since <code>Interpret</code> is an instance method on the <code>ShippingPolicy</code> class I can now also delete the internal <code>Complete</code> method, since <code>MarkAsComplete</code> is already callable (it's a <code>protected</code> method defined by the <code>Saga</code> base class).
+	</p>
+	<h3 id="ce2f9545c94b4c6ab9536050ed030b8b">
+		Use message data <a href="#ce2f9545c94b4c6ab9536050ed030b8b" title="permalink">#</a>
+	</h3>
+	<p>
+		Have you noticed an odd thing about the code so far? It doesn't use any of the <code>message</code> data!
+	</p>
+	<p>
+		This is an artefact of the original code example. Refer back to the original <code>ProcessOrder</code> helper method. It uses neither <code>OrderPlaced</code> nor <code>OrderBilled</code> for anything. Instead, it pulls the <code>OrderId</code> from the saga's <code>Data</code> property. It can do that because NServiceBus makes sure that all <code>OrderId</code> values are correlated. It'll only instantiate a saga for which <code>Data.OrderId</code> matches <code>OrderPlaced.OrderId</code> or <code>OrderBilled.OrderId</code>. Thus, these values are guaranteed to be the same, and that's why <code>ProcessOrder</code> can get away with using <code>Data.OrderId</code> instead of the <code>message</code> data.
+	</p>
+	<p>
+		So far, through all refactorings, I've retained this detail, but it seems odd. It also couples the implementation methods to the <code>ShippingPolicy</code> class rather than the message classes. For these reasons, refactor the methods to use the message data instead. Here's the <code>AwaitingBillingState</code> implementation:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;ShippingStateResult&nbsp;OrderBilled(OrderBilled&nbsp;message,&nbsp;ShippingPolicy&nbsp;policy)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;policy.State&nbsp;=&nbsp;CompletedShippingState.Instance;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;ShippingStateResult(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>[]&nbsp;{&nbsp;<span style="color:blue;">new</span>&nbsp;ShipOrder()&nbsp;{&nbsp;OrderId&nbsp;=&nbsp;message.OrderId&nbsp;}&nbsp;},
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">true</span>);
+}</pre>
+	</p>
+	<p>
+		Compare this version with the previous iteration, where it used <code>policy.Data.OrderId</code> instead of <code>message.OrderId</code>.
+	</p>
+	<p>
+		Now, the only reason to pass <code>ShippingPolicy</code> as a method parameter is to mutate <code>policy.State</code>. We'll get to that in due time, but first, there's another issue I'd like to address.
+	</p>
+	<h3 id="800453851c1944e3835a05f8ff2e3272">
+		Immutable arguments <a href="#800453851c1944e3835a05f8ff2e3272" title="permalink">#</a>
+	</h3>
+	<p>
+		Keep in mind that the overall goal of the exercise is to refactor the state machine to pure functions. For good measure, method parameters should be immutable as well. Consider a method like <code>OrderBilled</code> shown above in its most recent iteration. It mutates <code>policy</code> by setting <code>policy.State</code>. The long-term goal is to get rid of that statement.
+	</p>
+	<p>
+		The method doesn't mutate the other argument, <code>message</code>, but the <code>OrderBilled</code> class is actually mutable:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">OrderBilled</span>&nbsp;:&nbsp;IEvent
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">string</span>&nbsp;OrderId&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;<span style="color:blue;">set</span>;&nbsp;}
+}</pre>
+	</p>
+	<p>
+		The same is true for the other message type, <code>OrderPlaced</code>.
+	</p>
+	<p>
+		For good measure, pure functions shouldn't take mutable arguments. You could argue that, since none of the implementation methods actually mutate the messages, it doesn't really matter. I am, however, enough of a neat freak that I don't like to leave such a loose strand dangling. I'd like to refactor the <code>IShippingState</code> API so that only immutable message data is passed as arguments.
+	</p>
+	<p>
+		In a situation like this, there are (at least) three options:
+	</p>
+	<ul>
+		<li>
+			Make the message types immutable. This would mean making <code>OrderBilled</code> and <code>OrderPlaced</code> immutable. These message types are by default mutable <a href="https://en.wikipedia.org/wiki/Data_transfer_object">Data Transfer Objects</a> (DTO), because NServiceBus needs to serialise and deserialise them to transmit them over durable queues. There are ways you can configure NServiceBus to use serialisation mechanisms that enable immutable records as messages, but for an example code base like this, I might be inclined to reach for an easier solution if one presents itself.
+		</li>
+		<li>
+			Add an immutable 'mirror' class. This may often be a good idea if you have a rich domain model that you'd like to represent. You can see an example of that in <a href="/code-that-fits-in-your-head">Code That Fits in Your Head</a>, where there's both a mutable <code>ReservationDto</code> class and an immutable <code>Reservation</code> <a href="https://www.martinfowler.com/bliki/ValueObject.html">Value Object</a>. This makes sense if the invariants of the domain model are sufficiently stronger than the DTO. That hardly seems to be the case here, since both messages only contain an <code>OrderId</code>.
+		</li>
+		<li>
+			Dissolve the DTO into its constituents and pass each as an argument. This doesn't work if the DTO is complex and nested, but here there's only a single constituent element, and that's the <code>OrderId</code> property.
+		</li>
+	</ul>
+	<p>
+		The third option seems like the simplest solution, so refactor the <code>IShippingState</code> methods to take an <code>orderId</code> parameter instead of a message:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">interface</span>&nbsp;<span style="color:#2b91af;">IShippingState</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;ShippingStateResult&nbsp;OrderPlaced(<span style="color:blue;">string</span>&nbsp;orderId,&nbsp;ShippingPolicy&nbsp;policy);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;ShippingStateResult&nbsp;OrderBilled(<span style="color:blue;">string</span>&nbsp;orderId,&nbsp;ShippingPolicy&nbsp;policy);
+}</pre>
+	</p>
+	<p>
+		While this is the easiest of the three options given above, the refactoring doesn't hinge on this. It would work just as well with one of the two other options.
+	</p>
+	<p>
+		Implementations now look like this:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;ShippingStateResult&nbsp;OrderBilled(<span style="color:blue;">string</span>&nbsp;orderId,&nbsp;ShippingPolicy&nbsp;policy)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;policy.State&nbsp;=&nbsp;CompletedShippingState.Instance;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;ShippingStateResult(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>[]&nbsp;{&nbsp;<span style="color:blue;">new</span>&nbsp;ShipOrder()&nbsp;{&nbsp;OrderId&nbsp;=&nbsp;orderId&nbsp;}&nbsp;},
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">true</span>);
+}</pre>
+	</p>
+	<p>
+		The only impure action still lingering is the mutation of <code>policy.State</code>. Once we're rid of that, the API consists of pure functions.
+	</p>
+	<h3 id="1034a4283bb44e639805778d5ae4504a">
+		Return state <a href="#1034a4283bb44e639805778d5ae4504a" title="permalink">#</a>
+	</h3>
+	<p>
+		As outlined by the <a href="">parent article</a>, instead of mutating the caller's state, you can return the state as part of a tuple. This means that you no longer need to pass <code>ShippingPolicy </code> as a parameter:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">interface</span>&nbsp;<span style="color:#2b91af;">IShippingState</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;Tuple&lt;ShippingStateResult,&nbsp;IShippingState&gt;&nbsp;OrderPlaced(<span style="color:blue;">string</span>&nbsp;orderId);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;Tuple&lt;ShippingStateResult,&nbsp;IShippingState&gt;&nbsp;OrderBilled(<span style="color:blue;">string</span>&nbsp;orderId);
+}</pre>
+	</p>
+	<p>
+		Why not expand the <code>ShippingStateResult</code> class, or conversely, dissolve that class and instead return a triple (a three-tuple)? All of these are possible as alternatives, as they'd be isomorphic to this particular design. The reason I've chosen this particular return type is that it's the idiomatic implementation of the State monad: The result is the first element of a tuple, and the state is the second element. This means that you can use a standard, reusable State monad library to manipulate the values, as you'll see later.
+	</p>
+	<p>
+		An implementation now looks like this:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">sealed</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">AwaitingBillingState</span>&nbsp;:&nbsp;IShippingState
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;<span style="color:blue;">static</span>&nbsp;IShippingState&nbsp;Instance&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;AwaitingBillingState();
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:#2b91af;">AwaitingBillingState</span>()
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;Tuple&lt;ShippingStateResult,&nbsp;IShippingState&gt;&nbsp;OrderPlaced(<span style="color:blue;">string</span>&nbsp;orderId)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;Tuple.Create(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;ShippingStateResult(Array.Empty&lt;ICommand&gt;(),&nbsp;<span style="color:blue;">false</span>),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(IShippingState)<span style="color:blue;">this</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;Tuple&lt;ShippingStateResult,&nbsp;IShippingState&gt;&nbsp;OrderBilled(<span style="color:blue;">string</span>&nbsp;orderId)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;Tuple.Create(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;ShippingStateResult(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>[]&nbsp;{&nbsp;<span style="color:blue;">new</span>&nbsp;ShipOrder()&nbsp;{&nbsp;OrderId&nbsp;=&nbsp;orderId&nbsp;}&nbsp;},
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">true</span>),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;CompletedShippingState.Instance);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+	</p>
+	<p>
+		Since the <code>ShippingPolicy</code> class that calls these methods now directly receive the state as part of the output, it no longer needs a mutable <code>State</code> property. Instead, it immediately handles the return value:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">async</span>&nbsp;Task&nbsp;Handle(OrderPlaced&nbsp;message,&nbsp;IMessageHandlerContext&nbsp;context)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;log.Info(<span style="color:#a31515;">$&quot;OrderPlaced&nbsp;message&nbsp;received.&quot;</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;state&nbsp;=&nbsp;Hydrate();
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;result&nbsp;=&nbsp;state.OrderPlaced(message.OrderId);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">await</span>&nbsp;Interpret(result.Item1,&nbsp;context);
+&nbsp;&nbsp;&nbsp;&nbsp;Dehydrate(result.Item2);
+}
+ 
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">async</span>&nbsp;Task&nbsp;Handle(OrderBilled&nbsp;message,&nbsp;IMessageHandlerContext&nbsp;context)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;log.Info(<span style="color:#a31515;">$&quot;OrderBilled&nbsp;message&nbsp;received.&quot;</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;state&nbsp;=&nbsp;Hydrate();
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;result&nbsp;=&nbsp;state.OrderBilled(message.OrderId);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">await</span>&nbsp;Interpret(result.Item1,&nbsp;context);
+&nbsp;&nbsp;&nbsp;&nbsp;Dehydrate(result.Item2);
+}</pre>
+	</p>
+	<p>
+		Each <code>Handle</code> method is now an <a href="/2020/03/02/impureim-sandwich">impureim sandwich</a>.
+	</p>
+	<p>
+		Since the <code>result</code> is now a tuple, the <code>Handle</code> methods now have to pass the first element (<code>result.Item1</code>) to the <code>Interpret</code> helper method, and the second element (<code>result.Item2</code>) - the state - to <code>Dehydrate</code>. It's also possible to pattern match (or <em>desctructure</em>) each of the elements directly; you'll see an example of that later.
+	</p>
+	<p>
+		Since the mutable <code>State</code> property is now gone, the <code>Hydrate</code> method returns the hydrated state:
+	</p>
+	<p>
+		<pre><span style="color:blue;">private</span>&nbsp;IShippingState&nbsp;Hydrate()
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;(!Data.IsOrderPlaced&nbsp;&amp;&amp;&nbsp;!Data.IsOrderBilled)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;InitialShippingState.Instance;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">else</span>&nbsp;<span style="color:blue;">if</span>&nbsp;(Data.IsOrderPlaced&nbsp;&amp;&amp;&nbsp;!Data.IsOrderBilled)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;AwaitingBillingState.Instance;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">else</span>&nbsp;<span style="color:blue;">if</span>&nbsp;(!Data.IsOrderPlaced&nbsp;&amp;&amp;&nbsp;Data.IsOrderBilled)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;AwaitingPlacementState.Instance;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">else</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;CompletedShippingState.Instance;
+}</pre>
+	</p>
+	<p>
+		Likewise, the <code>Dehydrate</code> method takes the new state as an input parameter:
+	</p>
+	<p>
+		<pre><span style="color:blue;">private</span>&nbsp;<span style="color:blue;">void</span>&nbsp;Dehydrate(IShippingState&nbsp;state)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;(state&nbsp;<span style="color:blue;">is</span>&nbsp;AwaitingBillingState)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Data.IsOrderPlaced&nbsp;=&nbsp;<span style="color:blue;">true</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Data.IsOrderBilled&nbsp;=&nbsp;<span style="color:blue;">false</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;(state&nbsp;<span style="color:blue;">is</span>&nbsp;AwaitingPlacementState)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Data.IsOrderPlaced&nbsp;=&nbsp;<span style="color:blue;">false</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Data.IsOrderBilled&nbsp;=&nbsp;<span style="color:blue;">true</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;(state&nbsp;<span style="color:blue;">is</span>&nbsp;CompletedShippingState)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Data.IsOrderPlaced&nbsp;=&nbsp;<span style="color:blue;">true</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Data.IsOrderBilled&nbsp;=&nbsp;<span style="color:blue;">true</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;Data.IsOrderPlaced&nbsp;=&nbsp;<span style="color:blue;">false</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;Data.IsOrderBilled&nbsp;=&nbsp;<span style="color:blue;">false</span>;
+}</pre>
+	</p>
+	<p>
+		Since each <code>Handle</code> method only calls a single State-valued method, they don't need the State monad machinery. This only becomes useful when you need to compose multiple State-based operations.
+	</p>
+	<p>
+		This might be useful in unit tests, so let's examine that next.
+	</p>
+	<h3 id="8559bfcefc6e49459fa16fce5977cc58">
+		State monad <a href="#8559bfcefc6e49459fa16fce5977cc58" title="permalink">#</a>
+	</h3>
+	<p>
+		In <a href="/2022/06/20/the-state-monad">previous articles about the State monad</a> you've seen it implemented based on an <code>IState</code> interface. I've also dropped hints here and there that you don't <em>need</em> the interface. Instead, you can implement the monad functions directly on State-valued functions. That's what I'm going to do here:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;Func&lt;S,&nbsp;Tuple&lt;T1,&nbsp;S&gt;&gt;&nbsp;SelectMany&lt;<span style="color:#2b91af;">S</span>,&nbsp;<span style="color:#2b91af;">T</span>,&nbsp;<span style="color:#2b91af;">T1</span>&gt;(
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>&nbsp;Func&lt;S,&nbsp;Tuple&lt;T,&nbsp;S&gt;&gt;&nbsp;source,
+&nbsp;&nbsp;&nbsp;&nbsp;Func&lt;T,&nbsp;Func&lt;S,&nbsp;Tuple&lt;T1,&nbsp;S&gt;&gt;&gt;&nbsp;selector)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;s&nbsp;=&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;tuple&nbsp;=&nbsp;source(s);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;f&nbsp;=&nbsp;selector(tuple.Item1);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;f(tuple.Item2);
+&nbsp;&nbsp;&nbsp;&nbsp;};
+}</pre>
+	</p>
+	<p>
+		This <code>SelectMany</code> implementation works directly on another function, <code>source</code>. This function takes a state of type <code>S</code> as input and returns a tuple as a result. The first element is the result of type <code>T</code>, and the second element is the new state, still of type <code>S</code>. Compare that to <a href="/2021/07/19/the-state-functor">the IState interface</a> to convince yourself that these are just two representations of the same idea.
+	</p>
+	<p>
+		The return value is a new function with the same shape, but where the result type is <code>T1</code> rather than <code>T</code>.
+	</p>
+	<p>
+		You can implement the special <code>SelectMany</code> overload that enables query syntax in <a href="/2022/03/28/monads">the standard way</a>.
+	</p>
+	<p>
+		The <em>return</em> function also mirrors the previous interface-based implementation:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;Func&lt;S,&nbsp;Tuple&lt;T,&nbsp;S&gt;&gt;&nbsp;Return&lt;<span style="color:#2b91af;">S</span>,&nbsp;<span style="color:#2b91af;">T</span>&gt;(T&nbsp;x)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;s&nbsp;=&gt;&nbsp;Tuple.Create(x,&nbsp;s);
+}</pre>
+	</p>
+	<p>
+		You can also implement <a href="">the standard Get, Put, and Modify functions</a>, but we are not going to need them here. Try it as an exercise.
+	</p>
+	<h3 id="4fe0da2976e34c8eaf8490186f7d022a">
+		State-valued event handlers <a href="#4fe0da2976e34c8eaf8490186f7d022a" title="permalink">#</a>
+	</h3>
+	<p>
+		The <code>IShippingState</code> methods almost look like State values, but the arguments are in the wrong order. A State value is a function that takes state as input and returns a tuple. The methods on <code>IShippingState</code>, however, take <code>orderId</code> as input and return a tuple. The state is also present, but as the instance that exposes the methods. We have to flip the arguments:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;Func&lt;IShippingState,&nbsp;Tuple&lt;ShippingStateResult,&nbsp;IShippingState&gt;&gt;&nbsp;Billed(
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>&nbsp;<span style="color:blue;">string</span>&nbsp;orderId)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;s&nbsp;=&gt;&nbsp;s.OrderBilled(orderId);
+}
+ 
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;Func&lt;IShippingState,&nbsp;Tuple&lt;ShippingStateResult,&nbsp;IShippingState&gt;&gt;&nbsp;Placed(
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>&nbsp;<span style="color:blue;">string</span>&nbsp;orderId)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;s&nbsp;=&gt;&nbsp;s.OrderPlaced(orderId);
+}</pre>
+	</p>
+	<p>
+		This is a typical example of how you have to turn things on their heads in functional programming, compared to object-oriented programming. These two methods convert <code>OrderBilled</code> and <code>OrderPlaced</code> to State monad values.
+	</p>
+	<h3 id="2aa26c7863bc47f6a37ad50f54d97d24">
+		Testing state results <a href="#2aa26c7863bc47f6a37ad50f54d97d24" title="permalink">#</a>
+	</h3>
+	<p>
+		A unit test demonstrates how this enables you to compose multiple stateful operations using query syntax:
+	</p>
+	<p>
+		<pre>[Theory]
+[InlineData(<span style="color:#a31515;">&quot;90125&quot;</span>)]
+[InlineData(<span style="color:#a31515;">&quot;quux&quot;</span>)]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;StateResultExample(<span style="color:blue;">string</span>&nbsp;orderId)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;sf&nbsp;=&nbsp;<span style="color:blue;">from</span>&nbsp;x&nbsp;<span style="color:blue;">in</span>&nbsp;orderId.Placed()
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">from</span>&nbsp;y&nbsp;<span style="color:blue;">in</span>&nbsp;orderId.Billed()
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">select</span>&nbsp;<span style="color:blue;">new</span>[]&nbsp;{&nbsp;x,&nbsp;y&nbsp;};
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;var&nbsp;(results,&nbsp;finalState)&nbsp;=&nbsp;sf(InitialShippingState.Instance);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;Assert.Equal(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>[]&nbsp;{&nbsp;<span style="color:blue;">false</span>,&nbsp;<span style="color:blue;">true</span>&nbsp;},
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;results.Select(r&nbsp;=&gt;&nbsp;r.CompleteSaga));
+&nbsp;&nbsp;&nbsp;&nbsp;Assert.Single(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;results
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.SelectMany(r&nbsp;=&gt;&nbsp;r.Commands)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.OfType&lt;ShipOrder&gt;()
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.Select(msg&nbsp;=&gt;&nbsp;msg.OrderId),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;orderId);
+&nbsp;&nbsp;&nbsp;&nbsp;Assert.Equal(CompletedShippingState.Instance,&nbsp;finalState);
+}</pre>
+	</p>
+	<p>
+		Keep in mind that a State monad value is a function. That's the reason I called the composition <code>sf</code> - for <em>State Function</em>. When you execute it with <code>InitialShippingState</code> as input it returns a tuple that the test immediately pattern matches (destructures) into its constituent elements.
+	</p>
+	<p>
+		The test then asserts that the <code>results</code> and <code>finalState</code> are as expected. The assertions against <code>results</code> are a bit awkward, since C# collections don't have structural equality. These assertions would have been simpler in <a href="https://fsharp.org/">F#</a> or <a href="https://www.haskell.org/">Haskell</a>.
+	</p>
+	<h3 id="c899bd7d1b8f4bcea29a5ad946b0f3b8">
+		Testing with an interpreter <a href="#c899bd7d1b8f4bcea29a5ad946b0f3b8" title="permalink">#</a>
+	</h3>
+	<p>
+		While <a href="/2013/06/24/a-heuristic-for-formatting-code-according-to-the-aaa-pattern">the Arrange and Act phases of the above test</a> are simple, the Assertion phase seems awkward. Another testing strategy is to run a test-specific interpreter over the instructions returned as the State computation result:
+	</p>
+	<p>
+		<pre>[Theory]
+[InlineData(<span style="color:#a31515;">&quot;1984&quot;</span>)]
+[InlineData(<span style="color:#a31515;">&quot;quuz&quot;</span>)]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;StateInterpretationExample(<span style="color:blue;">string</span>&nbsp;orderId)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;sf&nbsp;=&nbsp;<span style="color:blue;">from</span>&nbsp;x&nbsp;<span style="color:blue;">in</span>&nbsp;orderId.Placed()
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">from</span>&nbsp;y&nbsp;<span style="color:blue;">in</span>&nbsp;orderId.Billed()
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">select</span>&nbsp;<span style="color:blue;">new</span>[]&nbsp;{&nbsp;x,&nbsp;y&nbsp;};
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;var&nbsp;(results,&nbsp;finalState)&nbsp;=&nbsp;sf(InitialShippingState.Instance);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;Assert.Equal(CompletedShippingState.Instance,&nbsp;finalState);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;result&nbsp;=&nbsp;Interpret(results);
+&nbsp;&nbsp;&nbsp;&nbsp;Assert.True(result.CompleteSaga);
+&nbsp;&nbsp;&nbsp;&nbsp;Assert.Single(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;result.Commands.OfType&lt;ShipOrder&gt;().Select(msg&nbsp;=&gt;&nbsp;msg.OrderId),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;orderId);
+}</pre>
+	</p>
+	<p>
+		It helps a little, but the assertions still have to work around the lack of structural equality of <code>result.Commands</code>.
+	</p>
+	<h3 id="80405400d4ed4cfd9c89bf539df21b3b">
+		Monoid <a href="#80405400d4ed4cfd9c89bf539df21b3b" title="permalink">#</a>
+	</h3>
+	<p>
+		The test-specific <code>Interpret</code> helper method is interesting in its own right, though:
+	</p>
+	<p>
+		<pre><span style="color:blue;">private</span>&nbsp;ShippingStateResult&nbsp;Interpret(IEnumerable&lt;ShippingStateResult&gt;&nbsp;results)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;identity&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;ShippingStateResult(Array.Empty&lt;ICommand&gt;(),&nbsp;<span style="color:blue;">false</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;ShippingStateResult&nbsp;Combine(ShippingStateResult&nbsp;x,&nbsp;ShippingStateResult&nbsp;y)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;ShippingStateResult(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;x.Commands.Concat(y.Commands).ToArray(),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;x.CompleteSaga&nbsp;||&nbsp;y.CompleteSaga);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;results.Aggregate(identity,&nbsp;Combine);
+}</pre>
+	</p>
+	<p>
+		It wasn't until I started implementing this helper method that I realised that <code>ShippingStateResult</code> gives rise to a <a href="/2017/10/06/monoids">monoid</a>! Since <a href="/2017/11/20/monoids-accumulate">monoids accumulate</a>, you can start with the <code>identity</code> and use the binary operation (here called <code>Combine</code>) to <code>Aggregate</code> an arbitrary number of <code>ShippingStateResult</code> values into one.
+	</p>
+	<p>
+		The <code>ShippingStateResult</code> class is composed of two constituent values (a collection and a Boolean value), and since both of these give rise to one or more monoids, a <a href="/2017/10/30/tuple-monoids">tuple of those monoids itself gives rise to one or more monoids</a>. The <code>ShippingStateResult</code> is isomorphic to a tuple, so this result carries over.
+	</p>
+	<p>
+		Should you move the <code>Combine</code> method and the <code>identity</code> value to the <code>ShippingStateResult</code> class itself. After all, putting them in a test-specific helper method smells a bit of <a href="https://wiki.c2.com/?FeatureEnvySmell">Feature Envy</a>.
+	</p>
+	<p>
+		This seems compelling, but it's not clear that arbitrary client code might need this particular monoid. After all, there are four monoids over Boolean values, and at least two over collections. That's eight possible combinations. Which one should <code>ShippingStateResult</code> expose as members?
+	</p>
+	<p>
+		The monoid used in <code>Interpret</code> combines the normal <a href="/2017/10/10/strings-lists-and-sequences-as-a-monoid">collection monoid</a> with the <em>any</em> monoid. That seems appropriate in this case, but other clients might rather need the <em>all</em> monoid.
+	</p>
+	<p>
+		Without more usage examples, I decided to leave the code as an <code>Interpret</code> implementation detail for now.
+	</p>
+	<p>
+		In any case, I find it worth noting that by decoupling the state logic from the NServiceBus framework, it's possible to test it without running asynchronous workflows.
+	</p>
+	<h3 id="a1bc6585723044a9b795aa23099d9d36">
+		Conclusion <a href="#a1bc6585723044a9b795aa23099d9d36" title="permalink">#</a>
+	</h3>
+	<p>
+		In this article you saw how to implement an asynchronous messaging saga in three different ways. First, as a simple ad-hoc solution, second using the State pattern, and third implemented with the State monad. Both the State pattern and State monad implementations are meant exclusively to showcase these two techniques. The first solution using two Boolean flags is by far the simplest solution, and the one I'd use in a production system.
+	</p>
+	<p>
+		The point is that you can use the State monad if you need to write stateful computations. This may include finite state machines, as otherwise addressed by the State design pattern, but could also include other algorithms where you need to keep track of state.
+	</p>
+	<p>
+		<strong>Next:</strong> <a href="/2021/11/29/postels-law-as-a-profunctor">Postel's law as a profunctor</a>.
+	</p>
+</div>
