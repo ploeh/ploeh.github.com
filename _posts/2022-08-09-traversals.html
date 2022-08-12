@@ -1,0 +1,372 @@
+---
+layout: post
+title: "Traversals"
+description: "How to convert a list of tasks into an asynchronous list, and similar problems."
+date: 2022-08-09 11:07 UTC
+tags: [Software Design, Functional Programming]
+image: "/content/binary/traversal-sequence.png"
+image_alt: "Nested functors depicted as concentric circles. To the left the circle t contains the circle f that again contains the circle a. To the right the circle f contains the circle t that again contains the circle a. An arrow points from the left circles to the right circles."
+---
+{% include JB/setup %}
+
+<div id="post">
+	<p>
+		<em>{{ page.description }}</em>
+	</p>
+	<p>
+		This article is part of <a href="/2022/07/11/functor-relationships">a series of articles about functor relationships</a>. In a previous article you learned about <a href="/2022/07/18/natural-transformations">natural transformations</a>, and then how <a href="/2018/03/22/functors">functors</a> compose. You can skip several of them if you like, but you might find the one about <a href="">functor compositions</a> relevant. Still, this article can be read independently of the rest of the series.
+	</p>
+	<p>
+		You can go a long way with just a single functor or <a href="/2022/03/28/monads">monad</a>. Consider how useful C#'s LINQ API is, or similar kinds of APIs in other languages - typically <code>map</code> and <code>flatMap</code> methods. These APIs work exclusively with the <a href="/2022/04/19/the-list-monad">List monad</a> (which is also a functor). Working with lists, sequences, or collections is so useful that many languages have other kinds of special syntax specifically aimed at working with multiple values: <a href="https://en.wikipedia.org/wiki/List_comprehension">List comprehension</a>.
+	</p>
+	<p>
+		<a href="/2022/06/06/asynchronous-monads">Asynchronous monads</a> like <a href="https://docs.microsoft.com/dotnet/api/system.threading.tasks.task-1">Task&lt;T&gt;</a> or <a href="https://fsharp.org/">F#</a>'s <a href="https://fsharp.github.io/fsharp-core-docs/reference/fsharp-control-fsharpasync-1.html">Async&lt;'T&gt;</a> are another kind of functor so useful in their own right that languages have special <code>async</code> and <code>await</code> keywords to compose them.
+	</p>
+	<p>
+		Sooner or later, though, you run into situations where you'd like to combine two different functors.
+	</p>
+	<h3 id="ebf67a9789e44ad8997832e1ac7c17da">
+		Lists and tasks <a href="#ebf67a9789e44ad8997832e1ac7c17da" title="permalink">#</a>
+	</h3>
+	<p>
+		It's not unusual to combine collections and asynchrony. If you make an asynchronous database query, you could easily receive something like <code>Task&lt;IEnumerable&lt;Reservation&gt;&gt;</code>. This, in isolation, hardly causes problems, but things get more interesting when you need to compose multiple reads.
+	</p>
+	<p>
+		Consider a query like this:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;Task&lt;Foo&gt;&nbsp;Read(<span style="color:blue;">int</span>&nbsp;id)</pre>
+	</p>
+	<p>
+		What happens if you have a collection of IDs that you'd like to read? This happens:
+	</p>
+	<p>
+		<pre><span style="color:blue;">var</span>&nbsp;ids&nbsp;=&nbsp;<span style="color:blue;">new</span>[]&nbsp;{&nbsp;42,&nbsp;1337,&nbsp;2112&nbsp;};
+IEnumerable&lt;Task&lt;Foo&gt;&gt;&nbsp;fooTasks&nbsp;=&nbsp;ids.Select(id&nbsp;=&gt;&nbsp;Foo.Read(id));</pre>
+	</p>
+	<p>
+		You get a collection of Tasks, which may be awkward because you can't <code>await</code> it. Perhaps you'd rather prefer a single Task that contains a collection: <code>Task&lt;IEnumerable&lt;Foo&gt;&gt;</code>. In other words, you'd like to flip the functors:
+	</p>
+	<p>
+		<pre>IEnumerable&lt;Task&lt;Foo&gt;&gt;
+Task&lt;IEnumerable&lt;Foo&gt;&gt;</pre>
+	</p>
+	<p>
+		The top type is what you have. The bottom type is what you'd like to have.
+	</p>
+	<p>
+		The combination of asynchrony and collections is so common that .NET has special methods to do that. I'll briefly mention one of these later, but what's the <em>general</em> solution to this problem?
+	</p>
+	<p>
+		Whenever you need to flip two functors, you need a <em>traversal</em>.
+	</p>
+	<h3 id="b962041a5e3d4eb9ba5101641407ca3f">
+		Sequence <a href="#b962041a5e3d4eb9ba5101641407ca3f" title="permalink">#</a>
+	</h3>
+	<p>
+		As is almost always the case, we can look to <a href="https://www.haskell.org/">Haskell</a> for a canonical definition of traversals - or, as the type class is called: <a href="https://hackage.haskell.org/package/base/docs/Data-Traversable.html">Traversable</a>.
+	</p>
+	<p>
+		A <em>traversable functor</em> is a functor that enables you to flip that functor and another functor, like the above C# example. In more succinct syntax:
+	</p>
+	<p>
+		<pre>t (f a) -&gt; f (t a)</pre>
+	</p>
+	<p>
+		Here, <code>t</code> symbolises any traversable functor (like <code>IEnumerable&lt;T&gt;</code> in the above C# example), and <code>f</code> is another functor (like <code>Task&lt;T&gt;</code>, above). By flipping the functors I mean making <code>t</code> and <code>f</code> change places; just like <code>IEnumerable</code> and <code>Task</code>, above.
+	</p>
+	<p>
+		Thinking of <a href="https://bartoszmilewski.com/2014/01/14/functors-are-containers/">functors as containers</a> we might depict the function like this:
+	</p>
+	<p>
+		<img src="/content/binary/traversal-sequence.png" alt="Nested functors depicted as concentric circles. To the left the circle t contains the circle f that again contains the circle a. To the right the circle f contains the circle t that again contains the circle a. An arrow points from the left circles to the right circles.">
+	</p>
+	<p>
+		To the left, we have an outer functor <code>t</code> (e.g. <code>IEnumerable</code>) that contains another functor <code>f</code> (e.g. <code>Task</code>) that again 'contains' values of type <code>a</code> (in C# typically called <code>T</code>). We'd like to flip how the containers are nested so that <code>f</code> contains <code>t</code>.
+	</p>
+	<p>
+		Contrary to what you might expect, the function that does that isn't called <em>traverse</em>; it's called <em>sequence</em>. (For those readers who are interested in Haskell specifics, the function I'm going to be talking about is actually called <a href="https://hackage.haskell.org/package/base/docs/Data-Traversable.html#v:sequenceA">sequenceA</a>. There's also a function called <a href="https://hackage.haskell.org/package/base/docs/Data-Traversable.html#v:sequence">sequence</a>, but it's not as general. The reason for the odd names are related to the evolution of various Haskell type classes.)
+	</p>
+	<p>
+		The <em>sequence</em> function doesn't work for any old functor. First, <code>t</code> has to be a <em>traversable functor</em>. We'll get back to that later. Second, <code>f</code> has to be an <a href="/2018/10/01/applicative-functors">applicative functor</a>. (To be honest, I'm not sure if this is <em>always</em> required, or if it's possible to produce an example of a specific functor that isn't applicative, but where it's still possible to implement a <em>sequence</em> function. The Haskell <code>sequenceA</code> function has <code>Applicative f</code> as a constraint, but as far as I can tell, this only means that this is a <em>sufficient</em> requirement - not that it's necessary.)
+	</p>
+	<p>
+		Since tasks (e.g. <code>Task&lt;T&gt;</code>) are applicative functors (the are, because <a href="/2022/06/06/asynchronous-monads">they are monads</a>, and <a href="/2022/03/28/monads">all monads are applicative functors</a>), that second requirement is fulfilled for the above example. I'll show you how to implement a <code>Sequence</code> function in C# and how to use it, and then we'll return to the general discussion of what a traversable functor is:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;Task&lt;IEnumerable&lt;T&gt;&gt;&nbsp;Sequence&lt;<span style="color:#2b91af;">T</span>&gt;(
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>&nbsp;IEnumerable&lt;Task&lt;T&gt;&gt;&nbsp;source)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;source.Aggregate(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Task.FromResult(Enumerable.Empty&lt;T&gt;()),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">async</span>&nbsp;(acc,&nbsp;t)&nbsp;=&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;xs&nbsp;=&nbsp;<span style="color:blue;">await</span>&nbsp;acc;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;x&nbsp;=&nbsp;<span style="color:blue;">await</span>&nbsp;t;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;xs.Concat(<span style="color:blue;">new</span>[]&nbsp;{&nbsp;x&nbsp;});
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;});
+}</pre>
+	</p>
+	<p>
+		This <code>Sequence</code> function enables you to flip any <code>IEnumerable&lt;Task&lt;T&gt;&gt;</code> to a <code>Task&lt;IEnumerable&lt;T&gt;&gt;</code>, including the above <code>fooTasks</code>:
+	</p>
+	<p>
+		<pre>Task&lt;IEnumerable&lt;Foo&gt;&gt;&nbsp;foosTask&nbsp;=&nbsp;fooTasks.Sequence();</pre>
+	</p>
+	<p>
+		You can also implement <code>sequence</code> in F#:
+	</p>
+	<p>
+		<pre><span style="color:green;">//&nbsp;Async&lt;&#39;a&gt;&nbsp;list&nbsp;-&gt;&nbsp;Async&lt;&#39;a&nbsp;list&gt;</span>
+<span style="color:blue;">let</span>&nbsp;sequence&nbsp;asyncs&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;go&nbsp;acc&nbsp;t&nbsp;=&nbsp;async&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;xs&nbsp;=&nbsp;acc
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;x&nbsp;&nbsp;=&nbsp;t
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;List.append&nbsp;xs&nbsp;[x]&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;List.fold&nbsp;go&nbsp;(fromValue&nbsp;[])&nbsp;asyncs</pre>
+	</p>
+	<p>
+		and use it like this:
+	</p>
+	<p>
+		<pre><span style="color:blue;">let</span>&nbsp;fooTasks&nbsp;=&nbsp;ids&nbsp;|&gt;&nbsp;List.map&nbsp;Foo.Read
+<span style="color:blue;">let</span>&nbsp;foosTask&nbsp;=&nbsp;fooTasks&nbsp;|&gt;&nbsp;Async.sequence</pre>
+	</p>
+	<p>
+		For this example, I put the <code>sequence</code> function in a local <code>Async</code> module; it's not part of any published <code>Async</code> module.
+	</p>
+	<p>
+		These C# and F# examples are specific translations: From lists of tasks to a task of list. If you need another translation, you'll have to write a new function for that particular combination of functors. Haskell has more general capabilities, so that you don't have to write functions for all combinations. I'm not assuming that you know Haskell, however, so I'll proceed with the description.
+	</p>
+	<h3 id="d63d059d841b4d9783f42c0360b21662">
+		Traversable functor <a href="#d63d059d841b4d9783f42c0360b21662" title="permalink">#</a>
+	</h3>
+	<p>
+		The <em>sequence</em> function requires that the 'other' functor (the one that's <em>not</em> the traversable functor) is an applicative functor, but what about the traversable functor itself? What does it take to be a traversable functor?
+	</p>
+	<p>
+		I have to admit that I have to rely on Haskell specifics to a greater extent than normal. For most other concepts and abstractions in <a href="/2017/10/04/from-design-patterns-to-category-theory">the overall article series</a>, I've been able to draw on various sources, chief of which are <a href="https://bartoszmilewski.com/2014/10/28/category-theory-for-programmers-the-preface/">Category Theory for Programmers</a>. In various articles, I've cited my sources whenever possible. While I've relied on Haskell libraries for 'canonical' ways to <em>represent</em> concepts in a programming language, I've tried to present ideas as having a more universal origin than just Haskell.
+	</p>
+	<p>
+		When it comes to traversable functors, I haven't come across universal reasoning like that which gives rise to concepts like <a href="/2017/10/06/monoids">monoids</a>, functors, <a href="/2018/05/22/church-encoding">Church encodings</a>, or <a href="/2019/04/29/catamorphisms">catamorphisms</a>. This is most likely a failing on my part.
+	</p>
+	<p>
+		Traversals of the Haskell kind are, however, so <em>useful</em> that I find it appropriate to describe them. When consulting, it's a common solution to a lot of problems that people are having with functional programming.
+	</p>
+	<p>
+		Thus, based on Haskell's <a href="https://hackage.haskell.org/package/base/docs/Data-Traversable.html">Data.Traversable</a>, a traversable functor must:
+		<ul>
+			<li>be a functor</li>
+			<li>be a 'foldable' functor</li>
+			<li>define a <em>sequence</em> or <em>traverse</em> function</li>
+		</ul>
+		You've already seen examples of <em>sequence</em> functions, and I'm also assuming that (since you've made it so far in the article already) you know what a functor is. But what's a <em>foldable</em> functor?
+	</p>
+	<p>
+		Haskell comes with a <a href="https://hackage.haskell.org/package/base/docs/Data-Foldable.html">Foldable</a> type class. It defines a class of data that has a particular type of <a href="/2019/04/29/catamorphisms">catamorphism</a>. As I've outlined in my article on catamorphisms, Haskell's notion of a <em>fold</em> sometimes coincides with a (or 'the') catamorphism for a type, and sometimes not. For <a href="/2019/05/20/maybe-catamorphism">Maybe</a> and <a href="/2019/05/27/list-catamorphism">List</a> they do coincide, while they don't for <a href="/2019/06/03/either-catamorphism">Either</a> or <a href="/2019/06/10/tree-catamorphism">Tree</a>. It's not that you can't define <code>Foldable</code> for <a href="/2018/06/11/church-encoded-either">Either</a> or <a href="/2018/08/06/a-tree-functor">Tree</a>, it's just that it's not 'the' <em>general</em> catamorphism for that type.
+	</p>
+	<p>
+		I can't tell whether <code>Foldable</code> is a universal abstraction, or if it's just an ad-hoc API that turns out to be useful in practice. It looks like the latter to me, but my knowledge is only limited. Perhaps I'll be wiser in a year or two.
+	</p>
+	<p>
+		I will, however, take it as licence to treat this topic a little less formally than I've done with other articles. While there <em>are</em> laws associated with <code>Traversable</code>, they are rather complex, so I'm going to skip them.
+	</p>
+	<p>
+		The above requirements will enable you to define traversable functors if you run into some more exotic ones, but in practice, the common functors List, <a href="/2018/03/26/the-maybe-functor">Maybe</a>, <a href="/2019/01/14/an-either-functor">Either</a>, <a href="/2018/08/06/a-tree-functor">Tree</a>, and <a href="/2018/09/03/the-identity-functor">Identity</a> are all traversable. That it useful to know. If any of those functors is the outer functor in a composition of functors, then you can flip them to the inner position as long as the other functor is an applicative functor.
+	</p>
+	<p>
+		Since <code>IEnumerable&lt;T&gt;</code> is traversable, and <code>Task&lt;T&gt;</code> (or <code>Async&lt;'T&gt;</code>) is an applicative functor, it's possible to use <code>Sequence</code> to convert <code>IEnumerable&lt;Task&lt;Foo&gt;&gt;</code> to <code>Task&lt;IEnumerable&lt;Foo&gt;&gt;</code>.
+	</p>
+	<h3 id="3346c092666c4dacb9a61cc1f622fc0f">
+		Traverse <a href="#3346c092666c4dacb9a61cc1f622fc0f" title="permalink">#</a>
+	</h3>
+	<p>
+		The C# and F# examples you've seen so far arrive at the desired type in a two-step process. First they produce the 'wrong' type with <code>ids.Select(Foo.Read)</code> or <code>ids&nbsp;|&gt;&nbsp;List.map&nbsp;Foo.Read</code>, and then they use <code>Sequence</code> to arrive at the desired type.
+	</p>
+	<p>
+		When you use two expressions, you need two lines of code, and you also need to come up with a name for the intermediary value. It might be easier to chain the two function calls into a single expression:
+	</p>
+	<p>
+		<pre>Task&lt;IEnumerable&lt;Foo&gt;&gt;&nbsp;foosTask&nbsp;=&nbsp;ids.Select(Foo.Read).Sequence();</pre>
+	</p>
+	<p>
+		Or, in F#:
+	</p>
+	<p>
+		<pre><span style="color:blue;">let</span>&nbsp;foosTask&nbsp;=&nbsp;ids&nbsp;|&gt;&nbsp;List.map&nbsp;Foo.Read&nbsp;|&gt;&nbsp;Async.sequence</pre>
+	</p>
+	<p>
+		Chaining <code>Select</code>/<code>map</code> with <code>Sequence</code>/<code>sequence</code> is so common that it's a named function: <em>traverse</em>. In C#:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;Task&lt;IEnumerable&lt;TResult&gt;&gt;&nbsp;Traverse&lt;<span style="color:#2b91af;">T</span>,&nbsp;<span style="color:#2b91af;">TResult</span>&gt;(
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>&nbsp;IEnumerable&lt;T&gt;&nbsp;source,
+&nbsp;&nbsp;&nbsp;&nbsp;Func&lt;T,&nbsp;Task&lt;TResult&gt;&gt;&nbsp;selector)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;source.Select(selector).Sequence();
+}</pre>
+	</p>
+	<p>
+		This makes usage a little easier:
+	</p>
+	<p>
+		<pre>Task&lt;IEnumerable&lt;Foo&gt;&gt;&nbsp;foosTask&nbsp;=&nbsp;ids.Traverse(Foo.Read);</pre>
+	</p>
+	<p>
+		In F# the implementation might be similar:
+	</p>
+	<p>
+		<pre><span style="color:green;">//&nbsp;(&#39;a&nbsp;-&gt;&nbsp;Async&lt;&#39;b&gt;)&nbsp;-&gt;&nbsp;&#39;a&nbsp;list&nbsp;-&gt;&nbsp;Async&lt;&#39;b&nbsp;list&gt;</span>
+<span style="color:blue;">let</span>&nbsp;traverse&nbsp;f&nbsp;xs&nbsp;=&nbsp;xs&nbsp;|&gt;&nbsp;List.map&nbsp;f&nbsp;|&gt;&nbsp;sequence</pre>
+	</p>
+	<p>
+		Usage then looks like this:
+	</p>
+	<p>
+		<pre><span style="color:blue;">let</span>&nbsp;foosTask&nbsp;=&nbsp;ids&nbsp;|&gt;&nbsp;Async.traverse&nbsp;Foo.Read</pre>
+	</p>
+	<p>
+		As you can tell, if you've already implemented <em>sequence</em> you can always implement <em>traverse</em>. The converse is also true: If you've already implemented <em>traverse</em>, you can always implement <em>sequence</em>. You'll see an example of that later.
+	</p>
+	<h3 id="117fac3b686e4db8b6c3c4e0ac556929">
+		A reusable idea <a href="#117fac3b686e4db8b6c3c4e0ac556929" title="permalink">#</a>
+	</h3>
+	<p>
+		If you know the .NET Task Parallel Library (TPL), you may demur that my implementation of <code>Sequence</code> seems like an inefficient version of <a href="https://docs.microsoft.com/dotnet/api/system.threading.tasks.task.whenall">Task.WhenAll</a>, and that <code>Traverse</code> could be written like this:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:blue;">async</span>&nbsp;Task&lt;IEnumerable&lt;TResult&gt;&gt;&nbsp;Traverse&lt;<span style="color:#2b91af;">T</span>,&nbsp;<span style="color:#2b91af;">TResult</span>&gt;(
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>&nbsp;IEnumerable&lt;T&gt;&nbsp;source,
+&nbsp;&nbsp;&nbsp;&nbsp;Func&lt;T,&nbsp;Task&lt;TResult&gt;&gt;&nbsp;selector)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:blue;">await</span>&nbsp;Task.WhenAll(source.Select(selector));
+}</pre>
+	</p>
+	<p>
+		This alternative is certainly possible. Whether it's more efficient I don't know; I haven't measured. As foreshadowed in the beginning of the article, the combination of collections and asynchrony is so common that .NET has special APIs to handle that. You may ask, then: <em>What's the point?</em>
+	</p>
+	<p>
+		The point of is that a traversable functor is <em>a reusable idea</em>.
+	</p>
+	<p>
+		You may be able to find existing APIs like <code>Task.WhenAll</code> to deal with combinations of collections and asynchrony, but what if you need to deal with asynchronous Maybe or Either? Or a List of Maybes?
+	</p>
+	<p>
+		There may be no existing API to flip things around - before you add it. Now you know that there's a (dare I say it?) design pattern you can implement.
+	</p>
+	<h3 id="f81375a0121247698f0ad5eac4deebff">
+		Asynchronous Maybe <a href="#f81375a0121247698f0ad5eac4deebff" title="permalink">#</a>
+	</h3>
+	<p>
+		Once people go beyond collections they often run into problems. You may, for example, decide to use the <a href="/2022/04/25/the-maybe-monad">Maybe monad</a> in order to model the presence or absence of a value. Then, once you combine Maybe-based decision values with asynchronous processesing, you may run into problems.
+	</p>
+	<p>
+		For example, in my article <a href="/2019/02/11/asynchronous-injection">Asynchronous Injection</a> I modelled the core domaim logic as returning <code>Maybe&lt;Reservation&gt;</code>. When handling an HTTP request, the application should use that value to determine what to do next. If the return value is empty it should do nothing, but when the Maybe value is populated, it should save the reservation in a data store using this method:
+	</p>
+	<p>
+		<pre>Task&lt;<span style="color:blue;">int</span>&gt;&nbsp;Create(Reservation&nbsp;reservation)</pre>
+	</p>
+	<p>
+		Finally, if accepting the reservation, the HTTP handler (<code>ReservationsController</code>) should return the resevation ID, which is the <code>int</code> returned by <code>Create</code>. Please refer to the article for details. It also links to the sample code on GitHub.
+	</p>
+	<p>
+		The entire expression is, however, <code>Task</code>-based:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">async</span>&nbsp;Task&lt;IActionResult&gt;&nbsp;Post(Reservation&nbsp;reservation)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:blue;">await</span>&nbsp;Repository.ReadReservations(reservation.Date)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.Select(rs&nbsp;=&gt;&nbsp;maîtreD.TryAccept(rs,&nbsp;reservation))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.SelectMany(m&nbsp;=&gt;&nbsp;m.Traverse(Repository.Create))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.Match(InternalServerError(<span style="color:#a31515;">&quot;Table&nbsp;unavailable&quot;</span>),&nbsp;Ok);
+}</pre>
+	</p>
+	<p>
+		The <code>Select</code> and <code>SelectMany</code> methods are defined on the <code>Task</code> monad. The <code>m</code> in the <code>SelectMany</code> lambda expression is the <code>Maybe&lt;Reservation&gt;</code> returned by <code>TryAccept</code>. What would happen if you didn't have a <code>Traverse</code> method?
+	</p>
+	<p>
+		<pre>Task&lt;Maybe&lt;Task&lt;<span style="color:blue;">int</span>&gt;&gt;&gt;&nbsp;whatIsThis&nbsp;=&nbsp;Repository.ReadReservations(reservation.Date)
+&nbsp;&nbsp;&nbsp;&nbsp;.Select(rs&nbsp;=&gt;&nbsp;maîtreD.TryAccept(rs,&nbsp;reservation))
+&nbsp;&nbsp;&nbsp;&nbsp;.Select(m&nbsp;=&gt;&nbsp;m.Select(Repository.Create));</pre>
+	</p>
+	<p>
+		Notice that <code>whatIsThis</code> (so named because it's a temporary variable used to investigate the type of the expression so far) has an awkward type: <code>Task&lt;Maybe&lt;Task&lt;<span style="color:blue;">int</span>&gt;&gt;&gt;</code>. That's a Task within a Maybe within a Task.
+	</p>
+	<p>
+		This makes it difficult to continue the composition and return an HTTP result.
+	</p>
+	<p>
+		Instead, use <code>Traverse</code>:
+	</p>
+	<p>
+		<pre>Task&lt;Task&lt;Maybe&lt;<span style="color:blue;">int</span>&gt;&gt;&gt;&nbsp;whatIsThis&nbsp;=&nbsp;Repository.ReadReservations(reservation.Date)
+&nbsp;&nbsp;&nbsp;&nbsp;.Select(rs&nbsp;=&gt;&nbsp;maîtreD.TryAccept(rs,&nbsp;reservation))
+&nbsp;&nbsp;&nbsp;&nbsp;.Select(m&nbsp;=&gt;&nbsp;m.Traverse(Repository.Create));</pre>
+	</p>
+	<p>
+		This flips the inner <code>Maybe&lt;Task&lt;<span style="color:blue;">int</span>&gt;&gt;</code> to <code>Task&lt;Maybe&lt;<span style="color:blue;">int</span>&gt;&gt;</code>. Now you have a Maybe within a Task within a Task. The outer two Tasks are now nicely nested, and it's a job for a monad to remove one level of nesting. That's the reason that the final composition uses <code>SelectMany</code> instead of <code>Select</code>.
+	</p>
+	<p>
+		The <code>Traverse</code> function is implemented like this:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;Task&lt;Maybe&lt;TResult&gt;&gt;&nbsp;Traverse&lt;<span style="color:#2b91af;">T</span>,&nbsp;<span style="color:#2b91af;">TResult</span>&gt;(
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>&nbsp;Maybe&lt;T&gt;&nbsp;source,
+&nbsp;&nbsp;&nbsp;&nbsp;Func&lt;T,&nbsp;Task&lt;TResult&gt;&gt;&nbsp;selector)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;source.Match(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;nothing:&nbsp;Task.FromResult(<span style="color:blue;">new</span>&nbsp;Maybe&lt;TResult&gt;()),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;just:&nbsp;<span style="color:blue;">async</span>&nbsp;x&nbsp;=&gt;&nbsp;<span style="color:blue;">new</span>&nbsp;Maybe&lt;TResult&gt;(<span style="color:blue;">await</span>&nbsp;selector(x)));
+}</pre>
+	</p>
+	<p>
+		The <em>idea</em> is reusable. You can also implement a similar traversal in F#:
+	</p>
+	<p>
+		<pre><span style="color:green;">//&nbsp;(&#39;a&nbsp;-&gt;&nbsp;Async&lt;&#39;b&gt;)&nbsp;-&gt;&nbsp;&#39;a&nbsp;option&nbsp;-&gt;&nbsp;Async&lt;&#39;b&nbsp;option&gt;</span>
+<span style="color:blue;">let</span>&nbsp;traverse&nbsp;f&nbsp;=&nbsp;<span style="color:blue;">function</span>
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;Some&nbsp;x&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;async&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;x&#39;&nbsp;=&nbsp;f&nbsp;x
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;Some&nbsp;x&#39;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;None&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;async&nbsp;{&nbsp;<span style="color:blue;">return</span>&nbsp;None&nbsp;}</pre>
+	</p>
+	<p>
+		You can see the F# function as well as a usage example in the article <a href="/2019/12/02/refactoring-registration-flow-to-functional-architecture">Refactoring registration flow to functional architecture</a>.
+	</p>
+	<h3 id="a9e25f8c3dc24d99b669f90a4e46afa0">
+		Sequence from traverse <a href="#a9e25f8c3dc24d99b669f90a4e46afa0" title="permalink">#</a>
+	</h3>
+	<p>
+		You've already seen that if you have a <em>sequence</em> function, you can implement <em>traverse</em>. I also claimed that the reverse is true: If you have <em>traverse</em> you can implement <em>sequence</em>.
+	</p>
+	<p>
+		When you've encountered these kinds of dual definitions a couple of times, you start to expect the ubiquitous identity function to make an appearance, and indeed it does:
+	</p>
+	<p>
+		<pre><span style="color:blue;">let</span>&nbsp;sequence&nbsp;x&nbsp;=&nbsp;traverse&nbsp;id&nbsp;x</pre>
+	</p>
+	<p>
+		That's the F# version where the identity function is built in as <code>id</code>. In C# you'd use a lambda expression:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;Task&lt;Maybe&lt;T&gt;&gt;&nbsp;Sequence&lt;<span style="color:#2b91af;">T</span>&gt;(<span style="color:blue;">this</span>&nbsp;Maybe&lt;Task&lt;T&gt;&gt;&nbsp;source)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;source.Traverse(x&nbsp;=&gt;&nbsp;x);
+}</pre>
+	</p>
+	<p>
+		Since C# doesn't come with a predefined identity function, it's <a href="/2015/08/03/idiomatic-or-idiosyncratic">idiomatic</a> to use <code>x&nbsp;=&gt;&nbsp;x</code> instead.
+	</p>
+	<h3 id="cc6c409706e24ea9b3ebefa49fcc3235">
+		Conclusion <a href="#cc6c409706e24ea9b3ebefa49fcc3235" title="permalink">#</a>
+	</h3>
+	<p>
+		Traversals are useful when you need to 'flip' the order of two different, nested functors. The outer one must be a traversable functor, and the inner an applicative functor.
+	</p>
+	<p>
+		Common traversable functors are List, Maybe, Either, Tree, and Identity, but there are more than those. In .NET you often need them when combining them with Tasks. In Haskell, they are useful when combined with <code>IO</code>.
+	</p>
+	<p>
+		<strong>Next:</strong> Nested monads.
+	</p>
+</div>
