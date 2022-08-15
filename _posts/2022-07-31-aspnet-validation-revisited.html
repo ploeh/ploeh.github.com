@@ -1,0 +1,525 @@
+---
+layout: post
+title: "ASP.NET validation revisited"
+description: "Is the built-in validation framework better than applicative validation?"
+date: 2022-07-31 7:07 UTC
+tags: [ASP.NET Web API]
+---
+{% include JB/setup %}
+
+<div id="post">
+	<p>
+		<em>{{ page.description }}</em>
+	</p>
+	<p>
+		I recently published an article called <a href="/2022/07/25/an-applicative-reservation-validation-example-in-c">An applicative reservation validation example in C#</a> in which I describe how to use the universal abstractions of <a href="/2018/10/01/applicative-functors">applicative functors</a> and <a href="/2017/11/27/semigroups">semigroups</a> to implement reusable, composable validation.
+	</p>
+	<p>
+		One reader reaction made me stop and think:
+	</p>
+	<blockquote>
+		<p>
+			"An exercise on how to reject 90% of the framework's existing services (*Validation) only to re implement them more poorly, by renouncing standardization, interoperability and globalization all for the glory of FP."
+		</p>
+		<footer><cite><a href="https://twitter.com/PopCatalin/status/1551478523981881349">PopCatalin</a></cite></footer>
+	</blockquote>
+	<p>
+		(At the time of posting, the <a href="https://twitter.com/PopCatalin">PopCatalin Twitter account</a>'s display name was <em>Prime minister of truth™ カタリンポップ🇺🇦</em>, which I find useless. The linked <a href="https://github.com/popcatalin81">GitHub account</a> locates the user in <a href="https://en.wikipedia.org/wiki/Cluj-Napoca">Cluj-Napoca</a>, a city I've <a href="https://blog.ploeh.dk/schedule">repeatedly visited for conferences</a> - the last time as recent as June 2022. I wouldn't be surprised if we've interacted, but if so, I'm sorry to say that I can't connect these accounts with one of the many wonderful people I've met there. In general, I'm getting a strong sarcastic vibe from that account, and I'm not sure whether or not to take <em>Pronouns kucf/fof</em> seriously. As the possibly clueless 51-year white male that I am, I will proceed with good intentions and to the best of my abilities.)
+	</p>
+	<p>
+		That reply is an important reminder that I should once in a while check my assumptions. I'm aware that the ASP.NET framework comes with validation features, but I many years ago dismissed them because I found them inadequate. Perhaps, in the meantime, these built-in services have improved to the point that they are to preferred over <a href="/2018/11/05/applicative-validation">applicative validation</a>.
+	</p>
+	<p>
+		I decided to attempt to refactor the code to take advantage of the built-in ASP.NET validation to be able to compare the two approaches. This article is an experience report.
+	</p>
+	<h3 id="d4b2e6bdae494d0397866f683ddd64e9">
+		Requirements <a href="#d4b2e6bdae494d0397866f683ddd64e9" title="permalink">#</a>
+	</h3>
+	<p>
+		In order to compare the two approaches, the ASP.NET-based validation should support the same validation features as the applicative validation example:
+	</p>
+	<ul>
+		<li>The <code>At</code> property is required and should be a valid date and time. If it isn't, the validation message should report the problem and the offending input.</li>
+		<li>The <code>Email</code> property should be required. If it's missing, the validation message should state so.</li>
+		<li>The <code>Quantity</code> property is required and should be a natural number. If it isn't, the validation message should report the problem and the offending input.</li>
+	</ul>
+	<p>
+		The <a href="/2022/07/25/an-applicative-reservation-validation-example-in-c">previous article</a> includes an interaction example that I'll repeat here for convenience:
+	</p>
+	<p>
+		<pre>POST /restaurants/1/reservations?sig=1WiLlS5705bfsffPzaFYLwntrS4FCjE5CLdaeYTHxxg%3D HTTP/1.1
+Content-Type: application/json
+{&nbsp;<span style="color:#2e75b6;">&quot;at&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;large&quot;</span>,&nbsp;<span style="color:#2e75b6;">&quot;name&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;Kerry&nbsp;Onn&quot;</span>,&nbsp;<span style="color:#2e75b6;">&quot;quantity&quot;</span>:&nbsp;-1&nbsp;}
+
+HTTP/1.1 400 Bad Request
+Invalid date or time: large.
+Email address is missing.
+Quantity must be a positive integer, but was: -1.</pre>
+	</p>
+	<p>
+		ASP.NET validation formats the errors differently, as you'll see later in this article. That's not much of a concern, though: <a href="/2014/12/23/exception-messages-are-for-programmers">Error <em>messages</em> are for other developers</a>. They don't really have to be machine-readable or have a strict shape (as opposed to error <em>types</em>, which should be machine-readable).
+	</p>
+	<p>
+		Reporting the offending values, as in <em>"Quantity must be a positive integer, but was: -1."</em> is part of the requirements. A REST API can make no assumptions about its clients. Perhaps one client is an unattended batch job that only logs errors. Logging offending values may be helpful to maintenance developers of such a batch job.
+	</p>
+	<h3 id="74d95aed3a5a40eb8f32ace05b0410a0">
+		Framework API <a href="#74d95aed3a5a40eb8f32ace05b0410a0" title="permalink">#</a>
+	</h3>
+	<p>
+		The first observation to make about the ASP.NET validation API is that it's specific to ASP.NET. It's not a general-purpose API that you can use for other purposes.
+	</p>
+	<p>
+		If, instead, you need to validate input to a console application, a background message handler, a batch job, or a desktop or phone app, you can't use that API.
+	</p>
+	<p>
+		Perhaps each of these styles of software come with their own validation APIs, but even if so, that's a different API you'll have to learn. And in cases where there's no built-in validation API, then what do you do?
+	</p>
+	<p>
+		The beauty and practicality of applicative validation is that it's <em>universal</em>. Since it's based on mathematical foundations, it's not tied to a particular framework, platform, or language. These concepts exist independently of technology. Once you understand the concepts, they're always there for you.
+	</p>
+	<p>
+		The code example from the previous article, as well as here, build upon the code base that accompanies <a href="/code-that-fits-in-your-head">Code That Fits in Your Head</a>. An example code base has to be written in <em>some</em> language, and I chose C# because I'm more familiar with it than I am with <a href="https://www.java.com/">Java</a>, <a href="https://isocpp.org/">C++</a>, or <a href="https://www.typescriptlang.org/">TypeScript</a>. While I wanted the code base to be realistic, I tried hard to include only coding techniques and patterns that you could use in more than one language.
+	</p>
+	<p>
+		As I wrote the book, I ran into many interesting problems and solutions that were specific to C# and ASP.NET. While I found them too specific to include in the book, I wrote <a href="/2021/06/14/new-book-code-that-fits-in-your-head">a series of blog posts</a> about them. This article is now becoming one of those.
+	</p>
+	<p>
+		The point about the previous article on <a href="/2022/07/25/an-applicative-reservation-validation-example-in-c">applicative reservation validation in C#</a> was to demonstrate how the general technique works. Not specifically in ASP.NET, or even C#, but in general.
+	</p>
+	<p>
+		It just so happens that this example is situated in a context where an alternative solution presents itself. This is not always the case. Sometimes you have to solve this problem yourself, and when this happens, it's useful to know that <a href="/2020/12/14/validation-a-solved-problem">validation is a solved problem</a>. Even so, while a universal solution exists, it doesn't follow that the universal solution is the best. Perhaps there are specialised solutions that are better, each within their constrained contexts.
+	</p>
+	<p>
+		Perhaps ASP.NET validation is an example of that.
+	</p>
+	<h3 id="0b80f4aa36954378be9278761b2f27ba">
+		Email validation <a href="#0b80f4aa36954378be9278761b2f27ba" title="permalink">#</a>
+	</h3>
+	<p>
+		The following is a report on my experience refactoring validation to use the built-in ASP.NET validation API.
+	</p>
+	<p>
+		I decided to start with the <code>Email</code> property, since the only requirement is that this value should be present. That seemed like an easy way to get started.
+	</p>
+	<p>
+		I added the <a href="https://docs.microsoft.com/dotnet/api/system.componentmodel.dataannotations.requiredattribute">[Required]</a> attribute to the <code>ReservationDto</code> class' <code>Email</code> property. Since this code base also uses <a href="https://docs.microsoft.com/dotnet/csharp/nullable-references">nullable reference types</a>, it was necessary to also annotate the property with the <a href="https://docs.microsoft.com/dotnet/api/system.diagnostics.codeanalysis.notnullattribute">[NotNull]</a> attribute:
+	</p>
+	<p>
+		<pre>[Required,&nbsp;NotNull]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">string</span>?&nbsp;Email&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;<span style="color:blue;">set</span>;&nbsp;}</pre>
+	</p>
+	<p>
+		That's not too difficult, and seems to be working satisfactory:
+	</p>
+	<p>
+		<pre>POST /restaurants/1/reservations?sig=1WiLlS5705bfsffPzaFYLwntrS4FCjE5CLdaeYTHxxg%3D HTTP/1.1
+> content-type: application/json
+{
+&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;at&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;2022-11-21&nbsp;19:00&quot;</span>,
+&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;name&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;Kerry&nbsp;Onn&quot;</span>,
+&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;quantity&quot;</span>:&nbsp;1
+}
+
+HTTP/1.1 400 Bad Request
+Content-Type: application/problem+json; charset=utf-8
+{
+&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;type&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;https://tools.ietf.org/html/rfc7231#section-6.5.1&quot;</span>,
+&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;title&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;One&nbsp;or&nbsp;more&nbsp;validation&nbsp;errors&nbsp;occurred.&quot;</span>,
+&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;status&quot;</span>:&nbsp;400,
+&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;traceId&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;|552ab5ff-494e1d1a9d4c6355.&quot;</span>,
+&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;errors&quot;</span>:&nbsp;{&nbsp;<span style="color:#2e75b6;">&quot;Email&quot;</span>:&nbsp;[&nbsp;<span style="color:#a31515;">&quot;The&nbsp;Email&nbsp;field&nbsp;is&nbsp;required.&quot;</span>&nbsp;]&nbsp;}
+}</pre>
+	</p>
+	<p>
+		As discussed above, the response body is formatted differently than in the applicative validation example, but I consider that inconsequential for the reasons I gave.
+	</p>
+	<p>
+		So far, so good.
+	</p>
+	<h3 id="a10d6da09d064a96bc0022e9657b62e5">
+		Quantity validation <a href="#a10d6da09d064a96bc0022e9657b62e5" title="permalink">#</a>
+	</h3>
+	<p>
+		The next property I decided to migrate was <code>Quantity</code>. This must be a natural number; that is, an integer greater than zero.
+	</p>
+	<p>
+		Disappointingly, no such built-in validation attribute seems to exist. One <a href="https://stackoverflow.com/a/7419330/126014">highly voted Stack Overflow answer</a> suggested using the <a href="https://docs.microsoft.com/dotnet/api/system.componentmodel.dataannotations.rangeattribute">[Range]</a> attribute, so I tried that:
+	</p>
+	<p>
+		<pre>[Range(1,&nbsp;<span style="color:blue;">int</span>.MaxValue,&nbsp;ErrorMessage&nbsp;=&nbsp;<span style="color:#a31515;">&quot;Quantity&nbsp;must&nbsp;be&nbsp;a&nbsp;natural&nbsp;number.&quot;</span>)]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">int</span>&nbsp;Quantity&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;<span style="color:blue;">set</span>;&nbsp;}</pre>
+	</p>
+	<p>
+		As a <em>declarative</em> approach to validation goes, I don't think this is off to a good start. I like declarative programming, but I'd prefer to be able to declare that <code>Quantity</code> must be a natural number, rather than in the range of <code>1</code> and <code>int.MaxValue</code>.
+	</p>
+	<p>
+		Does it work, though?
+	</p>
+	<p>
+		<pre>POST /restaurants/1/reservations?sig=1WiLlS5705bfsffPzaFYLwntrS4FCjE5CLdaeYTHxxg%3D HTTP/1.1
+content-type: application/json
+{
+&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;at&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;2022-11-21&nbsp;19:00&quot;</span>,
+&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;name&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;Kerry&nbsp;Onn&quot;</span>,
+&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;quantity&quot;</span>:&nbsp;0
+}
+
+HTTP/1.1 400 Bad Request
+Content-Type: application/problem+json; charset=utf-8
+{
+&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;type&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;https://tools.ietf.org/html/rfc7231#section-6.5.1&quot;</span>,
+&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;title&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;One&nbsp;or&nbsp;more&nbsp;validation&nbsp;errors&nbsp;occurred.&quot;</span>,
+&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;status&quot;</span>:&nbsp;400,
+&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;traceId&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;|d9a6be38-4be82ede7c525913.&quot;</span>,
+&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;errors&quot;</span>:&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;Email&quot;</span>:&nbsp;[&nbsp;<span style="color:#a31515;">&quot;The&nbsp;Email&nbsp;field&nbsp;is&nbsp;required.&quot;</span>&nbsp;],
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;Quantity&quot;</span>:&nbsp;[&nbsp;<span style="color:#a31515;">&quot;Quantity&nbsp;must&nbsp;be&nbsp;a&nbsp;natural&nbsp;number.&quot;</span>&nbsp;]
+&nbsp;&nbsp;}
+}</pre>
+	</p>
+	<p>
+		While it does capture the intent that <code>Quantity</code> must be one or greater, it fails to echo back the offending value.
+	</p>
+	<p>
+		In order to address that concern, I tried reading the documentation to find a way forward. Instead I found this:
+	</p>
+	<blockquote>
+		<p>
+			"Internally, the attributes call <a href="https://docs.microsoft.com/en-us/dotnet/api/system.string.format">String.Format</a> with a placeholder for the field name and sometimes additional placeholders. [...]"
+		</p>
+		<p>
+			"To find out which parameters are passed to <code>String.Format</code> for a particular attribute's error message, see the <a href="https://github.com/dotnet/runtime/tree/main/src/libraries/System.ComponentModel.Annotations/src/System/ComponentModel/DataAnnotations">DataAnnotations source code</a>."
+		</p>
+		<footer><cite><a href="https://docs.microsoft.com/aspnet/core/mvc/models/validation">ASP.NET validation documentation</a></cite></footer>
+	</blockquote>
+	<p>
+		Really?!
+	</p>
+	<p>
+		If you have to read implementation code, <a href="/encapsulation-and-solid">encapsulation</a> is broken.
+	</p>
+	<p>
+		Hardly impressed, I nonetheless found <a href="https://github.com/dotnet/runtime/blob/main/src/libraries/System.ComponentModel.Annotations/src/System/ComponentModel/DataAnnotations/RangeAttribute.cs">the RangeAttribute source code</a>. Alas, it only passes the property <code>name</code>, <code>Minimum</code>, and <code>Maximum</code> to <code>string.Format</code>, but not the offending value:
+	</p>
+	<p>
+		<pre>return string.Format(CultureInfo.CurrentCulture, ErrorMessageString, name, Minimum, Maximum);</pre>
+	</p>
+	<p>
+		This looked like a dead end, but at least it's possible to extend the ASP.NET validation API:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">sealed</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">NaturalNumberAttribute</span>&nbsp;:&nbsp;ValidationAttribute
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">protected</span>&nbsp;<span style="color:blue;">override</span>&nbsp;ValidationResult&nbsp;IsValid(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">object</span>&nbsp;value,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;ValidationContext&nbsp;validationContext)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;(validationContext&nbsp;<span style="color:blue;">is</span>&nbsp;<span style="color:blue;">null</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">throw</span>&nbsp;<span style="color:blue;">new</span>&nbsp;ArgumentNullException(nameof(validationContext));
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;i&nbsp;=&nbsp;value&nbsp;<span style="color:blue;">as</span>&nbsp;<span style="color:blue;">int</span>?;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;(i.HasValue&nbsp;&amp;&amp;&nbsp;0&nbsp;&lt;&nbsp;i)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;ValidationResult.Success;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;ValidationResult(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#a31515;">$&quot;</span>{validationContext.MemberName}<span style="color:#a31515;">&nbsp;must&nbsp;be&nbsp;a&nbsp;positive&nbsp;integer,&nbsp;but&nbsp;was:&nbsp;</span>{value}<span style="color:#a31515;">.&quot;</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+	</p>
+	<p>
+		Adding this <code>NaturalNumberAttribute</code> class enabled me to change the annotation of the <code>Quantity</code> property:
+	</p>
+	<p>
+		<pre>[NaturalNumber]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">int</span>&nbsp;Quantity&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;<span style="color:blue;">set</span>;&nbsp;}</pre>
+	</p>
+	<p>
+		This seems to get the job done:
+	</p>
+	<p>
+		<pre>POST /restaurants/1/reservations?sig=1WiLlS5705bfsffPzaFYLwntrS4FCjE5CLdaeYTHxxg%3D HTTP/1.1
+content-type: application/json
+{
+&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;at&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;2022-11-21&nbsp;19:00&quot;</span>,
+&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;name&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;Kerry&nbsp;Onn&quot;</span>,
+&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;quantity&quot;</span>:&nbsp;0
+}
+
+HTTP/1.1 400 Bad Request
+Content-Type: application/problem+json; charset=utf-8
+{
+&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;type&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;https://tools.ietf.org/html/rfc7231#section-6.5.1&quot;</span>,
+&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;title&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;One&nbsp;or&nbsp;more&nbsp;validation&nbsp;errors&nbsp;occurred.&quot;</span>,
+&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;status&quot;</span>:&nbsp;400,
+&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;traceId&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;|bb45b60d-4bd255194871157d.&quot;</span>,
+&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;errors&quot;</span>:&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;Email&quot;</span>:&nbsp;[&nbsp;<span style="color:#a31515;">&quot;The&nbsp;Email&nbsp;field&nbsp;is&nbsp;required.&quot;</span>&nbsp;],
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;Quantity&quot;</span>:&nbsp;[&nbsp;<span style="color:#a31515;">&quot;Quantity&nbsp;must&nbsp;be&nbsp;a&nbsp;positive&nbsp;integer,&nbsp;but&nbsp;was:&nbsp;0.&quot;</span>&nbsp;]
+&nbsp;&nbsp;}
+}</pre>
+	</p>
+	<p>
+		The <code>[NaturalNumber]</code> attribute now correctly reports the offending value together with a useful error message.
+	</p>
+	<p>
+		Compare, however, the above <code>NaturalNumberAttribute</code> class to the <code>TryParseQuantity</code> function, repeated here for convenience:
+	</p>
+	<p>
+		<pre><span style="color:blue;">private</span>&nbsp;Validated&lt;<span style="color:blue;">string</span>,&nbsp;<span style="color:blue;">int</span>&gt;&nbsp;<span style="color:#74531f;">TryParseQuantity</span>()
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">if</span>&nbsp;(Quantity&nbsp;&lt;&nbsp;1)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;Validated.Fail&lt;<span style="color:blue;">string</span>,&nbsp;<span style="color:blue;">int</span>&gt;(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#a31515;">$&quot;Quantity&nbsp;must&nbsp;be&nbsp;a&nbsp;positive&nbsp;integer,&nbsp;but&nbsp;was:&nbsp;</span>{Quantity}<span style="color:#a31515;">.&quot;</span>);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;Validated.Succeed&lt;<span style="color:blue;">string</span>,&nbsp;<span style="color:blue;">int</span>&gt;(Quantity);
+}</pre>
+	</p>
+	<p>
+		<code>TryParseQuantity</code> is shorter and has half the <a href="https://en.wikipedia.org/wiki/Cyclomatic_complexity">cyclomatic complexity</a> of <code>NaturalNumberAttribute</code>. In isolation, at least, I'd prefer the shorter, simpler alternative.
+	</p>
+	<h3 id="3c90c9ded0af42fd9017593c9a387e97">
+		Date and time validation <a href="#3c90c9ded0af42fd9017593c9a387e97" title="permalink">#</a>
+	</h3>
+	<p>
+		Remaining is validation of the <code>At</code> property. As a first step, I converted the property to a <code>DateTime</code> value and added attributes:
+	</p>
+	<p>
+		<pre>[Required,&nbsp;NotNull]
+<span style="color:blue;">public</span>&nbsp;DateTime?&nbsp;At&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;<span style="color:blue;">set</span>;&nbsp;}</pre>
+	</p>
+	<p>
+		I'd been a little apprehensive doing that, fearing that it'd break a lot of code (particularly tests), but that turned out not to be the case. In fact, it actually simplified a few of the tests.
+	</p>
+	<p>
+		On the other hand, this actually doesn't work satisfactorily:
+	</p>
+	<p>
+		<pre>POST /restaurants/1/reservations?sig=1WiLlS5705bfsffPzaFYLwntrS4FCjE5CLdaeYTHxxg%3D HTTP/1.1
+content-type: application/json
+{
+&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;at&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;2022-11-21&nbsp;19:00&quot;</span>,
+&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;name&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;Kerry&nbsp;Onn&quot;</span>,
+&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;quantity&quot;</span>:&nbsp;0
+}
+
+HTTP/1.1 400 Bad Request
+Content-Type: application/problem+json; charset=utf-8
+{
+&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;type&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;https://tools.ietf.org/html/rfc7231#section-6.5.1&quot;</span>,
+&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;title&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;One&nbsp;or&nbsp;more&nbsp;validation&nbsp;errors&nbsp;occurred.&quot;</span>,
+&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;status&quot;</span>:&nbsp;400,
+&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;traceId&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;|1e1d600e-4098fb36635642f6.&quot;</span>,
+&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;errors&quot;</span>:&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;dto&quot;</span>:&nbsp;[&nbsp;<span style="color:#a31515;">&quot;The&nbsp;dto&nbsp;field&nbsp;is&nbsp;required.&quot;</span>&nbsp;],
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;$.at&quot;</span>:&nbsp;[&nbsp;<span style="color:#a31515;">&quot;The&nbsp;JSON&nbsp;value&nbsp;could&nbsp;not&nbsp;be&nbsp;converted&nbsp;to&nbsp;System.Nullable`1[System.DateTime].↩
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Path:&nbsp;$.at&nbsp;|&nbsp;LineNumber:&nbsp;0&nbsp;|&nbsp;BytePositionInLine:&nbsp;26.&quot;</span>&nbsp;]
+&nbsp;&nbsp;}
+}</pre>
+	</p>
+	<p>
+		(I've wrapped the last error message over two lines for readability. The <code>↩</code> symbol indicates where I've wrapped the text.)
+	</p>
+	<p>
+		There are several problems with this response. First, in addition to complaining about the missing <code>at</code> property, it should also have reported that there are problems with the <code>Quantity</code> and that the <code>Email</code> property is missing. Instead, it implies that the <code>dto</code> field is missing. That's likely confusing to client developers, because <code>dto</code> is an implementation detail; it's the name of the C# parameter of the method that handles the request. Client developers can't and shouldn't know this. Instead, it looks as though the REST API somehow failed to receive the JSON document that the client posted.
+	</p>
+	<p>
+		Second, the error message exposes other implementation details, here that the <code>at</code> field has the type <code>System.Nullable`1[System.DateTime]</code>. This is, at best, irrelevant. At worst, it could be a security issue, because it reveals to a would-be attacker that the system is implemented on .NET.
+	</p>
+	<p>
+		Third, the framework rejects what looks like a perfectly good date and time: <code>2022-11-21 19:00</code>. This is a breaking change, since the API used to accept such values.
+	</p>
+	<p>
+		What's wrong with <code>2022-11-21 19:00</code>? It's not a valid <a href="https://en.wikipedia.org/wiki/ISO_8601">ISO 8601</a> string. According to the ISO 8601 standard, the date and time must be separated by <code>T</code>:
+	</p>
+	<p>
+		<pre>POST /restaurants/1/reservations?sig=1WiLlS5705bfsffPzaFYLwntrS4FCjE5CLdaeYTHxxg%3D HTTP/1.1
+content-type: application/json
+{
+&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;at&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;2022-11-21T19:00&quot;</span>,
+&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;name&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;Kerry&nbsp;Onn&quot;</span>,
+&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;quantity&quot;</span>:&nbsp;0
+}
+
+HTTP/1.1 400 Bad Request
+Content-Type: application/problem+json; charset=utf-8
+{
+&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;type&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;https://tools.ietf.org/html/rfc7231#section-6.5.1&quot;</span>,
+&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;title&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;One&nbsp;or&nbsp;more&nbsp;validation&nbsp;errors&nbsp;occurred.&quot;</span>,
+&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;status&quot;</span>:&nbsp;400,
+&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;traceId&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;|1e1d600f-4098fb36635642f6.&quot;</span>,
+&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;errors&quot;</span>:&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;Email&quot;</span>:&nbsp;[&nbsp;<span style="color:#a31515;">&quot;The&nbsp;Email&nbsp;field&nbsp;is&nbsp;required.&quot;</span>&nbsp;],
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;Quantity&quot;</span>:&nbsp;[&nbsp;<span style="color:#a31515;">&quot;Quantity&nbsp;must&nbsp;be&nbsp;a&nbsp;positive&nbsp;integer,&nbsp;but&nbsp;was:&nbsp;0.&quot;</span>&nbsp;]
+&nbsp;&nbsp;}
+}</pre>
+	</p>
+	<p>
+		Posting a valid ISO 8601 string does, indeed, enable the client to proceed - only to receive a new set of error messages. After converting <code>At</code> to <code>DateTime?</code>, the ASP.NET validation framework does <em>not</em> collect all errors, but instead fails on the first one it encounters.
+	</p>
+	<p>
+		That is exactly the requirement that applicative validation so elegantly solves.
+	</p>
+	<h3 id="e9986e66f63c476ca529788afaa863e4">
+		Tolerant Reader <a href="#e9986e66f63c476ca529788afaa863e4" title="permalink">#</a>
+	</h3>
+	<p>
+		While it's true that <code>2022-11-21 19:00</code> isn't valid ISO 8601, it's unambiguous. According to <a href="https://en.wikipedia.org/wiki/Robustness_principle">Postel's law</a> the API should be a <a href="https://martinfowler.com/bliki/TolerantReader.html">Tolerant Reader</a>. It's not.
+	</p>
+	<p>
+		This problem, however, is solvable. First, add the Tolerant Reader:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">sealed</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">DateTimeConverter</span>&nbsp;:&nbsp;JsonConverter&lt;DateTime&gt;
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">override</span>&nbsp;DateTime&nbsp;Read(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">ref</span>&nbsp;Utf8JsonReader&nbsp;reader,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Type&nbsp;typeToConvert,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;JsonSerializerOptions&nbsp;options)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;DateTime.Parse(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;reader.GetString(),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;CultureInfo.InvariantCulture);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">override</span>&nbsp;<span style="color:blue;">void</span>&nbsp;Write(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Utf8JsonWriter&nbsp;writer,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;DateTime&nbsp;value,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;JsonSerializerOptions&nbsp;options)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;(writer&nbsp;<span style="color:blue;">is</span>&nbsp;<span style="color:blue;">null</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">throw</span>&nbsp;<span style="color:blue;">new</span>&nbsp;ArgumentNullException(nameof(writer));
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;writer.WriteStringValue(value.ToString(<span style="color:#a31515;">&quot;s&quot;</span>));
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+	</p>
+	<p>
+		Then add it to the JSON serialiser's <a href="https://docs.microsoft.com/dotnet/api/system.text.json.jsonserializeroptions.converters">Converters</a>:
+	</p>
+	<p>
+		<pre>opts.JsonSerializerOptions.Converters.Add(<span style="color:blue;">new</span>&nbsp;DateTimeConverter());</pre>
+	</p>
+	<p>
+		This, at least, addresses the Tolerant Reader concern:
+	</p>
+	<p>
+		<pre>POST /restaurants/1/reservations?sig=1WiLlS5705bfsffPzaFYLwntrS4FCjE5CLdaeYTHxxg%3D HTTP/1.1
+content-type: application/json
+{
+&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;at&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;2022-11-21&nbsp;19:00&quot;</span>,
+&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;name&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;Kerry&nbsp;Onn&quot;</span>,
+&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;quantity&quot;</span>:&nbsp;0
+}
+
+HTTP/1.1 400 Bad Request
+Content-Type: application/problem+json; charset=utf-8
+{
+&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;type&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;https://tools.ietf.org/html/rfc7231#section-6.5.1&quot;</span>,
+&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;title&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;One&nbsp;or&nbsp;more&nbsp;validation&nbsp;errors&nbsp;occurred.&quot;</span>,
+&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;status&quot;</span>:&nbsp;400,
+&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;traceId&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;|11576943-400dafd4b489c282.&quot;</span>,
+&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;errors&quot;</span>:&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;Email&quot;</span>:&nbsp;[&nbsp;<span style="color:#a31515;">&quot;The&nbsp;Email&nbsp;field&nbsp;is&nbsp;required.&quot;</span>&nbsp;],
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;Quantity&quot;</span>:&nbsp;[&nbsp;<span style="color:#a31515;">&quot;Quantity&nbsp;must&nbsp;be&nbsp;a&nbsp;positive&nbsp;integer,&nbsp;but&nbsp;was:&nbsp;0.&quot;</span>&nbsp;]
+&nbsp;&nbsp;}
+}</pre>
+	</p>
+	<p>
+		The API now accepts the slightly malformed <code>at</code> field. It also correctly handles if the field is entirely missing:
+	</p>
+	<p>
+		<pre>POST /restaurants/1/reservations?sig=1WiLlS5705bfsffPzaFYLwntrS4FCjE5CLdaeYTHxxg%3D HTTP/1.1
+content-type: application/json
+{
+&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;name&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;Kerry&nbsp;Onn&quot;</span>,
+&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;quantity&quot;</span>:&nbsp;0
+}
+
+HTTP/1.1 400 Bad Request
+Content-Type: application/problem+json; charset=utf-8
+{
+&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;type&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;https://tools.ietf.org/html/rfc7231#section-6.5.1&quot;</span>,
+&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;title&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;One&nbsp;or&nbsp;more&nbsp;validation&nbsp;errors&nbsp;occurred.&quot;</span>,
+&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;status&quot;</span>:&nbsp;400,
+&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;traceId&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;|11576944-400dafd4b489c282.&quot;</span>,
+&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;errors&quot;</span>:&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;At&quot;</span>:&nbsp;[&nbsp;<span style="color:#a31515;">&quot;The&nbsp;At&nbsp;field&nbsp;is&nbsp;required.&quot;</span>&nbsp;],
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;Email&quot;</span>:&nbsp;[&nbsp;<span style="color:#a31515;">&quot;The&nbsp;Email&nbsp;field&nbsp;is&nbsp;required.&quot;</span>&nbsp;],
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;Quantity&quot;</span>:&nbsp;[&nbsp;<span style="color:#a31515;">&quot;Quantity&nbsp;must&nbsp;be&nbsp;a&nbsp;positive&nbsp;integer,&nbsp;but&nbsp;was:&nbsp;0.&quot;</span>&nbsp;]
+&nbsp;&nbsp;}
+}</pre>
+	</p>
+	<p>
+		On the other hand, it <em>still</em> doesn't gracefully handle the case when the <code>at</code> field is unrecoverably malformed:
+	</p>
+	<p>
+		<pre>POST /restaurants/1/reservations?sig=1WiLlS5705bfsffPzaFYLwntrS4FCjE5CLdaeYTHxxg%3D HTTP/1.1
+content-type: application/json
+{
+&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;at&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;foo&quot;</span>,
+&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;name&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;Kerry&nbsp;Onn&quot;</span>,
+&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;quantity&quot;</span>:&nbsp;0
+}
+
+HTTP/1.1 400 Bad Request
+Content-Type: application/problem+json; charset=utf-8
+{
+&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;type&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;https://tools.ietf.org/html/rfc7231#section-6.5.1&quot;</span>,
+&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;title&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;One&nbsp;or&nbsp;more&nbsp;validation&nbsp;errors&nbsp;occurred.&quot;</span>,
+&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;status&quot;</span>:&nbsp;400,
+&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;traceId&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;|11576945-400dafd4b489c282.&quot;</span>,
+&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;errors&quot;</span>:&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;&quot;</span>:&nbsp;[&nbsp;<span style="color:#a31515;">&quot;The&nbsp;supplied&nbsp;value&nbsp;is&nbsp;invalid.&quot;</span>&nbsp;],
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;dto&quot;</span>:&nbsp;[&nbsp;<span style="color:#a31515;">&quot;The&nbsp;dto&nbsp;field&nbsp;is&nbsp;required.&quot;</span>&nbsp;]
+&nbsp;&nbsp;}
+}</pre>
+	</p>
+	<p>
+		<code>The supplied value is invalid.</code> and <code>The dto field is required.</code>? That's not really helpful. And what happened to <code>The Email field is required.</code> and <code>Quantity must be a positive integer, but was: 0.</code>?
+	</p>
+	<p>
+		If there's a way to address this problem, I don't know how. I've tried adding another custom attribute, similar to the above <code>NaturalNumberAttribute</code> class, but that doesn't solve it - probably because the model binder (that deserialises the JSON document to a <code>ReservationDto</code> instance) runs before the validation.
+	</p>
+	<p>
+		Perhaps there's a way to address this problem with yet another class that derives from a base class, but I think that I've already played enough <a href="https://en.wikipedia.org/wiki/Whac-A-Mole">Whack-a-mole</a> to arrive at a conclusion.
+	</p>
+	<h3 id="fc3e2119ed1c4a7a8cff0c0992a8b071">
+		Conclusion <a href="#fc3e2119ed1c4a7a8cff0c0992a8b071" title="permalink">#</a>
+	</h3>
+	<p>
+		Your context may differ from mine, so the conclusion that I arrive at may not apply in your situation. For example, I'm given to understand that one benefit that the ASP.NET validation framework provides is that when used with ASP.NET MVC (instead of as a Web API), (some of) the validation logic can also run in <a href="https://www.javascript.com/">JavaScript</a> in browsers. This, ostensibly, reduces code duplication.
+	</p>
+	<blockquote>
+		<p>
+			"Yet in the case of validation, a Declarative model is far superior to a FP one. The declarative model allows various environments to implement validation as they need it (IE: Client side validation) while the FP one is strictly limited to the environment executing the code."
+		</p>
+		<footer><cite><a href="https://twitter.com/PopCatalin/status/1551478926005911553">PopCatalin</a></cite></footer>
+	</blockquote>
+	<p>
+		On the other hand, using the ASP.NET validation framework requires more code, and more complex code, than with applicative validation. It's a particular set of APIs that you have to learn, and that knowledge doesn't transfer to other frameworks, platforms, or languages.
+	</p>
+	<p>
+		Apart from client-side validation, I fail to see how applicative validation <em>"re implement[s validation] more poorly, by renouncing standardization, interoperability and globalization"</em>.
+	</p>
+	<p>
+		I'm not aware that there's any <em>standard</em> for validation as such, so I think that @PopCatalin has the 'standard' ASP.NET validation API in mind. If so, I consider applicative validation a much more standardised solution than a specialised API.
+	</p>
+	<p>
+		If by <em>interoperability</em> @PopCatalin means the transfer of logic from server side to client side, then it's true that the applicative validation I showed in the previous article runs exclusively on the server. I wonder, however, how much of such custom validation as <code>NaturalNumberAttribute</code> automatically transfers to the client side.
+	</p>
+	<p>
+		When it comes to globalisation, I fail to see how applicative validation is less globalisable than the ASP.NET validation framework. One could easily replace the hard-coded strings in my examples with resource strings.
+	</p>
+	<p>
+		It would seem, again, that <a href="https://en.wikipedia.org/wiki/Greenspun%27s_tenth_rule">any sufficiently complicated custom validation framework contains an ad-hoc, informally-specified, bug-ridden, slow implementation of half of applicative validation</a>.
+	</p>
+	<blockquote>
+		<p>
+			"I must admit I really liked the declarative OOP model using annotations when I first saw it in Java (EJB3.0, almost 20yrs ago) until I saw FP way of doing things. FP way is so much simpler and powerful, because it's just function composition, nothing more, no hidden "magic"."
+		</p>
+		<footer><cite><a href="https://twitter.com/witoldsz/status/1552429555503493120">Witold Szczerba</a></cite></footer>
+	</blockquote>
+	<p>
+		I still find myself in the same camp as Witold Szczerba. It's easy to get started using validation annotations, but it doesn't follow that it's simpler or better in the long run. As <a href="https://en.wikipedia.org/wiki/Rich_Hickey">Rich Hickey</a> points out in <a href="https://www.infoq.com/presentations/Simple-Made-Easy/">Simple Made Easy</a>, <em>simple</em> and <em>easy</em> isn't the same. If I have to maintain code, I'll usually choose the simple solution over the easy solution. That means choosing applicative validation over a framework-specific validation API.
+	</p>
+</div>
