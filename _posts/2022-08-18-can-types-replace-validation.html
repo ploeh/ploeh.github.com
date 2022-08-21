@@ -1,0 +1,387 @@
+---
+layout: post
+title: "Can types replace validation?"
+description: "With some examples in C#."
+date: 2022-08-18 7:56 UTC
+tags: [Software Design]
+image: "/content/binary/validation-as-a-function-from-data-to-type.png"
+image_alt: "An arrow labelled 'validation' pointing from a document to the left labelled 'Data' to a box to the right labelled 'Type'."
+---
+{% include JB/setup %}
+
+<div id="post">
+	<p>
+		<em>{{ page.description }}</em>
+	</p>
+	<p>
+		In a comment to my article on <a href="/2022/08/15/aspnet-validation-revisited">ASP.NET validation revisited</a> Maurice Johnson asks:
+	</p>
+	<blockquote>
+		<p>
+			"I was just wondering, is it possible to use the type system to do the validation instead ?
+		</p>
+		<p>
+			"What I mean is, for example, to make all the ReservationDto's field a type with validation in the constructor (like a class name, a class email, and so on). Normally, when the framework will build ReservationDto, it will try to construct the fields using the type constructor, and if there is an explicit error thrown during the construction, the framework will send us back the error with the provided message.
+		</p>
+		<p>
+			"Plus, I think types like "email", "name" and "at" are reusable. And I feel like we have more possibilities for validation with that way of doing than with the validation attributes.
+		</p>
+		<p>
+			"What do you think ?"
+		</p>
+		<footer><cite><a href="/2022/08/15/aspnet-validation-revisited#f6deac18851d47c3b066f82a8be3847d">Maurice Johnson</a></cite></footer>
+	</blockquote>
+	<p>
+		I started writing a response below the question, but it grew and grew so I decided to turn it into a separate article. I think the question is of general interest.
+	</p>
+	<h3 id="2492a444e49b49a09a4f7c03f38b29d5">
+		The halting problem <a href="#2492a444e49b49a09a4f7c03f38b29d5" title="permalink">#</a>
+	</h3>
+	<p>
+		I'm all in favour of using the type system for encapsulation, but there are limits to what it can do. We know this because it follows from the <a href="https://en.wikipedia.org/wiki/Halting_problem">halting problem</a>.
+	</p>
+	<p>
+		I'm basing my understanding of the halting problem on <a href="https://www.goodreads.com/review/show/1731926050">my reading</a> of <a href="/ref/annotated-turing">The Annotated Turing</a>. In short, given an arbitrary computer program in a Turing-complete language, there's no general algorithm that will determine whether or not the program will finish running.
+	</p>
+	<p>
+		A compiler that performs type-checking is a program, but typically type systems aren't Turing-complete. It's possible to write type checkers that always finish, because the 'programming language' they are running on - the type system - isn't Turing-complete.
+	</p>
+	<p>
+		Normal type systems (like C#'s) aren't Turing-complete. You expect the C# compiler to always arrive at a result (either compiled code or error) in finite time. As a counter-example, consider <a href="https://www.haskell.org/">Haskell</a>'s type system. By default it, too, isn't Turing-complete, but with sufficient language extensions, you <em>can</em> make it Turing-complete. Here's a fun example: <a href="https://aphyr.com/posts/342-typing-the-technical-interview">Typing the technical interview</a> by Kyle Kingsbury (Aphyr). When you do that, however, termination is no longer guaranteed. A program may now compile forever or, practically, until it times out or runs out of memory. That's what happened to me when I tried to compile Kyle Kingsbury's code example.
+	</p>
+	<p>
+		How is this relevant?
+	</p>
+	<p>
+		This matters because understanding that a normal type system is <em>not</em> Turing-complete means that there are truths it <em>can't</em> express. Thus, we shouldn't be surprised if we run into rules or policies that we can't express with the type system we're given. What exactly is inexpressible depends on the type system. There are policies you can express in Haskell that are impossible to express in C#, and so on. Let's stick with C#, though. Here are some examples of rules that are practically inexpressible:
+	</p>
+	<ul>
+		<li>An integer must be positive.</li>
+		<li>A string must be at most 100 characters long.</li>
+		<li>A maximum value must be greater than a minimum value.</li>
+		<li>A value must be a valid email address.</li>
+	</ul>
+	<p>
+		<a href="https://www.hillelwayne.com/">Hillel Wayne</a> provides more compelling examples in the article <a href="https://buttondown.email/hillelwayne/archive/making-illegal-states-unrepresentable/">Making Illegal States Unrepresentable</a>.
+	</p>
+	<h3 id="34f9d2e5570842adbb79a20972f458a0">
+		Encapsulation <a href="#34f9d2e5570842adbb79a20972f458a0" title="permalink">#</a>
+	</h3>
+	<p>
+		Depending on how many times you've been around the block, you may find the above list naive. You may, for example, say that it's possible to express that an integer is positive like this:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">struct</span>&nbsp;<span style="color:#2b91af;">NaturalNumber</span>&nbsp;:&nbsp;IEquatable&lt;NaturalNumber&gt;
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;<span style="color:blue;">int</span>&nbsp;i;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">NaturalNumber</span>(<span style="color:blue;">int</span>&nbsp;candidate)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;(candidate&nbsp;&lt;&nbsp;1)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">throw</span>&nbsp;<span style="color:blue;">new</span>&nbsp;ArgumentOutOfRangeException(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;nameof(candidate),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#a31515;">$&quot;The&nbsp;value&nbsp;must&nbsp;be&nbsp;a&nbsp;positive&nbsp;(non-zero)&nbsp;number,&nbsp;but&nbsp;was:&nbsp;</span>{candidate}<span style="color:#a31515;">.&quot;</span>);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.i&nbsp;=&nbsp;candidate;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;Various&nbsp;other&nbsp;members&nbsp;follow...</span></pre>
+	</p>
+	<p>
+		I like introducing wrapper types like this. To the inexperienced developer this may seem redundant, but using a wrapper like this has several advantages. For one, it makes preconditions explicit. Consider a constructor like this:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">Reservation</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;Guid&nbsp;id,
+&nbsp;&nbsp;&nbsp;&nbsp;DateTime&nbsp;at,
+&nbsp;&nbsp;&nbsp;&nbsp;Email&nbsp;email,
+&nbsp;&nbsp;&nbsp;&nbsp;Name&nbsp;name,
+&nbsp;&nbsp;&nbsp;&nbsp;NaturalNumber&nbsp;quantity)</pre>
+	</p>
+	<p>
+		What are the preconditions that you, as a client developer, has to fulfil before you can create a valid <code>Reservation</code> object? First, you must supply five arguments: <code>id</code>, <code>at</code>, <code>email</code>, <code>name</code>, and <code>quantity</code>. There is, however, more information than that.
+	</p>
+	<p>
+		Consider, as an alternative, a constructor like this:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">Reservation</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;Guid&nbsp;id,
+&nbsp;&nbsp;&nbsp;&nbsp;DateTime&nbsp;at,
+&nbsp;&nbsp;&nbsp;&nbsp;Email&nbsp;email,
+&nbsp;&nbsp;&nbsp;&nbsp;Name&nbsp;name,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">int</span>&nbsp;quantity)</pre>
+	</p>
+	<p>
+		This constructor requires you to supply the same five arguments. There is, however, less explicit information available. If that was the only available constructor, you might be wondering: <em>Can I pass zero as <code>quantity</code>? Can I pass <code>-1</code>?</em>
+	</p>
+	<p>
+		When the only constructor available is the first of these two alternatives, you already have the answer: No, the <code>quantity</code> must be a natural number.
+	</p>
+	<p>
+		Another advantage of creating wrapper types like <code>NaturalNumber</code> is that you centralise run-time checks in one place. Instead of sprinkling defensive code all over the code base, you have it in one place. Any code that receives a <code>NaturalNumber</code> object knows that the check has already been performed.
+	</p>
+	<p>
+		There's a word for this: Encapsulation.
+	</p>
+	<p>
+		You gather a coherent set of invariants and collect it in a single type, making sure that the type always guarantees its invariants. Note that this is an important design technique in functional programming too. While you may not have to worry about state mutation preserving invariants, it's still important to guarantee that all values of a type are <em>valid</em>.
+	</p>
+	<h3 id="8c48a55a5db74686ab7a0c8fc40dd650">
+		Predicative and constructive data <a href="#8c48a55a5db74686ab7a0c8fc40dd650" title="permalink">#</a>
+	</h3>
+	<p>
+		It's debatable whether the above <code>NaturalNumber</code> class <em>really</em> uses the type system to model what constitutes valid data. Since it relies on a run-time predicate, it falls in the category of types Hillel Wayne <a href="https://www.hillelwayne.com/post/constructive/">calls <em>predicative</em></a>. Such types are easy to create and compose well, but on the other hand fail to take full advantage of the type system.
+	</p>
+	<p>
+		It's often worthwhile considering if a <em>constructive</em> design is possible and practical. In other words, is it possible to <a href="https://blog.janestreet.com/effective-ml-video/">make illegal states unrepresentable</a> (MISU)?
+	</p>
+	<p>
+		What's wrong with <code>NaturalNumber</code>? Doesn't it do that? No, it doesn't, because this compiles:
+	</p>
+	<p>
+		<pre><span style="color:blue;">new</span>&nbsp;NaturalNumber(-1)</pre>
+	</p>
+	<p>
+		Surely it <em>will</em> fail at run time, but it compiles. Thus, it's <em>representable</em>.
+	</p>
+	<p>
+		Can we model natural numbers in a constructive way? Yes, with <a href="https://en.wikipedia.org/wiki/Peano_axioms">Peano numbers</a>. This is even <a href="/2018/05/28/church-encoded-natural-numbers">possible in C#</a>, but I wouldn't consider it practical. On the other hand, while it's possible to represent any natural number, there is <em>no way</em> to express -1 as a Peano number.
+	</p>
+	<p>
+		As Hillel Wayne describes, constructive data types are much harder and requires a considerable measure of creativity. Often, a constructive model can seem impossible until you get a good idea.
+	</p>
+	<blockquote>
+		<p>
+			"a list can only be of even length. Most languages will not be able to express such a thing in a reasonable way in the data type."
+		</p>
+		<footer><cite><a href="https://note89.github.io/state-of-emergency/">Nils Eriksson</a></cite></footer>
+	</blockquote>
+	<p>
+		Such a requirement may look difficult until inspiration hits. Then one day you may realise that it'd be as simple as a list of pairs (two-tuples). In Haskell, it could be as simple as this:
+	</p>
+	<p>
+		<pre>newtype EvenList a = EvenList [(a,a)] deriving (Eq, Show)</pre>
+	</p>
+	<p>
+		With such a constructive data model, lists of uneven length are unrepresentable. This is a simple example of the kind of creative thinking you may need to engage in with constructive data modelling.
+	</p>
+	<p>
+		If you feel the need to object that Haskell isn't 'most languages', then here's the same idea expressed in C#:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">sealed</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">EvenCollection</span>&lt;<span style="color:#2b91af;">T</span>&gt;&nbsp;:&nbsp;IEnumerable&lt;T&gt;
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;IEnumerable&lt;Tuple&lt;T,&nbsp;T&gt;&gt;&nbsp;values;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">EvenCollection</span>(IEnumerable&lt;Tuple&lt;T,&nbsp;T&gt;&gt;&nbsp;<span style="color:#1f377f;">values</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.values&nbsp;=&nbsp;values;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;IEnumerator&lt;T&gt;&nbsp;<span style="color:#74531f;">GetEnumerator</span>()
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">foreach</span>&nbsp;(var&nbsp;<span style="color:#1f377f;">x</span>&nbsp;<span style="color:#8f08c4;">in</span>&nbsp;values)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">yield</span>&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;x.Item1;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">yield</span>&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;x.Item2;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;IEnumerator&nbsp;IEnumerable.<span style="color:#74531f;">GetEnumerator</span>()
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;GetEnumerator();
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+	</p>
+	<p>
+		You can create such a list like this:
+	</p>
+	<p>
+		<pre><span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">list</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;EvenCollection&lt;<span style="color:blue;">string</span>&gt;(<span style="color:blue;">new</span>[]
+{
+&nbsp;&nbsp;&nbsp;&nbsp;Tuple.Create(<span style="color:#a31515;">&quot;foo&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;bar&quot;</span>),
+&nbsp;&nbsp;&nbsp;&nbsp;Tuple.Create(<span style="color:#a31515;">&quot;baz&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;qux&quot;</span>)
+});</pre>
+	</p>
+	<p>
+		On the other hand, this doesn't compile:
+	</p>
+	<p>
+		<pre><span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">list</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;EvenCollection&lt;<span style="color:blue;">string</span>&gt;(<span style="color:blue;">new</span>[]
+{
+&nbsp;&nbsp;&nbsp;&nbsp;Tuple.Create(<span style="color:#a31515;">&quot;foo&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;bar&quot;</span>),
+&nbsp;&nbsp;&nbsp;&nbsp;Tuple.Create(<span style="color:#a31515;">&quot;baz&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;qux&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;quux&quot;</span>)
+});</pre>
+	</p>
+	<p>
+		Despite this digression, the point remains: Constructive data modelling may be impossible, unimagined, or impractical.
+	</p>
+	<p>
+		Often, in languages like C# we resort to predicative data modelling. That's also what I did in the article <a href="/08/15/aspnet-validation-revisited">ASP.NET validation revisited</a>.
+	</p>
+	<h3 id="830f3f7a663b459994cc585ef9604d11">
+		Validation as functions <a href="#830f3f7a663b459994cc585ef9604d11" title="permalink">#</a>
+	</h3>
+	<p>
+		That was a long rambling detour inspired by a simple question: Is it possible to use types instead of validation?
+	</p>
+	<p>
+		In order to address that question, it's only proper to explicitly state assumptions and definitions. What's the definition of <em>validation?</em>
+	</p>
+	<p>
+		I'm not aware of a ubiquitous definition. While I could draw from <a href="https://en.wikipedia.org/wiki/Data_validation">the Wikipedia article on the topic</a>, at the time of writing it doesn't cite any sources when it sets out to define what it is. So I may as well paraphrase. It seems fair, though, to consider the stem of the word: <em>Valid</em>.
+	</p>
+	<p>
+		Validation is the process of examining input to determine whether or not it's valid. I consider this a (mostly) self-contained operation: Given the data, is it well-formed and according to specification? If you have to query a database before making a decision, you're not validating the input. In that case, you're applying a business rule. As a rule of thumb I expect validations to be <a href="https://en.wikipedia.org/wiki/Pure_function">pure functions</a>.
+	</p>
+	<p>
+		Validation, then, seems to imply a process. Before you execute the process, you don't know if data is valid. After executing the process, you do know.
+	</p>
+	<p>
+		Data types, whether predicative like <code>NaturalNumber</code> or constructive like <code>EvenCollection&lt;T&gt;</code>, aren't processes or functions. They are results.
+	</p>
+	<p>
+		<img src="/content/binary/validation-as-a-function-from-data-to-type.png" alt="An arrow labelled 'validation' pointing from a document to the left labelled 'Data' to a box to the right labelled 'Type'.">
+	</p>
+	<p>
+		Sometimes an algorithm can use a type to <em>infer</em> the validation function. This is common in statically typed languages, from C# over <a href="https://fsharp.org/">F#</a> to Haskell (which are the languages with which I'm most familiar).
+	</p>
+	<h3 id="4cc324c1919e45958542bb82c2ca73d4">
+		Data Transfer Object as a validation DSL <a href="#4cc324c1919e45958542bb82c2ca73d4" title="permalink">#</a>
+	</h3>
+	<p>
+		In a way you can think of the type system as a <a href="https://en.wikipedia.org/wiki/Domain-specific_language">domain-specific language</a> (DSL) for defining validation functions. It's not perfectly suited for that task, but often good enough that many developers reach for it.
+	</p>
+	<p>
+		Consider the <code>ReservationDto</code> class from the <a href="/2022/08/15/aspnet-validation-revisited">ASP.NET validation revisited</a> article where I eventually gave up on it:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">sealed</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">ReservationDto</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;LinkDto[]?&nbsp;Links&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;<span style="color:blue;">set</span>;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;Guid?&nbsp;Id&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;<span style="color:blue;">set</span>;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;[Required,&nbsp;NotNull]
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;DateTime?&nbsp;At&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;<span style="color:blue;">set</span>;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;[Required,&nbsp;NotNull]
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">string</span>?&nbsp;Email&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;<span style="color:blue;">set</span>;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">string</span>?&nbsp;Name&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;<span style="color:blue;">set</span>;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;[NaturalNumber]
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">int</span>&nbsp;Quantity&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;<span style="color:blue;">set</span>;&nbsp;}
+}</pre>
+	</p>
+	<p>
+		It actually tries to do what Maurice Johnson suggests. Particularly, it defines <code>At</code> as a <code>DateTime?</code> value. 
+	</p>
+	<p>
+		<pre>&gt; <span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">json</span>&nbsp;=&nbsp;<span style="color:#a31515;">&quot;{&nbsp;\&quot;At\&quot;:&nbsp;\&quot;2022-10-11T19:30\&quot;,&nbsp;\&quot;Email\&quot;:&nbsp;\&quot;z@example.com\&quot;,&nbsp;\&quot;Quantity\&quot;:&nbsp;1}&quot;</span>;
+&gt; JsonSerializer.Deserialize&lt;ReservationDto&gt;(json)
+ReservationDto { At=[11.10.2022 19:30:00], Email="z@example.com", Id=null, Name=null, Quantity=1 }</pre>
+	</p>
+	<p>
+		A JSON deserializer like this one uses run-time reflection to examine the type in question and then maps the incoming data onto an instance. Many XML deserializers work the same way.
+	</p>
+	<p>
+		What happens if you supply malformed input?
+	</p>
+	<p>
+		<pre>&gt; <span style="color:blue;">var</span>&nbsp;<span style="color:#1f377f;">json</span>&nbsp;=&nbsp;<span style="color:#a31515;">&quot;{&nbsp;\&quot;At\&quot;:&nbsp;\&quot;foo\&quot;,&nbsp;\&quot;Email\&quot;:&nbsp;\&quot;z@example.com\&quot;,&nbsp;\&quot;Quantity\&quot;:&nbsp;1}&quot;</span>;
+&gt; JsonSerializer.Deserialize&lt;ReservationDto&gt;(json)
+<span style="color:red">System.Text.Json.JsonException:↩
+The JSON value could not be converted to System.Nullable`1[System.DateTime].↩
+Path: $.At | LineNumber: 0 | BytePositionInLine: 26.↩
+[...]</span></pre>
+	</p>
+	<p>
+		(I've wrapped the result over multiple lines for readability. The <code>↩</code> symbol indicates where I've wrapped the text. I've also omitted a stack trace, indicated by <code>[...]</code>. I'll do that repeatedly throughout this article.)
+	</p>
+	<p>
+		What happens if we try to define <code>ReservationDto.Quantity</code> with <code>NaturalNumber</code>?
+	</p>
+	<p>
+		<pre>&gt; var json = "{ \"At\": \"2022-10-11T19:30\", \"Email\": \"z@example.com\", \"Quantity\": 1}";
+&gt; JsonSerializer.Deserialize&lt;ReservationDto&gt;(json)
+<span style="color:red">System.Text.Json.JsonException:↩
+The JSON value could not be converted to NaturalNumber.↩
+Path: $.Quantity | LineNumber: 0 | BytePositionInLine: 67.↩
+[...]</span></pre>
+	</p>
+	<p>
+		While <a href="https://docs.microsoft.com/dotnet/api/system.text.json.jsonserializer">JsonSerializer</a> is a sophisticated piece of software, it's not so sophisticated that it can automatically map <code>1</code> to a <code>NaturalNumber</code> value.
+	</p>
+	<p>
+		I'm sure that you can configure the behaviour with one or more <a href="https://docs.microsoft.com/dotnet/api/system.text.json.serialization.jsonconverter">JsonConverter</a> objects, but this is exactly the kind of framework <a href="https://en.wikipedia.org/wiki/Whac-A-Mole">Whack-a-mole</a> that I consider costly. It also suggests a wider problem.
+	</p>
+	<h3 id="bdad63c97ad44f1199f4f06e2b2e3fff">
+		Error handling <a href="#bdad63c97ad44f1199f4f06e2b2e3fff" title="permalink">#</a>
+	</h3>
+	<p>
+		What happens if input to a validation function is malformed? You may want to report the errors to the caller, and you may want to report all errors in one go. Consider the user experience if you don't: A user types in a big form and submits it. The system informs him or her that there's an error in the third field. Okay, correct the error and submit again. Now there's an error in the fifth field, and so on.
+	</p>
+	<p>
+		It's often better to return all errors as one collection.
+	</p>
+	<p>
+		The problem is that type-based validation doesn't <em>compose</em> well. What do I mean by that?
+	</p>
+	<p>
+		It's fairly clear that if you take a <em>simple</em> (i.e. non-complex) type like <code>NaturalNumber</code>, if you fail to initialize a value it's because the input is at fault:
+	</p>
+	<p>
+		<pre>&gt; <span style="color:blue;">new</span>&nbsp;NaturalNumber(-1)
+<span style="color:red">System.ArgumentOutOfRangeException: The value must be a positive (non-zero) number, but was: -1.↩
+(Parameter 'candidate')
+  + NaturalNumber..ctor(int)</span></pre>
+	</p>
+	<p>
+		The problem is that for complex types (i.e. types made from other types), exceptions short-circuit. As soon as one exception is thrown, further data validation stops. The <a href="/2022/08/15/aspnet-validation-revisited">ASP.NET validation revisited</a> article shows examples of that particular problem.
+	</p>
+	<p>
+		This happens when validation functions have no composable way to communicate errors. When throwing exceptions, you can return an exception message, but exceptions short-circuit rather than compose. The same is true for the <a href="/2022/05/09/an-either-monad">Either monad</a>: It short-circuits. Once you're on <a href="https://fsharpforfunandprofit.com/posts/recipe-part2/">the failure track</a> you stay there and no further processing takes place. Errors don't compose.
+	</p>
+	<h3 id="7a85a7339fc24eda8e922ba12fdb3d89">
+		Monoidal versus applicative validation <a href="#7a85a7339fc24eda8e922ba12fdb3d89" title="permalink">#</a>
+	</h3>
+	<p>
+		The naive take on validation is to answer the question: <em>Is that data valid or invalid?</em> Notice the binary nature of the question. It's either-or.
+	</p>
+	<p>
+		This is true for both predicative data and constructive data.
+	</p>
+	<p>
+		For constructive data, the question is: Is a candidate value representable? For example, can you represent <em>-1</em> as a Peano number? The answer is either yes or no; true or false.
+	</p>
+	<p>
+		This is even clearer for predicative data, which is defined by a <em>predicate</em>. (Here's another <a href="/2021/09/09/the-specification-contravariant-functor">example of a natural number specification</a>.) A predicate is a function that returns a Boolean value: True or false.
+	</p>
+	<p>
+		It's possible to compose Boolean values. The composition that we need in this case is Boolean <em>and</em>, which is also known as the <em>all</em> <a href="/2017/10/06/monoids">monoid</a>: If all values are <em>true</em>, the composed value is <em>true</em>; if just one value is <em>false</em>, the composed value is <em>false</em>.
+	</p>
+	<p>
+		The proble is that during composition, we lose information. While a single <em>false</em> value causes the entire aggregated value to be <em>false</em>, we don't know why. And we don't know if there was only a single <em>false</em> value, or if there were more than one. Boolean <em>all</em> short-circuits on the first <em>false</em> value it encounters, and stops processing subsequent predicates.
+	</p>
+	<p>
+		In logic, that's all you need, but in data validation you often want to know <em>what's wrong with the data</em>.
+	</p>
+	<p>
+		Fortunately, this is <a href="/2020/12/14/validation-a-solved-problem">a solved problem</a>. Use <a href="/2018/11/05/applicative-validation">applicative validation</a>, an example of which I supplied in the article <a href="/2022/07/25/an-applicative-reservation-validation-example-in-c">An applicative reservation validation example in C#</a>.
+	</p>
+	<p>
+		This changes focus on validation. No longer is validation a <em>true/false</em> question. Validation is a function from less-structured data to more-structured data. <a href="https://lexi-lambda.github.io/blog/2019/11/05/parse-don-t-validate/">Parse, don't validate</a>.
+	</p>
+	<h3 id="96d5b6c4df424f79b9eec8b186a2b3de">
+		Conclusion <a href="#96d5b6c4df424f79b9eec8b186a2b3de" title="permalink">#</a>
+	</h3>
+	<p>
+		Can types replace validation?
+	</p>
+	<p>
+		In some cases they can, but I think that the general answer is <em>no</em>. Granted, this answer is partially based on capabilities of current deserialisers. <a href="https://docs.microsoft.com/dotnet/api/system.text.json.jsonserializer.deserialize">JsonSerializer.Deserialize</a> short-circuits on the first error it encounters, and the same does <a href="https://hackage.haskell.org/package/aeson/docs/Data-Aeson.html">aeson</a>'s <a href="https://hackage.haskell.org/package/aeson/docs/Data-Aeson.html#v:eitherDecode">eitherDecode</a>.
+	</p>
+	<p>
+		While that's the current state of affairs, it may not have to stay like that forever. One might be able to derive an applicative parser from a desired destination type, but I haven't seen that done yet.
+	</p>
+	<p>
+		It sounds like a worthwhile research project.
+	</p>
+</div>
