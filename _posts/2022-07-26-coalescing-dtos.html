@@ -1,0 +1,304 @@
+---
+layout: post
+title: "Coalescing DTOs"
+description: "Refactoring to a universal abstraction."
+date: 2022-07-26 8:06 UTC
+tags: [Software Design, Code]
+---
+{% include JB/setup %}
+
+<div id="post">
+	<p>
+		<em>{{ page.description }}</em>
+	</p>
+	<p>
+		Despite my best efforts, no code base I write is perfect. This is also true for the code base that accompanies <a href="/code-that-fits-in-your-head">Code That Fits in Your Head</a>.
+	</p>
+	<p>
+		One (among several) warts that has annoyed me for long is this:
+	</p>
+	<p>
+		<pre>[HttpPost(<span style="color:#a31515;">&quot;restaurants/{restaurantId}/reservations&quot;</span>)]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">async</span>&nbsp;Task&lt;ActionResult&gt;&nbsp;Post(
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">int</span>&nbsp;restaurantId,
+&nbsp;&nbsp;&nbsp;&nbsp;ReservationDto&nbsp;dto)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;(dto&nbsp;<span style="color:blue;">is</span>&nbsp;<span style="color:blue;">null</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">throw</span>&nbsp;<span style="color:blue;">new</span>&nbsp;ArgumentNullException(nameof(dto));
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;id&nbsp;=&nbsp;dto.ParseId()&nbsp;??&nbsp;Guid.NewGuid();
+&nbsp;&nbsp;&nbsp;&nbsp;Reservation?&nbsp;reservation&nbsp;=&nbsp;dto.Validate(id);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;(reservation&nbsp;<span style="color:blue;">is</span>&nbsp;<span style="color:blue;">null</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;BadRequestResult();
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;More&nbsp;code&nbsp;follows...</span></pre>
+	</p>
+	<p>
+		Passing <code>id</code> to <code>Validate</code> annoys me. Why does <code>Validate</code> need an <code>id</code>?
+	</p>
+	<p>
+		When you see it in context, it <em>may</em> makes some sort of sense, but in isolation, it seems arbitrary:
+	</p>
+	<p>
+		<pre><span style="color:blue;">internal</span>&nbsp;Reservation?&nbsp;Validate(Guid&nbsp;id)</pre>
+	</p>
+	<p>
+		Why does the method need an <code>id</code>? Doesn't <code>ReservationDto</code> have an <code>Id</code>?
+	</p>
+	<h3 id="90765fa49a8149d0bf54d8d9de19ffee">
+		Abstraction, broken <a href="#90765fa49a8149d0bf54d8d9de19ffee" title="permalink">#</a>
+	</h3>
+	<p>
+		Yes, indeed, <code>ReservationDto</code> <em>has</em> an <code>Id</code> property:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">string</span>?&nbsp;Id&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;<span style="color:blue;">set</span>;&nbsp;}</pre>
+	</p>
+	<p>
+		Then why do callers have to pass an <code>id</code> argument? Doesn't <code>Validate</code> use the <code>Id</code> property? It's almost as though the <code>Validate</code> method <em>begs</em> you to read the implementing code:
+	</p>
+	<p>
+		<pre><span style="color:blue;">internal</span>&nbsp;Reservation?&nbsp;Validate(Guid&nbsp;id)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;(!DateTime.TryParse(At,&nbsp;<span style="color:blue;">out</span>&nbsp;var&nbsp;d))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:blue;">null</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;(Email&nbsp;<span style="color:blue;">is</span>&nbsp;<span style="color:blue;">null</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:blue;">null</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;(Quantity&nbsp;&lt;&nbsp;1)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:blue;">null</span>;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;Reservation(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;id,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;d,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;Email(Email),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;Name(Name&nbsp;??&nbsp;<span style="color:#a31515;">&quot;&quot;</span>),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Quantity);
+}</pre>
+	</p>
+	<p>
+		Indeed, the method doesn't use the <code>Id</code> property. Reading the code may not be of much help, but at least we learn that <code>id</code> is passed to the <code>Reservation</code> constructor. It's still not clear why the method isn't trying to parse the <code>Id</code> property, like it's doing with with <code>At</code>.
+	</p>
+	<p>
+		I'll return to the motivation in a moment, but first I'd like to dwell on the problems of this design.
+	</p>
+	<p>
+		It's a typical example of ad-hoc design. I had a set of behaviours I needed to implement, and in order to avoid code duplication, I come up with a method that seemed to solve the problem.
+	</p>
+	<p>
+		And indeed, the <code>Validate</code> method does solve the problem of code duplication. It also passes all tests. It could be worse.
+	</p>
+	<p>
+		It could also be better.
+	</p>
+	<p>
+		The problem with an ad-hoc design like this is that the motivation is unclear. As a reader, you feel that you're missing the full picture. Perhaps you feel compelled to read the implementation code to gain a better understanding. Perhaps you look for other call sites. Perhaps you search the Git history to find a helpful comment. Perhaps you ask a colleague.
+	</p>
+	<p>
+		It slows you down. Worst of all, it may leave you apprehensive of refactoring. If you feel that there's something you don't fully understand, you may decide to leave the API alone, instead of improving it.
+	</p>
+	<p>
+		It's one of the many ways that code slowly rots.
+	</p>
+	<p>
+		What's missing here is a proper abstraction.
+	</p>
+	<h3 id="c6b50930baf541eb9243611e2090b1e6">
+		Motivation <a href="#c6b50930baf541eb9243611e2090b1e6" title="permalink">#</a>
+	</h3>
+	<p>
+		I recently hit upon a design that I like better. Before I describe it, however, you need to understand the problem I was trying to solve.
+	</p>
+	<p>
+		The code base for the book is a restaurant reservation REST API, and I was evolving the code as I wrote it. I wanted the code base (and its Git history) to be as realistic as possible. In a real-world situation, you don't always know all requirements up front, or even if you do, they may change.
+	</p>
+	<p>
+		At one point I decided that a REST client could supply a <a href="https://en.wikipedia.org/wiki/Universally_unique_identifier">GUID</a> when making a new reservation. On the other hand, I had lots of existing tests (and a deployed system) that accepted reservations <em>without</em> IDs. In order to not break compatibility, I decided to use the ID if it was supplied with the <a href="https://en.wikipedia.org/wiki/Data_transfer_object">DTO</a>, and otherwise create one. (I later explored <a href="/2021/09/20/keep-ids-internal-with-rest">an API without explicit IDs</a>, but that's a different story.)
+	</p>
+	<p>
+		The <code>id</code> is a JSON property, however, so there's no guarantee that it's properly formatted. Thus, the need to first parse it:
+	</p>
+	<p>
+		<pre><span style="color:blue;">var</span>&nbsp;id&nbsp;=&nbsp;dto.ParseId()&nbsp;??&nbsp;Guid.NewGuid();</pre>
+	</p>
+	<p>
+		To make matters even more complicated, when you <code>PUT</code> a reservation, the ID is actually part of the resource address, which means that even if it's present in the JSON document, that value should be ignored:
+	</p>
+	<p>
+		<pre>[HttpPut(<span style="color:#a31515;">&quot;restaurants/{restaurantId}/reservations/{id}&quot;</span>)]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">async</span>&nbsp;Task&lt;ActionResult&gt;&nbsp;Put(
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">int</span>&nbsp;restaurantId,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">string</span>&nbsp;id,
+&nbsp;&nbsp;&nbsp;&nbsp;ReservationDto&nbsp;dto)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;(dto&nbsp;<span style="color:blue;">is</span>&nbsp;<span style="color:blue;">null</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">throw</span>&nbsp;<span style="color:blue;">new</span>&nbsp;ArgumentNullException(nameof(dto));
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;(!Guid.TryParse(id,&nbsp;<span style="color:blue;">out</span>&nbsp;var&nbsp;rid))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;NotFoundResult();
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;Reservation?&nbsp;reservation&nbsp;=&nbsp;dto.Validate(rid);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;(reservation&nbsp;<span style="color:blue;">is</span>&nbsp;<span style="color:blue;">null</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;BadRequestResult();
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;More&nbsp;code&nbsp;follows...</span></pre>
+	</p>
+	<p>
+		Notice that this <code>Put</code> implementation exclusively considers the resource address <code>id</code> parameter. Recall that the <code>Validate</code> method ignores the <code>dto</code>'s <code>Id</code> property.
+	</p>
+	<p>
+		This is knowledge about implementation details that leaks through to the calling code. As a client developer, you need to know and keep this knowledge in your head while you write your own code. That's not really code that fits in your head.
+	</p>
+	<p>
+		As I usually put it: If you have to read the code, it implies that encapsulation is broken.
+	</p>
+	<p>
+		At the time, however, I couldn't think of a better alternative, and since the problem is still fairly small and localised, I decided to move on. After all, <a href="https://en.wikipedia.org/wiki/Perfect_is_the_enemy_of_good">perfect is the enemy of good</a>.
+	</p>
+	<h3 id="7e10ecc024e94a20817f0054bde56c29">
+		Why don't you just..? <a href="#7e10ecc024e94a20817f0054bde56c29" title="permalink">#</a>
+	</h3>
+	<p>
+		Is there a better way? Perhaps you think that you've spotted an obvious improvement. Why don't I just try to parse <code>dto.Id</code> and then create a <code>Guid.NewGuid()</code> if parsing fails? Like this:
+	</p>
+	<p>
+		<pre><span style="color:blue;">internal</span>&nbsp;Reservation?&nbsp;<span style="color:#74531f;">Validate</span>()
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">if</span>&nbsp;(!Guid.TryParse(Id,&nbsp;<span style="color:blue;">out</span>&nbsp;var&nbsp;<span style="color:#1f377f;">id</span>))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;id&nbsp;=&nbsp;Guid.NewGuid();
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">if</span>&nbsp;(!DateTime.TryParse(At,&nbsp;<span style="color:blue;">out</span>&nbsp;var&nbsp;<span style="color:#1f377f;">d</span>))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">null</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">if</span>&nbsp;(Email&nbsp;<span style="color:blue;">is</span>&nbsp;<span style="color:blue;">null</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">null</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">if</span>&nbsp;(Quantity&nbsp;&lt;&nbsp;1)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">null</span>;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;Reservation(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;id,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;d,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;Email(Email),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;Name(Name&nbsp;??&nbsp;<span style="color:#a31515;">&quot;&quot;</span>),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Quantity);
+}</pre>
+	</p>
+	<p>
+		The short answer is: Because it doesn't work.
+	</p>
+	<p>
+		It may work for <code>Get</code>, but then <code>Put</code> doesn't have a way to tell the <code>Validate</code> method which ID to use.
+	</p>
+	<p>
+		Or rather: That's not entirely true, because this is possible:
+	</p>
+	<p>
+		<pre>dto.Id&nbsp;=&nbsp;id;
+Reservation?&nbsp;<span style="color:#1f377f;">reservation</span>&nbsp;=&nbsp;dto.Validate();</pre>
+	</p>
+	<p>
+		This does suggest an even better way. Before we go there, however, there's another reason I don't like this particular variation: It makes <code>Validation</code> impure.
+	</p>
+	<p>
+		<em>Why care?</em> you may ask.
+	</p>
+	<p>
+		I always end up regretting making an otherwise potentially <a href="https://en.wikipedia.org/wiki/Pure_function">pure function</a> non-deterministic. Sooner or later, it turns out to have been a bad decision, regardless of how alluring it initially looked. <a href="/2022/05/23/waiting-to-never-happen">I recently gave an example of that</a>.
+	</p>
+	<p>
+		When weighing the advantages and disadvantages, I preferred passing <code>id</code> explicitly rather than relying on <code>Guid.NewGuid()</code> inside <code>Validate</code>.
+	</p>
+	<h3 id="cb79dc6987854f8b9a897285af649360">
+		First monoid <a href="#cb79dc6987854f8b9a897285af649360" title="permalink">#</a>
+	</h3>
+	<p>
+		One of the reasons I find <a href="/2017/10/04/from-design-patterns-to-category-theory">universal abstractions</a> beneficial is that you only have to learn them once. As Felienne Hermans writes in <a href="/ref/programmers-brain">The Programmer's Brain</a> our working memory juggles a combination of ephemeral data with knowledge from our long-term memory. The better you can leverage existing knowledge, the easier it is to read code.
+	</p>
+	<p>
+		Which universal abstraction enables you to choose from a prioritised list of candidates? The <a href="/2018/04/03/maybe-monoids">First monoid</a>!
+	</p>
+	<p>
+		In C# with <a href="https://docs.microsoft.com/dotnet/csharp/nullable-references">nullable reference types</a> the <a href="https://docs.microsoft.com/dotnet/csharp/language-reference/operators/null-coalescing-operator">null-coalescing operator</a> <code>??</code> already implements the desired functionality. (If you're using another language or an older version of C#, you can instead use <a href="/2018/06/04/church-encoded-maybe">Maybe</a>.)
+	</p>
+	<p>
+		Once I got that idea I was able to simplify the API.
+	</p>
+	<h3 id="ad2f0a4d20da4c9c8006e9587b011911">
+		Parsing and coalescing DTOs <a href="#ad2f0a4d20da4c9c8006e9587b011911" title="permalink">#</a>
+	</h3>
+	<p>
+		Instead of that odd <code>Validate</code> method which isn't quite a validator and not quite a parser, this insight suggests to <a href="https://lexi-lambda.github.io/blog/2019/11/05/parse-don-t-validate/">parse, don't validate</a>:
+	</p>
+	<p>
+		<pre><span style="color:blue;">internal</span>&nbsp;Reservation?&nbsp;<span style="color:#74531f;">TryParse</span>()
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">if</span>&nbsp;(!Guid.TryParse(Id,&nbsp;<span style="color:blue;">out</span>&nbsp;var&nbsp;<span style="color:#1f377f;">id</span>))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">null</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">if</span>&nbsp;(!DateTime.TryParse(At,&nbsp;<span style="color:blue;">out</span>&nbsp;var&nbsp;<span style="color:#1f377f;">d</span>))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">null</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">if</span>&nbsp;(Email&nbsp;<span style="color:blue;">is</span>&nbsp;<span style="color:blue;">null</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">null</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">if</span>&nbsp;(Quantity&nbsp;&lt;&nbsp;1)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">null</span>;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;Reservation(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;id,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;d,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;Email(Email),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;Name(Name&nbsp;??&nbsp;<span style="color:#a31515;">&quot;&quot;</span>),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Quantity);
+}</pre>
+	</p>
+	<p>
+		This function only returns a parsed <code>Reservation</code> object when the <code>Id</code> is present and well-formed. What about the cases where the <code>Id</code> is absent?
+	</p>
+	<p>
+		The calling <code>ReservationsController</code> can deal with that:
+	</p>
+	<p>
+		<pre>Reservation?&nbsp;<span style="color:#1f377f;">candidate1</span>&nbsp;=&nbsp;dto.TryParse();
+dto.Id&nbsp;=&nbsp;Guid.NewGuid().ToString(<span style="color:#a31515;">&quot;N&quot;</span>);
+Reservation?&nbsp;<span style="color:#1f377f;">candidate2</span>&nbsp;=&nbsp;dto.TryParse();
+Reservation?&nbsp;<span style="color:#1f377f;">reservation</span>&nbsp;=&nbsp;candidate1&nbsp;??&nbsp;candidate2;
+<span style="color:#8f08c4;">if</span>&nbsp;(reservation&nbsp;<span style="color:blue;">is</span>&nbsp;<span style="color:blue;">null</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;BadRequestResult();</pre>
+	</p>
+	<p>
+		First try to parse the <code>dto</code>, then explicitly overwrite its <code>Id</code> property with a new <code>Guid</code>, and then try to parse it again. Finally, pick the first of these that aren't null, using the null-coalescing <code>??</code> operator.
+	</p>
+	<p>
+		This API also works consistently in the <code>Put</code> method:
+	</p>
+	<p>
+		<pre>dto.Id&nbsp;=&nbsp;id;
+Reservation?&nbsp;<span style="color:#1f377f;">reservation</span>&nbsp;=&nbsp;dto.TryParse();
+<span style="color:#8f08c4;">if</span>&nbsp;(reservation&nbsp;<span style="color:blue;">is</span>&nbsp;<span style="color:blue;">null</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;BadRequestResult();</pre>
+	</p>
+	<p>
+		Why is this better? I consider it better because the <code>TryParse</code> function should be a familiar abstraction. Once you've seen a couple of those, you know that a well-behaved parser either returns a valid object, or nothing. You don't have to go and read the implementation of <code>TryParse</code> to (correctly) guess that. Thus, encapsulation is maintained.
+	</p>
+	<h3 id="72d1eececc3f4166ba426d6a39cd6721">
+		Where does mutation go? <a href="#72d1eececc3f4166ba426d6a39cd6721" title="permalink">#</a>
+	</h3>
+	<p>
+		The <code>ReservationsController</code> mutates the <code>dto</code> and relies on the impure <code>Guid.NewGuid()</code> method. Why is that okay when it wasn't okay to do this inside of <code>Validate</code>?
+	</p>
+	<p>
+		This is because the code base follows the <a href="https://www.destroyallsoftware.com/screencasts/catalog/functional-core-imperative-shell">functional core, imperative shell</a> architecture. Specifically, Controllers make up the imperative shell, so I consider it appropriate to put impure actions there. After all, they have to go somewhere.
+	</p>
+	<p>
+		This means that the <code>TryParse</code> function remains pure.
+	</p>
+	<h3 id="85ce3840fad04a0c8cb106f6d36459d5">
+		Conclusion <a href="#85ce3840fad04a0c8cb106f6d36459d5" title="permalink">#</a>
+	</h3>
+	<p>
+		Sometimes a good API design can elude you for a long time. When that happens, I move on with the best solution I can think of in the moment. As it often happens, though, ad-hoc abstractions leave me unsatisfied, so I'm always happy to improve such code later, if possible.
+	</p>
+	<p>
+		In this article, you saw an example of an ad-hoc API design that represented the best I could produce at the time. Later, it dawned on me that an implementation based on a universal abstraction would be possible. In this case, the universal abstraction was null coalescing (which is a specialisation of the <em>monoid</em> abstraction).
+	</p>
+	<p>
+		I like universal abstractions because, once you know them, you can trust that they work in a well-understood way. You don't have to waste time reading implementation code in order to learn whether it's safe to call a method in a particular way.
+	</p>
+	<p>
+		This saves time when you have to work with the code, because, after all, we spend more time reading code than writing it.
+	</p>
+</div>
