@@ -1,0 +1,385 @@
+---
+layout: post
+title: "The Reader monad"
+description: "Normal functions form monads. An article for object-oriented programmers."
+date: 2022-06-25 12:36 UTC
+tags: [Software Design]
+---
+{% include JB/setup %}
+
+<div id="post">
+	<p>
+		<em>{{ page.description }}</em>
+	</p>
+	<p>
+		This article is an instalment in <a href="/2022/03/28/monads">an article series about monads</a>. A previous article described <a href="/2021/08/30/the-reader-functor">the Reader functor</a>. As is the case with many (but not all) <a href="/2018/03/22/functors">functors</a>, Readers also form monads.
+	</p>
+	<p>
+		This article continues where the Reader functor article stopped. It uses the same code base.
+	</p>
+	<h3 id="d54d83f22d854e94853271e1a559a1d8">
+		Flatten <a href="#d54d83f22d854e94853271e1a559a1d8" title="permalink">#</a>
+	</h3>
+	<p>
+		A monad must define either a <em>bind</em> or <em>join</em> function, although you can use other names for both of these functions. <code>Flatten</code> is in my opinion a more intuitive name than <code>join</code>, since a monad is really just a functor that you can flatten. Flattening is relevant if you have a nested functor; in this case a Reader within a Reader. You can flatten such a nested Reader with a <code>Flatten</code> function:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;IReader&lt;R,&nbsp;A&gt;&nbsp;<span style="color:#74531f;">Flatten</span>&lt;<span style="color:#2b91af;">R</span>,&nbsp;<span style="color:#2b91af;">A</span>&gt;(
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>&nbsp;IReader&lt;R,&nbsp;IReader&lt;R,&nbsp;A&gt;&gt;&nbsp;<span style="color:#1f377f;">source</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;FlattenReader&lt;R,&nbsp;A&gt;(source);
+}
+ 
+<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">FlattenReader</span>&lt;<span style="color:#2b91af;">R</span>,&nbsp;<span style="color:#2b91af;">A</span>&gt;&nbsp;:&nbsp;IReader&lt;R,&nbsp;A&gt;
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;IReader&lt;R,&nbsp;IReader&lt;R,&nbsp;A&gt;&gt;&nbsp;source;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">FlattenReader</span>(IReader&lt;R,&nbsp;IReader&lt;R,&nbsp;A&gt;&gt;&nbsp;<span style="color:#1f377f;">source</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.source&nbsp;=&nbsp;source;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;A&nbsp;<span style="color:#74531f;">Run</span>(R&nbsp;<span style="color:#1f377f;">environment</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;IReader&lt;R,&nbsp;A&gt;&nbsp;<span style="color:#1f377f;">newReader</span>&nbsp;=&nbsp;source.Run(environment);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;newReader.Run(environment);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+	</p>
+	<p>
+		Since the <code>source</code> Reader is nested, calling its <code>Run</code> method once returns a <code>newReader</code>. You can <code>Run</code> that <code>newReader</code> one more time to get an <code>A</code> value to return.
+	</p>
+	<p>
+		You could easily chain the two calls to <code>Run</code> together, one after the other. That would make the code terser, but here I chose to do it in two explicit steps in order to show what's going on.
+	</p>
+	<p>
+		Like the previous article about <a href="/2022/06/20/the-state-monad">the State monad</a>, a lot of <a href="/2019/12/16/zone-of-ceremony">ceremony</a> is required because this variation of the Reader monad is defined with an interface. You could also define the Reader monad on a 'raw' function of the type <code>Func&lt;R, A&gt;</code>, in which case <code>Flatten</code> would be simpler:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;Func&lt;R,&nbsp;A&gt;&nbsp;<span style="color:#74531f;">Flatten</span>&lt;<span style="color:#2b91af;">R</span>,&nbsp;<span style="color:#2b91af;">A</span>&gt;(<span style="color:blue;">this</span>&nbsp;Func&lt;R,&nbsp;Func&lt;R,&nbsp;A&gt;&gt;&nbsp;<span style="color:#1f377f;">source</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;<span style="color:#1f377f;">environment</span>&nbsp;=&gt;&nbsp;source(environment)(environment);
+}</pre>
+	</p>
+	<p>
+		In this variation <code>source</code> is a function, so you can call it with <code>environment</code>, which returns another function that you can again call with <code>environment</code>. This produces an <code>A</code> value for the function to return.
+	</p>
+	<h3 id="e2f72c66681d45949a23a7e574ae5ae7">
+		SelectMany <a href="#e2f72c66681d45949a23a7e574ae5ae7" title="permalink">#</a>
+	</h3>
+	<p>
+		When you have <code>Flatten</code> you can always define <code>SelectMany</code> (<em>monadic bind</em>) like this:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;IReader&lt;R,&nbsp;B&gt;&nbsp;<span style="color:#74531f;">SelectMany</span>&lt;<span style="color:#2b91af;">R</span>,&nbsp;<span style="color:#2b91af;">A</span>,&nbsp;<span style="color:#2b91af;">B</span>&gt;(
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>&nbsp;IReader&lt;R,&nbsp;A&gt;&nbsp;<span style="color:#1f377f;">source</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;Func&lt;A,&nbsp;IReader&lt;R,&nbsp;B&gt;&gt;&nbsp;<span style="color:#1f377f;">selector</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;source.Select(selector).Flatten();
+}</pre>
+	</p>
+	<p>
+		First use functor-based mapping. Since the <code>selector</code> returns a Reader, this mapping produces a Reader within a Reader. That's exactly the situation that <code>Flatten</code> addresses.
+	</p>
+	<p>
+		The above <code>SelectMany</code> example works with the <code>IReader&lt;R,&nbsp;A&gt;</code> interface, but the 'raw' function version has the exact same implementation:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;Func&lt;R,&nbsp;B&gt;&nbsp;<span style="color:#74531f;">SelectMany</span>&lt;<span style="color:#2b91af;">R</span>,&nbsp;<span style="color:#2b91af;">A</span>,&nbsp;<span style="color:#2b91af;">B</span>&gt;(
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>&nbsp;Func&lt;R,&nbsp;A&gt;&nbsp;<span style="color:#1f377f;">source</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;Func&lt;A,&nbsp;Func&lt;R,&nbsp;B&gt;&gt;&nbsp;<span style="color:#1f377f;">selector</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;source.Select(selector).Flatten();
+}</pre>
+	</p>
+	<p>
+		Only the method declaration differs.
+	</p>
+	<h3 id="8c5f94f7395040a7bcfdb2561c8e3ed3">
+		Query syntax <a href="#8c5f94f7395040a7bcfdb2561c8e3ed3" title="permalink">#</a>
+	</h3>
+	<p>
+		Monads also enable query syntax in C# (just like they enable other kinds of syntactic sugar in languages like <a href="https://fsharp.org/">F#</a> and <a href="https://www.haskell.org">Haskell</a>). As outlined in the <a href="/2022/03/28/monads">monad introduction</a>, however, you must add a special <code>SelectMany</code> overload:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;IReader&lt;R,&nbsp;T1&gt;&nbsp;<span style="color:#74531f;">SelectMany</span>&lt;<span style="color:#2b91af;">R</span>,&nbsp;<span style="color:#2b91af;">T</span>,&nbsp;<span style="color:#2b91af;">U</span>,&nbsp;<span style="color:#2b91af;">T1</span>&gt;(
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>&nbsp;IReader&lt;R,&nbsp;T&gt;&nbsp;<span style="color:#1f377f;">source</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;Func&lt;T,&nbsp;IReader&lt;R,&nbsp;U&gt;&gt;&nbsp;<span style="color:#1f377f;">k</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;Func&lt;T,&nbsp;U,&nbsp;T1&gt;&nbsp;<span style="color:#1f377f;">s</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;source.SelectMany(<span style="color:#1f377f;">x</span>&nbsp;=&gt;&nbsp;k(x).Select(<span style="color:#1f377f;">y</span>&nbsp;=&gt;&nbsp;s(x,&nbsp;y)));
+}</pre>
+	</p>
+	<p>
+		As already predicted in the monad introduction, this boilerplate overload is always implemented in the same way. Only the signature changes. With it, you could write an expression like this nonsense:
+	</p>
+	<p>
+		<pre>IReader&lt;<span style="color:blue;">int</span>,&nbsp;<span style="color:blue;">bool</span>&gt;&nbsp;<span style="color:#1f377f;">r</span>&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">from</span>&nbsp;dur&nbsp;<span style="color:blue;">in</span>&nbsp;<span style="color:blue;">new</span>&nbsp;MinutesReader()
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">from</span>&nbsp;b&nbsp;<span style="color:blue;">in</span>&nbsp;<span style="color:blue;">new</span>&nbsp;Thingy(dur)
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">select</span>&nbsp;b;</pre>
+	</p>
+	<p>
+		Where <code>MinutesReader</code> was already shown in the article <a href="/2021/10/04/reader-as-a-contravariant-functor">Reader as a contravariant functor</a>. I couldn't come up with a good name for another reader, so I went with <a href="https://dannorth.net">Dan North</a>'s naming convention that if you don't yet know what to call a class, method, or function, don't <em>pretend</em> that you know. Be explicit that you don't know.
+	</p>
+	<p>
+		Here it is, for the sake of completion:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">sealed</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">Thingy</span>&nbsp;:&nbsp;IReader&lt;<span style="color:blue;">int</span>,&nbsp;<span style="color:blue;">bool</span>&gt;
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;TimeSpan&nbsp;timeSpan;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">Thingy</span>(TimeSpan&nbsp;<span style="color:#1f377f;">timeSpan</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.timeSpan&nbsp;=&nbsp;timeSpan;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">bool</span>&nbsp;<span style="color:#74531f;">Run</span>(<span style="color:blue;">int</span>&nbsp;<span style="color:#1f377f;">environment</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;TimeSpan(timeSpan.Ticks&nbsp;*&nbsp;environment).TotalDays&nbsp;&lt;&nbsp;1;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+	</p>
+	<p>
+		I'm not claiming that this class makes sense. These articles are deliberate kept abstract in order to focus on structure and behaviour, rather than on practical application.
+	</p>
+	<h3 id="d5d827cf83d242e6baecbda622ca5cb9">
+		Return <a href="#d5d827cf83d242e6baecbda622ca5cb9" title="permalink">#</a>
+	</h3>
+	<p>
+		Apart from flattening or monadic bind, a monad must also define a way to put a normal value into the monad. Conceptually, I call this function <em>return</em> (because that's the name that Haskell uses):
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;IReader&lt;R,&nbsp;A&gt;&nbsp;<span style="color:#74531f;">Return</span>&lt;<span style="color:#2b91af;">R</span>,&nbsp;<span style="color:#2b91af;">A</span>&gt;(A&nbsp;<span style="color:#1f377f;">a</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;ReturnReader&lt;R,&nbsp;A&gt;(a);
+}
+ 
+<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">ReturnReader</span>&lt;<span style="color:#2b91af;">R</span>,&nbsp;<span style="color:#2b91af;">A</span>&gt;&nbsp;:&nbsp;IReader&lt;R,&nbsp;A&gt;
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;A&nbsp;a;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">ReturnReader</span>(A&nbsp;<span style="color:#1f377f;">a</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.a&nbsp;=&nbsp;a;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;A&nbsp;<span style="color:#74531f;">Run</span>(R&nbsp;<span style="color:#1f377f;">environment</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;a;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+	</p>
+	<p>
+		This implementation returns the <code>a</code> value and completely ignores the <code>environment</code>. You can do the same with a 'naked' function.
+	</p>
+	<h3 id="bd79fe3d97644f0f9edb12f08a0b5d01">
+		Left identity <a href="#bd79fe3d97644f0f9edb12f08a0b5d01" title="permalink">#</a>
+	</h3>
+	<p>
+		We need to identify the <em>return</em> function in order to examine <a href="/2022/04/11/monad-laws">the monad laws</a>. Now that this is accomplished, let's see what the laws look like for the Reader monad, starting with the left identity law.
+	</p>
+	<p>
+		<pre>[Theory]
+[InlineData(UriPartial.Authority,&nbsp;<span style="color:#a31515;">&quot;https://example.com/f?o=o&quot;</span>)]
+[InlineData(UriPartial.Path,&nbsp;<span style="color:#a31515;">&quot;https://example.net/b?a=r&quot;</span>)]
+[InlineData(UriPartial.Query,&nbsp;<span style="color:#a31515;">&quot;https://example.org/b?a=z&quot;</span>)]
+[InlineData(UriPartial.Scheme,&nbsp;<span style="color:#a31515;">&quot;https://example.gov/q?u=x&quot;</span>)]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;<span style="color:#74531f;">LeftIdentity</span>(UriPartial&nbsp;<span style="color:#1f377f;">a</span>,&nbsp;<span style="color:blue;">string</span>&nbsp;<span style="color:#1f377f;">u</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;Func&lt;UriPartial,&nbsp;IReader&lt;Uri,&nbsp;UriPartial&gt;&gt;&nbsp;<span style="color:#1f377f;">@return</span>&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#1f377f;">up</span>&nbsp;=&gt;&nbsp;Reader.Return&lt;Uri,&nbsp;UriPartial&gt;(up);
+&nbsp;&nbsp;&nbsp;&nbsp;Func&lt;UriPartial,&nbsp;IReader&lt;Uri,&nbsp;<span style="color:blue;">string</span>&gt;&gt;&nbsp;<span style="color:#1f377f;">h</span>&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#1f377f;">up</span>&nbsp;=&gt;&nbsp;<span style="color:blue;">new</span>&nbsp;UriPartReader(up);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;Assert.Equal(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;@return(a).SelectMany(h).Run(<span style="color:blue;">new</span>&nbsp;Uri(u)),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;h(a).Run(<span style="color:blue;">new</span>&nbsp;Uri(u)));
+}</pre>
+	</p>
+	<p>
+		In order to compare the two Reader values, the test has to <code>Run</code> them and then compare the return values.
+	</p>
+	<p>
+		This test and the next uses a Reader implementation called <code>UriPartReader</code>, which almost makes sense:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">sealed</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">UriPartReader</span>&nbsp;:&nbsp;IReader&lt;Uri,&nbsp;<span style="color:blue;">string</span>&gt;
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;UriPartial&nbsp;part;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">UriPartReader</span>(UriPartial&nbsp;<span style="color:#1f377f;">part</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.part&nbsp;=&nbsp;part;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">string</span>&nbsp;<span style="color:#74531f;">Run</span>(Uri&nbsp;<span style="color:#1f377f;">environment</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;environment.GetLeftPart(part);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+	</p>
+	<p>
+		Almost.
+	</p>
+	<h3 id="ad9edb1097be4eeb96170809272851eb">
+		Right identity <a href="#ad9edb1097be4eeb96170809272851eb" title="permalink">#</a>
+	</h3>
+	<p>
+		In a similar manner, we can showcase the right identity law as a test.
+	</p>
+	<p>
+		<pre>[Theory]
+[InlineData(UriPartial.Authority,&nbsp;<span style="color:#a31515;">&quot;https://example.com/q?u=ux&quot;</span>)]
+[InlineData(UriPartial.Path,&nbsp;<span style="color:#a31515;">&quot;https://example.net/q?u=uuz&quot;</span>)]
+[InlineData(UriPartial.Query,&nbsp;<span style="color:#a31515;">&quot;https://example.org/c?o=rge&quot;</span>)]
+[InlineData(UriPartial.Scheme,&nbsp;<span style="color:#a31515;">&quot;https://example.gov/g?a=rply&quot;</span>)]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;<span style="color:#74531f;">RightIdentity</span>(UriPartial&nbsp;<span style="color:#1f377f;">a</span>,&nbsp;<span style="color:blue;">string</span>&nbsp;<span style="color:#1f377f;">u</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;Func&lt;UriPartial,&nbsp;IReader&lt;Uri,&nbsp;<span style="color:blue;">string</span>&gt;&gt;&nbsp;<span style="color:#1f377f;">f</span>&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#1f377f;">up</span>&nbsp;=&gt;&nbsp;<span style="color:blue;">new</span>&nbsp;UriPartReader(up);
+&nbsp;&nbsp;&nbsp;&nbsp;Func&lt;<span style="color:blue;">string</span>,&nbsp;IReader&lt;Uri,&nbsp;<span style="color:blue;">string</span>&gt;&gt;&nbsp;<span style="color:#1f377f;">@return</span>&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#1f377f;">s</span>&nbsp;=&gt;&nbsp;Reader.Return&lt;Uri,&nbsp;<span style="color:blue;">string</span>&gt;(s);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;IReader&lt;Uri,&nbsp;<span style="color:blue;">string</span>&gt;&nbsp;<span style="color:#1f377f;">m</span>&nbsp;=&nbsp;f(a);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;Assert.Equal(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;m.SelectMany(@return).Run(<span style="color:blue;">new</span>&nbsp;Uri(u)),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;m.Run(<span style="color:blue;">new</span>&nbsp;Uri(u)));
+}</pre>
+	</p>
+	<p>
+		As always, even a parametrised test constitutes no <em>proof</em> that the law holds. I show the tests to illustrate what the laws look like in 'real' code.
+	</p>
+	<h3 id="67a2f225bd8f432dbeed30c2ba2b623a">
+		Associativity <a href="#67a2f225bd8f432dbeed30c2ba2b623a" title="permalink">#</a>
+	</h3>
+	<p>
+		The last monad law is the associativity law that describes how (at least) three functions compose. We're going to need three functions. For the purpose of demonstrating the law, any three pure functions will do. While the following functions are silly and not at all 'realistic', they have the virtue of being as simple as they can be (while still providing a bit of variety). They don't 'mean' anything, so don't worry too much about their behaviour. It is, as far as I can tell, nonsensical.
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">sealed</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">F</span>&nbsp;:&nbsp;IReader&lt;<span style="color:blue;">int</span>,&nbsp;<span style="color:blue;">string</span>&gt;
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;<span style="color:blue;">char</span>&nbsp;c;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">F</span>(<span style="color:blue;">char</span>&nbsp;<span style="color:#1f377f;">c</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.c&nbsp;=&nbsp;c;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">string</span>&nbsp;<span style="color:#74531f;">Run</span>(<span style="color:blue;">int</span>&nbsp;<span style="color:#1f377f;">environment</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:blue;">string</span>(c,&nbsp;environment);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}
+ 
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">sealed</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">G</span>&nbsp;:&nbsp;IReader&lt;<span style="color:blue;">int</span>,&nbsp;<span style="color:blue;">bool</span>&gt;
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;<span style="color:blue;">string</span>&nbsp;s;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">G</span>(<span style="color:blue;">string</span>&nbsp;<span style="color:#1f377f;">s</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.s&nbsp;=&nbsp;s;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">bool</span>&nbsp;<span style="color:#74531f;">Run</span>(<span style="color:blue;">int</span>&nbsp;<span style="color:#1f377f;">environment</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;environment&nbsp;&lt;&nbsp;42&nbsp;||&nbsp;s.Contains(<span style="color:#a31515;">&quot;a&quot;</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}
+ 
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">sealed</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">H</span>&nbsp;:&nbsp;IReader&lt;<span style="color:blue;">int</span>,&nbsp;TimeSpan&gt;
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;<span style="color:blue;">bool</span>&nbsp;b;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">H</span>(<span style="color:blue;">bool</span>&nbsp;<span style="color:#1f377f;">b</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.b&nbsp;=&nbsp;b;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;TimeSpan&nbsp;<span style="color:#74531f;">Run</span>(<span style="color:blue;">int</span>&nbsp;<span style="color:#1f377f;">environment</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#8f08c4;">return</span>&nbsp;b&nbsp;?
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;TimeSpan.FromMinutes(environment)&nbsp;:
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;TimeSpan.FromSeconds(environment);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+	</p>
+	<p>
+		Armed with these three classes, we can now demonstrate the Associativity law:
+	</p>
+	<p>
+		<pre>[Theory]
+[InlineData(<span style="color:#a31515;">&#39;a&#39;</span>,&nbsp;0)]
+[InlineData(<span style="color:#a31515;">&#39;b&#39;</span>,&nbsp;1)]
+[InlineData(<span style="color:#a31515;">&#39;c&#39;</span>,&nbsp;42)]
+[InlineData(<span style="color:#a31515;">&#39;d&#39;</span>,&nbsp;2112)]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;<span style="color:#74531f;">Associativity</span>(<span style="color:blue;">char</span>&nbsp;<span style="color:#1f377f;">a</span>,&nbsp;<span style="color:blue;">int</span>&nbsp;<span style="color:#1f377f;">i</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;Func&lt;<span style="color:blue;">char</span>,&nbsp;IReader&lt;<span style="color:blue;">int</span>,&nbsp;<span style="color:blue;">string</span>&gt;&gt;&nbsp;<span style="color:#1f377f;">f</span>&nbsp;=&nbsp;<span style="color:#1f377f;">c</span>&nbsp;=&gt;&nbsp;<span style="color:blue;">new</span>&nbsp;F(c);
+&nbsp;&nbsp;&nbsp;&nbsp;Func&lt;<span style="color:blue;">string</span>,&nbsp;IReader&lt;<span style="color:blue;">int</span>,&nbsp;<span style="color:blue;">bool</span>&gt;&gt;&nbsp;<span style="color:#1f377f;">g</span>&nbsp;=&nbsp;<span style="color:#1f377f;">s</span>&nbsp;=&gt;&nbsp;<span style="color:blue;">new</span>&nbsp;G(s);
+&nbsp;&nbsp;&nbsp;&nbsp;Func&lt;<span style="color:blue;">bool</span>,&nbsp;IReader&lt;<span style="color:blue;">int</span>,&nbsp;TimeSpan&gt;&gt;&nbsp;<span style="color:#1f377f;">h</span>&nbsp;=&nbsp;<span style="color:#1f377f;">b</span>&nbsp;=&gt;&nbsp;<span style="color:blue;">new</span>&nbsp;H(b);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;IReader&lt;<span style="color:blue;">int</span>,&nbsp;<span style="color:blue;">string</span>&gt;&nbsp;<span style="color:#1f377f;">m</span>&nbsp;=&nbsp;f(a);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;Assert.Equal(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;m.SelectMany(g).SelectMany(h).Run(i),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;m.SelectMany(<span style="color:#1f377f;">x</span>&nbsp;=&gt;&nbsp;g(x).SelectMany(h)).Run(i));
+}</pre>
+	</p>
+	<p>
+		In case you're wondering, the four test cases produce the outputs <code>00:00:00</code>, <code>00:01:00</code>, <code>00:00:42</code>, and <code>00:35:12</code>. You can see that reproduced below:
+	</p>
+	<h3 id="a46f77dddd914f0b9c8926dd2c06e9d6">
+		Haskell <a href="#a46f77dddd914f0b9c8926dd2c06e9d6" title="permalink">#</a>
+	</h3>
+	<p>
+		In Haskell, normal functions <code>a -&gt; b</code> are already <code>Monad</code> instances, which means that you can easily replicate the functions from the <code>Associativity</code> test:
+	</p>
+	<p>
+		<pre>&gt; f c = \env -&gt; replicate env c
+&gt; g s = \env -&gt; env &lt; 42 || 'a' `elem` s
+&gt; h b = \env -&gt; if b then secondsToDiffTime (toEnum env * 60) else secondsToDiffTime (toEnum env)</pre>
+	</p>
+	<p>
+		I've chosen to write the <code>f</code>, <code>g</code>, and <code>h</code> as functions that return lambda expressions in order to emphasise that each of these functions return Readers. Since Haskell functions are already curried, I could also have written them in the more normal function style with two normal parameters, but that might have obscured the Reader aspect of each.
+	</p>
+	<p>
+		Here's the composition in action:
+	</p>
+	<p>
+		<pre>&gt; f 'a' &gt;&gt;= g &gt;&gt;= h $ 0
+0s
+&gt; f 'b' &gt;&gt;= g &gt;&gt;= h $ 1
+60s
+&gt; f 'c' &gt;&gt;= g &gt;&gt;= h $ 42
+42s
+&gt; f 'd' &gt;&gt;= g &gt;&gt;= h $ 2112
+2112s</pre>
+	</p>
+	<p>
+		In case you are wondering, then 2,112 seconds is 35 minutes and 12 seconds, so all outputs fit with the results reported for the C# example.
+	</p>
+	<p>
+		What the above Haskell GHCi (<a href="https://en.wikipedia.org/wiki/Read%E2%80%93eval%E2%80%93print_loop">REPL</a>) session demonstrates is that it's possible to compose functions with Haskell's monadic bind operator <code>&gt;&gt;=</code> operator exactly because all functions are (Reader) monads.
+	</p>
+	<h3 id="fb5e50be9b66464ca61cd4a45eb7e756">
+		Conclusion <a href="#fb5e50be9b66464ca61cd4a45eb7e756" title="permalink">#</a>
+	</h3>
+	<p>
+		In Haskell, it can occasionally be useful that a function can be used when a <code>Monad</code> is required. Some Haskell libraries are defined in very general terms. Their APIs may enable you to call functions with any monadic input value. You can, say, pass a <a href="/2022/03/15/the-maybe-monad">Maybe</a>, a <a href="/2022/04/19/the-list-monad">List</a>, an <a href="/2022/05/09/an-either-monad">Either</a>, a State, but you can also pass a function.
+	</p>
+	<p>
+		C# and most other languages (F# included) doesn't come with that level of abstraction, so the fact that a function forms a monad is less useful there. In fact, I can't recall having made explicit use of this knowledge in C#, but one never knows if that day arrives.
+	</p>
+	<p>
+		In a similar vein, knowing that <a href="/2018/04/16/endomorphic-composite-as-a-monoid">endomorphisms form monoids</a> (and thereby also <a href="/2017/11/27/semigroups">semigroups</a>) enabled me to <a href="/2020/12/14/validation-a-solved-problem">quickly identify the correct design for a validation problem</a>.
+	</p>
+	<p>
+		Who knows? One day the knowledge that functions are monads may come in handy.
+	</p>
+	<p>
+		<strong>Next:</strong> The IO monad.
+	</p>
+</div>
