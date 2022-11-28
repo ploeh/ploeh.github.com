@@ -1,0 +1,269 @@
+---
+layout: post
+title: "An initial proof of concept of applicative assertions in C#"
+description: "Worthwhile? Not obviously."
+date: 2022-10-20 8:36 UTC
+tags: [Unit Testing, Software Design]
+---
+{% include JB/setup %}
+
+<div id="post">
+	<p>
+		<em>{{ page.description }}</em>
+	</p>
+	<p>
+		This article is the first instalment in a small articles series about <a href="">applicative assertions</a>. It explores a way to compose assertions in such a way that failure messages accumulate rather than short-circuit. It assumes that you've read the <a href="">article series introduction</a>.
+	</p>
+	<p>
+		Assertions are typically based on throwing exceptions. As soon as one assertion fails, an exception is thrown and no further assertions are evaluated. This is normal short-circuiting behaviour of exceptions. In some cases, however, it'd be useful to keep evaluating other assertions and collect error messages.
+	</p>
+	<p>
+		This article series explores <a href="https://twitter.com/lucasdicioccio/status/1572264819109003265">an intriguing idea</a> to address such issues: Use an <a href="/2018/10/01/applicative-functors">applicative functor</a> to collect multiple assertion messages. I started experimenting with the idea to see where it would lead. The article series serves as a report of what I found. It is neither a recommendation nor a caution. I still find the idea interesting, but I'm not sure whether the complexity is warranted.
+	</p>
+	<h3 id="877c6f5ee5b34ecf990d1126b8139720">
+		Example scenario <a href="#877c6f5ee5b34ecf990d1126b8139720" title="permalink">#</a>
+	</h3>
+	<p>
+		A realistic example is often illustrative, although there's a risk that the realism carries with it some noise that detracts from core of the matter. I'll reuse an example that I've <a href="" memo-to-self="so guest blog post">already discussed and explained in greater detail</a>. The code is from the code base that accompanies my book <a href="/2021/06/14/new-book-code-that-fits-in-your-head">Code That Fits in Your Head</a>.
+	</p>
+	<p>
+		This test has two independent assertions:
+	</p>
+	<p>
+		<pre>[Theory]
+[InlineData(884,&nbsp;18,&nbsp;47,&nbsp;<span style="color:#a31515;">&quot;c@example.net&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;Nick&nbsp;Klimenko&quot;</span>,&nbsp;2)]
+[InlineData(902,&nbsp;18,&nbsp;50,&nbsp;<span style="color:#a31515;">&quot;emot@example.gov&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;Emma&nbsp;Otting&quot;</span>,&nbsp;5)]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">async</span>&nbsp;Task&nbsp;DeleteReservation(
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">int</span>&nbsp;days,&nbsp;<span style="color:blue;">int</span>&nbsp;hours,&nbsp;<span style="color:blue;">int</span>&nbsp;minutes,&nbsp;<span style="color:blue;">string</span>&nbsp;email,&nbsp;<span style="color:blue;">string</span>&nbsp;name,&nbsp;<span style="color:blue;">int</span>&nbsp;quantity)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">using</span>&nbsp;<span style="color:blue;">var</span>&nbsp;api&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;LegacyApi();
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;at&nbsp;=&nbsp;DateTime.Today.AddDays(days).At(hours,&nbsp;minutes)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.ToIso8601DateTimeString();
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;dto&nbsp;=&nbsp;Create.ReservationDto(at,&nbsp;email,&nbsp;name,&nbsp;quantity);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;postResp&nbsp;=&nbsp;<span style="color:blue;">await</span>&nbsp;api.PostReservation(dto);
+&nbsp;&nbsp;&nbsp;&nbsp;Uri&nbsp;address&nbsp;=&nbsp;FindReservationAddress(postResp);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;deleteResp&nbsp;=&nbsp;<span style="color:blue;">await</span>&nbsp;api.CreateClient().DeleteAsync(address);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;Assert.True(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;deleteResp.IsSuccessStatusCode,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#a31515;">$&quot;Actual&nbsp;status&nbsp;code:&nbsp;</span>{deleteResp.StatusCode}<span style="color:#a31515;">.&quot;</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;getResp&nbsp;=&nbsp;<span style="color:blue;">await</span>&nbsp;api.CreateClient().GetAsync(address);
+&nbsp;&nbsp;&nbsp;&nbsp;Assert.Equal(HttpStatusCode.NotFound,&nbsp;getResp.StatusCode);
+}</pre>
+	</p>
+	<p>
+		The test exercises the REST API to first create a reservation, then delete it, and finally check that the reservation no longer exists. Two independent postconditions must be true for the test to pass:
+	</p>
+	<ul>
+		<li>The <code>DELETE</code> request must result in a status code that indicates success.</li>
+		<li>The resource must no longer exist.</li>
+	</ul>
+	<p>
+		It's conceivable that a bug might fail one of these without invalidating the other.
+	</p>
+	<p>
+		As the test is currently written, it uses <a href="https://xunit.net/">xUnit.net</a>'s standard assertion library. If the <code>Assert.True</code> verification fails, the <code>Assert.Equal</code> statement isn't evaluated.
+	</p>
+	<h3 id="cd132aaee5484068a890cc4b7995bed3">
+		Assertions as validations <a href="#cd132aaee5484068a890cc4b7995bed3" title="permalink">#</a>
+	</h3>
+	<p>
+		Is it possible to evaluate the <code>Assert.Equal</code> postcondition even if the first assertion fails? You could use a <code>try/catch</code> block, but is there a more composable and elegant option? How about an applicative functor?
+	</p>
+	<p>
+		Since I was interested in exploring this question as a proof of concept, I decided to reuse the machinery that I'd already put in place for the article <a href="/2022/07/25/an-applicative-reservation-validation-example-in-c">An applicative reservation validation example in C#</a>: The <code>Validated</code> class and its associated functions. In a sense, you can think of an assertion as a validation of a postcondition.
+	</p>
+	<p>
+		This is not a resemblance I intend to carry too far. What I learn by experimenting with <code>Validated</code> I can apply to a more appropriately-named class like <code>Asserted</code>.
+	</p>
+	<p>
+		Neither of the two above assertions return a value; they are one-stop assertions. If they succeed, they return nothing; if they fail, they produce an error.
+	</p>
+	<p>
+		It's possible to model this kind of behaviour with <code>Validated</code>. You can model a collection of errors with, well, a collection. To keep the proof of concept simple, I decided to use a collection of strings: <code>IReadOnlyCollection&lt;<span style="color:blue;">string</span>&gt;</code>. To model 'nothing' I had to add a <a href="/2018/01/15/unit-isomorphisms">unit</a> type:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">sealed</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">Unit</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:#2b91af;">Unit</span>()&nbsp;{&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;<span style="color:blue;">static</span>&nbsp;Unit&nbsp;Value&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;Unit();
+}</pre>
+	</p>
+	<p>
+		This enabled me to define assertions as <code>Validated&lt;IReadOnlyCollection&lt;<span style="color:blue;">string</span>&gt;,&nbsp;Unit&gt;</code> values: Either a collection of error messages, or nothing.
+	</p>
+	<h3 id="5ac18fb532c04876b00f7de080905a16">
+		Asserting truth <a href="#5ac18fb532c04876b00f7de080905a16" title="permalink">#</a>
+	</h3>
+	<p>
+		Instead of xUnit.net's <code>Assert.True</code>, you can now define an equivalent function:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;Validated&lt;IReadOnlyCollection&lt;<span style="color:blue;">string</span>&gt;,&nbsp;Unit&gt;&nbsp;AssertTrue(
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>&nbsp;<span style="color:blue;">bool</span>&nbsp;condition,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">string</span>&nbsp;message)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;condition
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;?&nbsp;Succeed&lt;IReadOnlyCollection&lt;<span style="color:blue;">string</span>&gt;,&nbsp;Unit&gt;(Unit.Value)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;:&nbsp;Fail&lt;IReadOnlyCollection&lt;<span style="color:blue;">string</span>&gt;,&nbsp;Unit&gt;(<span style="color:blue;">new</span>[]&nbsp;{&nbsp;message&nbsp;});
+}</pre>
+	</p>
+	<p>
+		It simply returns a <code>Success</code> value containing nothing when <code>condition</code> is <code>true</code>, and otherwise a <code>Failure</code> value containing the error <code>message</code>.
+	</p>
+	<p>
+		You can use it like this:
+	</p>
+	<p>
+		<pre><span style="color:blue;">var</span>&nbsp;assertResponse&nbsp;=&nbsp;Validated.AssertTrue(
+&nbsp;&nbsp;&nbsp;&nbsp;deleteResp.IsSuccessStatusCode,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#a31515;">$&quot;Actual&nbsp;status&nbsp;code:&nbsp;</span>{deleteResp.StatusCode}<span style="color:#a31515;">.&quot;</span>);</pre>
+	</p>
+	<p>
+		Later in the article you'll see how this assertion combines with another assertion.
+	</p>
+	<h3 id="adc98673e4734918ac983a5bbb520e15">
+		Asserting equality <a href="#adc98673e4734918ac983a5bbb520e15" title="permalink">#</a>
+	</h3>
+	<p>
+		Instead of xUnit.net's <code>Assert.Equal</code>, you can also define a function that works the same way but returns a <code>Validated</code> value:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;Validated&lt;IReadOnlyCollection&lt;<span style="color:blue;">string</span>&gt;,&nbsp;Unit&gt;&nbsp;AssertEqual&lt;<span style="color:#2b91af;">T</span>&gt;(
+&nbsp;&nbsp;&nbsp;&nbsp;T&nbsp;expected,
+&nbsp;&nbsp;&nbsp;&nbsp;T&nbsp;actual)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;Equals(expected,&nbsp;actual)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;?&nbsp;Succeed&lt;IReadOnlyCollection&lt;<span style="color:blue;">string</span>&gt;,&nbsp;Unit&gt;(Unit.Value)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;:&nbsp;Fail&lt;IReadOnlyCollection&lt;<span style="color:blue;">string</span>&gt;,&nbsp;Unit&gt;(<span style="color:blue;">new</span>[]
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{&nbsp;<span style="color:#a31515;">$&quot;Expected&nbsp;</span>{expected}<span style="color:#a31515;">,&nbsp;but&nbsp;got&nbsp;</span>{actual}<span style="color:#a31515;">.&quot;</span>&nbsp;});
+}</pre>
+	</p>
+	<p>
+		The <code>AssertEqual</code> function first uses <a href="https://learn.microsoft.com/dotnet/api/system.object.equals">Equals</a> to compare <code>expected</code> with <code>actual</code>. If the result is <code>true</code>, the function returns a <code>Success</code> value containing nothing; otherwise, it returns a <code>Failure</code> value containing a failure message. Since this is only a proof of concept, the failure message is useful, but minimal.
+	</p>
+	<p>
+		Notice that this function returns a value of the same type (<code>Validated&lt;IReadOnlyCollection&lt;<span style="color:blue;">string</span>&gt;,&nbsp;Unit&gt;</code>) as <code>AssertTrue</code>.
+	</p>
+	<p>
+		You can use the function like this:
+	</p>
+	<p>
+		<pre><span style="color:blue;">var</span>&nbsp;assertState&nbsp;=&nbsp;Validated.AssertEqual(HttpStatusCode.NotFound,&nbsp;getResp.StatusCode);</pre>
+	</p>
+	<p>
+		Again, you'll see how to combine this assertion with the above <code>assertResponse</code> value later in this article.
+	</p>
+	<h3 id="1d29ecff5ea64911918168cb985ed6b5">
+		Evaluating assertions <a href="#1d29ecff5ea64911918168cb985ed6b5" title="permalink">#</a>
+	</h3>
+	<p>
+		The <code>DeleteReservation</code> test only has two independent assertions, so in my proof of concept, all I needed to do was to figure out a way to combine two applicative assertions into one, and then evaluate it. This rather horrible method does that:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:blue;">void</span>&nbsp;RunAssertions(
+&nbsp;&nbsp;&nbsp;&nbsp;Validated&lt;IReadOnlyCollection&lt;<span style="color:blue;">string</span>&gt;,&nbsp;Unit&gt;&nbsp;assertion1,
+&nbsp;&nbsp;&nbsp;&nbsp;Validated&lt;IReadOnlyCollection&lt;<span style="color:blue;">string</span>&gt;,&nbsp;Unit&gt;&nbsp;assertion2)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;f&nbsp;=&nbsp;Succeed&lt;IReadOnlyCollection&lt;<span style="color:blue;">string</span>&gt;,&nbsp;Func&lt;Unit,&nbsp;Unit,&nbsp;Unit&gt;&gt;((_,&nbsp;__)&nbsp;=&gt;&nbsp;Unit.Value);
+&nbsp;&nbsp;&nbsp;&nbsp;Func&lt;IReadOnlyCollection&lt;<span style="color:blue;">string</span>&gt;,&nbsp;IReadOnlyCollection&lt;<span style="color:blue;">string</span>&gt;,&nbsp;IReadOnlyCollection&lt;<span style="color:blue;">string</span>&gt;&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;combine&nbsp;=&nbsp;(x,&nbsp;y)&nbsp;=&gt;&nbsp;x.Concat(y).ToArray();
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;Validated&lt;IReadOnlyCollection&lt;<span style="color:blue;">string</span>&gt;,&nbsp;Unit&gt;&nbsp;composition&nbsp;=&nbsp;f
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.Apply(assertion1,&nbsp;combine)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.Apply(assertion2,&nbsp;combine);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">string</span>&nbsp;errors&nbsp;=&nbsp;composition.Match(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;onFailure:&nbsp;f&nbsp;=&gt;&nbsp;<span style="color:blue;">string</span>.Join(Environment.NewLine,&nbsp;f),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;onSuccess:&nbsp;_&nbsp;=&gt;&nbsp;<span style="color:blue;">string</span>.Empty);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;(!<span style="color:blue;">string</span>.IsNullOrEmpty(errors))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">throw</span>&nbsp;<span style="color:blue;">new</span>&nbsp;Exception(errors);</pre>
+	</p>
+	<p>
+		C# doesn't have good language features for applicative functors the same way that <a href="https://fsharp.org/">F#</a> and <a href="https://www.haskell.org/">Haskell</a> do, and although you can use various tricks to make the programming experience better that what is on display here, I was still doing a proof of concept. If it turns out that this approach is useful and warranted, we can introduce some of the facilities to make the API more palatable. For now, though, we're dealing with all the rough edges.
+	</p>
+	<p>
+		The way that applicative functors work, you typically use a 'lifted' function to combine two (or more) 'lifted' values. Here, 'lifted' means 'being inside the <code>Validated</code> <a href="https://bartoszmilewski.com/2014/01/14/functors-are-containers/">container</a>'.
+	</p>
+	<p>
+		Each of the assertions that I want to combine has the same type: <code>Validated&lt;IReadOnlyCollection&lt;<span style="color:blue;">string</span>&gt;,&nbsp;Unit&gt;</code>. Notice that the <code>S</code> (<em>success</em>) generic type argument is <code>Unit</code> in both cases. While it seems redundant, formally I needed a 'lifted' function to combine two <code>Unit</code> values into a single value. This single value can (in principle) have any type I'd like it to have, but since you can't extract any information out of a <code>Unit</code> value, it makes sense to use the <a href="/2018/01/15/unit-isomorphisms#4657dbd4b5fc4abda6e8dee2cac67ea9">monoidal nature of unit</a> to combine two into one.
+	</p>
+	<p>
+		Basically, you just ignore the <code>Unit</code> input values because they carry no information. Also, they're all the same value anyway, since the type is a <a href="https://en.wikipedia.org/wiki/Singleton_pattern">Singleton</a>. In its 'naked' form, the function might be implemented like this: <code>(_,&nbsp;__)&nbsp;=&gt;&nbsp;Unit.Value</code>. Due to the <a href="/2019/12/16/zone-of-ceremony">ceremony</a> required by the combination of C# and applicative functors, however, this <a href="/2017/10/06/monoids">monoidal</a> binary operation has to be 'lifted' to a <code>Validated</code> value. That's the <code>f</code> value in the <code>RunAssertions</code> function body.
+	</p>
+	<p>
+		The <code>Validated.Apply</code> function requires as an argument a function that combines the generic <code>F</code> (<em>failure</em>) values into one, in order to deal with the case where there's multiple failures. In this case <code>F</code> is <code>IReadOnlyCollection&lt;<span style="color:blue;">string</span>&gt;</code>. Since declarations of <code>Func</code> values in C# requires explicit type declaration, that's a bit of a mouthful, but the <code>combine</code> function just concatenates two collections into one.
+	</p>
+	<p>
+		The <code>RunAssertions</code> method can now <code>Apply</code> both <code>assertion1</code> and <code>assertion2</code> to <code>f</code>, which produces a combined <code>Validated</code> value, <code>composition</code>. It then matches on the combined value to produce a <code>string</code> value. If there are no assertion messages, the result is the empty string; otherwise, the function combines the assertion messages with a <code>NewLine</code> between each. Again, this is proof-of-concept code. A more robust and flexible API (if warranted) might keep the errors around as a collection of strongly typed <a href="https://martinfowler.com/bliki/ValueObject.html">Value Objects</a>.
+	</p>
+	<p>
+		Finally, if the resulting <code>errors</code> string is not null or empty, the <code>RunAssertions</code> method throws an exception with the combined error message(s). Here I once more invoked my proof-of-concept privilege to throw an <a href="https://learn.microsoft.com/dotnet/api/system.exception">Exception</a>, even though <a href="https://learn.microsoft.com/dotnet/standard/design-guidelines/using-standard-exception-types">the framework design guidelines admonishes against doing so</a>.
+	</p>
+	<p>
+		Ultimately, then, the <a href="/2013/06/24/a-heuristic-for-formatting-code-according-to-the-aaa-pattern">assert phase</a> of the test looks like this:
+	</p>
+	<p>
+		<pre><span style="color:blue;">var</span>&nbsp;assertResponse&nbsp;=&nbsp;Validated.AssertTrue(
+&nbsp;&nbsp;&nbsp;&nbsp;deleteResp.IsSuccessStatusCode,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#a31515;">$&quot;Actual&nbsp;status&nbsp;code:&nbsp;</span>{deleteResp.StatusCode}<span style="color:#a31515;">.&quot;</span>);
+<span style="color:blue;">var</span>&nbsp;getResp&nbsp;=&nbsp;<span style="color:blue;">await</span>&nbsp;api.CreateClient().GetAsync(address);
+<span style="color:blue;">var</span>&nbsp;assertState&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;Validated.AssertEqual(HttpStatusCode.NotFound,&nbsp;getResp.StatusCode);
+Validated.RunAssertions(assertResponse,&nbsp;assertState);</pre>
+	</p>
+	<p>
+		The rest of the test hasn't changed.
+	</p>
+	<h3 id="42e68063b7a3472e960031fde5e3f40d">
+		Outcomes <a href="#42e68063b7a3472e960031fde5e3f40d" title="permalink">#</a>
+	</h3>
+	<p>
+		Running the test with the applicative assertions passes, as expected. In order to verify that it works as it's supposed to, I tried to sabotage the System Under Test (SUT) in various ways. First, I made the <code>Delete</code> method that handles <code>DELETE</code> requests a <a href="https://en.wikipedia.org/wiki/NOP_(code)">no-op</a>, while still returning <code>200 OK</code>. As you'd expect, the result is a test failure with this message:
+	</p>
+	<p>
+		<pre>Message:
+System.Exception : Expected NotFound, but got OK.</pre>
+	</p>
+	<p>
+		This is the assertion that verifies that <code>getResp.StatusCode</code> is <code>404 Not Found</code>. It fails because the sabotaged <code>Delete</code> method doesn't delete the reservation.
+	</p>
+	<p>
+		Then I further sabotaged the SUT to also return an incorrect status code (<code>400 Bad Request</code>), which produced this failure message:
+	</p>
+	<p>
+		<pre>Message:
+System.Exception : Actual status code: BadRequest.
+Expected NotFound, but got OK.</pre>
+	</p>
+	<p>
+		Notice that the message contains information about both failure conditions.
+	</p>
+	<p>
+		Finally, I re-enabled the correct behaviour (deleting the reservation from the data store) while still returning <code>400 Bad Request</code>:
+	</p>
+	<p>
+		<pre>Message:
+System.Exception : Actual status code: BadRequest.</pre>
+	</p>
+	<p>
+		As desired, the assertions collect all relevant failure messages.
+	</p>
+	<h3 id="4a2c496da999408ea6c6cddd6a4f33d4">
+		Conclusion <a href="#4a2c496da999408ea6c6cddd6a4f33d4" title="permalink">#</a>
+	</h3>
+	<p>
+		Not surprisingly, it's possible to design a composable assertion API that collects multiple failure messages using an applicative functor. Anyone who knows how <a href="/2018/11/05/applicative-validation">applicative validation</a> works would have been able to predict that outcome. That's not what the above proof of concept was about. What I wanted to see was rather how it would play out in a realistic scenario, and whether using an applicative functor is warranted.
+	</p>
+	<p>
+		Applicative functors don't gel well with C#, so unsurprisingly the API is awkward. It's likely possible to smooth much of the friction, but without good language support and syntactic sugar, it's unlikely to become <a href="/2015/08/03/idiomatic-or-idiosyncratic">idiomatic</a> C#.
+	</p>
+	<p>
+		Rather than taking the edge off the unwieldy API, the implementation of <code>RunAssertions</code> suggests another alternative.
+	</p>
+	<p>
+		<strong>Next:</strong> Error-accumulating composable assertions in C#.
+	</p>
+</div>
