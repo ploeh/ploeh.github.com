@@ -1,0 +1,290 @@
+---
+layout: post
+title: "Error-accumulating composable assertions in C#"
+description: "Perhaps the list monoid is all you need for non-short-circuiting assertions."
+date: 2022-10-21 9:29 UTC
+tags: [Unit Testing, Software Design]
+---
+{% include JB/setup %}
+
+<div id="post">
+	<p>
+		<em>{{ page.description }}</em>
+	</p>
+	<p>
+		This article is the second instalment in a small articles series about <a href="">applicative assertions</a>. It explores a way to compose assertions in such a way that failure messages accumulate rather than short-circuit. It assumes that you've read the <a href="">article series introduction</a> and the <a href="">previous article</a>.
+	</p>
+	<p>
+		Unsurprisingly, the previous article showed that you can use an <a href="/2018/10/01/applicative-functors">applicative functor</a> to create composable assertions that don't short-circuit. It also concluded that, in C# at least, the API is awkward.
+	</p>
+	<p>
+		This article explores a simpler API.
+	</p>
+	<h3 id="dc146cd5b792473db7f7e64cac3c4607">
+		A clue left by the proof of concept <a href="#dc146cd5b792473db7f7e64cac3c4607" title="permalink">#</a>
+	</h3>
+	<p>
+		The previous article's proof of concept left a clue suggesting a simpler API. Consider, again, how the rather horrible <code>RunAssertions</code> method decides whether or not to throw an exception:
+	</p>
+	<p>
+		<pre><span style="color:blue;">string</span>&nbsp;errors&nbsp;=&nbsp;composition.Match(
+&nbsp;&nbsp;&nbsp;&nbsp;onFailure:&nbsp;f&nbsp;=&gt;&nbsp;<span style="color:blue;">string</span>.Join(Environment.NewLine,&nbsp;f),
+&nbsp;&nbsp;&nbsp;&nbsp;onSuccess:&nbsp;_&nbsp;=&gt;&nbsp;<span style="color:blue;">string</span>.Empty);
+ 
+<span style="color:blue;">if</span>&nbsp;(!<span style="color:blue;">string</span>.IsNullOrEmpty(errors))
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">throw</span>&nbsp;<span style="color:blue;">new</span>&nbsp;Exception(errors);</pre>
+	</p>
+	<p>
+		Even though <code><span style="color:#2b91af;">Validated</span>&lt;<span style="color:#2b91af;">F</span>,&nbsp;<span style="color:#2b91af;">S</span>&gt;</code> is a <a href="https://en.wikipedia.org/wiki/Tagged_union">sum type</a>, the <code>RunAssertions</code> method declines to take advantage of that. Instead, it reduces <code>composition</code> to a simple type: A <code>string</code>. It then decides to throw an exception if the <code>errors</code> is not null or empty.
+	</p>
+	<p>
+		This suggests that using a sum type may not be necessary to distinguish between the success and the failure case. Rather, an empty error string is all it takes to indicate success.
+	</p>
+	<h3 id="801897c3ffc0455e8e7a7ac7531f2be3">
+		Non-empty errors <a href="#801897c3ffc0455e8e7a7ac7531f2be3" title="permalink">#</a>
+	</h3>
+	<p>
+		The proof-of-concept assertion type is currently defined as <code>Validated</code> with a particular combination of type arguments: <code>Validated&lt;IReadOnlyCollection&lt;<span style="color:blue;">string</span>&gt;,&nbsp;Unit&gt;</code>. Consider, again, this <code>Match</code> expression:
+	</p>
+	<p>
+		<pre><span style="color:blue;">string</span>&nbsp;errors&nbsp;=&nbsp;composition.Match(
+&nbsp;&nbsp;&nbsp;&nbsp;onFailure:&nbsp;f&nbsp;=&gt;&nbsp;<span style="color:blue;">string</span>.Join(Environment.NewLine,&nbsp;f),
+&nbsp;&nbsp;&nbsp;&nbsp;onSuccess:&nbsp;_&nbsp;=&gt;&nbsp;<span style="color:blue;">string</span>.Empty);</pre>
+	</p>
+	<p>
+		Does an empty string unambiguously indicate success? Or is it possible to arrive at an empty string even if <code>composition</code> actually represents a failure case?
+	</p>
+	<p>
+		You can arrive at an empty string from a failure case if the collection of error messages is empty. Consider the type argument that takes the place of the <code>F</code> generic type: <code>IReadOnlyCollection&lt;<span style="color:blue;">string</span>&gt;</code>. A collection of this type can be empty, which would also cause the above <code>Match</code> to produce an empty string.
+	</p>
+	<p>
+		Even so, the proof-of-concept works in practice. The reason it works is that failure cases will never have empty assertion messages. We know this because (in the proof-of-concept code) only two functions produce assertions, and they each populate the error message collection with a string. You may want to revisit the <code>AssertTrue</code> and <code>AssertEqual</code> functions in the <a href="">previous article</a> to convince yourself that this is true.
+	</p>
+	<p>
+		This is a good example of knowledge that 'we' as developers know, but the code currently doesn't capture. Having to deal with such knowledge taxes your working memory, so why not <a href="/encapsulation-and-solid">encapsulate</a> such information in the type itself?
+	</p>
+	<p>
+		How do you encapsulate the knowledge that a collection is never empty? Introduce a <code>NotEmptyCollection</code> collection. I'll reuse the class from the article <a href="/2017/12/11/semigroups-accumulate">Semigroups accumulate</a> and add a <code>Concat</code> instance method:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;NotEmptyCollection&lt;T&gt;&nbsp;Concat(NotEmptyCollection&lt;T&gt;&nbsp;other)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;NotEmptyCollection&lt;T&gt;(Head,&nbsp;Tail.Concat(other).ToArray());
+}</pre>
+	</p>
+	<p>
+		Since the two assertion-producing functions both supply an error message in the failure case, it's trivial to change them to return <code>Validated&lt;NotEmptyCollection&lt;<span style="color:blue;">string</span>&gt;,&nbsp;Unit&gt;</code> - just change the types used:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;Validated&lt;NotEmptyCollection&lt;<span style="color:blue;">string</span>&gt;,&nbsp;Unit&gt;&nbsp;AssertTrue(
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>&nbsp;<span style="color:blue;">bool</span>&nbsp;condition,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">string</span>&nbsp;message)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;condition
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;?&nbsp;Succeed&lt;NotEmptyCollection&lt;<span style="color:blue;">string</span>&gt;,&nbsp;Unit&gt;(Unit.Value)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;:&nbsp;Fail&lt;NotEmptyCollection&lt;<span style="color:blue;">string</span>&gt;,&nbsp;Unit&gt;(<span style="color:blue;">new</span>&nbsp;NotEmptyCollection&lt;<span style="color:blue;">string</span>&gt;(message));
+}
+ 
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;Validated&lt;NotEmptyCollection&lt;<span style="color:blue;">string</span>&gt;,&nbsp;Unit&gt;&nbsp;AssertEqual&lt;<span style="color:#2b91af;">T</span>&gt;(
+&nbsp;&nbsp;&nbsp;&nbsp;T&nbsp;expected,
+&nbsp;&nbsp;&nbsp;&nbsp;T&nbsp;actual)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;Equals(expected,&nbsp;actual)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;?&nbsp;Succeed&lt;NotEmptyCollection&lt;<span style="color:blue;">string</span>&gt;,&nbsp;Unit&gt;(Unit.Value)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;:&nbsp;Fail&lt;NotEmptyCollection&lt;<span style="color:blue;">string</span>&gt;,&nbsp;Unit&gt;(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;NotEmptyCollection&lt;<span style="color:blue;">string</span>&gt;(<span style="color:#a31515;">$&quot;Expected&nbsp;</span>{expected}<span style="color:#a31515;">,&nbsp;but&nbsp;got&nbsp;</span>{actual}<span style="color:#a31515;">.&quot;</span>));
+}</pre>
+	</p>
+	<p>
+		This change guarantees that the <code>RunAssertions</code> method only produces an empty <code>errors</code> string in success cases.
+	</p>
+	<h3 id="e5097dc5d94f4a1480eeaf483ac08336">
+		Error collection isomorphism <a href="#e5097dc5d94f4a1480eeaf483ac08336" title="permalink">#</a>
+	</h3>
+	<p>
+		Assertions are still defined by the <code>Validated</code> sum type, but the <em>success</em> case carries no information: <code>Validated&lt;NotEmptyCollection&lt;T&gt;,&nbsp;Unit&gt;</code>, and the <em>failure</em> case is always guaranteed to contain at least one error message.
+	</p>
+	<p>
+		This suggests that a simpler representation is possible: One that uses a normal collection of errors, and where an empty collection indicates an absence of errors:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">Asserted</span>&lt;<span style="color:#2b91af;">T</span>&gt;
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">Asserted</span>()&nbsp;:&nbsp;<span style="color:blue;">this</span>(Array.Empty&lt;T&gt;())
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">Asserted</span>(T&nbsp;error)&nbsp;:&nbsp;<span style="color:blue;">this</span>(<span style="color:blue;">new</span>[]&nbsp;{&nbsp;error&nbsp;})
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">Asserted</span>(IReadOnlyCollection&lt;T&gt;&nbsp;errors)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Errors&nbsp;=&nbsp;errors;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;Asserted&lt;T&gt;&nbsp;And(Asserted&lt;T&gt;&nbsp;other)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;(other&nbsp;<span style="color:blue;">is</span>&nbsp;<span style="color:blue;">null</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">throw</span>&nbsp;<span style="color:blue;">new</span>&nbsp;ArgumentNullException(nameof(other));
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;Asserted&lt;T&gt;(Errors.Concat(other.Errors).ToList());
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;IReadOnlyCollection&lt;T&gt;&nbsp;Errors&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;}
+}</pre>
+	</p>
+	<p>
+		The <code><span style="color:#2b91af;">Asserted</span>&lt;<span style="color:#2b91af;">T</span>&gt;</code> class is scarcely more than a glorified wrapper around a normal collection, but it's isomorphic to <code>Validated&lt;NotEmptyCollection&lt;T&gt;,&nbsp;Unit&gt;</code>, which the following two functions prove:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;Asserted&lt;T&gt;&nbsp;FromValidated&lt;<span style="color:#2b91af;">T</span>&gt;(<span style="color:blue;">this</span>&nbsp;Validated&lt;NotEmptyCollection&lt;T&gt;,&nbsp;Unit&gt;&nbsp;v)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;v.Match(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;failures&nbsp;=&gt;&nbsp;<span style="color:blue;">new</span>&nbsp;Asserted&lt;T&gt;(failures),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;_&nbsp;=&gt;&nbsp;<span style="color:blue;">new</span>&nbsp;Asserted&lt;T&gt;());
+}
+ 
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;Validated&lt;NotEmptyCollection&lt;T&gt;,&nbsp;Unit&gt;&nbsp;ToValidated&lt;<span style="color:#2b91af;">T</span>&gt;(<span style="color:blue;">this</span>&nbsp;Asserted&lt;T&gt;&nbsp;a)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;(a.Errors.Any())
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;errors&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;NotEmptyCollection&lt;T&gt;(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;a.Errors.First(),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;a.Errors.Skip(1).ToArray());
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;Validated.Fail&lt;NotEmptyCollection&lt;T&gt;,&nbsp;Unit&gt;(errors);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">else</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;Validated.Succeed&lt;NotEmptyCollection&lt;T&gt;,&nbsp;Unit&gt;(Unit.Value);
+}</pre>
+	</p>
+	<p>
+		You can translate back and forth between <code>Validated&lt;NotEmptyCollection&lt;T&gt;,&nbsp;Unit&gt;</code> and <code>Asserted&lt;T&gt;</code> without loss of information.
+	</p>
+	<p>
+		A collection, however, gives rise to a <a href="/2017/10/06/monoids">monoid</a>, which suggests a much simpler way to compose assertions than using an applicative functor.
+	</p>
+	<h3 id="0ccfc89ad23f4b95932637723ff3c29a">
+		Asserted truth <a href="#0ccfc89ad23f4b95932637723ff3c29a" title="permalink">#</a>
+	</h3>
+	<p>
+		You can now rewrite the assertion-producing functions to return <code>Asserted&lt;<span style="color:blue;">string</span>&gt;</code> instead of <code>Validated&lt;NotEmptyCollection&lt;<span style="color:blue;">string</span>&gt;,&nbsp;Unit&gt;</code>.
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;Asserted&lt;<span style="color:blue;">string</span>&gt;&nbsp;True(<span style="color:blue;">bool</span>&nbsp;condition,&nbsp;<span style="color:blue;">string</span>&nbsp;message)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;condition&nbsp;?&nbsp;<span style="color:blue;">new</span>&nbsp;Asserted&lt;<span style="color:blue;">string</span>&gt;()&nbsp;:&nbsp;<span style="color:blue;">new</span>&nbsp;Asserted&lt;<span style="color:blue;">string</span>&gt;(message);
+}</pre>
+	</p>
+	<p>
+		This <code>Asserted.True</code> function returns no error messages when <code>condition</code> is <code>true</code>, but a collection with the single element <code>message</code> when it's <code>false</code>.
+	</p>
+	<p>
+		You can use it in a unit test like this:
+	</p>
+	<p>
+		<pre><span style="color:blue;">var</span>&nbsp;assertResponse&nbsp;=&nbsp;Asserted.True(
+&nbsp;&nbsp;&nbsp;&nbsp;deleteResp.IsSuccessStatusCode,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#a31515;">$&quot;Actual&nbsp;status&nbsp;code:&nbsp;</span>{deleteResp.StatusCode}<span style="color:#a31515;">.&quot;</span>);</pre>
+	</p>
+	<p>
+		You'll see how <code>assertResponse</code> composes with another assertion later in this article. The example continues from <a href="">the previous article</a>. It's the same test from the same code base.
+	</p>
+	<h3 id="519d7e0d757f4dceb6a2833c09d019d8">
+		Asserted equality <a href="#519d7e0d757f4dceb6a2833c09d019d8" title="permalink">#</a>
+	</h3>
+	<p>
+		You can also rewrite the other assertion-producing function in the same way:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;Asserted&lt;<span style="color:blue;">string</span>&gt;&nbsp;Equal(<span style="color:blue;">object</span>&nbsp;expected,&nbsp;<span style="color:blue;">object</span>&nbsp;actual)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;(Equals(expected,&nbsp;actual))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;Asserted&lt;<span style="color:blue;">string</span>&gt;();
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;Asserted&lt;<span style="color:blue;">string</span>&gt;(<span style="color:#a31515;">$&quot;Expected&nbsp;</span>{expected}<span style="color:#a31515;">,&nbsp;but&nbsp;got&nbsp;</span>{actual}<span style="color:#a31515;">.&quot;</span>);
+}</pre>
+	</p>
+	<p>
+		Again, when the assertion passes, it returns no errors; otherwise, it returns a collection with a single error message.
+	</p>
+	<p>
+		Using it may look like this:
+	</p>
+	<p>
+		<pre><span style="color:blue;">var</span>&nbsp;getResp&nbsp;=&nbsp;<span style="color:blue;">await</span>&nbsp;api.CreateClient().GetAsync(address);
+<span style="color:blue;">var</span>&nbsp;assertState&nbsp;=&nbsp;Asserted.Equal(HttpStatusCode.NotFound,&nbsp;getResp.StatusCode);</pre>
+	</p>
+	<p>
+		At this point, each of the assertions are objects that represent a verification step. By themselves, they neither pass nor fail the test. You have to execute them to reach a verdict.
+	</p>
+	<h3 id="29825aed26124471803324863ea7d897">
+		Evaluating assertions <a href="#29825aed26124471803324863ea7d897" title="permalink">#</a>
+	</h3>
+	<p>
+		The above code listing of the <code><span style="color:#2b91af;">Asserted</span>&lt;<span style="color:#2b91af;">T</span>&gt;</code> class already shows how to combine two <code><span style="color:#2b91af;">Asserted</span>&lt;<span style="color:#2b91af;">T</span>&gt;</code> objects into one. The <code>And</code> instance method is a binary operation that, together with the parameterless constructor, makes <code><span style="color:#2b91af;">Asserted</span>&lt;<span style="color:#2b91af;">T</span>&gt;</code> a <a href="/2017/10/06/monoids">monoid</a>.
+	</p>
+	<p>
+		Once you've combined all assertions into a single <code><span style="color:#2b91af;">Asserted</span>&lt;<span style="color:#2b91af;">T</span>&gt;</code> object, you need to <code>Run</code> it to produce a test outcome:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:blue;">void</span>&nbsp;Run(<span style="color:blue;">this</span>&nbsp;Asserted&lt;<span style="color:blue;">string</span>&gt;&nbsp;assertions)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;(assertions?.Errors.Any()&nbsp;??&nbsp;<span style="color:blue;">false</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;messages&nbsp;=&nbsp;<span style="color:blue;">string</span>.Join(Environment.NewLine,&nbsp;assertions.Errors);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">throw</span>&nbsp;<span style="color:blue;">new</span>&nbsp;Exception(messages);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+	</p>
+	<p>
+		If there are no errors, <code>Run</code> does nothing; otherwise it combines all the error messages together and throws an exception. As was also the case in the previous article, I've allowed myself a few proof-of-concept shortcuts. <a href="https://learn.microsoft.com/dotnet/standard/design-guidelines/using-standard-exception-types">The framework design guidelines admonishes against throwing System.Exception</a>. It might be more appropriate to introduce a new <code>Exception</code> type that also allows enumerating the error messages.
+	</p>
+	<p>
+		The entire <a href="/2013/06/24/a-heuristic-for-formatting-code-according-to-the-aaa-pattern">assertion phase</a> of the test looks like this:
+	</p>
+	<p>
+		<pre><span style="color:blue;">var</span>&nbsp;assertResponse&nbsp;=&nbsp;Asserted.True(
+&nbsp;&nbsp;&nbsp;&nbsp;deleteResp.IsSuccessStatusCode,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#a31515;">$&quot;Actual&nbsp;status&nbsp;code:&nbsp;</span>{deleteResp.StatusCode}<span style="color:#a31515;">.&quot;</span>);
+<span style="color:blue;">var</span>&nbsp;getResp&nbsp;=&nbsp;<span style="color:blue;">await</span>&nbsp;api.CreateClient().GetAsync(address);
+<span style="color:blue;">var</span>&nbsp;assertState&nbsp;=&nbsp;Asserted.Equal(HttpStatusCode.NotFound,&nbsp;getResp.StatusCode);
+assertResponse.And(assertState).Run();</pre>
+	</p>
+	<p>
+		You can see the entire test in the previous article. Notice how the two assertion objects are first combined into one with the <code>And</code> binary operation. The result is a single <code>Asserted&lt;<span style="color:blue;">string</span>&gt;</code> object on which you can call <code>Run</code>.
+	</p>
+	<p>
+		Like the previous proof of concept, this assertion passes and fails in the same way. It's possible to compose assertions and collect error messages, instead of short-circuiting on the first failure, even without an applicative functor.
+	</p>
+	<h3 id="f3d9baf1ad564c05be99b32f0b4a1017">
+		Method chaining <a href="#f3d9baf1ad564c05be99b32f0b4a1017" title="permalink">#</a>
+	</h3>
+	<p>
+		If you don't like to come up with variable names just to make assertions, it's also possible to use the <code>Asserted</code> API's <a href="https://martinfowler.com/bliki/FluentInterface.html">fluent interface</a>:
+	</p>
+	<p>
+		<pre><span style="color:blue;">var</span>&nbsp;getResp&nbsp;=&nbsp;<span style="color:blue;">await</span>&nbsp;api.CreateClient().GetAsync(address);
+Asserted
+&nbsp;&nbsp;&nbsp;&nbsp;.True(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;deleteResp.IsSuccessStatusCode,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#a31515;">$&quot;Actual&nbsp;status&nbsp;code:&nbsp;</span>{deleteResp.StatusCode}<span style="color:#a31515;">.&quot;</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;.And(Asserted.Equal(HttpStatusCode.NotFound,&nbsp;getResp.StatusCode))
+&nbsp;&nbsp;&nbsp;&nbsp;.Run();</pre>
+	</p>
+	<p>
+		This isn't necessarily better, but it's an option.
+	</p>
+	<h3 id="ecabe91c2b9949edbcb4cfed5213ec72">
+		Conclusion <a href="#ecabe91c2b9949edbcb4cfed5213ec72" title="permalink">#</a>
+	</h3>
+	<p>
+		While it's possible to design non-short-circuiting composable assertions using an applicative functor, it looks as though a simpler solution might solve the same problem. Collect error messages. If none were collected, interpret that as a success.
+	</p>
+	<p>
+		As I wrote in the <a href="">introduction article</a>, however, this may not be the last word. Some assertions return values that can be used for other assertions. That's a scenario that I have not yet investigated in this light, and it may change the conclusion. If so, I'll add more articles to this small article series. As I'm writing this, though, I have no such plans.
+	</p>
+	<p>
+		Did I just, in a roundabout way, write that <em>more research is needed?</em>
+	</p>
+</div>
