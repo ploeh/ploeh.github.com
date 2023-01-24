@@ -1,0 +1,305 @@
+---
+layout: post
+title: "Built-in alternatives to applicative assertions"
+description: "Why make things so complicated?"
+date: 2023-01-23 17:57 UTC
+tags: [Unit Testing, xUnit.net]
+---
+{% include JB/setup %}
+
+<div id="post">
+	<p>
+		<em>{{ page.description }}</em>
+	</p>
+	<p>
+		Several readers reacted to my small article series on <a href="/2022/11/07/applicative-assertions">applicative assertions</a>, pointing out that error-collecting assertions are already supported in more than one unit-testing framework.
+	</p>
+	<blockquote>
+		<p>
+			"In the Java world this seems similar to the result gained by Soft Assertions in AssertJ. <a href="https://assertj.github.io/doc/#assertj-core-soft-assertions">https://assertj.github.io/doc/#assertj-c...</a> if you’re after a target for functionality (without the adventures through monad land)"
+		</p>
+		<footer><cite><a href="https://twitter.com/joshuamck/status/1597190184134590464">Josh McK</a></cite></footer>
+	</blockquote>
+	<p>
+		While I'm not familiar with the details of Java unit-testing frameworks, the situation is similar in .NET, it turns out.
+	</p>
+	<blockquote>
+		<p>
+			"Did you know there is Assert.Multiple in NUnit and now also in xUnit .Net? It seems to have quite an overlap with what you're doing here.
+		</p>
+		<p>
+			"For a quick overview, I found this blogpost helpful: <a href="https://www.thomasbogholm.net/2021/11/25/xunit-2-4-2-pre-multiple-asserts-in-one-test/">https://www.thomasbogholm.net/2021/11/25/xunit-2-4-2-pre-multiple-asserts-in-one-test/</a>"
+		</p>
+		<footer><cite><a href="https://twitter.com/DoCh_Dev/status/1597158737357459456">DoCh_Dev</a></cite></footer>
+	</blockquote>
+	<p>
+		I'm not surprised to learn that something like this exists, but let's take a quick look.
+	</p>
+	<h3 id="d7c0c78093084c08aa22ccaa7b86cb8a">
+		NUnit Assert.Multiple <a href="#d7c0c78093084c08aa22ccaa7b86cb8a" title="permalink">#</a>
+	</h3>
+	<p>
+		Let's begin with <a href="https://nunit.org/">NUnit</a>, as this seems to be the first .NET unit-testing framework to support error-collecting assertions. As a beginning, the <a href="https://docs.nunit.org/articles/nunit/writing-tests/assertions/multiple-asserts.html">documentation example</a> works as it's supposed to:
+	</p>
+	<p>
+		<pre>[Test]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;ComplexNumberTest()
+{
+&nbsp;&nbsp;&nbsp;&nbsp;ComplexNumber&nbsp;result&nbsp;=&nbsp;SomeCalculation();
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;Assert.Multiple(()&nbsp;=&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Assert.AreEqual(5.2,&nbsp;result.RealPart,&nbsp;<span style="color:#a31515;">&quot;Real&nbsp;part&quot;</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Assert.AreEqual(3.9,&nbsp;result.ImaginaryPart,&nbsp;<span style="color:#a31515;">&quot;Imaginary&nbsp;part&quot;</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;});
+}</pre>
+	</p>
+	<p>
+		When you run the test, it fails (as expected) with this error message:
+	</p>
+	<p>
+		<pre>Message:
+&nbsp;&nbsp;Multiple failures or warnings in test:
+&nbsp;&nbsp;&nbsp;&nbsp;1)   Real part
+&nbsp;&nbsp;&nbsp;&nbsp;Expected: 5.2000000000000002d
+&nbsp;&nbsp;&nbsp;&nbsp;But was:  5.0999999999999996d
+
+&nbsp;&nbsp;&nbsp;&nbsp;2)   Imaginary part
+&nbsp;&nbsp;&nbsp;&nbsp;Expected: 3.8999999999999999d
+&nbsp;&nbsp;&nbsp;&nbsp;But was:  4.0d</pre>
+	</p>
+	<p>
+		That seems to work well enough, but how does it actually work? I'm not interested in reading the NUnit source code - after all, the concept of <a href="/encapsulation-and-solid">encapsulation</a> is that one should be able to make use of the capabilities of an object without knowing all implementation details. Instead, I'll guess: Perhaps <code>Assert.Multiple</code> executes the code block in a <code>try/catch</code> block and collects the various exceptions thrown by the nested assertions.
+	</p>
+	<p>
+		Does it catch all exception types, or only a subset?
+	</p>
+	<p>
+		Let's try with the kind of composed assertion that I <a href="/2022/11/28/an-initial-proof-of-concept-of-applicative-assertions-in-c">previously investigated</a>:
+	</p>
+	<p>
+		<pre>[Test]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;HttpExample()
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;deleteResp&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;HttpResponseMessage(HttpStatusCode.BadRequest);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;getResp&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;HttpResponseMessage(HttpStatusCode.OK);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;Assert.Multiple(()&nbsp;=&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;deleteResp.EnsureSuccessStatusCode();
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Assert.That(getResp.StatusCode,&nbsp;Is.EqualTo(HttpStatusCode.NotFound));
+&nbsp;&nbsp;&nbsp;&nbsp;});
+}</pre>
+	</p>
+	<p>
+		This test fails (again, as expected). What's the error message?
+	</p>
+	<p>
+		<pre>Message:
+&nbsp;&nbsp;System.Net.Http.HttpRequestException :↩
+&nbsp;&nbsp;&nbsp;&nbsp;Response status code does not indicate success: 400 (Bad Request).</pre>
+	</p>
+	<p>
+		(I've wrapped the result over multiple lines for readability. The <code>↩</code> symbol indicates where I've wrapped the text. I'll do that again later in this article.)
+	</p>
+	<p>
+		Notice that I'm using <a href="/2020/09/28/ensuresuccessstatuscode-as-an-assertion">EnsureSuccessStatusCode as an assertion</a>. This seems to spoil the behaviour of <code>Assert.Multiple</code>. It only reports the first status code error, but not the second one.
+	</p>
+	<p>
+		I admit that I don't fully understand what's going on here. In fact, I <em>have</em> taken a cursory glance at the relevant NUnit source code without being enlightened.
+	</p>
+	<p>
+		One hypothesis might be that NUnit assertions throw special <code>Exception</code> sub-types that <code>Assert.Multiple</code> catch. In order to test that, I wrote a few more tests in <a href="https://fsharp.org/">F#</a> with <a href="http://www.swensensoftware.com/unquote/">Unquote</a>, assuming that, since Unquote hardly throws NUnit exceptions, the behaviour might be similar to above.
+	</p>
+	<p>
+		<pre>[&lt;Test&gt;]
+<span style="color:blue;">let</span>&nbsp;Test4&nbsp;()&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;x&nbsp;=&nbsp;1
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;y&nbsp;=&nbsp;2
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;z&nbsp;=&nbsp;3
+&nbsp;&nbsp;&nbsp;&nbsp;Assert.Multiple&nbsp;(<span style="color:blue;">fun</span>&nbsp;()&nbsp;<span style="color:blue;">-&gt;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;x&nbsp;=!&nbsp;y
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;y&nbsp;=!&nbsp;z)</pre>
+	</p>
+	<p>
+		The <code>=!</code> operator is an Unquote operator that I usually read as <em>must equal</em>. How does that error message look?
+	</p>
+	<p>
+		<pre>Message:
+&nbsp;&nbsp;Multiple failures or warnings in test:
+&nbsp;&nbsp;&nbsp;&nbsp;1) 
+
+&nbsp;&nbsp;1 = 2
+&nbsp;&nbsp;false
+
+&nbsp;&nbsp;&nbsp;&nbsp;2)
+
+&nbsp;&nbsp;2 = 3
+&nbsp;&nbsp;false</pre>
+	</p>
+	<p>
+		Somehow, <code>Assert.Multiple</code> understands Unquote error messages, but not <code>HttpRequestException</code>. As I wrote, I don't fully understand why it behaves this way. To a degree, I'm intellectually curious enough that I'd like to know. On the other hand, from a maintainability perspective, as a user of NUnit, I shouldn't have to understand such details.
+	</p>
+	<h3 id="1f28e534b0f94e93bb12cbb951fa663f">
+		xUnit.net Assert.Multiple <a href="#1f28e534b0f94e93bb12cbb951fa663f" title="permalink">#</a>
+	</h3>
+	<p>
+		How fares the <a href="https://xunit.net/">xUnit.net</a> port of <code>Assert.Multiple</code>?
+	</p>
+	<p>
+		<pre>[Fact]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;HttpExample()
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;deleteResp&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;HttpResponseMessage(HttpStatusCode.BadRequest);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;getResp&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;HttpResponseMessage(HttpStatusCode.OK);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;Assert.Multiple(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;()&nbsp;=&gt;&nbsp;deleteResp.EnsureSuccessStatusCode(),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;()&nbsp;=&gt;&nbsp;Assert.Equal(HttpStatusCode.NotFound,&nbsp;getResp.StatusCode));
+}</pre>
+	</p>
+	<p>
+		The API is, you'll notice, not quite identical. Where the NUnit <code>Assert.Multiple</code> method takes a single delegate as input, the xUnit.net method takes an array of actions. The difference is not only at the level of API; the behaviour is different, too:
+	</p>
+	<p>
+		<pre>Message:
+&nbsp;&nbsp;Multiple failures were encountered:
+&nbsp;&nbsp;---- System.Net.Http.HttpRequestException :↩
+&nbsp;&nbsp;Response status code does not indicate success: 400 (Bad Request).
+&nbsp;&nbsp;---- Assert.Equal() Failure
+&nbsp;&nbsp;Expected: NotFound
+&nbsp;&nbsp;Actual:   OK</pre>
+	</p>
+	<p>
+		This error message reports both problems, as we'd like it to do.
+	</p>
+	<p>
+		I also tried writing equivalent tests in F#, with and without Unquote, and they behave consistently with this result.
+	</p>
+	<p>
+		If I had to use something like <code>Assert.Multiple</code>, I'd trust the xUnit.net variant more than NUnit's implementation.
+	</p>
+	<h3 id="c51fb932618c4464a2e9be05869005d4">
+		Assertion scopes <a href="#c51fb932618c4464a2e9be05869005d4" title="permalink">#</a>
+	</h3>
+	<p>
+		Apparently, <a href="https://fluentassertions.com/">Fluent Assertions</a> offers yet another alternative.
+	</p>
+	<blockquote>
+		<p>
+			"Hey @ploeh, been reading your applicative assertion series. I recently discovered Assertion Scopes, so I'm wondering what is your take on them since it seems to me they are solving this problem in C# already. <a href="https://fluentassertions.com/introduction#assertion-scopes">https://fluentassertions.com/introduction#assertion-scopes</a></a>"
+		</p>
+		<footer><cite><a href="https://twitter.com/JernejGoricki/status/1597704973839904768">Jernej Gorički</a></cite></footer>
+	</blockquote>
+	<p>
+		The linked documentation contains this example:
+	</p>
+	<p>
+		<pre>[Fact]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;DocExample()
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">using</span>&nbsp;(<span style="color:blue;">new</span>&nbsp;AssertionScope())
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;5.Should().Be(10);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#a31515;">&quot;Actual&quot;</span>.Should().Be(<span style="color:#a31515;">&quot;Expected&quot;</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+	</p>
+	<p>
+		It fails in the expected manner:
+	</p>
+	<p>
+		<pre>Message:
+&nbsp;&nbsp;Expected value to be 10, but found 5 (difference of -5).
+&nbsp;&nbsp;Expected string to be "Expected" with a length of 8, but "Actual" has a length of 6,↩
+&nbsp;&nbsp;&nbsp;&nbsp;differs near "Act" (index 0).</pre>
+	</p>
+	<p>
+		How does it fare when subjected to the <code>EnsureSuccessStatusCode</code> test?
+	</p>
+	<p>
+		<pre>[Fact]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;HttpExample()
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;deleteResp&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;HttpResponseMessage(HttpStatusCode.BadRequest);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;getResp&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;HttpResponseMessage(HttpStatusCode.OK);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">using</span>&nbsp;(<span style="color:blue;">new</span>&nbsp;AssertionScope())
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;deleteResp.EnsureSuccessStatusCode();
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;getResp.StatusCode.Should().Be(HttpStatusCode.NotFound);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+	</p>
+	<p>
+		That test produces this error output:
+	</p>
+	<p>
+		<pre>Message:
+&nbsp;&nbsp;System.Net.Http.HttpRequestException :↩
+&nbsp;&nbsp;&nbsp;&nbsp;Response status code does not indicate success: 400 (Bad Request).</pre>
+	</p>
+	<p>
+		Again, <code>EnsureSuccessStatusCode</code> prevents further assertions from being evaluated. I can't say that I'm that surprised.
+	</p>
+	<h3 id="2f325809027243889d703e927a115efc">
+		Implicit or explicit <a href="#2f325809027243889d703e927a115efc" title="permalink">#</a>
+	</h3>
+	<p>
+		You might protest that using <code>EnsureSuccessStatusCode</code> and treating the resulting <code>HttpRequestException</code> as an assertion is unfair and unrealistic. Possibly. As usual, such considerations are subject to a multitude of considerations, and there's no one-size-fits-all answer.
+	</p>
+	<p>
+		My intent with this article isn't to attack or belittle the APIs I've examined. Rather, I wanted to explore their boundaries by stress testing them. That's one way to gain a better understanding. Being aware of an API's limitations and quirks can prevent subtle bugs.
+	</p>
+	<p>
+		Even if you'd <em>never</em> use <code>EnsureSuccessStatusCode</code> as an assertion, perhaps you or a colleague might inadvertently do something to the same effect.
+	</p>
+	<p>
+		I'm not surprised that both NUnit's <code>Assert.Multiple</code> and Fluent Assertions' <code>AssertionScope</code> behaves in a less consistent manner than xUnit.net's <code>Assert.Multiple</code>. The clue is in the API.
+	</p>
+	<p>
+		The xUnit.net API looks like this:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:blue;">void</span>&nbsp;<span style="color:#74531f;">Multiple</span>(<span style="color:blue;">params</span>&nbsp;Action[]&nbsp;<span style="color:#1f377f;">checks</span>)</pre>
+	</p>
+	<p>
+		Notice that each assertion is explicitly a separate action. This enables the implementation to isolate it and treat it independently of other actions.
+	</p>
+	<p>
+		Neither the NUnit nor the Fluent Assertions API is that explicit. Instead, you can write arbitrary code inside the 'scope' of multiple assertions. For <code>AssertionScope</code>, the notion of a 'scope' is plain to see. For the NUnit API it's more implicit, but the scope is effectively the extent of the method:
+	</p>
+	<p>
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:blue;">void</span>&nbsp;<span style="color:#74531f;">Multiple</span>(TestDelegate&nbsp;<span style="color:#1f377f;">testDelegate</span>)</pre>
+	</p>
+	<p>
+		That <code>testDelegate</code> can have as many (nested, even) assertions as you'd like, so the <code>Multiple</code> implementation needs to somehow demarcate when it begins and when it ends.
+	</p>
+	<p>
+		The <code>testDelegate</code> can be implemented in a different file, or even in a different library, and it has no way to communicate or coordinate with its surrounding scope. This reminds me of an Ambient Context, an idiom that <a href="/2019/01/21/some-thoughts-on-anti-patterns">Steven van Deursen convinced me was an anti-pattern</a>. The surrounding context changes the behaviour of the code block it surrounds, and it's quite implicit.
+	</p>
+	<blockquote>
+		<p>
+			Explicit is better than implicit.
+		</p>
+		<footer><cite>Tim Peters, <a href="https://peps.python.org/pep-0020/">The Zen of Python</a></cite></footer>
+	</blockquote>
+	<p>
+		The xUnit.net API, at least, looks a bit saner. Still, this kind of API is quirky enough that it reminds me of <a href="https://en.wikipedia.org/wiki/Greenspun%27s_tenth_rule">Greenspun's tenth rule</a>; that these APIs are ad-hoc, informally-specified, bug-ridden, slow implementations of half of <a href="/2018/10/01/applicative-functors">applicative functors</a>.
+	</p>
+	<h3 id="95b723f05a7f4b4c88b5e716f5f82989">
+		Conclusion <a href="#95b723f05a7f4b4c88b5e716f5f82989" title="permalink">#</a>
+	</h3>
+	<p>
+		Not surprisingly, popular unit-testing and assertion libraries come with facilities to compose assertions. Also, not surprisingly, these APIs are crude and require you to learn their implementation details.
+	</p>
+	<p>
+		Would I use them if I had to? I probably would. As <a href="https://www.infoq.com/presentations/Simple-Made-Easy/">Rich Hickey put it</a>, they're already <em>at hand</em>. That makes them easy, but not necessarily simple. APIs that compel you to learn their internal implementation details aren't simple.
+	</p>
+	<p>
+		<a href="/2017/10/04/from-design-patterns-to-category-theory">Universal abstractions</a>, on the other hand, you only have to learn one time. Once you understand what an applicative functor is, you know what to expect from it, and which capabilities it has.
+	</p>
+	<p>
+		In languages with good support for applicative functors, I would favour an assertion API based on that abstraction, if given a choice. At the moment, though, that's not much of an option. Even <a href="https://hackage.haskell.org/package/HUnit/docs/Test-HUnit-Base.html#t:Assertion">HUnit assertions</a> are based on side effects.
+	</p>
+</div>
