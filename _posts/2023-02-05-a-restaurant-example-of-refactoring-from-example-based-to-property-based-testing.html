@@ -1,0 +1,690 @@
+---
+layout: post
+title: "A restaurant example of refactoring from example-based to property-based testing"
+description: "A C# example with xUnit.net and FsCheck."
+date: 2023-02-05 10:21 UTC
+tags: [Unit Testing, Property-based Testing, FsCheck]
+---
+{% include JB/setup %}
+
+<div id="post">
+	<p>
+		<em>{{ page.description }}</em>
+	</p>
+    <p>
+        This is the second comprehensive example that accompanies the article <a href="">Epistemology of interaction testing</a>. In that article, I argue that in a code base that leans toward functional programming (FP), property-based testing is a better fit than interaction-based testing. In this example, I will show how to refactor realistic <a href="/2019/02/18/from-interaction-based-to-state-based-testing">state-based tests</a> into (state-based) property-based tests.
+    </p>
+    <p>
+        The <a href="">previous article</a> showed a <a href="https://en.wikipedia.org/wiki/Minimal_reproducible_example">minimal and self-contained example</a> that had the advantage of being simple, but the disadvantage of being perhaps too abstract and unrelatable. In this article, then, I will attempt to show a more realistic and concrete example. It actually doesn't start with interaction-based testing, since it's already written in the style of <a href="https://www.destroyallsoftware.com/screencasts/catalog/functional-core-imperative-shell">Functional Core, Imperative Shell</a>. On the other hand, it shows how to refactor from concrete example-based tests to property-based tests.
+    </p>
+    <p>
+        I'll use the online restaurant reservation code base that accompanies my book <a href="/2021/06/14/new-book-code-that-fits-in-your-head">Code That Fits in Your Head</a>.
+    </p>
+    <h3 id="e7aaa6310292411ab830de17f5906777">
+        Smoke test <a href="#e7aaa6310292411ab830de17f5906777">#</a>
+    </h3>
+    <p>
+        I'll start with a simple test which was, if I remember correctly, the second test I wrote for this code base. It was a smoke test that I wrote to drive a <a href="https://wiki.c2.com/?WalkingSkeleton">walking skeleton</a>. It verifies that if you post a valid reservation request to the system, you receive an HTTP response in the <code>200</code> range.
+    </p>
+    <p>
+        <pre>[Fact]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">async</span>&nbsp;Task&nbsp;<span style="font-weight:bold;color:#74531f;">PostValidReservation</span>()
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">using</span>&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">api</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;LegacyApi();
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">expected</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;ReservationDto
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;At&nbsp;=&nbsp;DateTime.Today.AddDays(778).At(19,&nbsp;0)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.ToIso8601DateTimeString(),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Email&nbsp;=&nbsp;<span style="color:#a31515;">&quot;katinka@example.com&quot;</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Name&nbsp;=&nbsp;<span style="color:#a31515;">&quot;Katinka&nbsp;Ingabogovinanana&quot;</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Quantity&nbsp;=&nbsp;2
+&nbsp;&nbsp;&nbsp;&nbsp;};
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">response</span>&nbsp;=&nbsp;<span style="color:blue;">await</span>&nbsp;api.PostReservation(expected);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;response.EnsureSuccessStatusCode();
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">actual</span>&nbsp;=&nbsp;<span style="color:blue;">await</span>&nbsp;response.ParseJsonContent&lt;ReservationDto&gt;();
+&nbsp;&nbsp;&nbsp;&nbsp;Assert.Equal(expected,&nbsp;actual,&nbsp;<span style="color:blue;">new</span>&nbsp;ReservationDtoComparer());
+}</pre>
+    </p>
+    <p>
+        Over the lifetime of the code base, I embellished and edited the test to reflect the evolution of the system as well as my understanding of it. Thus, when I wrote it, it may not have looked exactly like this. Even so, I kept it around even though other, more detailed tests eventually superseded it.
+    </p>
+    <p>
+        One characteristic of this test is that it's quite concrete. When I originally wrote it, I hard-coded the date and time as well. Later, however, <a href="/2021/01/11/waiting-to-happen">I discovered that I had to make the time relative to the system clock</a>. Thus, as you can see, the <code>At</code> property isn't a literal value, but all other properties (<code>Email</code>, <code>Name</code>, and <code>Quantity</code>) are.
+    </p>
+    <p>
+        This test is far from abstract or data-driven. Is it possible to turn such a test into a property-based test? Yes, I'll show you how.
+    </p>
+    <p>
+        A word of warning before we proceed: Tests with concrete, literal, easy-to-understand examples are valuable as programmer documentation. A person new to the code base can peruse such tests and learn about the system. Thus, this test is <em>already quite valuable as it is</em>. In a real, living code base, I'd prefer leaving it as it is, instead of turning it into a property-based test.
+    </p>
+    <p>
+        Since it's a simple and concrete test, on the other hand, it's easy to understand, and thus also a a good place to start. Thus, I'm going to refactor it into a property-based test; not because I think that you should (I don't), but because I think it'll be easy for you, the reader, to follow along. In other words, it's a good introduction to the process of turning a concrete test into a property-based test.
+    </p>
+    <h3 id="9dabcfae9e284a0ab9748cf817f4b2f9">
+        Adding parameters <a href="#9dabcfae9e284a0ab9748cf817f4b2f9">#</a>
+    </h3>
+    <p>
+        This code base already uses <a href="https://fscheck.github.io/FsCheck/">FsCheck</a> so it makes sense to stick to that framework for property-based testing. While it's written in <a href="https://fsharp.org/">F#</a> you can use it from C# as well. The easiest way to use it is as a parametrised test. This is possible with the <a href="https://www.nuget.org/packages/FsCheck.Xunit">FsCheck.Xunit</a> glue library. In fact, as I refactor the <code>PostValidReservation</code> test, it'll look much like the <a href="https://github.com/AutoFixture/AutoFixture">AutoFixture</a>-driven tests from <a href="">the previous article</a>.
+    </p>
+    <p>
+        When turning concrete examples into properties, it helps to consider whether literal values are representative of an equivalence class. In other words, is that particular value important, or is there a wider set of values that would be just as good? For example, why is the test making a reservation 778 days in the future? Why not 777 or 779? Is the value <em>778</em> important? Not really. What's important is that the reservation is in the future. How far in the future actually isn't important. Thus, we can replace the literal value <code>778</code> with a parameter:
+    </p>
+    <p>
+        <pre>[Property]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">async</span>&nbsp;Task&nbsp;<span style="font-weight:bold;color:#74531f;">PostValidReservation</span>(PositiveInt&nbsp;<span style="font-weight:bold;color:#1f377f;">days</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">using</span>&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">api</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;LegacyApi();
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">expected</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;ReservationDto
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;At&nbsp;=&nbsp;DateTime.Today.AddDays((<span style="color:blue;">int</span>)days).At(19,&nbsp;0)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.ToIso8601DateTimeString(),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;The&nbsp;rest&nbsp;of&nbsp;the&nbsp;test...</span></pre>
+    </p>
+    <p>
+        Notice that I've replaced the literal value <code>778</code> with the method parameter <code>days</code>. The <code>PositiveInt</code> type is a type from FsCheck. It's a wrapper around <code>int</code> that guarantees that the value is positive. This is important because we don't want to make a reservation in the past. The <code>PositiveInt</code> type is a good choice because it's a type that's already available with FsCheck, and the framework knows how to generate valid values. Since it's a wrapper, though, the test needs to unwrap the value before using it. This is done with the <code>(int)days</code> cast.
+    </p>
+    <p>
+        Notice, also, that I've replaced the <code>[Fact]</code> attribute with the <code>[Property]</code> attribute that comes with FsCheck.Xunit. This is what enables FsCheck to automatically generate test cases and feed them to the test method. You can't always do this, as you'll see later, but when you can, it's a nice and succinct way to express a property-based test.
+    </p>
+    <p>
+        Already, the <code>PostValidReservation</code> test method is 100 test cases (the FsCheck default), rather than one.
+    </p>
+    <p>
+        What about <code>Email</code> and <code>Name</code>? Is it important for the test that these values are exactly <em>katinka@example.com</em> and <em>Katinka Ingabogovinanana</em> or might other values do? The answer is that it's not important. What's important is that the values are valid, and essentially any non-null string is. Thus, we can replace the literal values with parameters:
+    </p>
+    <p>
+        <pre>[Property]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">async</span>&nbsp;Task&nbsp;<span style="font-weight:bold;color:#74531f;">PostValidReservation</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;PositiveInt&nbsp;<span style="font-weight:bold;color:#1f377f;">days</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;StringNoNulls&nbsp;<span style="font-weight:bold;color:#1f377f;">email</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;StringNoNulls&nbsp;<span style="font-weight:bold;color:#1f377f;">name</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">using</span>&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">api</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;LegacyApi();
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">expected</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;ReservationDto
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;At&nbsp;=&nbsp;DateTime.Today.AddDays((<span style="color:blue;">int</span>)days).At(19,&nbsp;0)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.ToIso8601DateTimeString(),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Email&nbsp;=&nbsp;email.Item,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Name&nbsp;=&nbsp;name.Item,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Quantity&nbsp;=&nbsp;2
+&nbsp;&nbsp;&nbsp;&nbsp;};
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">response</span>&nbsp;=&nbsp;<span style="color:blue;">await</span>&nbsp;api.PostReservation(expected);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;response.EnsureSuccessStatusCode();
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">actual</span>&nbsp;=&nbsp;<span style="color:blue;">await</span>&nbsp;response.ParseJsonContent&lt;ReservationDto&gt;();
+&nbsp;&nbsp;&nbsp;&nbsp;Assert.Equal(expected,&nbsp;actual,&nbsp;<span style="color:blue;">new</span>&nbsp;ReservationDtoComparer());
+}</pre>
+    </p>
+    <p>
+        The <code>StringNoNulls</code> type is another FsCheck wrapper, this time around <code>string</code>. It ensures that FsCheck will generate no null strings. This time, however, a cast isn't possible, so instead I had to pull the wrapped string out of the value with the <code>Item</code> property.
+    </p>
+    <p>
+        That's enough conversion to illustrate the process.
+    </p>
+    <p>
+        What about the literal values <em>19</em>, <em>0</em>, or <em>2?</em> Shouldn't we parametrise those as well? While we could, that takes a bit more effort. The problem is that with these values, any old positive integer isn't going to work. For example, the number <em>19</em> is the hour component of the reservation time; that is, the reservation is for 19:00. Clearly, we can't just let FsCheck generate any positive integer, because most integers aren't going to work. For example, <em>5</em> doesn't work because it's in the early morning, and the restaurant isn't open at that time.
+    </p>
+    <p>
+        Like other property-based testing frameworks FsCheck has an API that enables you to constrain value generation, but it doesn't work with the type-based approach I've used so far. Unlike <code>PositiveInt</code> there's no <code>TimeBetween16And21</code> wrapper type.
+    </p>
+    <p>
+        You'll see what you can do to control how FsCheck generates values, but I'll use another test for that.
+    </p>
+    <h3 id="80844424b40a48f4931c78d91d865323">
+        Parametrised unit test <a href="#80844424b40a48f4931c78d91d865323">#</a>
+    </h3>
+    <p>
+        The <code>PostValidReservation</code> test is a high-level smoke test that gives you an idea about how the system works. It doesn't, however, reveal much about the possible variations in input. To drive such behaviour, I wrote and evolved the following state-based test:
+    </p>
+    <p>
+        <pre>[Theory]
+[InlineData(1049,&nbsp;19,&nbsp;00,&nbsp;<span style="color:#a31515;">&quot;juliad@example.net&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;Julia&nbsp;Domna&quot;</span>,&nbsp;5)]
+[InlineData(1130,&nbsp;18,&nbsp;15,&nbsp;<span style="color:#a31515;">&quot;x@example.com&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;Xenia&nbsp;Ng&quot;</span>,&nbsp;9)]
+[InlineData(&nbsp;956,&nbsp;16,&nbsp;55,&nbsp;<span style="color:#a31515;">&quot;kite@example.edu&quot;</span>,&nbsp;<span style="color:blue;">null</span>,&nbsp;2)]
+[InlineData(&nbsp;433,&nbsp;17,&nbsp;30,&nbsp;<span style="color:#a31515;">&quot;shli@example.org&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;Shanghai&nbsp;Li&quot;</span>,&nbsp;5)]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">async</span>&nbsp;Task&nbsp;<span style="font-weight:bold;color:#74531f;">PostValidReservationWhenDatabaseIsEmpty</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">int</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">days</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">int</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">hours</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">int</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">minutes</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">string</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">email</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">string</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">name</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">int</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">quantity</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">at</span>&nbsp;=&nbsp;DateTime.Now.Date&nbsp;+&nbsp;<span style="color:blue;">new</span>&nbsp;TimeSpan(days,&nbsp;hours,&nbsp;minutes,&nbsp;0);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">db</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;FakeDatabase();
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">sut</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;ReservationsController(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;SystemClock(),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;InMemoryRestaurantDatabase(Grandfather.Restaurant),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;db);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">expected</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;Reservation(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;Guid(<span style="color:#a31515;">&quot;B50DF5B1-F484-4D99-88F9-1915087AF568&quot;</span>),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;at,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;Email(email),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;Name(name&nbsp;??&nbsp;<span style="color:#a31515;">&quot;&quot;</span>),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;quantity);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">await</span>&nbsp;sut.Post(expected.ToDto());
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;Assert.Contains(expected,&nbsp;db.Grandfather);
+}</pre>
+    </p>
+    <p>
+        This test gives more details, without exercising all possible code paths of the system. It's still a <a href="/2012/06/27/FacadeTest">Facade Test</a> that covers 'just enough' of the integration with underlying components to provide confidence that things work as they should. All the business logic is implemented by a class called <code>MaitreD</code>, which is covered by its own set of targeted unit tests.
+    </p>
+    <p>
+        While parametrised, this is still only four test cases, so perhaps you don't have sufficient confidence that everything works as it should. Perhaps, as I've outlined in <a href="">the introductory article</a>, it would help if we converted it to an FsCheck property.
+    </p>
+    <h3 id="707d58026e914b708e6394b5d1d2abad">
+        Parametrised property <a href="#707d58026e914b708e6394b5d1d2abad">#</a>
+    </h3>
+    <p>
+        I find it safest to refactor this parametrised test to a property in a series of small steps. This implies that I need to keep the <code>[InlineData]</code> attributes around for a while longer, removing one or two literal values at a time, turning them into randomly generated values.
+    </p>
+    <p>
+        From the previous test we know that the <code>Email</code> and <code>Name</code> values are almost unconstrained. This means that they are trivial in themselves to have FsCheck generate. That change, in itself, is easy, which is good, because combining an <code>[InlineData]</code>-driven <code>[Theory]</code> with an FsCheck property is enough of a mouthful for one refactoring step:
+    </p>
+    <p>
+        <pre>[Theory]
+[InlineData(1049,&nbsp;19,&nbsp;00,&nbsp;5)]
+[InlineData(1130,&nbsp;18,&nbsp;15,&nbsp;9)]
+[InlineData(&nbsp;956,&nbsp;16,&nbsp;55,&nbsp;2)]
+[InlineData(&nbsp;433,&nbsp;17,&nbsp;30,&nbsp;5)]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;<span style="font-weight:bold;color:#74531f;">PostValidReservationWhenDatabaseIsEmpty</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">int</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">days</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">int</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">hours</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">int</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">minutes</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">int</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">quantity</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;Prop.ForAll(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(<span style="color:blue;">from</span>&nbsp;r&nbsp;<span style="color:blue;">in</span>&nbsp;Gens.Reservation
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">select</span>&nbsp;r).ToArbitrary(),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">async</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">r</span>&nbsp;=&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">at</span>&nbsp;=&nbsp;DateTime.Now.Date&nbsp;+&nbsp;<span style="color:blue;">new</span>&nbsp;TimeSpan(days,&nbsp;hours,&nbsp;minutes,&nbsp;0);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">db</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;FakeDatabase();
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">sut</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;ReservationsController(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;SystemClock(),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;InMemoryRestaurantDatabase(Grandfather.Restaurant),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;db);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">expected</span>&nbsp;=&nbsp;r
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.WithQuantity(quantity)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.WithDate(at);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">await</span>&nbsp;sut.Post(expected.ToDto());
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Assert.Contains(expected,&nbsp;db.Grandfather);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;}).QuickCheckThrowOnFailure();
+}</pre>
+    </p>
+    <p>
+        I've now managed to get rid of the <code>email</code> and <code>name</code> parameters, so I've also removed those values from the <code>[InlineData]</code> attributes. Instead, I've asked FsCheck to generate a valid reservation <code>r</code>, which comes with both valid <code>Email</code> and <code>Name</code>.
+    </p>
+    <p>
+        It turned out that this code base already had some custom generators in a static class called <code>Gens</code>, so I reused those:
+    </p>
+    <p>
+        <pre><span style="color:blue;">internal</span>&nbsp;<span style="color:blue;">static</span>&nbsp;Gen&lt;Email&gt;&nbsp;Email&nbsp;=&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">from</span>&nbsp;s&nbsp;<span style="color:blue;">in</span>&nbsp;ArbMap.Default.GeneratorFor&lt;NonWhiteSpaceString&gt;()
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">select</span>&nbsp;<span style="color:blue;">new</span>&nbsp;Email(s.Item);
+ 
+<span style="color:blue;">internal</span>&nbsp;<span style="color:blue;">static</span>&nbsp;Gen&lt;Name&gt;&nbsp;Name&nbsp;=&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">from</span>&nbsp;s&nbsp;<span style="color:blue;">in</span>&nbsp;ArbMap.Default.GeneratorFor&lt;StringNoNulls&gt;()
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">select</span>&nbsp;<span style="color:blue;">new</span>&nbsp;Name(s.Item);
+ 
+<span style="color:blue;">internal</span>&nbsp;<span style="color:blue;">static</span>&nbsp;Gen&lt;Reservation&gt;&nbsp;Reservation&nbsp;=&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">from</span>&nbsp;id&nbsp;<span style="color:blue;">in</span>&nbsp;ArbMap.Default.GeneratorFor&lt;Guid&gt;()
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">from</span>&nbsp;d&nbsp;<span style="color:blue;">in</span>&nbsp;ArbMap.Default.GeneratorFor&lt;DateTime&gt;()
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">from</span>&nbsp;e&nbsp;<span style="color:blue;">in</span>&nbsp;Email
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">from</span>&nbsp;n&nbsp;<span style="color:blue;">in</span>&nbsp;Name
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">from</span>&nbsp;q&nbsp;<span style="color:blue;">in</span>&nbsp;ArbMap.Default.GeneratorFor&lt;PositiveInt&gt;()
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">select</span>&nbsp;<span style="color:blue;">new</span>&nbsp;Reservation(id,&nbsp;d,&nbsp;e,&nbsp;n,&nbsp;q.Item);</pre>
+    </p>
+    <p>
+        As was also the case with <a href="https://github.com/AnthonyLloyd/CsCheck">CsCheck</a> you typically use <a href="/2022/03/28/monads">syntactic sugar for monads</a> (which in C# is query syntax) to compose complex <a href="" hint-to-self="Test Data generator monad">test data generators</a> from simpler generators. This enables me to generate an entire <code>Reservation</code> object with a single expression.
+    </p>
+    <h3 id="05d4d9e8c07b4162bd1b65347200456f">
+        Time of day <a href="#05d4d9e8c07b4162bd1b65347200456f">#</a>
+    </h3>
+    <p>
+        Some of the values (such as the reservation's name and email address) that are involved in the <code>PostValidReservationWhenDatabaseIsEmpty</code> test don't really matter. Other values are constrained in some way. Even for the reservation <code>r</code> the above version of the test has to override the arbitrarily generated <code>r</code> value with a specific <code>quantity</code> and a specific <code>at</code> value. This is because you can't just reserve any quantity at any time of day. The restaurant has opening hours and actual tables. Most likely, it doesn't have a table for 100 people at 3 in the morning.
+    </p>
+    <p>
+        This particular test actually exercises a particular restaurant called <code>Grandfather.Restaurant</code> (because it was the original restaurant that was <a href="https://en.wikipedia.org/wiki/Grandfather_clause">grandfathered in</a> when the system was expanded to a multi-tenant system). It opens at 16 and has the last seating at 21. This means that the <code>at</code> value has to be between 16 and 21. What's the best way to generate a <code>DateTime</code> value that satisfies this constraint?
+    </p>
+    <p>
+        You could, naively, ask FsCheck to generate an integer between these two values. You'll see how to do that when we get to the <code>quantity</code>. While that would work for the <code>at</code> value, it would only generate the whole hours <em>16:00</em>, <em>17:00</em>, <em>18:00</em>, etcetera. It would be nice if the test could also exercise times such as <em>18:30</em>, <em>20:45</em>, and so on. On the other hand, perhaps we don't want weird reservation times such as <em>17:09:23.282</em>. How do we tell FsCheck to generate a <code>DateTime</code> value like that?
+    </p>
+    <p>
+        It's definitely possible to do from scratch, but I chose to do something else. The following shows how test code and production code can co-exist in a symbiotic relationship. The main business logic component that deals with reservations in the system is a class called <code>MaitreD</code>. One of its methods is used to generate a list of time slots for every day. A user interface can use that list to populate a drop-down list of available times. The method is called <code>Segment</code> and can also be used as a data source for an FsCheck test data generator:
+    </p>
+    <p>
+        <pre><span style="color:blue;">internal</span>&nbsp;<span style="color:blue;">static</span>&nbsp;Gen&lt;TimeSpan&gt;&nbsp;<span style="color:#74531f;">ReservationTime</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;Restaurant&nbsp;<span style="font-weight:bold;color:#1f377f;">restaurant</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;DateTime&nbsp;<span style="font-weight:bold;color:#1f377f;">date</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">slots</span>&nbsp;=&nbsp;restaurant.MaitreD
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.Segment(date,&nbsp;Enumerable.Empty&lt;Reservation&gt;())
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.Select(<span style="font-weight:bold;color:#1f377f;">ts</span>&nbsp;=&gt;&nbsp;ts.At.TimeOfDay);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;Gen.Elements(slots);
+}</pre>
+    </p>
+    <p>
+        The <code>Gen.Elements</code> function is an FsCheck combinator that randomly picks a value from a collection. This one, then, picks one of the <code>DataTime</code> values generated by <code>MaitreD.Segment</code>.
+    </p>
+    <p>
+        The <code>PostValidReservationWhenDatabaseIsEmpty</code> test can now use the <code>ReservationTime</code> generator to produce a time of day:
+    </p>
+    <p>
+        <pre>[Theory]
+[InlineData(5)]
+[InlineData(9)]
+[InlineData(2)]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;<span style="font-weight:bold;color:#74531f;">PostValidReservationWhenDatabaseIsEmpty</span>(<span style="color:blue;">int</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">quantity</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">today</span>&nbsp;=&nbsp;DateTime.Now.Date;
+&nbsp;&nbsp;&nbsp;&nbsp;Prop.ForAll(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(<span style="color:blue;">from</span>&nbsp;days&nbsp;<span style="color:blue;">in</span>&nbsp;ArbMap.Default.GeneratorFor&lt;PositiveInt&gt;()
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">from</span>&nbsp;t&nbsp;<span style="color:blue;">in</span>&nbsp;Gens.ReservationTime(Grandfather.Restaurant,&nbsp;today)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;offset&nbsp;=&nbsp;TimeSpan.FromDays((<span style="color:blue;">int</span>)days)&nbsp;+&nbsp;t
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">from</span>&nbsp;r&nbsp;<span style="color:blue;">in</span>&nbsp;Gens.Reservation
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">select</span>&nbsp;(r,&nbsp;offset)).ToArbitrary(),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">async</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">t</span>&nbsp;=&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">at</span>&nbsp;=&nbsp;today&nbsp;+&nbsp;t.offset;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">db</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;FakeDatabase();
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">sut</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;ReservationsController(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;SystemClock(),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;InMemoryRestaurantDatabase(Grandfather.Restaurant),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;db);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">expected</span>&nbsp;=&nbsp;t.r
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.WithQuantity(quantity)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.WithDate(at);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">await</span>&nbsp;sut.Post(expected.ToDto());
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Assert.Contains(expected,&nbsp;db.Grandfather);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;}).QuickCheckThrowOnFailure();
+}</pre>
+    </p>
+    <p>
+        Granted, the test code is getting more and more busy, but there's room for improvement. Before I simplify it, though, I think that it's more prudent to deal with the remaining literal values.
+    </p>
+    <p>
+        Notice that the <code>InlineData</code> attributes now only supply a single value each: The <code>quantity</code>.
+    </p>
+    <h3 id="e551e156b8344bc0bd5379084bd8a7ed">
+        Quantity <a href="#e551e156b8344bc0bd5379084bd8a7ed">#</a>
+    </h3>
+    <p>
+        Like the <code>at</code> value, the <code>quantity</code> is constrained. It must be a positive integer, but it can't be larger than the largest table in the restaurant. That number, however, isn't that hard to find:
+    </p>
+    <p>
+        <pre><span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">maxCapacity</span>&nbsp;=&nbsp;restaurant.MaitreD.Tables.Max(<span style="font-weight:bold;color:#1f377f;">t</span>&nbsp;=&gt;&nbsp;t.Capacity);</pre>
+    </p>
+    <p>
+        The FsCheck API includes a function that generates a random number within a given range. It's called <code>Gen.Choose</code>, and now that we know the range, we can use it to generate the <code>quantity</code> value. Here, I'm only showing the test-data-generator part of the test, since the rest doesn't change that much. You'll see the full test again after a few more refactorings.
+    </p>
+    <p>
+        <pre><span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">today</span>&nbsp;=&nbsp;DateTime.Now.Date;
+<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">restaurant</span>&nbsp;=&nbsp;Grandfather.Restaurant;
+<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">maxCapacity</span>&nbsp;=&nbsp;restaurant.MaitreD.Tables.Max(<span style="font-weight:bold;color:#1f377f;">t</span>&nbsp;=&gt;&nbsp;t.Capacity);
+Prop.ForAll(
+&nbsp;&nbsp;&nbsp;&nbsp;(<span style="color:blue;">from</span>&nbsp;days&nbsp;<span style="color:blue;">in</span>&nbsp;ArbMap.Default.GeneratorFor&lt;PositiveInt&gt;()
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">from</span>&nbsp;t&nbsp;<span style="color:blue;">in</span>&nbsp;Gens.ReservationTime(restaurant,&nbsp;today)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;offset&nbsp;=&nbsp;TimeSpan.FromDays((<span style="color:blue;">int</span>)days)&nbsp;+&nbsp;t
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">from</span>&nbsp;quantity&nbsp;<span style="color:blue;">in</span>&nbsp;Gen.Choose(1,&nbsp;maxCapacity)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">from</span>&nbsp;r&nbsp;<span style="color:blue;">in</span>&nbsp;Gens.Reservation
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">select</span>&nbsp;(r.WithQuantity(quantity),&nbsp;offset)).ToArbitrary(),</pre>
+    </p>
+    <p>
+        There are now no more literal values in the test. In a sense, the refactoring from parametrised test to property-based test is complete. It could do with a bit of cleanup, though.
+    </p>
+    <h3 id="53494d59981c4c32b0dbbd93aa857874">
+        Simplification <a href="#53494d59981c4c32b0dbbd93aa857874">#</a>
+    </h3>
+    <p>
+        There's no longer any need to pass along the <code>offset</code> variable, and the explicit <code>QuickCheckThrowOnFailure</code> also seems a bit redundant. I can use the <code>[Property]</code> attribute from FsCheck.Xunit instead.
+    </p>
+    <p>
+        <pre>[Property]
+<span style="color:blue;">public</span>&nbsp;Property&nbsp;<span style="font-weight:bold;color:#74531f;">PostValidReservationWhenDatabaseIsEmpty</span>()
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">today</span>&nbsp;=&nbsp;DateTime.Now.Date;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">restaurant</span>&nbsp;=&nbsp;Grandfather.Restaurant;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">maxCapacity</span>&nbsp;=&nbsp;restaurant.MaitreD.Tables.Max(<span style="font-weight:bold;color:#1f377f;">t</span>&nbsp;=&gt;&nbsp;t.Capacity);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;Prop.ForAll(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(<span style="color:blue;">from</span>&nbsp;days&nbsp;<span style="color:blue;">in</span>&nbsp;ArbMap.Default.GeneratorFor&lt;PositiveInt&gt;()
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">from</span>&nbsp;t&nbsp;<span style="color:blue;">in</span>&nbsp;Gens.ReservationTime(restaurant,&nbsp;today)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;at&nbsp;=&nbsp;today&nbsp;+&nbsp;TimeSpan.FromDays((<span style="color:blue;">int</span>)days)&nbsp;+&nbsp;t
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">from</span>&nbsp;quantity&nbsp;<span style="color:blue;">in</span>&nbsp;Gen.Choose(1,&nbsp;maxCapacity)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">from</span>&nbsp;r&nbsp;<span style="color:blue;">in</span>&nbsp;Gens.Reservation
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">select</span>&nbsp;r.WithQuantity(quantity).WithDate(at)).ToArbitrary(),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">async</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">expected</span>&nbsp;=&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">db</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;FakeDatabase();
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">sut</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;ReservationsController(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;SystemClock(),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;InMemoryRestaurantDatabase(restaurant),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;db);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">await</span>&nbsp;sut.Post(expected.ToDto());
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Assert.Contains(expected,&nbsp;db.Grandfather);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;});
+}</pre>
+    </p>
+    <p>
+        Compared to the initial version of the test, it has become more top-heavy. It's about the same size, though. The original version was 30 lines of code. This version is only 26 lines of code, but it is admittedly more information-dense. The original version had more 'noise' interleaved with the 'signal'. The new variation actually has a better separation of data generation and the test itself. Consider the 'actual' test code:
+    </p>
+    <p>
+        <pre><span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">db</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;FakeDatabase();
+<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">sut</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;ReservationsController(
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;SystemClock(),
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;InMemoryRestaurantDatabase(restaurant),
+&nbsp;&nbsp;&nbsp;&nbsp;db);
+ 
+<span style="color:blue;">await</span>&nbsp;sut.Post(expected.ToDto());
+ 
+Assert.Contains(expected,&nbsp;db.Grandfather);</pre>
+    </p>
+    <p>
+        If we could somehow separate the data generation from the test itself, we might have something that was quite readable.
+    </p>
+    <h3 id="a23c68b065d140c588e30bd1db228879">
+        Extract test data generator <a href="#a23c68b065d140c588e30bd1db228879">#</a>
+    </h3>
+    <p>
+        The above data generation consists of a bit of initialisation and a query expression. Like all <a href="https://en.wikipedia.org/wiki/Pure_function">pure functions</a> it's easy to extract:
+    </p>
+    <p>
+        <pre><span style="color:blue;">private</span>&nbsp;<span style="color:blue;">static</span>&nbsp;Gen&lt;(Restaurant,&nbsp;Reservation)&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#74531f;">GenValidReservationForEmptyDatabase</span>()
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">today</span>&nbsp;=&nbsp;DateTime.Now.Date;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">restaurant</span>&nbsp;=&nbsp;Grandfather.Restaurant;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">capacity</span>&nbsp;=&nbsp;restaurant.MaitreD.Tables.Max(<span style="font-weight:bold;color:#1f377f;">t</span>&nbsp;=&gt;&nbsp;t.Capacity);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">from</span>&nbsp;days&nbsp;<span style="color:blue;">in</span>&nbsp;ArbMap.Default.GeneratorFor&lt;PositiveInt&gt;()
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">from</span>&nbsp;t&nbsp;<span style="color:blue;">in</span>&nbsp;Gens.ReservationTime(restaurant,&nbsp;today)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;at&nbsp;=&nbsp;today&nbsp;+&nbsp;TimeSpan.FromDays((<span style="color:blue;">int</span>)days)&nbsp;+&nbsp;t
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">from</span>&nbsp;quantity&nbsp;<span style="color:blue;">in</span>&nbsp;Gen.Choose(1,&nbsp;capacity)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">from</span>&nbsp;r&nbsp;<span style="color:blue;">in</span>&nbsp;Gens.Reservation
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">select</span>&nbsp;(restaurant,&nbsp;r.WithQuantity(quantity).WithDate(at));
+}</pre>
+    </p>
+    <p>
+        While it's quite specialised, it leaves the test itself small and readable:
+    </p>
+    <p>
+        <pre>[Property]
+<span style="color:blue;">public</span>&nbsp;Property&nbsp;<span style="font-weight:bold;color:#74531f;">PostValidReservationWhenDatabaseIsEmpty</span>()
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;Prop.ForAll(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;GenValidReservationForEmptyDatabase().ToArbitrary(),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">async</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">t</span>&nbsp;=&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;var&nbsp;(<span style="font-weight:bold;color:#1f377f;">restaurant</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">expected</span>)&nbsp;=&nbsp;t;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">db</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;FakeDatabase();
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">sut</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;ReservationsController(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;SystemClock(),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;InMemoryRestaurantDatabase(restaurant),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;db);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">await</span>&nbsp;sut.Post(expected.ToDto());
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Assert.Contains(expected,&nbsp;db[restaurant.Id]);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;});
+}</pre>
+    </p>
+    <p>
+        That's not the only way to separate test and data generation.
+    </p>
+    <h3 id="39343db1a22c4d0c93dbfb74e3af6689">
+        Test as implementation detail <a href="#39343db1a22c4d0c93dbfb74e3af6689">#</a>
+    </h3>
+    <p>
+        The above separation refactors the data-generating expression to a private helper function. Alternatively you can keep all that FsCheck infrastructure code in the public test method and extract the test body itself to a private helper method:
+    </p>
+    <p>
+        <pre>[Property]
+<span style="color:blue;">public</span>&nbsp;Property&nbsp;<span style="font-weight:bold;color:#74531f;">PostValidReservationWhenDatabaseIsEmpty</span>()
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">today</span>&nbsp;=&nbsp;DateTime.Now.Date;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">restaurant</span>&nbsp;=&nbsp;Grandfather.Restaurant;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">capacity</span>&nbsp;=&nbsp;restaurant.MaitreD.Tables.Max(<span style="font-weight:bold;color:#1f377f;">t</span>&nbsp;=&gt;&nbsp;t.Capacity);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">g</span>&nbsp;=&nbsp;<span style="color:blue;">from</span>&nbsp;days&nbsp;<span style="color:blue;">in</span>&nbsp;ArbMap.Default.GeneratorFor&lt;PositiveInt&gt;()
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">from</span>&nbsp;t&nbsp;<span style="color:blue;">in</span>&nbsp;Gens.ReservationTime(restaurant,&nbsp;today)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;at&nbsp;=&nbsp;today&nbsp;+&nbsp;TimeSpan.FromDays((<span style="color:blue;">int</span>)days)&nbsp;+&nbsp;t
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">from</span>&nbsp;quantity&nbsp;<span style="color:blue;">in</span>&nbsp;Gen.Choose(1,&nbsp;capacity)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">from</span>&nbsp;r&nbsp;<span style="color:blue;">in</span>&nbsp;Gens.Reservation
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">select</span>&nbsp;(restaurant,&nbsp;r.WithQuantity(quantity).WithDate(at));
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;Prop.ForAll(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;g.ToArbitrary(),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">t</span>&nbsp;=&gt;&nbsp;PostValidReservationWhenDatabaseIsEmptyImp(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;t.restaurant,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;t.Item2));
+}</pre>
+    </p>
+    <p>
+        At first glance, that doesn't look like an improvement, but it has the advantage that the actual test method is now devoid of FsCheck details. If we use that as a yardstick for how decoupled the test is from FsCheck, this seems cleaner.
+    </p>
+    <p>
+        <pre><span style="color:blue;">private</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:blue;">async</span>&nbsp;Task&nbsp;<span style="color:#74531f;">PostValidReservationWhenDatabaseIsEmptyImp</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;Restaurant&nbsp;<span style="font-weight:bold;color:#1f377f;">restaurant</span>,&nbsp;Reservation&nbsp;<span style="font-weight:bold;color:#1f377f;">expected</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">db</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;FakeDatabase();
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">sut</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;ReservationsController(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;SystemClock(),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;InMemoryRestaurantDatabase(restaurant),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;db);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">await</span>&nbsp;sut.Post(expected.ToDto());
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;Assert.Contains(expected,&nbsp;db[restaurant.Id]);
+}</pre>
+    </p>
+    <p>
+        Using a property-based testing framework in C# is still more awkward than in a language with better support for monadic composition and pattern matching. That said, more recent versions of C# do have better pattern matching on tuples, but this code base is still on C# 8.
+    </p>
+    <p>
+        If you still think that this looks more complicated than the initial version of the test, then I agree. Property-based testing isn't free, but you get something in return. We started with four test cases and ended with 100. And that's just the default. If you want to increase the number of test cases, that's just an API call away. You could run 1,000 or 10,000 test cases if you wanted to. The only real downside is that the tests take longer to run.
+    </p>
+    <h3 id="624f8d06db274e54b76af869f1a790c5">
+        Unhappy paths <a href="#624f8d06db274e54b76af869f1a790c5">#</a>
+    </h3>
+    <p>
+        The tests above all test the happy path. A valid request arrives and the system is in a state where it can accept it. This small article series is, you may recall, a response to an email from Sergei Rogovtsev. In his email, he mentioned the need to test both happy path and various error scenarios. Let's cover a few before wrapping up.
+    </p>
+    <p>
+        As I was developing the system and fleshing out its behaviour, I evolved this parametrised test:
+    </p>
+    <p>
+        <pre>[Theory]
+[InlineData(<span style="color:blue;">null</span>,&nbsp;<span style="color:#a31515;">&quot;j@example.net&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;Jay&nbsp;Xerxes&quot;</span>,&nbsp;1)]
+[InlineData(<span style="color:#a31515;">&quot;not&nbsp;a&nbsp;date&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;w@example.edu&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;Wk&nbsp;Hd&quot;</span>,&nbsp;8)]
+[InlineData(<span style="color:#a31515;">&quot;2023-11-30&nbsp;20:01&quot;</span>,&nbsp;<span style="color:blue;">null</span>,&nbsp;<span style="color:#a31515;">&quot;Thora&quot;</span>,&nbsp;19)]
+[InlineData(<span style="color:#a31515;">&quot;2022-01-02&nbsp;12:10&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;3@example.org&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;3&nbsp;Beard&quot;</span>,&nbsp;0)]
+[InlineData(<span style="color:#a31515;">&quot;2045-12-31&nbsp;11:45&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;git@example.com&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;Gil&nbsp;Tan&quot;</span>,&nbsp;-1)]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">async</span>&nbsp;Task&nbsp;<span style="font-weight:bold;color:#74531f;">PostInvalidReservation</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">string</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">at</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">string</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">email</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">string</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">name</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">int</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">quantity</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">using</span>&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">api</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;LegacyApi();
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">response</span>&nbsp;=&nbsp;<span style="color:blue;">await</span>&nbsp;api.PostReservation(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;{&nbsp;at,&nbsp;email,&nbsp;name,&nbsp;quantity&nbsp;});
+&nbsp;&nbsp;&nbsp;&nbsp;Assert.Equal(HttpStatusCode.BadRequest,&nbsp;response.StatusCode);
+}</pre>
+    </p>
+    <p>
+        The test body itself is about as minimal as it can be. There are four test cases that I added one or two at a time.
+    </p>
+    <ul>
+        <li>The first test case covers what happens if the <code>at</code> value is missing (i.e. null)</li>
+        <li>The next test case covers a malformed <code>at</code> value</li>
+        <li>The third test case covers a missing email address</li>
+        <li>The two last test cases covers non-positive quantities, both <em>0</em> and a negative number</li>
+    </ul>
+    <p>
+        It's possible to combine FsCheck generators that deal with each of these cases, but here I want to demonstrate how it's still possible to keep each error case separate, if that's what you need. First, separate the test body from its data source, like I did above:
+    </p>
+    <p>
+        <pre>[Theory]
+[InlineData(<span style="color:blue;">null</span>,&nbsp;<span style="color:#a31515;">&quot;j@example.net&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;Jay&nbsp;Xerxes&quot;</span>,&nbsp;1)]
+[InlineData(<span style="color:#a31515;">&quot;not&nbsp;a&nbsp;date&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;w@example.edu&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;Wk&nbsp;Hd&quot;</span>,&nbsp;8)]
+[InlineData(<span style="color:#a31515;">&quot;2023-11-30&nbsp;20:01&quot;</span>,&nbsp;<span style="color:blue;">null</span>,&nbsp;<span style="color:#a31515;">&quot;Thora&quot;</span>,&nbsp;19)]
+[InlineData(<span style="color:#a31515;">&quot;2022-01-02&nbsp;12:10&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;3@example.org&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;3&nbsp;Beard&quot;</span>,&nbsp;0)]
+[InlineData(<span style="color:#a31515;">&quot;2045-12-31&nbsp;11:45&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;git@example.com&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;Gil&nbsp;Tan&quot;</span>,&nbsp;-1)]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">async</span>&nbsp;Task&nbsp;<span style="font-weight:bold;color:#74531f;">PostInvalidReservation</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">string</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">at</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">string</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">email</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">string</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">name</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">int</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">quantity</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">await</span>&nbsp;PostInvalidReservationImp(at,&nbsp;email,&nbsp;name,&nbsp;quantity);
+}
+ 
+<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:blue;">async</span>&nbsp;Task&nbsp;<span style="color:#74531f;">PostInvalidReservationImp</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">string</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">at</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">string</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">email</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">string</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">name</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">int</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">quantity</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">using</span>&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">api</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;LegacyApi();
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">response</span>&nbsp;=&nbsp;<span style="color:blue;">await</span>&nbsp;api.PostReservation(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;{&nbsp;at,&nbsp;email,&nbsp;name,&nbsp;quantity&nbsp;});
+&nbsp;&nbsp;&nbsp;&nbsp;Assert.Equal(HttpStatusCode.BadRequest,&nbsp;response.StatusCode);
+}</pre>
+    </p>
+    <p>
+        If you consider this refactoring in isolation, it seems frivolous, but it's just preparation for further work. In each subsequent refactoring I'll convert each of the above error cases to a property.
+    </p>
+    <h3 id="d1d2ea6091c7440991e24e213c9154b6">
+        Missing date and time <a href="#d1d2ea6091c7440991e24e213c9154b6">#</a>
+    </h3>
+    <p>
+        Starting from the top, convert the reservation-at-null test case to a property:
+    </p>
+    <p>
+        <pre>[Property]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">async</span>&nbsp;Task&nbsp;<span style="font-weight:bold;color:#74531f;">PostReservationAtNull</span>(<span style="color:blue;">string</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">email</span>,&nbsp;<span style="color:blue;">string</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">name</span>,&nbsp;PositiveInt&nbsp;<span style="font-weight:bold;color:#1f377f;">quantity</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">await</span>&nbsp;PostInvalidReservationImp(<span style="color:blue;">null</span>,&nbsp;email,&nbsp;name,&nbsp;(<span style="color:blue;">int</span>)quantity);
+}</pre>
+    </p>
+    <p>
+        I've left the parametrised <code>PostInvalidReservation</code> test in place, but removed the <code>[InlineData]</code> attribute with the <code>null</code> value for the <code>at</code> parameter:
+    </p>
+    <p>
+        <pre>[Theory]
+[InlineData(<span style="color:#a31515;">&quot;not&nbsp;a&nbsp;date&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;w@example.edu&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;Wk&nbsp;Hd&quot;</span>,&nbsp;8)]
+[InlineData(<span style="color:#a31515;">&quot;2023-11-30&nbsp;20:01&quot;</span>,&nbsp;<span style="color:blue;">null</span>,&nbsp;<span style="color:#a31515;">&quot;Thora&quot;</span>,&nbsp;19)]
+[InlineData(<span style="color:#a31515;">&quot;2022-01-02&nbsp;12:10&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;3@example.org&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;3&nbsp;Beard&quot;</span>,&nbsp;0)]
+[InlineData(<span style="color:#a31515;">&quot;2045-12-31&nbsp;11:45&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;git@example.com&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;Gil&nbsp;Tan&quot;</span>,&nbsp;-1)]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">async</span>&nbsp;Task&nbsp;<span style="font-weight:bold;color:#74531f;">PostInvalidReservation</span>(</pre>
+    </p>
+    <p>
+        The <code>PostReservationAtNull</code> property can use the FsCheck.Xunit <code>[Property]</code> attribute, because any <code>string</code> can be used for <code>email</code> and <code>name</code>.
+    </p>
+    <p>
+        To be honest, it is, perhaps, cheating a bit to post any positive quantity, because a number like, say, <em>1837</em> would be a problem even if the posted representation was well-formed and valid, since no table of the restaurant has that capacity.
+    </p>
+    <p>
+        Validation does, however, happen before evaluating business rules and application state, so the way the system is currently implemented, the test never fails because of that. The service never gets to that part of handling the request.
+    </p>
+    <p>
+        One might argue that this is relying on (and thereby coupling to) an implementation detail, but honestly, it seems unlikely that the service would begin processing an invalid request - 'invalid' implying that the request makes no sense. Concretely, if the date and time is missing from a reservation, how can the service begin to process it? On which date? At what time?
+    </p>
+    <p>
+        Thus, it's not that likely that this behaviour would change in the future, and therefore unlikely that the test would fail because of a policy change. It is, however, worth considering.
+    </p>
+    <h3 id="a93a77fa6f9f42b9810d37a300c1989a">
+        Malformed date and time <a href="#a93a77fa6f9f42b9810d37a300c1989a">#</a>
+    </h3>
+    <p>
+        The next error case is when the <code>at</code> value is present, but malformed. You can also convert that case to a property:
+    </p>
+    <p>
+        <pre>[Property]
+<span style="color:blue;">public</span>&nbsp;Property&nbsp;<span style="font-weight:bold;color:#74531f;">PostMalformedDateAndTime</span>()
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">g</span>&nbsp;=&nbsp;<span style="color:blue;">from</span>&nbsp;at&nbsp;<span style="color:blue;">in</span>&nbsp;ArbMap.Default.GeneratorFor&lt;<span style="color:blue;">string</span>&gt;()
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.Where(<span style="font-weight:bold;color:#1f377f;">s</span>&nbsp;=&gt;&nbsp;!DateTime.TryParse(s,&nbsp;<span style="color:blue;">out</span>&nbsp;_))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">from</span>&nbsp;email&nbsp;<span style="color:blue;">in</span>&nbsp;Gens.Email
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">from</span>&nbsp;name&nbsp;<span style="color:blue;">in</span>&nbsp;Gens.Name
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">from</span>&nbsp;quantity&nbsp;<span style="color:blue;">in</span>&nbsp;Gen.Choose(1,&nbsp;10)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">select</span>&nbsp;(at,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;email:&nbsp;email.ToString(),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;name:&nbsp;name.ToString(),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;quantity);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;Prop.ForAll(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;g.ToArbitrary(),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">t</span>&nbsp;=&gt;&nbsp;PostInvalidReservationImp(t.at,&nbsp;t.email,&nbsp;t.name,&nbsp;t.quantity));
+}</pre>
+    </p>
+    <p>
+        Given how simple <code>PostReservationAtNull</code> turned out to be, you may be surprised that this case takes so much code to express. There's not that much going on, though. I reuse the generators I already have for <code>email</code> and <code>name</code>, and FsCheck's built-in <code>Gen.Choose</code> to pick a <code>quantity</code> between <code>1</code> and <code>10</code>. The only slightly tricky expression is for the <code>at</code> value.
+    </p>
+    <p>
+        The distinguishing part of this test is that the <code>at</code> value should be malformed. A randomly generated <code>string</code> is a good starting point. After all, most strings aren't well-formed date-and-time values. Still, <a href="/2016/01/18/make-pre-conditions-explicit-in-property-based-tests">a random string <em>could</em> be interpreted as a date or time, so it's better to explicitly disallow such values</a>. This is possible with the <code>Where</code> function. It's a filter that only allows values through that are <em>not</em> understandable as dates or times - which is the vast majority of them.
+    </p>
+    <h3 id="3b130aa436c44e25b0b4b9d9ccf87e9a">
+        Null email <a href="#3b130aa436c44e25b0b4b9d9ccf87e9a">#</a>
+    </h3>
+    <p>
+        The penultimate error case is when the email address is missing. That one is as easy to express as the missing <code>at</code> value.
+    </p>
+    <p>
+        <pre>[Property]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">async</span>&nbsp;Task&nbsp;<span style="font-weight:bold;color:#74531f;">PostNullEmail</span>(DateTime&nbsp;<span style="font-weight:bold;color:#1f377f;">at</span>,&nbsp;<span style="color:blue;">string</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">name</span>,&nbsp;PositiveInt&nbsp;<span style="font-weight:bold;color:#1f377f;">quantity</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">await</span>&nbsp;PostInvalidReservationImp(at.ToIso8601DateTimeString(),&nbsp;<span style="color:blue;">null</span>,&nbsp;name,&nbsp;(<span style="color:blue;">int</span>)quantity);
+}</pre>
+    </p>
+    <p>
+        Again, with the addition of this specific property, I've removed the corresponding <code>[InlineData]</code> attribute from the <code>PostInvalidReservation</code> test. It only has two remaining test cases, both about non-positive quantities.
+    </p>
+    <h3 id="c1897ba360a74189a3c49a1bf05fb46a">
+        Non-positive quantity <a href="#c1897ba360a74189a3c49a1bf05fb46a">#</a>
+    </h3>
+    <p>
+        Finally, we can add a property that checks what happens if the quantity isn't positive:
+    </p>
+    <p>
+        <pre>[Property]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">async</span>&nbsp;Task&nbsp;<span style="font-weight:bold;color:#74531f;">PostNonPositiveQuantity</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;DateTime&nbsp;<span style="font-weight:bold;color:#1f377f;">at</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">string</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">email</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">string</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">name</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;NonNegativeInt&nbsp;<span style="font-weight:bold;color:#1f377f;">quantity</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">await</span>&nbsp;PostInvalidReservationImp(at.ToIso8601DateTimeString(),&nbsp;email,&nbsp;name,&nbsp;-(<span style="color:blue;">int</span>)quantity);
+}</pre>
+    </p>
+    <p>
+        FsCheck doesn't have a wrapper for non-positive integers, but I can use <code>NonNegativeInt</code> and negate it. The point is that I want to include <em>0</em>, which <code>NonNegativeInt</code> does. That wrapper generates integers that greater than or equal to zero.
+    </p>
+    <p>
+        Since I've now modelled each error case as a separate FsCheck property, I can remove the <code>PostInvalidReservation</code> method.
+    </p>
+    <h3 id="1da5bfff9de24adba8fe5f3005f35e69">
+        Conclusion <a href="#1da5bfff9de24adba8fe5f3005f35e69">#</a>
+    </h3>
+    <p>
+        To be honest, I think that turning these parametrised tests into FsCheck properties is overkill. After all, when I wrote the code base, I found the parametrised tests adequate. I used test-driven development all the way through, and while I also kept the <a href="/2019/10/07/devils-advocate">Devil's Advocate</a> in mind, the tests that I wrote gave me sufficient confidence that the system works as it should.
+    </p>
+    <p>
+        The main point of this article is to show how you <em>can</em> convert example-based tests to property-based tests. After all, just because I felt confident in my test suite it doesn't follow that a few parametrised tests does it for you. <a href="/2018/11/12/what-to-test-and-not-to-test">How much testing you need depends on a variety of factors</a>, so you may need the extra confidence that thousands of test cases can give you.
+    </p>
+    <p>
+        The previous article in this series showed an abstract, but minimal example. This one is more realistic, but also more involved.
+    </p>
+</div>
