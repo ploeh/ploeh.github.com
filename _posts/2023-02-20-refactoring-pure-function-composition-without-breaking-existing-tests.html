@@ -1,0 +1,373 @@
+---
+layout: post
+title: "Refactoring pure function composition without breaking existing tests"
+description: "An example modifying a Haskell Gossiping Bus Drivers implementation."
+date: 2023-02-20 7:18 UTC
+tags: [Unit Testing, Functional Programming, Haskell]
+---
+{% include JB/setup %}
+
+<div id="post">
+    <p>
+        <em>{{ page.description }}</em>
+    </p>
+    <p>
+        This is an article in an series of articles about the <a href="/2023/02/13/epistemology-of-interaction-testing">epistemology of interaction testing</a>. In short, this collection of articles discusses how to test the composition of <a href="https://en.wikipedia.org/wiki/Pure_function">pure functions</a>. While a pure function is <a href="/2015/05/07/functional-design-is-intrinsically-testable">intrinsically testable</a>, how do you test the composition of pure functions? As the introductory article outlines, I consider it mostly a matter of establishing confidence. With <a href="/2018/11/12/what-to-test-and-not-to-test">enough test coverage</a> you can be confident that the composition produces the desired outputs.
+    </p>
+    <p>
+        Keep in mind that if you compose pure functions into a larger pure function, the composition is still pure. This implies that you can still test it by supplying input and verifying that the output is correct.
+    </p>
+    <p>
+        Tests that exercise the composition do so by verifying observable behaviour. This makes them more robust to refactoring. You'll see an example of that later in this article.
+    </p>
+    <h3 id="32b583422c354d0f8468406f0486a762">
+        Gossiping bus drivers <a href="#32b583422c354d0f8468406f0486a762">#</a>
+    </h3>
+    <p>
+        I recently did the <a href="https://kata-log.rocks/gossiping-bus-drivers-kata">Gossiping Bus Drivers</a> kata in <a href="https://www.haskell.org/">Haskell</a>. At first, I added the tests suggested in the kata description.
+    </p>
+    <p>
+        <pre>{-#&nbsp;OPTIONS_GHC&nbsp;-Wno-type-defaults&nbsp;#-}
+<span style="color:blue;">module</span>&nbsp;Main&nbsp;<span style="color:blue;">where</span>
+ 
+<span style="color:blue;">import</span>&nbsp;GossipingBusDrivers
+<span style="color:blue;">import</span>&nbsp;Test.HUnit
+<span style="color:blue;">import</span>&nbsp;Test.Framework.Providers.HUnit&nbsp;(<span style="color:#2b91af;">hUnitTestToTests</span>)
+<span style="color:blue;">import</span>&nbsp;Test.Framework&nbsp;(<span style="color:#2b91af;">defaultMain</span>)
+ 
+<span style="color:#2b91af;">main</span>&nbsp;<span style="color:blue;">::</span>&nbsp;<span style="color:#2b91af;">IO</span>&nbsp;()
+main&nbsp;=&nbsp;defaultMain&nbsp;$&nbsp;hUnitTestToTests&nbsp;$&nbsp;TestList&nbsp;[
+&nbsp;&nbsp;<span style="color:#a31515;">&quot;Kata&nbsp;examples&quot;</span>&nbsp;~:&nbsp;<span style="color:blue;">do</span>
+&nbsp;&nbsp;&nbsp;&nbsp;(routes,&nbsp;expected)&nbsp;&lt;-
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;[
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;([[3,&nbsp;1,&nbsp;2,&nbsp;3],
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;[3,&nbsp;2,&nbsp;3,&nbsp;1],
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;[4,&nbsp;2,&nbsp;3,&nbsp;4,&nbsp;5]],
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Just&nbsp;5),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;([[2,&nbsp;1,&nbsp;2],
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;[5,&nbsp;2,&nbsp;8]],
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Nothing)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;]
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;actual&nbsp;=&nbsp;drive&nbsp;routes
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;$&nbsp;expected&nbsp;~=?&nbsp;actual
+&nbsp;&nbsp;]</pre>
+    </p>
+    <p>
+        As I prefer them, these tests are <a href="/2018/04/30/parametrised-unit-tests-in-haskell">parametrised HUnit tests</a>.
+    </p>
+    <p>
+        The problem with those suggested test cases is that they don't provide enough confidence that an implementation is correct. In fact, I wrote this implementation to pass them:
+    </p>
+    <p>
+        <pre>drive&nbsp;routes&nbsp;=&nbsp;<span style="color:blue;">if</span>&nbsp;<span style="color:blue;">length</span>&nbsp;routes&nbsp;==&nbsp;3&nbsp;<span style="color:blue;">then</span>&nbsp;Just&nbsp;5&nbsp;<span style="color:blue;">else</span>&nbsp;Nothing</pre>
+    </p>
+    <p>
+        This is clearly incorrect. It just looks at the number of routes and returns a fixed value for each count. It doesn't look at the contents of the routes.
+    </p>
+    <p>
+        Even if you don't <a href="/2019/10/07/devils-advocate">try to deliberately cheat</a> I'm not convinced that these two tests are enough. You could <em>try</em> to write the correct implementation, but how do you know that you've correctly dealt with various edge cases?
+    </p>
+    <h3 id="0e40e3994772481f855b266452685852">
+        Helper function <a href="#0e40e3994772481f855b266452685852">#</a>
+    </h3>
+    <p>
+        The kata description isn't hard to understand, so while the suggested test cases seem insufficient, I knew what was required. Perhaps I could write a proper implementation without additional tests. After all, I was convinced that it'd be possible to do it with a <a href="http://en.wikipedia.org/wiki/Cyclomatic_complexity">cyclomatic complexity</a> of <em>1</em>, and since <a href="/2013/04/02/why-trust-tests">a test function also has a cyclomatic complexity of <em>1</em></a>, there's always that tension in test-driven development: Why write test code to exercise code with a cyclomatic complexity of <em>1?</em>.
+    </p>
+    <p>
+        To be clear: There are often good reasons to write tests even in this case, and this seems like one of them. <a href="/2019/12/09/put-cyclomatic-complexity-to-good-use">Cyclomatic complexity indicates a minimum number of test cases</a>, not necessarily a sufficient number.
+    </p>
+    <p>
+        Even though Haskell's type system is expressive, I soon found myself second-guessing the behaviour of various expressions that I'd experimented with. Sometimes I find GHCi (the Haskell <a href="https://en.wikipedia.org/wiki/Read%E2%80%93eval%E2%80%93print_loop">REPL</a>) sufficiently edifying, but in this case I thought that I might want to keep some test cases around for a helper function that I was developing:
+    </p>
+    <p>
+        <pre><span style="color:blue;">import</span>&nbsp;Data.List
+<span style="color:blue;">import</span>&nbsp;<span style="color:blue;">qualified</span>&nbsp;Data.Map.Strict&nbsp;<span style="color:blue;">as</span>&nbsp;Map
+<span style="color:blue;">import</span>&nbsp;Data.Map.Strict&nbsp;(<span style="color:#2b91af;">(!)</span>)
+<span style="color:blue;">import</span>&nbsp;<span style="color:blue;">qualified</span>&nbsp;Data.Set&nbsp;<span style="color:blue;">as</span>&nbsp;Set
+<span style="color:blue;">import</span>&nbsp;Data.Set&nbsp;(<span style="color:blue;">Set</span>)
+ 
+<span style="color:#2b91af;">evaluateStop</span>&nbsp;<span style="color:blue;">::</span>&nbsp;(<span style="color:blue;">Functor</span>&nbsp;f,&nbsp;<span style="color:blue;">Foldable</span>&nbsp;f,&nbsp;<span style="color:blue;">Ord</span>&nbsp;k,&nbsp;<span style="color:blue;">Ord</span>&nbsp;a)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;=&gt;&nbsp;f&nbsp;(k,&nbsp;Set&nbsp;a)&nbsp;-&gt;&nbsp;f&nbsp;(k,&nbsp;Set&nbsp;a)
+evaluateStop&nbsp;stopsAndDrivers&nbsp;=
+&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;gossip&nbsp;(stop,&nbsp;driver)&nbsp;=&nbsp;Map.insertWith&nbsp;Set.union&nbsp;stop&nbsp;driver
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;gossipAtStops&nbsp;=&nbsp;<span style="color:blue;">foldl</span>&#39;&nbsp;(<span style="color:blue;">flip</span>&nbsp;gossip)&nbsp;Map.empty&nbsp;stopsAndDrivers
+&nbsp;&nbsp;<span style="color:blue;">in</span>&nbsp;<span style="color:blue;">fmap</span>&nbsp;(\(stop,&nbsp;_)&nbsp;-&gt;&nbsp;(stop,&nbsp;gossipAtStops&nbsp;!&nbsp;stop))&nbsp;stopsAndDrivers</pre>
+    </p>
+    <p>
+        I was fairly confident that this function worked as I intended, but I wanted to be sure. I needed some examples, so I added these tests:
+    </p>
+    <p>
+        <pre><span style="color:#a31515;">&quot;evaluateStop&nbsp;examples&quot;</span>&nbsp;~:&nbsp;<span style="color:blue;">do</span>
+&nbsp;&nbsp;(stopsAndDrivers,&nbsp;expected)&nbsp;&lt;-&nbsp;[
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;([(1,&nbsp;fromList&nbsp;[1]),&nbsp;(2,&nbsp;fromList&nbsp;[2]),&nbsp;(1,&nbsp;fromList&nbsp;[1])],
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;[(1,&nbsp;fromList&nbsp;[1]),&nbsp;(2,&nbsp;fromList&nbsp;[2]),&nbsp;(1,&nbsp;fromList&nbsp;[1])]),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;([(1,&nbsp;fromList&nbsp;[1]),&nbsp;(2,&nbsp;fromList&nbsp;[2]),&nbsp;(1,&nbsp;fromList&nbsp;[2])],
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;[(1,&nbsp;fromList&nbsp;[1,&nbsp;2]),&nbsp;(2,&nbsp;fromList&nbsp;[2]),&nbsp;(1,&nbsp;fromList&nbsp;[1,&nbsp;2])]),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;([(1,&nbsp;fromList&nbsp;[1,&nbsp;2,&nbsp;3]),&nbsp;(1,&nbsp;fromList&nbsp;[2,&nbsp;3,&nbsp;4])],
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;[(1,&nbsp;fromList&nbsp;[1,&nbsp;2,&nbsp;3,&nbsp;4]),&nbsp;(1,&nbsp;fromList&nbsp;[1,&nbsp;2,&nbsp;3,&nbsp;4])])
+&nbsp;&nbsp;&nbsp;&nbsp;]
+&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;actual&nbsp;=&nbsp;evaluateStop&nbsp;stopsAndDrivers
+&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;$&nbsp;fromList&nbsp;expected&nbsp;~=?&nbsp;fromList&nbsp;actual</pre>
+    </p>
+    <p>
+        They do, indeed, pass.
+    </p>
+    <p>
+        The idea behind that <code>evaluateStop</code> function is to evaluate the state at each 'minute' of the simulation. The first line of each test case is the state before the drivers meet, and the second line is the <em>expected</em> state after all drivers have gossiped.
+    </p>
+    <p>
+        My plan was to use some sort of left fold to keep evaluating states until all information has disseminated to all drivers.
+    </p>
+    <h3 id="06888628b5da4b4bb76fc59812c019da">
+        Property <a href="#06888628b5da4b4bb76fc59812c019da">#</a>
+    </h3>
+    <p>
+        Since I have already extolled the virtues of property-based testing in this article series, I wondered whether I could add some properties instead of relying on examples. Well, I did manage to add one <a href="https://hackage.haskell.org/package/QuickCheck">QuickCheck</a> property:
+    </p>
+    <p>
+        <pre>testProperty&nbsp;<span style="color:#a31515;">&quot;drive&nbsp;image&quot;</span>&nbsp;$&nbsp;\&nbsp;(routes&nbsp;::&nbsp;[NonEmptyList&nbsp;Int])&nbsp;-&gt;
+&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;actual&nbsp;=&nbsp;drive&nbsp;$&nbsp;<span style="color:blue;">fmap</span>&nbsp;getNonEmpty&nbsp;routes
+&nbsp;&nbsp;<span style="color:blue;">in</span>&nbsp;checkCoverage&nbsp;$
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;cover&nbsp;75&nbsp;(isJust&nbsp;actual)&nbsp;<span style="color:#a31515;">&quot;solution&nbsp;exists&quot;</span>&nbsp;$
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">all</span>&nbsp;(\i&nbsp;-&gt;&nbsp;0&nbsp;&lt;=&nbsp;i&nbsp;&amp;&amp;&nbsp;i&nbsp;&lt;=&nbsp;480)&nbsp;actual</pre>
+    </p>
+    <p>
+        There's not much to talk about here. The property only states that the result of the <code>drive</code> function must be between <code>0</code> and <code>480</code>, if it exists.
+    </p>
+    <p>
+        Such a property could vacuously pass if <code>drive</code> always returns <code>Nothing</code>, so I used the <code>cover</code> QuickCheck modifier to make sure that the property is actually exercising some <code>Just</code> cases, at least 75% of the time.
+    </p>
+    <p>
+        Since the <code>drive</code> function only returns a number, apart from verifying its <a href="https://en.wikipedia.org/wiki/Image_(mathematics)">image</a> I couldn't think of any other general property to add.
+    </p>
+    <p>
+        You can always come up with more specific properties that explicitly set up more constrained test scenarios, but is it worth it?
+    </p>
+    <p>
+        It's always worthwhile to stop and think. If you're writing a 'normal' example-based test, consider whether a property would be better. Likewise, if you're about to write a property, consider whether an example would be better.
+    </p>
+    <p>
+        'Better' can mean more than one thing. Preventing regressions is one thing, but making the code maintainable is another. If you're writing a property that is too complicated, it might be better to write a simpler example-based test.
+    </p>
+    <p>
+        I could definitely think of some complicated properties, but I found that more examples might make the test code easier to understand.
+    </p>
+    <h3 id="64eac896c8ea4127bacccb8ca01cf2fb">
+        More examples <a href="#64eac896c8ea4127bacccb8ca01cf2fb">#</a>
+    </h3>
+    <p>
+        After all that angst and soul-searching, I added a few more examples to the first parametrised test:
+    </p>
+    <p>
+        <pre><span style="color:#a31515;">&quot;Kata&nbsp;examples&quot;</span>&nbsp;~:&nbsp;<span style="color:blue;">do</span>
+&nbsp;&nbsp;(routes,&nbsp;expected)&nbsp;&lt;-
+&nbsp;&nbsp;&nbsp;&nbsp;[
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;([[3,&nbsp;1,&nbsp;2,&nbsp;3],
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;[3,&nbsp;2,&nbsp;3,&nbsp;1],
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;[4,&nbsp;2,&nbsp;3,&nbsp;4,&nbsp;5]],
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Just&nbsp;5),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;([[2,&nbsp;1,&nbsp;2],
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;[5,&nbsp;2,&nbsp;8]],
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Nothing),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;([[1,&nbsp;2,&nbsp;3,&nbsp;4,&nbsp;5],
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;[5,&nbsp;6,&nbsp;7,&nbsp;8],
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;[3,&nbsp;9,&nbsp;6]],
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Just&nbsp;13),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;([[1,&nbsp;2,&nbsp;3],
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;[2,&nbsp;1,&nbsp;3],
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;[2,&nbsp;4,&nbsp;5,&nbsp;3]],
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Just&nbsp;5),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;([[1,&nbsp;2],
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;[2,&nbsp;1]],
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Nothing),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;([[1]],
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Just&nbsp;0),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;([[2],
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;[2]],
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Just&nbsp;1)
+&nbsp;&nbsp;&nbsp;&nbsp;]
+&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;actual&nbsp;=&nbsp;drive&nbsp;routes
+&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;$&nbsp;expected&nbsp;~=?&nbsp;actual</pre>
+    </p>
+    <p>
+        The first two test cases are the same as before, and the last two are some edge cases I added myself. The middle three I adopted from <a href="https://dodona.ugent.be/en/activities/1792896126/">another page about the kata</a>. Since those examples turned out to be off by one, I did those examples on paper to verify that I understood what the expected value was. Then I adjusted them to my one-indexed results.
+    </p>
+    <h3 id="52417ab56528457891928ea551017f75">
+        Drive <a href="#52417ab56528457891928ea551017f75">#</a>
+    </h3>
+    <p>
+        The <code>drive</code> function now correctly implements the kata, I hope. At least it passes all the tests.
+    </p>
+    <p>
+        <pre><span style="color:#2b91af;">drive</span>&nbsp;<span style="color:blue;">::</span>&nbsp;(<span style="color:blue;">Num</span>&nbsp;b,&nbsp;<span style="color:blue;">Enum</span>&nbsp;b,&nbsp;<span style="color:blue;">Ord</span>&nbsp;a)&nbsp;<span style="color:blue;">=&gt;</span>&nbsp;[[a]]&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:#2b91af;">Maybe</span>&nbsp;b
+drive&nbsp;routes&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">--&nbsp;Each&nbsp;driver&nbsp;starts&nbsp;with&nbsp;a&nbsp;single&nbsp;gossip.&nbsp;Any&nbsp;kind&nbsp;of&nbsp;value&nbsp;will&nbsp;do,&nbsp;as
+</span>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">--&nbsp;long&nbsp;as&nbsp;each&nbsp;is&nbsp;unique.&nbsp;Here&nbsp;I&nbsp;use&nbsp;the&nbsp;one-based&nbsp;index&nbsp;of&nbsp;each&nbsp;route,
+</span>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">--&nbsp;since&nbsp;it&nbsp;fulfills&nbsp;the&nbsp;requirements.
+</span>&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;drivers&nbsp;=&nbsp;<span style="color:blue;">fmap</span>&nbsp;Set.singleton&nbsp;[1&nbsp;..&nbsp;<span style="color:blue;">length</span>&nbsp;routes]
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;goal&nbsp;=&nbsp;Set.unions&nbsp;drivers
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;stops&nbsp;=&nbsp;transpose&nbsp;$&nbsp;<span style="color:blue;">fmap</span>&nbsp;(<span style="color:blue;">take</span>&nbsp;480&nbsp;.&nbsp;<span style="color:blue;">cycle</span>)&nbsp;routes
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;propagation&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">scanl</span>&nbsp;(\ds&nbsp;ss&nbsp;-&gt;&nbsp;<span style="color:blue;">snd</span>&nbsp;&lt;$&gt;&nbsp;evaluateStop&nbsp;(<span style="color:blue;">zip</span>&nbsp;ss&nbsp;ds))&nbsp;drivers&nbsp;stops
+&nbsp;&nbsp;<span style="color:blue;">in</span>&nbsp;<span style="color:blue;">fmap</span>&nbsp;<span style="color:blue;">fst</span>&nbsp;$&nbsp;find&nbsp;(<span style="color:blue;">all</span>&nbsp;(==&nbsp;goal)&nbsp;.&nbsp;<span style="color:blue;">snd</span>)&nbsp;$&nbsp;<span style="color:blue;">zip</span>&nbsp;[0&nbsp;..]&nbsp;propagation</pre>
+    </p>
+    <p>
+        Haskell code can be information-dense, and if you don't have an integrated development environment (IDE) around, this may be hard to read.
+    </p>
+    <p>
+        <code>drivers</code> is a list of sets. Each set represents the gossip that a driver knows. At the beginning, each only knows one piece of gossip. The expression initialises each driver with a <code>singleton</code> set. Each piece of gossip is represented by a number, simply going from <code>1</code> to the number of routes. Incidentally, this is also the number of drivers, so you can consider the number <code>1</code> as a placeholder for the gossip that driver <em>1</em> knows, and so on.
+    </p>
+    <p>
+        The <code>goal</code> is the union of all the gossip. Once every driver's knowledge is equal to the <code>goal</code> the simulation can stop.
+    </p>
+    <p>
+        Since <code>evaluateStop</code> simulates one stop, the <code>drive</code> function needs a list of stops to fold. That's the <code>stops</code> value. In the very first example, you have three routes: <code>[3, 1, 2, 3]</code>, <code>[3, 2, 3, 1]</code>, and <code>[4, 2, 3, 4, 5]</code>. The first time the drivers stop (after one minute), the stops are <code>3</code>, <code>3</code>, and <code>4</code>. That is, the first element in <code>stops</code> would be the list <code>[3, 3, 4]</code>. The next one would be <code>[1, 2, 2]</code>, then <code>[2, 3, 3]</code>, and so on.
+    </p>
+    <p>
+        My plan all along was to use some sort of left fold to repeatedly run <code>evaluateStop</code> over each minute. Since I need to produce a list of states, <code>scanl</code> was an appropriate choice. The lambda expression that I have to pass to it, though, is more complicated than I appreciate. We'll return to that in a moment.
+    </p>
+    <p>
+        The <code>drive</code> function can now index the <code>propagation</code> list by zipping it with the infinite list <code>[0 ..]</code>, <code>find</code> the first element where <code>all</code> sets are equal to the <code>goal</code> set, and then return that index. That produces the correct results.
+    </p>
+    <h3 id="2b84136e78154ebdb81654efabf3d987">
+        The need for a better helper function <a href="#2b84136e78154ebdb81654efabf3d987">#</a>
+    </h3>
+    <p>
+        As I already warned, I wasn't happy with the lambda expression passed to <code>scanl</code>. It looks complicated and arcane. Is there a better way to express the same behaviour? Usually, when confronted with a nasty lambda expression like that, in Haskell my first instinct is to see if <a href="https://pointfree.io/">pointfree.io</a> has a better option. Alas, <code>(((<span style="color:blue;">snd</span>&nbsp;&lt;$&gt;)&nbsp;.&nbsp;evaluateStop)&nbsp;.)&nbsp;.&nbsp;<span style="color:blue;">flip</span>&nbsp;<span style="color:blue;">zip</span></code> hardly seems an improvement. That <code>flip zip</code> expression to the right, however, suggests that it might help flipping the arguments to <code>evaluateStop</code>.
+    </p>
+    <p>
+        When I developed the <code>evaluateStop</code> helper function, I found it intuitive to define it over a list of tuples, where the first element in the tuple is the stop, and the second element is the set of gossip that the driver at that stop knows.
+    </p>
+    <p>
+        The tuples don't <em>have</em> to be in that order, though. Perhaps if I flip the tuples that would make the lambda expression more readable. It was worth a try.
+    </p>
+    <h3 id="ca808b5a5fa3473c9046704e4bcc7357">
+        Confidence <a href="#ca808b5a5fa3473c9046704e4bcc7357">#</a>
+    </h3>
+    <p>
+        Since this article is part of a small series about the epistemology of testing composed functions, let's take a moment to reflect on the confidence we may have in the <code>drive</code> function.
+    </p>
+    <p>
+        Keep in mind the goal of the kata: Calculate the number of minutes it takes for all gossip to spread to all drivers. There's a few tests that verify that; seven examples and a fairly vacuous QuickCheck property. Is that enough to be confident that the function is correct?
+    </p>
+    <p>
+        If it isn't, I think the best option you have is to add more examples. For the sake of argument, however, let's assume that the tests are good enough.
+    </p>
+    <p>
+        When summarising the tests that cover the <code>drive</code> function, I didn't count the three examples that exercise <code>evaluateStop</code>. Do these three test cases improve your confidence in the <code>drive</code> function? A bit, perhaps, but keep in mind that <em>the kata description doesn't mandate that function.</em> It's just a helper function I created in order to decompose the problem.
+    </p>
+    <p>
+        Granted, having tests that cover a helper function does, to a degree, increase my confidence in the code. I have confidence in the function itself, but that is largely irrelevant, because the problem I'm trying to solve is <code>not</code> implementing this particular function. On the other hand, my confidence in <code>evaluateStop</code> means that I have increased confidence in the code that calls it.
+    </p>
+    <p>
+        Compared to interaction-based testing, I'm not <em>testing</em> that <code>drive</code> calls <code>evaluateStop</code>, but I can still verify that this happens. I can just look at the code.
+    </p>
+    <p>
+        The composition is already there in the code. What do I gain from replicating that composition with <a href="http://xunitpatterns.com/Test%20Stub.html">Stubs</a> and <a href="http://xunitpatterns.com/Test%20Spy.html">Spies</a>?
+    </p>
+    <p>
+        It's not a breaking change if I decide to implement <code>drive</code> in a different way.
+    </p>
+    <p>
+        What gives me confidence when composing pure functions isn't that I've subjected the composition to an interaction-based test. Rather, it's that the function is composed from trustworthy components.
+    </p>
+    <h3 id="a414a1e6b9e947d2b4632fcea7b916cf">
+        Strangler <a href="#a414a1e6b9e947d2b4632fcea7b916cf">#</a>
+    </h3>
+    <p>
+        My main grievance with Stubs and Spies is that <a href="/2022/10/17/stubs-and-mocks-break-encapsulation">they break encapsulation</a>. This may sound abstract, but is a real problem. This is the underlying reason that so many tests break when you refactor code.
+    </p>
+    <p>
+        This example code base, as other functional code that I write, avoids interaction-based testing. This makes it easier to refactor the code, as I will now demonstrate.
+    </p>
+    <p>
+        My goal is to change the <code>evaluateStop</code> helper function by flipping the tuples. If I just edit it, however, I'm going to (temporarily) break the <code>drive</code> function.
+    </p>
+    <p>
+        Katas typically result in small code bases where you can get away with a lot of bad practices that wouldn't work in a larger code base. To be honest, the refactoring I have in mind can be completed in a few minutes with a brute-force approach. Imagine, however, that we can't break compatibility of the <code>evaluateStop</code> function for the time being. Perhaps, had we had a larger code base, there were other code that depended on this function. At the very least, the tests do.
+    </p>
+    <p>
+        Instead of brute-force changing the function, I'm going to make use of the <a href="https://martinfowler.com/bliki/StranglerFigApplication.html">Strangler</a> pattern, as I've also described in my book <a href="/2021/06/14/new-book-code-that-fits-in-your-head">Code That Fits in Your Head</a>.
+    </p>
+    <p>
+        Leave the existing function alone, and add a new one. You can typically copy and paste the existing code and then make the necessary changes. In that way, you break neither client code nor tests, because there are none.
+    </p>
+    <p>
+        <pre><span style="color:#2b91af;">evaluateStop&#39;</span>&nbsp;<span style="color:blue;">::</span>&nbsp;(<span style="color:blue;">Functor</span>&nbsp;f,&nbsp;<span style="color:blue;">Foldable</span>&nbsp;f,&nbsp;<span style="color:blue;">Ord</span>&nbsp;k,&nbsp;<span style="color:blue;">Ord</span>&nbsp;a)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;=&gt;&nbsp;f&nbsp;(Set&nbsp;a,&nbsp;k)&nbsp;-&gt;&nbsp;f&nbsp;(Set&nbsp;a,&nbsp;k)
+evaluateStop&#39;&nbsp;driversAndStops&nbsp;=
+&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;gossip&nbsp;(driver,&nbsp;stop)&nbsp;=&nbsp;Map.insertWith&nbsp;Set.union&nbsp;stop&nbsp;driver
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;gossipAtStops&nbsp;=&nbsp;<span style="color:blue;">foldl</span>&#39;&nbsp;(<span style="color:blue;">flip</span>&nbsp;gossip)&nbsp;Map.empty&nbsp;driversAndStops
+&nbsp;&nbsp;<span style="color:blue;">in</span>&nbsp;<span style="color:blue;">fmap</span>&nbsp;(\(_,&nbsp;stop)&nbsp;-&gt;&nbsp;(gossipAtStops&nbsp;!&nbsp;stop,&nbsp;stop))&nbsp;driversAndStops</pre>
+    </p>
+    <p>
+        In a language like C# you can often get away with overloading a method name, but Haskell doesn't have overloading. Since I consider this side-by-side situation to be temporary, I've appended a prime after the function name. This is a fairly normal convention in Haskell, I gather.
+    </p>
+    <p>
+        The only change this function represents is that I've swapped the tuple order.
+    </p>
+    <p>
+        Once you've added the new function, you may want to copy, paste and edit the tests. Or perhaps you want to do the tests first. During this process, make <a href="https://www.industriallogic.com/blog/whats-this-about-micro-commits/">micro-commits</a> so that you can easily suspend your 'refactoring' activity if something more important comes up.
+    </p>
+    <p>
+        Once everything is in place, you can change the <code>drive</code> function:
+    </p>
+    <p>
+        <pre><span style="color:#2b91af;">drive</span>&nbsp;<span style="color:blue;">::</span>&nbsp;(<span style="color:blue;">Num</span>&nbsp;b,&nbsp;<span style="color:blue;">Enum</span>&nbsp;b,&nbsp;<span style="color:blue;">Ord</span>&nbsp;a)&nbsp;<span style="color:blue;">=&gt;</span>&nbsp;[[a]]&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:#2b91af;">Maybe</span>&nbsp;b
+drive&nbsp;routes&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">--&nbsp;Each&nbsp;driver&nbsp;starts&nbsp;with&nbsp;a&nbsp;single&nbsp;gossip.&nbsp;Any&nbsp;kind&nbsp;of&nbsp;value&nbsp;will&nbsp;do,&nbsp;as
+</span>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">--&nbsp;long&nbsp;as&nbsp;each&nbsp;is&nbsp;unique.&nbsp;Here&nbsp;I&nbsp;use&nbsp;the&nbsp;one-based&nbsp;index&nbsp;of&nbsp;each&nbsp;route,
+</span>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">--&nbsp;since&nbsp;it&nbsp;fulfills&nbsp;the&nbsp;requirements.
+</span>&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;drivers&nbsp;=&nbsp;<span style="color:blue;">fmap</span>&nbsp;Set.singleton&nbsp;[1&nbsp;..&nbsp;<span style="color:blue;">length</span>&nbsp;routes]
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;goal&nbsp;=&nbsp;Set.unions&nbsp;drivers
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;stops&nbsp;=&nbsp;transpose&nbsp;$&nbsp;<span style="color:blue;">fmap</span>&nbsp;(<span style="color:blue;">take</span>&nbsp;480&nbsp;.&nbsp;<span style="color:blue;">cycle</span>)&nbsp;routes
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;propagation&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">scanl</span>&nbsp;(\ds&nbsp;ss&nbsp;-&gt;&nbsp;<span style="color:blue;">fst</span>&nbsp;&lt;$&gt;&nbsp;evaluateStop&#39;&nbsp;(<span style="color:blue;">zip</span>&nbsp;ds&nbsp;ss))&nbsp;drivers&nbsp;stops
+&nbsp;&nbsp;<span style="color:blue;">in</span>&nbsp;<span style="color:blue;">fmap</span>&nbsp;<span style="color:blue;">fst</span>&nbsp;$&nbsp;find&nbsp;(<span style="color:blue;">all</span>&nbsp;(==&nbsp;goal)&nbsp;.&nbsp;<span style="color:blue;">snd</span>)&nbsp;$&nbsp;<span style="color:blue;">zip</span>&nbsp;[0&nbsp;..]&nbsp;propagation</pre>
+    </p>
+    <p>
+        Notice that the type of <code>drive</code> hasn't change, and neither has the behaviour. This means that although I've changed the composition (the <em>interaction</em>) no tests broke.
+    </p>
+    <p>
+        Finally, once I moved all code over, I deleted the old function and renamed the new one to take its place.
+    </p>
+    <h3 id="6be4ec66c14c4adbbb8bcb60307c7ba3">
+        Was it all worth it? <a href="#6be4ec66c14c4adbbb8bcb60307c7ba3">#</a>
+    </h3>
+    <p>
+        At first glance, it doesn't look as though much was gained. What happens if I eta-reduce the new lambda expression?
+    </p>
+    <p>
+        <pre><span style="color:#2b91af;">drive</span>&nbsp;<span style="color:blue;">::</span>&nbsp;(<span style="color:blue;">Num</span>&nbsp;b,&nbsp;<span style="color:blue;">Enum</span>&nbsp;b,&nbsp;<span style="color:blue;">Ord</span>&nbsp;a)&nbsp;<span style="color:blue;">=&gt;</span>&nbsp;[[a]]&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:#2b91af;">Maybe</span>&nbsp;b
+drive&nbsp;routes&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">--&nbsp;Each&nbsp;driver&nbsp;starts&nbsp;with&nbsp;a&nbsp;single&nbsp;gossip.&nbsp;Any&nbsp;kind&nbsp;of&nbsp;value&nbsp;will&nbsp;do,&nbsp;as
+</span>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">--&nbsp;long&nbsp;as&nbsp;each&nbsp;is&nbsp;unique.&nbsp;Here&nbsp;I&nbsp;use&nbsp;the&nbsp;one-based&nbsp;index&nbsp;of&nbsp;each&nbsp;route,
+</span>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">--&nbsp;since&nbsp;it&nbsp;fulfills&nbsp;the&nbsp;requirements.
+</span>&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;drivers&nbsp;=&nbsp;<span style="color:blue;">fmap</span>&nbsp;Set.singleton&nbsp;[1&nbsp;..&nbsp;<span style="color:blue;">length</span>&nbsp;routes]
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;goal&nbsp;=&nbsp;Set.unions&nbsp;drivers
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;stops&nbsp;=&nbsp;transpose&nbsp;$&nbsp;<span style="color:blue;">fmap</span>&nbsp;(<span style="color:blue;">take</span>&nbsp;480&nbsp;.&nbsp;<span style="color:blue;">cycle</span>)&nbsp;routes
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;propagation&nbsp;=&nbsp;<span style="color:blue;">scanl</span>&nbsp;(((<span style="color:blue;">fmap</span>&nbsp;<span style="color:blue;">fst</span>&nbsp;.&nbsp;evaluateStop)&nbsp;.)&nbsp;.&nbsp;<span style="color:blue;">zip</span>)&nbsp;drivers&nbsp;stops
+&nbsp;&nbsp;<span style="color:blue;">in</span>&nbsp;<span style="color:blue;">fmap</span>&nbsp;<span style="color:blue;">fst</span>&nbsp;$&nbsp;find&nbsp;(<span style="color:blue;">all</span>&nbsp;(==&nbsp;goal)&nbsp;.&nbsp;<span style="color:blue;">snd</span>)&nbsp;$&nbsp;<span style="color:blue;">zip</span>&nbsp;[0&nbsp;..]&nbsp;propagation</pre>
+    </p>
+    <p>
+        Not much better. I can now fit the <code>propagation</code> expression on a single line of code and still stay within a <a href="/2019/11/04/the-80-24-rule">80x24 box</a>, but that's about it. Is <code>((<span style="color:blue;">fmap</span>&nbsp;<span style="color:blue;">fst</span>&nbsp;.&nbsp;evaluateStop)&nbsp;.)&nbsp;.&nbsp;<span style="color:blue;">zip</span></code> more readable than what we had before?
+    </p>
+    <p>
+        Hardly, I admit. I might consider reverting, and since I've been <a href="https://stackoverflow.blog/2022/12/19/use-git-tactically/">using Git tactically</a>, I have that option.
+    </p>
+    <p>
+        If I hadn't tried, though, I wouldn't have known.
+    </p>
+    <h3 id="5bf92cabf46e4ec9a6a41b51dd29e876">
+        Conclusion <a href="#5bf92cabf46e4ec9a6a41b51dd29e876">#</a>
+    </h3>
+    <p>
+        When composing one pure function with another, how can you test that the outer function correctly calls the inner function?
+    </p>
+    <p>
+        By the same way that you test any other pure function. The only way you can observe whether a pure function works as intended is to compare its actual output to the output you expected its input to produce. How it arrives at that output is irrelevant. It could be looking up all results in a big table. As long as the result is correct, the function is correct.
+    </p>
+    <p>
+        In this article, you saw an example of how to test a composed function, as well as how to refactor it without breaking tests.
+    </p>
+</div>
