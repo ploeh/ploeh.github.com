@@ -1,0 +1,328 @@
+---
+layout: post
+title: "Test Data Generator monad"
+description: "With examples in C# and F#."
+date: 2023-02-06 19:44 UTC
+tags: [Software Design, Unit Testing, Property-based Testing]
+---
+{% include JB/setup %}
+
+<div id="post">
+	<p>
+		<em>{{ page.description }}</em>
+	</p>
+    <p>
+		This article is an instalment in <a href="/2022/03/28/monads">an article series about monads</a>. A previous article described <a href="/2017/09/18/the-test-data-generator-functor">Test Data Generator as a functor</a>, and another as <a href="/2018/11/26/the-test-data-generator-applicative-functor">Test Data Generator as an applicative functor</a>. As is the case with many (but not all) <a href="/2018/03/22/functors">functors</a>, this one also forms a monad.
+	</p>
+    <p>
+        This article expands on the code from the above-mentioned articles about Test Data Generators. Keep in mind that the code is a simplified version of what you'll find in a real property-based testing framework. It lacks shrinking and referentially transparent (pseudo-)random value generation. Probably more things than that, too.
+    </p>
+    <h3 id="0855f8f4840c4efc96f102e3913e7357">
+        SelectMany <a href="#0855f8f4840c4efc96f102e3913e7357">#</a>
+    </h3>
+    <p>
+        A monad must define either a <em>bind</em> or <em>join</em> function. In C#, monadic bind is called <code>SelectMany</code>. For the <code><span style="color:#2b91af;">Generator</span>&lt;<span style="color:#2b91af;">T</span>&gt;</code> class, you can implement it as an instance method like this:
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;Generator&lt;TResult&gt;&nbsp;<span style="font-weight:bold;color:#74531f;">SelectMany</span>&lt;<span style="color:#2b91af;">TResult</span>&gt;(Func&lt;T,&nbsp;Generator&lt;TResult&gt;&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">selector</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;Func&lt;Random,&nbsp;TResult&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">newGenerator</span>&nbsp;=&nbsp;<span style="font-weight:bold;color:#1f377f;">r</span>&nbsp;=&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Generator&lt;TResult&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">g</span>&nbsp;=&nbsp;selector(generate(r));
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;g.Generate(r);
+&nbsp;&nbsp;&nbsp;&nbsp;};
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;Generator&lt;TResult&gt;(newGenerator);
+}</pre>
+    </p>
+    <p>
+        <code>SelectMany</code> enables you to chain generators together. You'll see an example later in the article.
+    </p>
+    <h3 id="36a3fb07ddc9428cb334939251deea36">
+        Query syntax <a href="#36a3fb07ddc9428cb334939251deea36">#</a>
+    </h3>
+    <p>
+        As the <a href="/2022/03/28/monads">monad article</a> explains, you can enable C# query syntax by adding a special <code>SelectMany</code> overload:
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;Generator&lt;TResult&gt;&nbsp;<span style="font-weight:bold;color:#74531f;">SelectMany</span>&lt;<span style="color:#2b91af;">U</span>,&nbsp;<span style="color:#2b91af;">TResult</span>&gt;(
+&nbsp;&nbsp;&nbsp;&nbsp;Func&lt;T,&nbsp;Generator&lt;U&gt;&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">k</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;Func&lt;T,&nbsp;U,&nbsp;TResult&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">s</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;SelectMany(<span style="font-weight:bold;color:#1f377f;">x</span>&nbsp;=&gt;&nbsp;k(x).Select(<span style="font-weight:bold;color:#1f377f;">y</span>&nbsp;=&gt;&nbsp;s(x,&nbsp;y)));
+}</pre>
+    </p>
+    <p>
+        The implementation body always looks the same; only the method signature varies from monad to monad. Again, I'll show you an example of using query syntax later in the article.
+    </p>
+    <h3 id="3486b1debaf34921b03fd307d03fadce">
+        Flatten <a href="#3486b1debaf34921b03fd307d03fadce">#</a>
+    </h3>
+    <p>
+        In <a href="/2022/03/28/monads">the introduction</a> you learned that if you have a <code>Flatten</code> or <code>Join</code> function, you can implement <code>SelectMany</code>, and the other way around. Since we've already defined <code>SelectMany</code> for <code><span style="color:#2b91af;">Generator</span>&lt;<span style="color:#2b91af;">T</span>&gt;</code>, we can use that to implement <code>Flatten</code>. In this article I use the name <code>Flatten</code> rather than <code>Join</code>. This is an arbitrary choice that doesn't impact behaviour. Perhaps you find it confusing that I'm inconsistent, but I do it in order to demonstrate that the behaviour is the same even if the name is different.
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;Generator&lt;T&gt;&nbsp;<span style="color:#74531f;">Flatten</span>&lt;<span style="color:#2b91af;">T</span>&gt;(<span style="color:blue;">this</span>&nbsp;Generator&lt;Generator&lt;T&gt;&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">generator</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;generator.SelectMany(<span style="font-weight:bold;color:#1f377f;">x</span>&nbsp;=&gt;&nbsp;x);
+}</pre>
+    </p>
+    <p>
+        As you can tell, this function has to be an extension method, since we can't have a class typed <code>Generator&lt;Generator&lt;T&gt;&gt;</code>. As usual, when you already have <code>SelectMany</code>, the body of <code>Flatten</code> (or <code>Join</code>) is always the same.
+    </p>
+    <h3 id="347da42ffc7a4c8296743de68cf6a622">
+        Return <a href="#347da42ffc7a4c8296743de68cf6a622">#</a>
+    </h3>
+    <p>
+        Apart from monadic bind, a monad must also define a way to put a normal value into the monad. Conceptually, I call this function <em>return</em> (because that's the name that <a href="https://www.haskell.org/">Haskell</a> uses):
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;Generator&lt;T&gt;&nbsp;<span style="color:#74531f;">Return</span>&lt;<span style="color:#2b91af;">T</span>&gt;(T&nbsp;<span style="font-weight:bold;color:#1f377f;">value</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;Generator&lt;T&gt;(<span style="font-weight:bold;color:#1f377f;">_</span>&nbsp;=&gt;&nbsp;value);
+}</pre>
+    </p>
+    <p>
+        This function ignores the random number generator and always returns <code>value</code>.
+    </p>
+    <h3 id="60fdd02680034ebe8ec21cff4fdb47e6">
+        Left identity <a href="#60fdd02680034ebe8ec21cff4fdb47e6">#</a>
+    </h3>
+    <p>
+        We needed to identify the <em>return</em> function in order to examine <a href="/2022/04/11/monad-laws">the monad laws</a>. Let's see what they look like for the Test Data Generator monad, starting with the left identity law.
+    </p>
+    <p>
+        <pre>[Theory]
+[InlineData(17,&nbsp;0)]
+[InlineData(17,&nbsp;8)]
+[InlineData(42,&nbsp;0)]
+[InlineData(42,&nbsp;1)]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;<span style="font-weight:bold;color:#74531f;">LeftIdentityLaw</span>(<span style="color:blue;">int</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">x</span>,&nbsp;<span style="color:blue;">int</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">seed</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;Func&lt;<span style="color:blue;">int</span>,&nbsp;Generator&lt;<span style="color:blue;">string</span>&gt;&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">h</span>&nbsp;=&nbsp;<span style="font-weight:bold;color:#1f377f;">i</span>&nbsp;=&gt;&nbsp;<span style="color:blue;">new</span>&nbsp;Generator&lt;<span style="color:blue;">string</span>&gt;(<span style="font-weight:bold;color:#1f377f;">r</span>&nbsp;=&gt;&nbsp;r.Next(i).ToString());
+&nbsp;&nbsp;&nbsp;&nbsp;Assert.Equal(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Generator.Return(x).SelectMany(h).Generate(<span style="color:blue;">new</span>&nbsp;Random(seed)),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;h(x).Generate(<span style="color:blue;">new</span>&nbsp;Random(seed)));
+}</pre>
+    </p>
+    <p>
+        Notice that the test can't directly compare the two generators, because equality isn't clearly defined for that class. Instead, the test has to call <code>Generate</code> in order to produce comparable values; in this case, strings.
+    </p>
+    <p>
+        Since <code>Generate</code> is non-deterministic, the test has to <code>seed</code> the random number generator argument in order to get reproducible results. It can't even declare one <code>Random</code> object and share it across both method calls, since generating values changes the state of the object. Instead, the test has to generate two separate <code>Random</code> objects, one for each call to <code>Generate</code>, but with the same <code>seed</code>.
+    </p>
+    <h3 id="eed0615f4fce4cd79ecc57a734a358ea">
+        Right identity <a href="#eed0615f4fce4cd79ecc57a734a358ea">#</a>
+    </h3>
+    <p>
+        In a manner similar to above, we can showcase the right identity law as a test.
+    </p>
+    <p>
+        <pre>[Theory]
+[InlineData(<span style="color:#a31515;">&#39;a&#39;</span>,&nbsp;0)]
+[InlineData(<span style="color:#a31515;">&#39;a&#39;</span>,&nbsp;8)]
+[InlineData(<span style="color:#a31515;">&#39;j&#39;</span>,&nbsp;0)]
+[InlineData(<span style="color:#a31515;">&#39;j&#39;</span>,&nbsp;5)]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;<span style="font-weight:bold;color:#74531f;">RightIdentityLaw</span>(<span style="color:blue;">char</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">letter</span>,&nbsp;<span style="color:blue;">int</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">seed</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;Func&lt;<span style="color:blue;">char</span>,&nbsp;Generator&lt;<span style="color:blue;">string</span>&gt;&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">f</span>&nbsp;=&nbsp;<span style="font-weight:bold;color:#1f377f;">c</span>&nbsp;=&gt;&nbsp;<span style="color:blue;">new</span>&nbsp;Generator&lt;<span style="color:blue;">string</span>&gt;(<span style="font-weight:bold;color:#1f377f;">r</span>&nbsp;=&gt;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:blue;">string</span>(c,&nbsp;r.Next(100)));
+&nbsp;&nbsp;&nbsp;&nbsp;Generator&lt;<span style="color:blue;">string</span>&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">m</span>&nbsp;=&nbsp;f(letter);
+&nbsp;&nbsp;&nbsp;&nbsp;Assert.Equal(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;m.SelectMany(Generator.Return).Generate(<span style="color:blue;">new</span>&nbsp;Random(seed)),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;m.Generate(<span style="color:blue;">new</span>&nbsp;Random(seed)));
+}</pre>
+    </p>
+    <p>
+        As always, even a parametrised test constitutes no <em>proof</em> that the law holds. I show the tests to illustrate what the laws look like in 'real' code.
+    </p>
+    <h3 id="bca718938dd84e3f9d650e42094768f9">
+        Associativity <a href="#bca718938dd84e3f9d650e42094768f9">#</a>
+    </h3>
+    <p>
+        The last monad law is the associativity law that describes how (at least) three functions compose. We're going to need three functions. For the demonstration test I'm going to conjure three nonsense functions. While this may not be as intuitive, it on the other hand reduces the noise that more realistic code tends to produce. Later in the article you'll see a more realistic example.
+    </p>
+    <p>
+        <pre>[Theory]
+[InlineData(<span style="color:#a31515;">&#39;t&#39;</span>,&nbsp;&nbsp;0)]
+[InlineData(<span style="color:#a31515;">&#39;t&#39;</span>,&nbsp;28)]
+[InlineData(<span style="color:#a31515;">&#39;u&#39;</span>,&nbsp;&nbsp;0)]
+[InlineData(<span style="color:#a31515;">&#39;u&#39;</span>,&nbsp;98)]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;<span style="font-weight:bold;color:#74531f;">AssociativityLaw</span>(<span style="color:blue;">char</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">a</span>,&nbsp;<span style="color:blue;">int</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">seed</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;Func&lt;<span style="color:blue;">char</span>,&nbsp;Generator&lt;<span style="color:blue;">string</span>&gt;&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">f</span>&nbsp;=&nbsp;<span style="font-weight:bold;color:#1f377f;">c</span>&nbsp;=&gt;&nbsp;<span style="color:blue;">new</span>&nbsp;Generator&lt;<span style="color:blue;">string</span>&gt;(<span style="font-weight:bold;color:#1f377f;">r</span>&nbsp;=&gt;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:blue;">string</span>(c,&nbsp;r.Next(100)));
+&nbsp;&nbsp;&nbsp;&nbsp;Func&lt;<span style="color:blue;">string</span>,&nbsp;Generator&lt;<span style="color:blue;">int</span>&gt;&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">g</span>&nbsp;=&nbsp;<span style="font-weight:bold;color:#1f377f;">s</span>&nbsp;=&gt;&nbsp;<span style="color:blue;">new</span>&nbsp;Generator&lt;<span style="color:blue;">int</span>&gt;(<span style="font-weight:bold;color:#1f377f;">r</span>&nbsp;=&gt;&nbsp;r.Next(s.Length));
+&nbsp;&nbsp;&nbsp;&nbsp;Func&lt;<span style="color:blue;">int</span>,&nbsp;Generator&lt;TimeSpan&gt;&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">h</span>&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">i</span>&nbsp;=&gt;&nbsp;<span style="color:blue;">new</span>&nbsp;Generator&lt;TimeSpan&gt;(<span style="font-weight:bold;color:#1f377f;">r</span>&nbsp;=&gt;&nbsp;TimeSpan.FromDays(r.Next(i)));
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;Generator&lt;<span style="color:blue;">string</span>&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">m</span>&nbsp;=&nbsp;f(a);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;Assert.Equal(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;m.SelectMany(g).SelectMany(h).Generate(<span style="color:blue;">new</span>&nbsp;Random(seed)),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;m.SelectMany(<span style="font-weight:bold;color:#1f377f;">x</span>&nbsp;=&gt;&nbsp;g(x).SelectMany(h)).Generate(<span style="color:blue;">new</span>&nbsp;Random(seed)));
+}</pre>
+    </p>
+    <p>
+        All tests pass.
+    </p>
+    <h3 id="3bcc2327700747008fbc5b00865fffc3">
+        CPR example <a href="#3bcc2327700747008fbc5b00865fffc3">#</a>
+    </h3>
+    <p>
+        Formalities out of the way, let's look at a more realistic example. In the article about the <a href="/2018/11/26/the-test-data-generator-applicative-functor">Test Data Generator applicative functor</a> you saw an example of parsing a <a href="https://en.wikipedia.org/wiki/Personal_identification_number_(Denmark)">Danish personal identification number</a>, in Danish called <em>CPR-nummer</em> (<em>CPR number</em>) for <em>Central Person Register</em>. (It's not a register of central persons, but rather the central register of persons. Danish works slightly differently than English.)
+    </p>
+    <p>
+        CPR numbers have a simple format: <code>DDMMYY-SSSS</code>, where the first six digits indicate a person's birth date, and the last four digits are a sequence number. An example could be <code>010203-1234</code>, which indicates a woman born February 1, 1903.
+    </p>
+    <p>
+        In C# you might model a CPR number as a class with a constructor like this:
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">CprNumber</span>(<span style="color:blue;">int</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">day</span>,&nbsp;<span style="color:blue;">int</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">month</span>,&nbsp;<span style="color:blue;">int</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">year</span>,&nbsp;<span style="color:blue;">int</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">sequenceNumber</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">if</span>&nbsp;(year&nbsp;&lt;&nbsp;0&nbsp;||&nbsp;99&nbsp;&lt;&nbsp;year)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">throw</span>&nbsp;<span style="color:blue;">new</span>&nbsp;ArgumentOutOfRangeException(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;nameof(year),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#a31515;">&quot;Year&nbsp;must&nbsp;be&nbsp;between&nbsp;0&nbsp;and&nbsp;99,&nbsp;inclusive.&quot;</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">if</span>&nbsp;(month&nbsp;&lt;&nbsp;1&nbsp;||&nbsp;12&nbsp;&lt;&nbsp;month)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">throw</span>&nbsp;<span style="color:blue;">new</span>&nbsp;ArgumentOutOfRangeException(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;nameof(month),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#a31515;">&quot;Month&nbsp;must&nbsp;be&nbsp;between&nbsp;1&nbsp;and&nbsp;12,&nbsp;inclusive.&quot;</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">if</span>&nbsp;(sequenceNumber&nbsp;&lt;&nbsp;0&nbsp;||&nbsp;9999&nbsp;&lt;&nbsp;sequenceNumber)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">throw</span>&nbsp;<span style="color:blue;">new</span>&nbsp;ArgumentOutOfRangeException(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;nameof(sequenceNumber),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#a31515;">&quot;Sequence&nbsp;number&nbsp;must&nbsp;be&nbsp;between&nbsp;0&nbsp;and&nbsp;9999,&nbsp;inclusive.&quot;</span>);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">fourDigitYear</span>&nbsp;=&nbsp;CalculateFourDigitYear(year,&nbsp;sequenceNumber);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">daysInMonth</span>&nbsp;=&nbsp;DateTime.DaysInMonth(fourDigitYear,&nbsp;month);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">if</span>&nbsp;(day&nbsp;&lt;&nbsp;1&nbsp;||&nbsp;daysInMonth&nbsp;&lt;&nbsp;day)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">throw</span>&nbsp;<span style="color:blue;">new</span>&nbsp;ArgumentOutOfRangeException(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;nameof(day),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#a31515;">$&quot;Day&nbsp;must&nbsp;be&nbsp;between&nbsp;1&nbsp;and&nbsp;</span>{daysInMonth}<span style="color:#a31515;">,&nbsp;inclusive.&quot;</span>);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.day&nbsp;=&nbsp;day;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.month&nbsp;=&nbsp;month;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.year&nbsp;=&nbsp;year;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.sequenceNumber&nbsp;=&nbsp;sequenceNumber;
+}</pre>
+    </p>
+    <p>
+        The system has been around since 1968 so clearly suffers from a <a href="https://en.wikipedia.org/wiki/Year_2000_problem">Y2k problem</a>, as years are encoded with only two digits. The workaround for this is that the most significant digit of the sequence number encodes the century. At the time I'm writing this, <a href="https://da.wikipedia.org/wiki/CPR-nummer">the Danish-language wikipedia entry for CPR-nummer</a> still includes a table that shows how one can derive the century from the sequence number. This enables the CPR system to handle birth dates between 1858 and 2057.
+    </p>
+    <p>
+        The <code>CprNumber</code> constructor has to consult that table in order to determine the century. It uses the <code>CalculateFourDigitYear</code> function for that. Once it has the four-digit year, it can use the <a href="https://learn.microsoft.com/dotnet/api/system.datetime.daysinmonth">DateTime.DaysInMonth</a> method to determine the number of days in the given month. This is used to validate the day parameter.
+    </p>
+    <p>
+        The <a href="/2018/11/26/the-test-data-generator-applicative-functor">previous article</a> showed a test that made use of a Test Data Generator for the <code>CprNumber</code> class. The generator was referenced as <code>Gen.CprNumber</code>, but how do you define such a generator?
+    </p>
+    <h3 id="02e0bc1c345c4c2b910abd5fa338b30c">
+        CPR number generator <a href="#02e0bc1c345c4c2b910abd5fa338b30c">#</a>
+    </h3>
+    <p>
+        The constructor arguments for <code>month</code>, <code>year</code>, and <code>sequenceNumber</code> are easy to generate. You need a basic generator that produces values between two boundaries. Both <a href="https://en.wikipedia.org/wiki/QuickCheck">QuickCheck</a> and <a href="https://fscheck.github.io/FsCheck">FsCheck</a> call it <code>choose</code>, so I'll reuse that name:
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;Generator&lt;<span style="color:blue;">int</span>&gt;&nbsp;<span style="color:#74531f;">Choose</span>(<span style="color:blue;">int</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">min</span>,&nbsp;<span style="color:blue;">int</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">max</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;Generator&lt;<span style="color:blue;">int</span>&gt;(<span style="font-weight:bold;color:#1f377f;">r</span>&nbsp;=&gt;&nbsp;r.Next(min,&nbsp;max&nbsp;+&nbsp;1));
+}</pre>
+    </p>
+    <p>
+        The <code>choose</code> functions of QuickCheck and FsCheck consider both boundaries to be inclusive, so I've done the same. That explains the <code>+ 1</code>, since <a href="https://learn.microsoft.com/dotnet/api/system.random.next">Random.Next</a> excludes the upper boundary.
+    </p>
+    <p>
+        You can now combine <code>choose</code> with <code>DateTime.DaysInMonth</code> to generate a valid day:
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;Generator&lt;<span style="color:blue;">int</span>&gt;&nbsp;<span style="color:#74531f;">Day</span>(<span style="color:blue;">int</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">year</span>,&nbsp;<span style="color:blue;">int</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">month</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">daysInMonth</span>&nbsp;=&nbsp;DateTime.DaysInMonth(year,&nbsp;month);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;Gen.Choose(1,&nbsp;daysInMonth);
+}</pre>
+    </p>
+    <p>
+        Let's pause and consider the implications. The point of this example is to demonstrate why it's practically useful that Test Data Generators are monads. Keep in mind that monads are functors you can flatten. When do you need to flatten a functor? Specifically, when do you need to flatten a Test Data Generator? Right now, as it turns out.
+    </p>
+    <p>
+        The <code>Day</code> method returns a <code>Generator&lt;<span style="color:blue;">int</span>&gt;</code>, but where do the <code>year</code> and <code>month</code> arguments come from? They'll typically be produced by another Test Data Generator such as <code>choose</code>. Thus, if you only <em>map</em> (<code>Select</code>) over previous Test Data Generators, you'll produce a <code>Generator&lt;Generator&lt;<span style="color:blue;">int</span>&gt;&gt;</code>:
+    </p>
+    <p>
+        <pre>Generator&lt;<span style="color:blue;">int</span>&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">genYear</span>&nbsp;=&nbsp;Gen.Choose(1970,&nbsp;2050);
+Generator&lt;<span style="color:blue;">int</span>&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">genMonth</span>&nbsp;=&nbsp;Gen.Choose(1,&nbsp;12);
+Generator&lt;(<span style="color:blue;">int</span>,&nbsp;<span style="color:blue;">int</span>)&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">genYearAndMonth</span>&nbsp;=&nbsp;genYear.Apply(genMonth);
+ 
+Generator&lt;Generator&lt;<span style="color:blue;">int</span>&gt;&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">genDay</span>&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;genYearAndMonth.Select(<span style="font-weight:bold;color:#1f377f;">t</span>&nbsp;=&gt;&nbsp;Gen.Choose(1,&nbsp;DateTime.DaysInMonth(t.Item1,&nbsp;t.Item2)));</pre>
+    </p>
+    <p>
+        This example uses an <code>Apply</code> overload to combine <code>genYear</code> and <code>genMonth</code>. As long as the two generators are independent of each other, you can use the <a href="/2018/10/01/applicative-functors">applicative functor</a> capability to combine them. When, however, you need to produce a new generator from a value produced by a previous generator, the functor or applicative functor capabilities are insufficient. If you try to use <code>Select</code>, as in the above example, you'll produce a nested generator.
+    </p>
+    <p>
+        Since it's a monad, however, you can <code>Flatten</code> it:
+    </p>
+    <p>
+        <pre>Generator&lt;<span style="color:blue;">int</span>&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">flattened</span>&nbsp;=&nbsp;genDay.Flatten();</pre>
+    </p>
+    <p>
+        Or you can use <code>SelectMany</code> (monadic <em>bind</em>) to flatten as you go. The <code>CprNumber</code> generator does that, although it uses query syntax syntactic sugar to make the code more readable:
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;Generator&lt;CprNumber&gt;&nbsp;CprNumber&nbsp;=&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">from</span>&nbsp;sequenceNumber&nbsp;<span style="color:blue;">in</span>&nbsp;Gen.Choose(0,&nbsp;9999)
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">from</span>&nbsp;year&nbsp;<span style="color:blue;">in</span>&nbsp;Gen.Choose(0,&nbsp;99)
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">from</span>&nbsp;month&nbsp;<span style="color:blue;">in</span>&nbsp;Gen.Choose(1,&nbsp;12)
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;fourDigitYear&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;TestDataBuilderFunctor.CprNumber.CalculateFourDigitYear(year,&nbsp;sequenceNumber)
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">from</span>&nbsp;day&nbsp;<span style="color:blue;">in</span>&nbsp;Gen.Day(fourDigitYear,&nbsp;month)
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">select</span>&nbsp;<span style="color:blue;">new</span>&nbsp;CprNumber(day,&nbsp;month,&nbsp;year,&nbsp;sequenceNumber);</pre>
+    </p>
+    <p>
+        The expression first uses <code>Gen.Choose</code> to produce three independent <code>int</code> values: <code>sequenceNumber</code>, <code>year</code>, and <code>month</code>. It then uses the <code>CalculateFourDigitYear</code> function to look up the proper century based on the two-digit <code>year</code> and the <code>sequenceNumber</code>. With that information it can call <code>Gen.Day</code>, and since the expression uses monadic composition, it's flattening as it goes. Thus <code>day</code> is an <code>int</code> value rather than a generator.
+    </p>
+    <p>
+        Finally, the entire expression can compose the four <code>int</code> values into a valid <code>CprNumber</code> object.
+    </p>
+    <p>
+        You can consult the <a href="/2018/11/26/the-test-data-generator-applicative-functor">previous article</a> to see <code>Gen.CprNumber</code> in use.
+    </p>
+    <h3 id="f3947d3a3c364fb28fb264aff59f7fe7">
+        Hedgehog CPR generator <a href="#f3947d3a3c364fb28fb264aff59f7fe7">#</a>
+    </h3>
+    <p>
+        You can reproduce the CPR example in F# using one of several property-based testing frameworks. In this example, I'll continue the example from the <a href="/2018/11/26/the-test-data-generator-applicative-functor">previous article</a> as well as the article <a href="/2018/12/10/danish-cpr-numbers-in-f">Danish CPR numbers in F#</a>. You can see a couple of tests in these articles. They use the <code>cprNumber</code> generator, but never show the code.
+    </p>
+    <p>
+        In all the property-based testing frameworks I've seen, generators are called <code>Gen</code>. This is also the case for Hedgehog. The <code>Gen</code> <a href="https://bartoszmilewski.com/2014/01/14/functors-are-containers">container</a> is a monad, and there's a <code>gen</code> <a href="https://learn.microsoft.com/dotnet/fsharp/language-reference/computation-expressions">computation expression</a> that supplies syntactic sugar.
+    </p>
+    <p>
+        You can translate the above example to a Hedgehog <code>Gen</code> value like this:
+    </p>
+    <p>
+        <pre><span style="color:blue;">let</span>&nbsp;cprNumber&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;gen&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;sequenceNumber&nbsp;=&nbsp;Range.linear&nbsp;0&nbsp;9999&nbsp;|&gt;&nbsp;Gen.int32
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;year&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;=&nbsp;Range.linear&nbsp;0&nbsp;&nbsp;&nbsp;99&nbsp;|&gt;&nbsp;Gen.int32
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;month&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;=&nbsp;Range.linear&nbsp;1&nbsp;&nbsp;&nbsp;12&nbsp;|&gt;&nbsp;Gen.int32
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;fourDigitYear&nbsp;&nbsp;&nbsp;=&nbsp;Cpr.calculateFourDigitYear&nbsp;year&nbsp;sequenceNumber
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;daysInMonth&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;=&nbsp;DateTime.DaysInMonth&nbsp;(fourDigitYear,&nbsp;month)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;day&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;=&nbsp;Range.linear&nbsp;1&nbsp;daysInMonth&nbsp;|&gt;&nbsp;Gen.int32
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;Cpr.tryCreate&nbsp;day&nbsp;month&nbsp;year&nbsp;sequenceNumber&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;Gen.some</pre>
+    </p>
+    <p>
+        To keep the example simple, I haven't defined an explicit <code>day</code> generator, but instead just inlined <code>DateTime.DaysInMonth</code>.
+    </p>
+    <p>
+        Consult the articles that I linked above to see the <code>Gen.cprNumber</code> generator in use.
+    </p>
+    <h3 id="15d1feac289e426ebd5845fc59d3f33e">
+        Conclusion <a href="#15d1feac289e426ebd5845fc59d3f33e">#</a>
+    </h3>
+    <p>
+        Test Data Generators form monads. This is useful when you need to generate test data that depends on other generated test data. Monadic <em>bind</em> (<code>SelectMany</code> in C#) can flatten the generator functor as you go. This article showed examples in both C# and F#.
+    </p>
+    <p>
+        The same abstraction also exists in the Haskell QuickCheck library, but I haven't shown any Haskell examples. If you've taken the trouble to learn Haskell (which you should), you already know what a monad is.
+    </p>
+    <p>
+        <strong>Next:</strong> <a href="/2018/01/08/software-design-isomorphisms">Software design isomorphisms</a>.
+    </p>
+</div>
