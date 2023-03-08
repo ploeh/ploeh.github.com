@@ -1,0 +1,209 @@
+---
+layout: post
+title: "Anagrams kata as a one-liner"
+description: "A futile exercise in code compaction."
+date: 2023-03-08 13:28 UTC
+tags: [Haskell, Functional Programming]
+---
+{% include JB/setup %}
+
+<div id="post">
+    <p>
+        <em>{{ page.description }}</em>
+    </p>
+    <p>
+        Recently I was doing the <a href="http://codekata.com/kata/kata06-anagrams/">Anagrams kata</a> in <a href="https://fsharp.org/">F#</a> with <a href="https://github.com/gdziadkiewicz">Grzegorz Dziadkiewicz</a>, and along the way realised that the implementation is essentially a one-liner. I thought it would be fun to redo the exercise in <a href="https://www.haskell.org/">Haskell</a> and see how compact code I could get away with.
+    </p>
+    <p>
+        In short, in the exercise, you're given a list of words, and you need to find all the <a href="https://en.wikipedia.org/wiki/Anagram">anagrams</a> in the list. For example, given the list <em>bar, foo, bra</em>, the result should be <em>bar, bra</em>, and <em>foo</em> shouldn't be part of the output, since it's not an anagram of any other word in the list.
+    </p>
+    <h3 id="99c78f1d41a540128c07eb8912e4ca92">
+        A pipeline of transformations <a href="#99c78f1d41a540128c07eb8912e4ca92">#</a>
+    </h3>
+    <p>
+        My idea was to collect all the words in a <a href="https://hackage.haskell.org/package/containers/docs/Data-Map-Strict.html">Map</a> (dictionary) keyed by the string, but sorted. Even if the sorted string is a nonsense word, all anagrams sort to the same sequence of letters:
+    </p>
+    <p>
+        <pre>ghci&gt; sort "bar"
+"abr"
+ghci&gt; sort "bra"
+"abr"</pre>
+    </p>
+    <p>
+        Each of the keys should contain a <a href="https://hackage.haskell.org/package/containers-0.6.7/docs/Data-Set.html">Set</a> of words, since I don't care about the order.
+    </p>
+    <p>
+        Once I have that map of sets, I can throw away the singleton sets, and then the keys. Or perhaps first throw away the keys, and then the singleton sets. The order of those two steps doesn't matter.
+    </p>
+    <p>
+        The reason I don't want the singleton sets is that a set with only one word means that no anagrams were found.
+    </p>
+    <h3 id="53831677170c455cb4624971c8e82249">
+        Creating the map <a href="#53831677170c455cb4624971c8e82249">#</a>
+    </h3>
+    <p>
+        How to create the desired map? The <code>Map</code> module exports the <a href="https://hackage.haskell.org/package/containers/docs/Data-Map-Strict.html#v:fromListWith">fromListWith</a> function that enables you to go through an <a href="https://en.wikipedia.org/wiki/Association_list">association list</a> and combine values along the, in case you encounter the key more than once. That sounds useful, but means that first I have to convert the list of words to an association list.
+    </p>
+    <p>
+        Importing <a href="https://hackage.haskell.org/package/base/docs/Control-Arrow.html">Control.Arrow</a>, I can do it like this:
+    </p>
+    <p>
+        <pre>ghci&gt; fmap (sort &amp;&amp;&amp; Set.singleton) ["bar", "foo", "bra"]
+[("abr",fromList ["bar"]),("foo",fromList ["foo"]),("abr",fromList ["bra"])]</pre>
+    </p>
+    <p>
+        Each element in the list is a pair of a key, and a set containing a single word. Notice that the set containing <code>"bar"</code> has the same key as the set containing <code>"bra"</code>. When using <code>fromListWith</code>, the function will have to unite these two sets whenever it encounters the same key.
+    </p>
+    <p>
+        <pre>ghci&gt; Map.fromListWith Set.union $ fmap (sort &amp;&amp;&amp; Set.singleton) ["bar", "foo", "bra"]
+fromList [("abr",fromList ["bar","bra"]),("foo",fromList ["foo"])]</pre>
+    </p>
+    <p>
+        The two anagrams <code>"bar"</code> and <code>"bra"</code> now belong to the same set, while <code>"foo"</code> is still solitary.
+    </p>
+    <h3 id="bbd82971c2324018973182c27d613a64">
+        Finding the anagrams <a href="#bbd82971c2324018973182c27d613a64">#</a>
+    </h3>
+    <p>
+        Now that we've grouped sets according to key, we no longer need the keys:
+    </p>
+    <p>
+        <pre>ghci&gt; Map.elems $ Map.fromListWith Set.union $ fmap (sort &amp;&amp;&amp; Set.singleton) ["bar", "foo", "bra"]
+[fromList ["bar","bra"],fromList ["foo"]]</pre>
+    </p>
+    <p>
+        The anagrams are those sets that have more than one element, so we can throw away those that are smaller.
+    </p>
+    <p>
+        <pre>ghci&gt; filter ((1 &lt;) . Set.size) $ Map.elems $ Map.fromListWith Set.union $
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;fmap (sort &amp;&amp;&amp; Set.singleton) ["bar", "foo", "bra"]
+[fromList ["bar","bra"]]</pre>
+    </p>
+    <p>
+        The expression has now grown to such a width that I've broken it into two lines to make it more readable. It really is just one line, though.
+    </p>
+    <h3 id="203f41225d944d1689cf1df0d3f8118f">
+        Function <a href="#203f41225d944d1689cf1df0d3f8118f">#</a>
+    </h3>
+    <p>
+        To save a bit of space, I eta-reduced the expression before I made it a function:
+    </p>
+    <p>
+        <pre><span style="color:#2b91af;">anagrams</span>&nbsp;<span style="color:blue;">::</span>&nbsp;<span style="color:blue;">Ord</span>&nbsp;a&nbsp;<span style="color:blue;">=&gt;</span>&nbsp;[[a]]&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">Set</span>&nbsp;(<span style="color:blue;">Set</span>&nbsp;[a])
+anagrams&nbsp;=
+&nbsp;&nbsp;Set.fromList&nbsp;.&nbsp;<span style="color:blue;">filter</span>&nbsp;((1&nbsp;&lt;)&nbsp;.&nbsp;Set.size)&nbsp;.&nbsp;Map.elems&nbsp;.&nbsp;Map.fromListWith&nbsp;Set.union
+&nbsp;&nbsp;.&nbsp;<span style="color:blue;">fmap</span>&nbsp;(sort&nbsp;&amp;&amp;&amp;&nbsp;Set.singleton)</pre>
+    </p>
+    <p>
+        The leftmost <code>Set.fromList</code> converts the list of anagrams to a <code>Set</code> of anagrams, since I didn't think that it was a postcondition that the anagrams should be returned in a specific order.
+    </p>
+    <p>
+        Unfortunately the expression is still so wide that I found it necessary to break it into two lines.
+    </p>
+    <p>
+        Just for the hell of it, I tried to fix the situation by changing the imports:
+    </p>
+    <p>
+        <pre><span style="color:blue;">import</span>&nbsp;Control.Arrow
+<span style="color:blue;">import</span>&nbsp;Data.List&nbsp;(<span style="color:#2b91af;">sort</span>)
+<span style="color:blue;">import</span>&nbsp;Data.Map.Strict&nbsp;(<span style="color:#2b91af;">fromListWith</span>,&nbsp;<span style="color:#2b91af;">elems</span>)
+<span style="color:blue;">import</span>&nbsp;Data.Set&nbsp;(<span style="color:blue;">Set</span>,&nbsp;<span style="color:#2b91af;">fromList</span>,&nbsp;<span style="color:#2b91af;">singleton</span>)</pre>
+    </p>
+    <p>
+        With this very specific set of imports, the expression now barely fits on a single line:
+    </p>
+    <p>
+        <pre><span style="color:#2b91af;">anagrams</span>&nbsp;<span style="color:blue;">::</span>&nbsp;<span style="color:blue;">Ord</span>&nbsp;a&nbsp;<span style="color:blue;">=&gt;</span>&nbsp;[[a]]&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">Set</span>&nbsp;(<span style="color:blue;">Set</span>&nbsp;[a])
+anagrams&nbsp;=&nbsp;fromList&nbsp;.&nbsp;<span style="color:blue;">filter</span>&nbsp;((1&nbsp;&lt;)&nbsp;.&nbsp;<span style="color:blue;">length</span>)&nbsp;.&nbsp;elems&nbsp;.&nbsp;fromListWith&nbsp;<span style="color:#2b91af;">(&lt;&gt;)</span>&nbsp;.&nbsp;<span style="color:blue;">fmap</span>&nbsp;(sort&nbsp;&amp;&amp;&amp;&nbsp;singleton)</pre>
+    </p>
+    <p>
+        Here, I also took advantage of <code>Semigroup</code> <em>append</em> (<code>&lt;&gt;</code>) being equal to <code>Set.union</code> for <code>Set</code>.
+    </p>
+    <p>
+        Is it readable? Hardly.
+    </p>
+    <p>
+        My main goal with the exercise was to implement the desired functionality as a single expression. Perhaps I was inspired by Dave Thomas, who wrote:
+    </p>
+    <blockquote>
+        <p>
+            "I hacked a solution together in 25 lines of Ruby."
+        </p>
+        <footer><cite><a href="http://codekata.com/kata/kata06-anagrams/">Dave Thomas</a></cite></footer>
+    </blockquote>
+    <p>
+        25 lines of Ruby? I can do it in one line of Haskell!
+    </p>
+    <p>
+        Is that interesting? Does it make sense to compare two languages? Why not? By trying out different languages you learn the strengths and weaknesses of each. There's no denying that Haskell is <em>expressive</em>. On the other hand, what you can't see in this blog post is that compilation takes forever. Not for this code in particular, but in general.
+    </p>
+    <p>
+        I'm sure Dave Thomas was done with his Ruby implementation before my machine had even finished compiling the empty, scaffolded Haskell code.
+    </p>
+    <h3 id="3ee6ff0610174f3ea5293baaefbc9ee3">
+        Performance <a href="#3ee6ff0610174f3ea5293baaefbc9ee3">#</a>
+    </h3>
+    <p>
+        Dave Thomas also wrote:
+    </p>
+    <blockquote>
+        <p>
+            "It runs on <a href="http://codekata.com/data/wordlist.txt">this wordlist</a> in 1.8s on a 1.7GHz i7."
+        </p>
+    </blockquote>
+    <p>
+        Usually I don't care that much about performance as long as it's adequate. Or rather, I find that good software architecture with poor algorithms usually beats bad architecture with good algorithms. But I digress.
+    </p>
+    <p>
+        How fares my one-liner against Dave Thomas' implementation?
+    </p>
+    <p>
+        <pre>ghci&gt; :set +s
+ghci&gt; length . anagrams . lines &lt;$&gt; readFile "wordlist.txt"
+20683
+(3.56 secs, 1,749,984,448 bytes)</pre>
+    </p>
+    <p>
+        Oh, 3.56 seconds isn't particularly g <em>Holy thunk, Batman! 1.7 gigabytes!</em>
+    </p>
+    <p>
+        That's actually disappointing, I admit. If only I could excuse this by running on a weaker machine, but mine is a 1.9 GHz i7. Nominally faster than Dave Thomas' machine.
+    </p>
+    <p>
+        At least, the time it takes to run through that 3.7 MB file is the same order of magnitude.
+    </p>
+    <h3 id="224925799e714bb1922f9c41a68207a3">
+        Tests <a href="#224925799e714bb1922f9c41a68207a3">#</a>
+    </h3>
+    <p>
+        Since I had a good idea about the kind of implementation I was aiming for, I didn't write that many tests. Only three, actually.
+    </p>
+    <p>
+        <pre><span style="color:#2b91af;">main</span>&nbsp;<span style="color:blue;">::</span>&nbsp;<span style="color:#2b91af;">IO</span>&nbsp;()
+main&nbsp;=&nbsp;defaultMain&nbsp;$&nbsp;hUnitTestToTests&nbsp;(TestList&nbsp;[
+&nbsp;&nbsp;<span style="color:#a31515;">&quot;Examples&quot;</span>&nbsp;~:&nbsp;<span style="color:blue;">do</span>
+&nbsp;&nbsp;&nbsp;&nbsp;(<span style="color:blue;">words</span>,&nbsp;expected)&nbsp;&lt;-
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;[
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;([<span style="color:#a31515;">&quot;foo&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;bar&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;baz&quot;</span>],&nbsp;Set.empty),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;([<span style="color:#a31515;">&quot;bar&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;foo&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;bra&quot;</span>],&nbsp;Set.fromList&nbsp;[Set.fromList&nbsp;[<span style="color:#a31515;">&quot;bar&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;bra&quot;</span>]]),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;([<span style="color:#a31515;">&quot;foo&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;bar&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;bra&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;oof&quot;</span>],
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Set.fromList&nbsp;[
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Set.fromList&nbsp;[<span style="color:#a31515;">&quot;foo&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;oof&quot;</span>],&nbsp;Set.fromList&nbsp;[<span style="color:#a31515;">&quot;bar&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;bra&quot;</span>]])
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;]
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;actual&nbsp;=&nbsp;anagrams&nbsp;<span style="color:blue;">words</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;$&nbsp;expected&nbsp;~=?&nbsp;actual
+&nbsp;&nbsp;])</pre>
+    </p>
+    <p>
+        As I usually do it in Haskell, these are <a href="/2018/05/07/inlined-hunit-test-lists">inlined</a> <a href="/2018/04/30/parametrised-unit-tests-in-haskell">parametrised HUnit tests</a>.
+    </p>
+    <h3 id="3b4f477f18954c5095d48f450f935092">
+        Conclusion <a href="#3b4f477f18954c5095d48f450f935092">#</a>
+    </h3>
+    <p>
+        <a href="/2020/01/13/on-doing-katas">Doing katas</a> is a good way to try out new ideas, dumb or otherwise. Implementing the Anagrams kata as a one-liner was fun, but the final code shown here is sufficiently unreadable that I wouldn't recommend it.
+    </p>
+    <p>
+        You could still write the <code>anagrams</code> function based on the idea presented here, but in a shared code base with an indefinite life span, I'd break it up into multiple expressions with descriptive names.
+    </p>
+</div>
