@@ -1,0 +1,427 @@
+---
+layout: post
+title: "An abstract example of refactoring from interaction-based to property-based testing"
+description: "A C# example with xUnit.net and CsCheck"
+date: 2023-02-03 6:45 UTC
+tags: [Unit Testing, Property-based Testing]
+---
+{% include JB/setup %}
+
+<div id="post">
+	<p>
+		<em>{{ page.description }}</em>
+	</p>
+    <p>
+        This is the first comprehensive example that accompanies the article <a href="">Epistemology of interaction testing</a>. In that article, I argue that in a code base that leans toward functional programming (FP), property-based testing is a better fit than interaction-based testing. In this example, I will show how to refactor simple interaction-based tests into a property-based tests.
+    </p>
+    <p>
+        This small article series was prompted by an email from Sergei Rogovtsev, who was kind enough to furnish <a href="https://github.com/srogovtsev/mocks-in-tests">example code</a>. I'll use his code as a starting point for this example, so I've <a href="https://github.com/ploeh/mocks-in-tests">forked the repository</a>. If you want to follow along, all my work is in a branch called <em>no-mocks</em>. That branch simply continues off the <em>master</em> branch.
+    </p>
+    <h3 id="5fe789d2b85b449fa2677bbcbf095bfc">
+        Interaction-based testing <a href="#5fe789d2b85b449fa2677bbcbf095bfc">#</a>
+    </h3>
+    <p>
+        Sergei Rogovtsev writes:
+    </p>
+    <blockquote>
+        <p>
+            "A major thing to point out here is that I'm not following TDD here not by my own choice, but because my original question arose in a context of a legacy system devoid of tests, so I choose to present it to you in the same way. I imagine that working from tests would avoid a lot of questions."
+        </p>
+    </blockquote>
+    <p>
+        Even when using test-driven development (TDD), most code bases I've seen make use of <a href="http://xunitpatterns.com/Test%20Stub.html">Stubs</a> and <a href="http://xunitpatterns.com/Mock%20Object.html">Mocks</a> (or, rather, <a href="http://xunitpatterns.com/Test%20Spy.html">Spies</a>). In an object-oriented context this can make much sense. After all, a catch phrase of object-oriented programming is <em>tell, don't ask</em>.
+    </p>
+    <p>
+        If you base API design on that principle, you're modelling side effects, and it makes sense that tests use Spies to verify those side effects. The book <a href="/ref/goos">Growing Object-Oriented Software, Guided by Tests</a> is a good example of this approach. Thus, even if you follow established good TDD practice, you could easily arrive at a code base reminiscent of Sergei Rogovtsev's example. I've written plenty of such code bases myself.
+    </p>
+    <p>
+        Sergei Rogovtsev then extracts a couple of components, leaving him with a <code>Controller</code> class looking like this:
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">string</span>&nbsp;<span style="font-weight:bold;color:#74531f;">Complete</span>(<span style="color:blue;">string</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">state</span>,&nbsp;<span style="color:blue;">string</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">code</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">knownState</span>&nbsp;=&nbsp;_repository.GetState(state);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">try</span>
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">if</span>&nbsp;(_stateValidator.Validate(code,&nbsp;knownState))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;_renderer.Success(knownState);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">else</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;_renderer.Failure(knownState);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">catch</span>&nbsp;(Exception&nbsp;<span style="font-weight:bold;color:#1f377f;">e</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;_renderer.Error(knownState,&nbsp;e);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+    </p>
+    <p>
+        This code snippet doesn't show the entire class, but only its solitary action method. Keep in mind that the entire repository is available on GitHub if you want to see the surrounding code.
+    </p>
+    <p>
+        The <code>Complete</code> method orchestrates three injected dependencies: <code>_repository</code>, <code>_stateValidator</code>, and <code>_renderer</code>. The question that Sergei Rogovtsev asks is how to test this method. You may think that it's so simple that you don't need to test it, but keep in mind that this is a <a href="https://en.wikipedia.org/wiki/Minimal_reproducible_example">minimal and self-contained example</a> that stands in for something more complicated.
+    </p>
+    <p>
+        The method has a cyclomatic complexity of <em>3</em>, so <a href="/2019/12/09/put-cyclomatic-complexity-to-good-use">you need at least three test cases</a>. That's also what Sergei Rogovtsev's code contains. I'll show each test case in turn, while I refactor them.
+    </p>
+    <p>
+        The overall question is still this: Both <code>IStateValidator</code> and <code>IRenderer</code> interfaces have only a single production implementation, and in both cases the implementations are <a href="https://en.wikipedia.org/wiki/Pure_function">pure functions</a>. If interaction-based testing is suboptimal, is there a better way to test this code?
+    </p>
+    <p>
+        As I outlined in <a href="">the introductory article</a>, I consider property-based testing a good alternative. In the following, I'll refactor the tests. Since the tests already use <a href="https://github.com/AutoFixture/AutoFixture">AutoFixture</a>, most of the preliminary work can be done without choosing a property-based testing framework. I'll postpone that decision until I need it.
+    </p>
+    <h3 id="ca095000df004ef9b7cb7c022071f76b">
+        State validator <a href="#ca095000df004ef9b7cb7c022071f76b">#</a>
+    </h3>
+    <p>
+        The <code>IStateValidator</code> interface has a single implementation:
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">StateValidator</span>&nbsp;:&nbsp;IStateValidator
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">bool</span>&nbsp;<span style="font-weight:bold;color:#74531f;">Validate</span>(<span style="color:blue;">string</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">code</span>,&nbsp;(<span style="color:blue;">string</span>&nbsp;expectedCode,&nbsp;<span style="color:blue;">bool</span>&nbsp;isMobile,&nbsp;Uri&nbsp;redirect)&nbsp;<span style="font-weight:bold;color:#1f377f;">knownState</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;=&gt;&nbsp;code&nbsp;==&nbsp;knownState.expectedCode;
+}</pre>
+    </p>
+    <p>
+        The <code>Validate</code> method is a pure function, so it's completely deterministic. It means that you don't have to hide it behind an interface and replace it with a <a href="https://martinfowler.com/bliki/TestDouble.html">Test Double</a> in order to control it. Rather, just feed it proper data. Still, that's not what the interaction-based tests do:
+    </p>
+    <p>
+        <pre>[Theory]
+[AutoData]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;<span style="font-weight:bold;color:#74531f;">HappyPath</span>(<span style="color:blue;">string</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">state</span>,&nbsp;<span style="color:blue;">string</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">code</span>,&nbsp;(<span style="color:blue;">string</span>,&nbsp;<span style="color:blue;">bool</span>,&nbsp;Uri)&nbsp;<span style="font-weight:bold;color:#1f377f;">knownState</span>,&nbsp;<span style="color:blue;">string</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">response</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;_repository.Add(state,&nbsp;knownState);
+&nbsp;&nbsp;&nbsp;&nbsp;_stateValidator
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.Setup(<span style="font-weight:bold;color:#1f377f;">validator</span>&nbsp;=&gt;&nbsp;validator.Validate(code,&nbsp;knownState))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.Returns(<span style="color:blue;">true</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;_renderer
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.Setup(<span style="font-weight:bold;color:#1f377f;">renderer</span>&nbsp;=&gt;&nbsp;renderer.Success(knownState))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.Returns(response);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;_target
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.Complete(state,&nbsp;code)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.Should().Be(response);
+}</pre>
+    </p>
+    <p>
+        These tests use AutoFixture, which will make it a bit easier to refactor them to properties. It also makes the test a bit more abstract, since you don't get to see concrete test data. In short, the <code>[AutoData]</code> attribute will generate a random <code>state</code> string, a random <code>code</code> string, and so on. If you want to see an example with concrete test data, the next article shows that variation.
+    </p>
+    <p>
+        The test uses <a href="https://github.com/moq/moq4">Moq</a> to control the behaviour of the Test Doubles. It states that the <code>Validate</code> method will return <code>true</code> when called with certain arguments. This is possible because you can redefine its behaviour, but as far as executable specifications go, this test doesn't reflect reality. There's only one <code>Validate</code> implementation, and it doesn't behave like that. Rather, it'll return <code>true</code> when <code>code</code> is equal to <code>knownState.expectedCode</code>. The test poorly communicates that behaviour.
+    </p>
+    <p>
+        Even before I replace AutoFixture with CsCheck, I'll prepare the test by making it more honest. I'll replace the <code>code</code> parameter with a <a href="http://xunitpatterns.com/Derived%20Value.html">Derived Value</a>:
+    </p>
+    <p>
+        <pre>[Theory]
+[AutoData]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;<span style="font-weight:bold;color:#74531f;">HappyPath</span>(<span style="color:blue;">string</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">state</span>,&nbsp;(<span style="color:blue;">string</span>,&nbsp;<span style="color:blue;">bool</span>,&nbsp;Uri)&nbsp;<span style="font-weight:bold;color:#1f377f;">knownState</span>,&nbsp;<span style="color:blue;">string</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">response</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;var&nbsp;(<span style="font-weight:bold;color:#1f377f;">expectedCode</span>,&nbsp;<span style="color:blue;">_</span>,&nbsp;<span style="color:blue;">_</span>)&nbsp;=&nbsp;knownState;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">code</span>&nbsp;=&nbsp;expectedCode;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;The&nbsp;rest&nbsp;of&nbsp;the&nbsp;test...</span></pre>
+    </p>
+    <p>
+        I've removed the <code>code</code> parameter to replace it with a variable derived from <code>knownState</code>. Notice how this <em>documents</em> the overall behaviour of the (sub-)system.
+    </p>
+    <p>
+        This also means that I can now replace the <code>IStateValidator</code> Test Double with the real, pure implementation:
+    </p>
+    <p>
+        <pre>[Theory]
+[AutoData]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;<span style="font-weight:bold;color:#74531f;">HappyPath</span>(<span style="color:blue;">string</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">state</span>,&nbsp;(<span style="color:blue;">string</span>,&nbsp;<span style="color:blue;">bool</span>,&nbsp;Uri)&nbsp;<span style="font-weight:bold;color:#1f377f;">knownState</span>,&nbsp;<span style="color:blue;">string</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">response</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;var&nbsp;(<span style="font-weight:bold;color:#1f377f;">expectedCode</span>,&nbsp;<span style="color:blue;">_</span>,&nbsp;<span style="color:blue;">_</span>)&nbsp;=&nbsp;knownState;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">code</span>&nbsp;=&nbsp;expectedCode;
+&nbsp;&nbsp;&nbsp;&nbsp;_repository.Add(state,&nbsp;knownState);
+&nbsp;&nbsp;&nbsp;&nbsp;_renderer
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.Setup(<span style="font-weight:bold;color:#1f377f;">renderer</span>&nbsp;=&gt;&nbsp;renderer.Success(knownState))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.Returns(response);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">sut</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;Controller(_repository,&nbsp;<span style="color:blue;">new</span>&nbsp;StateValidator(),&nbsp;_renderer.Object);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;sut
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.Complete(state,&nbsp;code)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.Should().Be(response);
+}</pre>
+    </p>
+    <p>
+        I give the <code>Failure</code> test case the same treatment:
+    </p>
+    <p>
+        <pre>[Theory]
+[AutoData]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;<span style="font-weight:bold;color:#74531f;">Failure</span>(<span style="color:blue;">string</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">state</span>,&nbsp;(<span style="color:blue;">string</span>,&nbsp;<span style="color:blue;">bool</span>,&nbsp;Uri)&nbsp;<span style="font-weight:bold;color:#1f377f;">knownState</span>,&nbsp;<span style="color:blue;">string</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">response</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;var&nbsp;(<span style="font-weight:bold;color:#1f377f;">expectedCode</span>,&nbsp;<span style="color:blue;">_</span>,&nbsp;<span style="color:blue;">_</span>)&nbsp;=&nbsp;knownState;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">code</span>&nbsp;=&nbsp;expectedCode&nbsp;+&nbsp;<span style="color:#a31515;">&quot;1&quot;</span>;&nbsp;<span style="color:green;">//&nbsp;Any&nbsp;extra&nbsp;string&nbsp;will&nbsp;do</span>
+&nbsp;&nbsp;&nbsp;&nbsp;_repository.Add(state,&nbsp;knownState);
+&nbsp;&nbsp;&nbsp;&nbsp;_renderer
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.Setup(<span style="font-weight:bold;color:#1f377f;">renderer</span>&nbsp;=&gt;&nbsp;renderer.Failure(knownState))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.Returns(response);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">sut</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;Controller(_repository,&nbsp;<span style="color:blue;">new</span>&nbsp;StateValidator(),&nbsp;_renderer.Object);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;sut
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.Complete(state,&nbsp;code)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.Should().Be(response);
+}</pre>
+    </p>
+    <p>
+        The third test case is a bit more interesting.
+    </p>
+    <h3 id="aa150cf1b817416ea49e30cdc8b27ac7">
+        An impossible case <a href="#aa150cf1b817416ea49e30cdc8b27ac7">#</a>
+    </h3>
+    <p>
+        Before I make any changes to it, the third test case is this:
+    </p>
+    <p>
+        <pre>[Theory]
+[AutoData]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;<span style="font-weight:bold;color:#74531f;">Error</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">string</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">state</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">string</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">code</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;(<span style="color:blue;">string</span>,&nbsp;<span style="color:blue;">bool</span>,&nbsp;Uri)&nbsp;<span style="font-weight:bold;color:#1f377f;">knownState</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;Exception&nbsp;<span style="font-weight:bold;color:#1f377f;">e</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">string</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">response</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;_repository.Add(state,&nbsp;knownState);
+&nbsp;&nbsp;&nbsp;&nbsp;_stateValidator
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.Setup(<span style="font-weight:bold;color:#1f377f;">validator</span>&nbsp;=&gt;&nbsp;validator.Validate(code,&nbsp;knownState))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.Throws(e);
+&nbsp;&nbsp;&nbsp;&nbsp;_renderer
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.Setup(<span style="font-weight:bold;color:#1f377f;">renderer</span>&nbsp;=&gt;&nbsp;renderer.Error(knownState,&nbsp;e))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.Returns(response);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;_target
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.Complete(state,&nbsp;code)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.Should().Be(response);
+}</pre>
+    </p>
+    <p>
+        This test case verifies the behaviour of the <code>Controller</code> class when the <code>Validate</code> method throws an exception. If we want to instead use the real, pure implementation, how can we get it to throw an exception? Consider it again:
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">bool</span>&nbsp;<span style="font-weight:bold;color:#74531f;">Validate</span>(<span style="color:blue;">string</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">code</span>,&nbsp;(<span style="color:blue;">string</span>&nbsp;expectedCode,&nbsp;<span style="color:blue;">bool</span>&nbsp;isMobile,&nbsp;Uri&nbsp;redirect)&nbsp;<span style="font-weight:bold;color:#1f377f;">knownState</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;=&gt;&nbsp;code&nbsp;==&nbsp;knownState.expectedCode;</pre>
+    </p>
+    <p>
+        As far as I can tell, there's no way to get this method to throw an exception. You might suggest passing <code>null</code> as the <code>knownState</code> parameter, but that's not possible. This is a new version of C# and the <a href="https://learn.microsoft.com/dotnet/csharp/language-reference/builtin-types/nullable-reference-types">nullable reference types</a> feature is turned on. I spent some fifteen minutes trying to convince the compiler to pass a <code>null</code> argument in place of <code>knownState</code>, but I couldn't make it work in a unit test.
+    </p>
+    <p>
+        That's interesting. The <code>Error</code> test is exercising a code path that's impossible in production. Is it redundant?
+    </p>
+    <p>
+        It might be, but here I think that it's more an artefact of the process. Sergei Rogovtsev has provided a minimal example, and as it sometimes happens, perhaps it's a bit too minimal. He did write, however, that he considered it essential for the example that the logic involved more that an Boolean <em>true/false</em> condition. In order to keep with the spirit of the example, then, I'm going to modify the <code>Validate</code> method so that it's also possible to make it throw an exception:
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">bool</span>&nbsp;<span style="font-weight:bold;color:#74531f;">Validate</span>(<span style="color:blue;">string</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">code</span>,&nbsp;(<span style="color:blue;">string</span>&nbsp;expectedCode,&nbsp;<span style="color:blue;">bool</span>&nbsp;isMobile,&nbsp;Uri&nbsp;redirect)&nbsp;<span style="font-weight:bold;color:#1f377f;">knownState</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">if</span>&nbsp;(knownState&nbsp;==&nbsp;<span style="color:blue;">default</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">throw</span>&nbsp;<span style="color:blue;">new</span>&nbsp;ArgumentNullException(nameof(knownState));
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;code&nbsp;==&nbsp;knownState.expectedCode;
+}</pre>
+    </p>
+    <p>
+        The method now throws an exception if you pass it a <code>default</code> value for <code>knownState</code>. From an implementation standpoint, there's no reason to do this, so it's only for the sake of the example. You can now test how the <code>Controller</code> handles an exception:
+    </p>
+    <p>
+        <pre>[Theory]
+[AutoData]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;<span style="font-weight:bold;color:#74531f;">Error</span>(<span style="color:blue;">string</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">state</span>,&nbsp;<span style="color:blue;">string</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">code</span>,&nbsp;<span style="color:blue;">string</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">response</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;_repository.Add(state,&nbsp;<span style="color:blue;">default</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;_renderer
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.Setup(<span style="font-weight:bold;color:#1f377f;">renderer</span>&nbsp;=&gt;&nbsp;renderer.Error(<span style="color:blue;">default</span>,&nbsp;It.IsAny&lt;Exception&gt;()))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.Returns(response);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">sut</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;Controller(_repository,&nbsp;<span style="color:blue;">new</span>&nbsp;StateValidator(),&nbsp;_renderer.Object);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;sut
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.Complete(state,&nbsp;code)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.Should().Be(response);
+}</pre>
+    </p>
+    <p>
+        The test no longer has a reference to the specific <code>Exception</code> object that <code>Validate</code> is going to throw, so instead it has to use Moq's <code>It.IsAny</code> API to configure the <code>_renderer</code>. This is, however, only an interim step, since it's now time to treat that dependency in the same way as the validator.
+    </p>
+    <h3 id="389a212d80a4445c99917cbd15b043eb">
+        Renderer <a href="#389a212d80a4445c99917cbd15b043eb">#</a>
+    </h3>
+    <p>
+        The <code>Renderer</code> class has three methods, and they are all pure functions:
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">Renderer</span>&nbsp;:&nbsp;IRenderer
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">string</span>&nbsp;<span style="font-weight:bold;color:#74531f;">Success</span>((<span style="color:blue;">string</span>&nbsp;expectedCode,&nbsp;<span style="color:blue;">bool</span>&nbsp;isMobile,&nbsp;Uri&nbsp;redirect)&nbsp;<span style="font-weight:bold;color:#1f377f;">knownState</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">if</span>&nbsp;(knownState.isMobile)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="color:#a31515;">&quot;{\&quot;success\&quot;:&nbsp;true,&nbsp;\&quot;redirect\&quot;:&nbsp;\&quot;&quot;</span>&nbsp;+&nbsp;knownState.redirect&nbsp;+&nbsp;<span style="color:#a31515;">&quot;\&quot;}&quot;</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">else</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="color:#a31515;">&quot;302&nbsp;Location:&nbsp;&quot;</span>&nbsp;+&nbsp;knownState.redirect;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">string</span>&nbsp;<span style="font-weight:bold;color:#74531f;">Failure</span>((<span style="color:blue;">string</span>&nbsp;expectedCode,&nbsp;<span style="color:blue;">bool</span>&nbsp;isMobile,&nbsp;Uri&nbsp;redirect)&nbsp;<span style="font-weight:bold;color:#1f377f;">knownState</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">if</span>&nbsp;(knownState.isMobile)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="color:#a31515;">&quot;{\&quot;success\&quot;:&nbsp;false,&nbsp;\&quot;redirect\&quot;:&nbsp;\&quot;login\&quot;}&quot;</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">else</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="color:#a31515;">&quot;302&nbsp;Location:&nbsp;login&quot;</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">string</span>&nbsp;<span style="font-weight:bold;color:#74531f;">Error</span>((<span style="color:blue;">string</span>&nbsp;expectedCode,&nbsp;<span style="color:blue;">bool</span>&nbsp;isMobile,&nbsp;Uri&nbsp;redirect)&nbsp;<span style="font-weight:bold;color:#1f377f;">knownState</span>,&nbsp;Exception&nbsp;<span style="font-weight:bold;color:#1f377f;">e</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">if</span>&nbsp;(knownState.isMobile)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="color:#a31515;">&quot;{\&quot;error\&quot;:&nbsp;\&quot;&quot;</span>&nbsp;+&nbsp;e.Message&nbsp;+&nbsp;<span style="color:#a31515;">&quot;\&quot;}&quot;</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">else</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="color:#a31515;">&quot;500&quot;</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+    </p>
+    <p>
+        Since all three methods are deterministic, automated tests can control their behaviour simply by passing in the appropriate arguments:
+    </p>
+    <p>
+        <pre>[Theory]
+[AutoData]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;<span style="font-weight:bold;color:#74531f;">HappyPath</span>(<span style="color:blue;">string</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">state</span>,&nbsp;(<span style="color:blue;">string</span>,&nbsp;<span style="color:blue;">bool</span>,&nbsp;Uri)&nbsp;<span style="font-weight:bold;color:#1f377f;">knownState</span>,&nbsp;<span style="color:blue;">string</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">response</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;var&nbsp;(<span style="font-weight:bold;color:#1f377f;">expectedCode</span>,&nbsp;<span style="color:blue;">_</span>,&nbsp;<span style="color:blue;">_</span>)&nbsp;=&nbsp;knownState;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">code</span>&nbsp;=&nbsp;expectedCode;
+&nbsp;&nbsp;&nbsp;&nbsp;_repository.Add(state,&nbsp;knownState);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">renderer</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;Renderer();
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">sut</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;Controller(_repository,&nbsp;renderer);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">expected</span>&nbsp;=&nbsp;renderer.Success(knownState);
+&nbsp;&nbsp;&nbsp;&nbsp;sut
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.Complete(state,&nbsp;code)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.Should().Be(expected);
+}</pre>
+    </p>
+    <p>
+        Instead of configuring an <code>IRenderer</code> Stub, the test can state the <code>expected</code> output: That the output is equal to the output that <code>renderer.Success</code> would return.
+    </p>
+    <p>
+        Notice that the test doesn't <em>require</em> that the implementation calls <code>renderer.Success</code>. It only requires that the output is equal to the output that <code>renderer.Success</code> would return. Thus, it has less of an opinion about the implementation, which means that it's marginally less coupled to it.
+    </p>
+    <p>
+        You might protest that the test now duplicates the implementation code. This is partially true, but no more than the previous incarnation of it. Before, the test used Moq to explicitly <em>require</em> that <code>renderer.Success</code> gets called. Now, there's still coupling, but this refactoring reduces it.
+    </p>
+    <p>
+        As a side note, this may partially be an artefact of the process. Here I'm refactoring tests while keeping the implementation intact. Had I started with a property, perhaps the test would have turned out differently, and less coupled to the implementation. If you're interested in a successful exercise in using property-based TDD, you may find my article <a href="/2021/06/28/property-based-testing-is-not-the-same-as-partition-testing">Property-based testing is not the same as partition testing</a> interesting.
+    </p>
+    <h3 id="81bbcfc59f5c48df8ee15f9d1bad47cf">
+        Simplification <a href="#81bbcfc59f5c48df8ee15f9d1bad47cf">#</a>
+    </h3>
+    <p>
+        Once you've refactored the tests to use the pure functions as dependencies, you no longer need the interfaces. The interfaces <code>IStateValidator</code> and <code>IRenderer</code> only existed to support testing. Now that the tests no longer use the interfaces, you can delete them.
+    </p>
+    <p>
+        Furthermore, once you've removed those interfaces, there's no reason for the classes to support instantiation. Instead, make them <code>static</code>:
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">StateValidator</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:blue;">bool</span>&nbsp;<span style="color:#74531f;">Validate</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">string</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">code</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(<span style="color:blue;">string</span>&nbsp;expectedCode,&nbsp;<span style="color:blue;">bool</span>&nbsp;isMobile,&nbsp;Uri&nbsp;redirect)&nbsp;<span style="font-weight:bold;color:#1f377f;">knownState</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">if</span>&nbsp;(knownState&nbsp;==&nbsp;<span style="color:blue;">default</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">throw</span>&nbsp;<span style="color:blue;">new</span>&nbsp;ArgumentNullException(nameof(knownState));
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;code&nbsp;==&nbsp;knownState.expectedCode;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+    </p>
+    <p>
+        You can do the same for the <code>Renderer</code> class.
+    </p>
+    <p>
+        This doesn't change the overall <em>flow</em> of the <code>Controller</code> class' <code>Complete</code> method, although the implementation details have changed a bit:
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">string</span>&nbsp;<span style="font-weight:bold;color:#74531f;">Complete</span>(<span style="color:blue;">string</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">state</span>,&nbsp;<span style="color:blue;">string</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">code</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">knownState</span>&nbsp;=&nbsp;_repository.GetState(state);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">try</span>
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">if</span>&nbsp;(StateValidator.Validate(code,&nbsp;knownState))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;Renderer.Success(knownState);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">else</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;Renderer.Failure(knownState);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">catch</span>&nbsp;(Exception&nbsp;<span style="font-weight:bold;color:#1f377f;">e</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;Renderer.Error(knownState,&nbsp;e);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+    </p>
+    <p>
+        <code>StateValidator</code> and <code>Renderer</code> are no longer injected dependencies, but rather 'modules' that affords pure functions.
+    </p>
+    <p>
+        Both the <code>Controller</code> class and the tests that cover it are simpler.
+    </p>
+    <h3 id="984cd44e8f6545ddafa673a411e188f1">
+        Properties <a href="#984cd44e8f6545ddafa673a411e188f1">#</a>
+    </h3>
+    <p>
+        So far I've been able to make all these changes without introducing a property-based testing framework. This was possible because the tests already used AutoFixture, which, while not a property-based testing framework, already strongly encourages you to write tests without literal test data.
+    </p>
+    <p>
+        This makes it easy to make the final change to property-based testing. On the other hand, it's a bit unfortunate from a pedagogical perspective. This means that you didn't get to see how to refactor a 'traditional' unit test to a property. The next article in this series will plug that hole, as well as show a more realistic example.
+    </p>
+    <p>
+        It's now time to pick a property-based testing framework. On .NET you have a few choices. Since this code base is C#, you may consider a framework written in C#. I'm not convinced that this is necessarily better, but it's a worthwhile experiment. Here I've used <a href="https://github.com/AnthonyLloyd/CsCheck">CsCheck</a>.
+    </p>
+    <p>
+        Since the tests already used randomly generated test data, the conversion to CsCheck is relatively straightforward. I'm only going to show one of the tests. You can always find the rest of the code in the Git repository.
+    </p>
+    <p>
+        <pre>[Fact]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;<span style="font-weight:bold;color:#74531f;">HappyPath</span>()
+{
+&nbsp;&nbsp;&nbsp;&nbsp;(<span style="color:blue;">from</span>&nbsp;state&nbsp;<span style="color:blue;">in</span>&nbsp;Gen.String
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">from</span>&nbsp;expectedCode&nbsp;<span style="color:blue;">in</span>&nbsp;Gen.String
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">from</span>&nbsp;isMobile&nbsp;<span style="color:blue;">in</span>&nbsp;Gen.Bool
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;urls&nbsp;=&nbsp;<span style="color:blue;">new</span>[]&nbsp;{&nbsp;<span style="color:#a31515;">&quot;https://example.com&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;https://example.org&quot;</span>&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">from</span>&nbsp;redirect&nbsp;<span style="color:blue;">in</span>&nbsp;Gen.OneOfConst(urls).Select(<span style="font-weight:bold;color:#1f377f;">s</span>&nbsp;=&gt;&nbsp;<span style="color:blue;">new</span>&nbsp;Uri(s))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">select</span>&nbsp;(state,&nbsp;(expectedCode,&nbsp;isMobile,&nbsp;redirect)))
+&nbsp;&nbsp;&nbsp;&nbsp;.Sample((<span style="font-weight:bold;color:#1f377f;">state</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">knownState</span>)&nbsp;=&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;var&nbsp;(<span style="font-weight:bold;color:#1f377f;">expectedCode</span>,&nbsp;<span style="color:blue;">_</span>,&nbsp;<span style="color:blue;">_</span>)&nbsp;=&nbsp;knownState;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">code</span>&nbsp;=&nbsp;expectedCode;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">repository</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;RepositoryStub();
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;repository.Add(state,&nbsp;knownState);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">sut</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;Controller(repository);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">expected</span>&nbsp;=&nbsp;Renderer.Success(knownState);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;sut
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.Complete(state,&nbsp;code)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.Should().Be(expected);
+&nbsp;&nbsp;&nbsp;&nbsp;});
+}</pre>
+    </p>
+    <p>
+        Compared to the AutoFixture version of the test, this looks more complicated. Part of it is that CsCheck (as far as I know) doesn't have the same <a href="https://www.nuget.org/packages/AutoFixture.Xunit2/">integration with xUnit.net that AutoFixture has</a>. That might be an issue that someone could address; after all, <a href="https://fscheck.github.io/FsCheck/RunningTests.html">FsCheck has framework integration</a>, to name an example.
+    </p>
+    <p>
+        <a href="">Test data generators are monads</a> so you typically leverage whatever syntactic sugar a language offers to simplify monadic composition. <a href="/2022/03/28/monads">In C# that syntactic sugar is query syntax</a>, which explains that initial <code>from</code> block.
+    </p>
+    <p>
+        The test does look too top-heavy for my taste. An equivalent problem appears in the next article, where I also try to address it. In general, the better monad support a language offers, the more elegantly you can address this kind of problem. C# isn't really there yet, whereas languages like <a href="https://fsharp.org/">F#</a> and <a href="https://www.haskell.org/">Haskell</a> offer superior alternatives.
+    </p>
+    <h3 id="b0e7738d8b0440bba33caa470fd440fb">
+        Conclusion <a href="#b0e7738d8b0440bba33caa470fd440fb">#</a>
+    </h3>
+    <p>
+        In this article I've tried to demonstrate how property-based testing is a viable alternative to using Stubs and Mocks for verification of composition. You can try to sabotage the <code>Controller.Complete</code> method in the <em>no-mocks</em> branch and see that one or more properties will fail.
+    </p>
+    <p>
+        While the example code base that I've used for this article has the strength of being small and self-contained, it also suffers from a few weaknesses. It's perhaps a bit too abstract to truly resonate. It also uses AutoFixture to generate test data, which already takes it halfway towards property-based testing. While that makes the refactoring easier, it also means that it may not fully demonstrate how to refactor an example-based test to a property. I'll try to address these shortcomings in the next article.
+    </p>
+    <p>
+        <strong>Next:</strong> A restaurant example of refactoring from example-based to property-based testing.
+    </p>
+</div>
