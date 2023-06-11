@@ -1,0 +1,285 @@
+---
+layout: post
+title: "Collatz sequences by function composition"
+description: "Mostly in C#, with a few lines of Haskell code."
+date: 2023-06-11 7:14 UTC
+tags: [Unit Testing, Code, Functional Programming]
+---
+{% include JB/setup %}
+
+<div id="post">
+    <p>
+        <em>{{ page.description }}</em>
+    </p>
+    <p>
+        A <a href="/2023/05/08/is-cyclomatic-complexity-really-related-to-branch-coverage">recent article</a> elicited more comments than usual, and I've been so unusually buried in work that only now do I have a little time to respond to some of them. In <a href="/2023/05/08/is-cyclomatic-complexity-really-related-to-branch-coverage#02568f995d91432da540858644b61e89">one comment</a> <a href="http://github.com/neongraal">Struan Judd</a> offers a refactored version of my <a href="https://en.wikipedia.org/wiki/Collatz_conjecture">Collatz sequence</a> in order to shed light on the relationship between <a href="https://en.wikipedia.org/wiki/Cyclomatic_complexity">cyclomatic complexity</a> and test case coverage.
+    </p>
+    <p>
+        Struan Judd's agenda is different from what I have in mind in this article, but the comment inspired me to refactor my own code. I wanted to see what it would look like with this constraint: It should be possible to test odd input numbers without exercising the code branches related to even numbers.
+    </p>
+    <p>
+        The problem with more naive implementations of Collatz sequence generators is that (apart from when the input is <em>1</em>) the sequence ends with a tail of even numbers halving down to <em>1</em>. I'll start with a simple example to show what I mean.
+    </p>
+    <h3 id="ccd16365f7ce4842870f90e43267c33f">
+        Standard recursion <a href="#ccd16365f7ce4842870f90e43267c33f">#</a>
+    </h3>
+    <p>
+        At first I thought that my confusion originated from the imperative structure of the original example. For more than a decade, I've preferred functional programming (FP), and even when I write object-oriented code, I tend to use concepts and patterns from FP. Thus I, naively, rewrote my Collatz generator as a recursive function:
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;IReadOnlyCollection&lt;<span style="color:blue;">int</span>&gt;&nbsp;Sequence(<span style="color:blue;">int</span>&nbsp;n)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;(n&nbsp;&lt;&nbsp;1)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">throw</span>&nbsp;<span style="color:blue;">new</span>&nbsp;ArgumentOutOfRangeException(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;nameof(n),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#a31515;">$&quot;Only&nbsp;natural&nbsp;numbers&nbsp;allowed,&nbsp;but&nbsp;given&nbsp;</span>{n}<span style="color:#a31515;">.&quot;</span>);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;(n&nbsp;==&nbsp;1)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:blue;">new</span>[]&nbsp;{&nbsp;n&nbsp;};
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">else</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;(n&nbsp;%&nbsp;2&nbsp;==&nbsp;0)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:blue;">new</span>[]&nbsp;{&nbsp;n&nbsp;}.Concat(Sequence(n&nbsp;/&nbsp;2)).ToArray();
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">else</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:blue;">new</span>[]&nbsp;{&nbsp;n&nbsp;}.Concat(Sequence(n&nbsp;*&nbsp;3&nbsp;+&nbsp;1)).ToArray();
+}</pre>
+    </p>
+    <p>
+        Recursion is usually not recommended in C#, because a sufficiently long sequence could blow the call stack. I wouldn't write production C# code like this, but you could do something like this in <a href="https://fsharp.org/">F#</a> or <a href="https://www.haskell.org/">Haskell</a> where the languages offer solutions to that problem. In other words, the above example is only for educational purposes.
+    </p>
+    <p>
+        It doesn't, however, solve the problem that confused me: If you want to test the branch that deals with odd numbers, you can't avoid also exercising the branch that deals with even numbers.
+    </p>
+    <h3 id="4587120e2d9e483aba8cf7297704eb28">
+        Calculating the next value <a href="#4587120e2d9e483aba8cf7297704eb28">#</a>
+    </h3>
+    <p>
+        In functional programming, you solve most problems by decomposing them into smaller problems and then compose the smaller <a href="/2018/03/05/some-design-patterns-as-universal-abstractions">Lego bricks</a> with standard combinators. It seemed like a natural refactoring step to first pull the calculation of the next value into an independent function:
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:blue;">int</span>&nbsp;Next(<span style="color:blue;">int</span>&nbsp;n)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;((n&nbsp;%&nbsp;2)&nbsp;==&nbsp;0)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;n&nbsp;/&nbsp;2;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">else</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;n&nbsp;*&nbsp;3&nbsp;+&nbsp;1;
+}</pre>
+    </p>
+    <p>
+        This function has a cyclomatic complexity of <em>2</em> and no loops or recursion. Test cases that exercise the even branch never touch the odd branch, and vice versa.
+    </p>
+    <p>
+        A parametrised test might look like this:
+    </p>
+    <p>
+        <pre>[Theory]
+[InlineData(&nbsp;2,&nbsp;&nbsp;1)]
+[InlineData(&nbsp;3,&nbsp;10)]
+[InlineData(&nbsp;4,&nbsp;&nbsp;2)]
+[InlineData(&nbsp;5,&nbsp;16)]
+[InlineData(&nbsp;6,&nbsp;&nbsp;3)]
+[InlineData(&nbsp;7,&nbsp;22)]
+[InlineData(&nbsp;8,&nbsp;&nbsp;4)]
+[InlineData(&nbsp;9,&nbsp;28)]
+[InlineData(10,&nbsp;&nbsp;5)]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;NextExamples(<span style="color:blue;">int</span>&nbsp;n,&nbsp;<span style="color:blue;">int</span>&nbsp;expected)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">int</span>&nbsp;actual&nbsp;=&nbsp;Collatz.Next(n);
+&nbsp;&nbsp;&nbsp;&nbsp;Assert.Equal(expected,&nbsp;actual);
+}</pre>
+    </p>
+    <p>
+        The <code>NextExamples</code> test obviously defines more than the two test cases that are required to cover the <code>Next</code> function, but since <a href="/2015/11/16/code-coverage-is-a-useless-target-measure">code coverage shouldn't be used as a target measure</a>, I felt that more than two test cases were warranted. This often happens, and should be considered normal.
+    </p>
+    <h3 id="e46d3353db8b4d50bcbe595dbbe3dbd0">
+        A Haskell proof of concept <a href="#e46d3353db8b4d50bcbe595dbbe3dbd0">#</a>
+    </h3>
+    <p>
+        While I had a general idea about the direction in which I wanted to go, I felt that I lacked some standard functional building blocks in C#: Most notably an infinite, lazy sequence generator. Before moving on with the C# code, I threw together a proof of concept in Haskell.
+    </p>
+    <p>
+        The <code>next</code> function is just a one-liner (if you ignore the optional type declaration):
+    </p>
+    <p>
+        <pre><span style="color:#2b91af;">next</span>&nbsp;<span style="color:blue;">::</span>&nbsp;<span style="color:blue;">Integral</span>&nbsp;a&nbsp;<span style="color:blue;">=&gt;</span>&nbsp;a&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;a
+next&nbsp;n&nbsp;=&nbsp;<span style="color:blue;">if</span>&nbsp;<span style="color:blue;">even</span>&nbsp;n&nbsp;<span style="color:blue;">then</span>&nbsp;n&nbsp;`div`&nbsp;2&nbsp;<span style="color:blue;">else</span>&nbsp;n&nbsp;*&nbsp;3&nbsp;+&nbsp;1</pre>
+    </p>
+    <p>
+        A few examples in GHCi suggest that it works as intended:
+    </p>
+    <p>
+        <pre>ghci&gt; next 2
+1
+ghci&gt; next 3
+10
+ghci&gt; next 4
+2
+ghci&gt; next 5
+16</pre>
+    </p>
+    <p>
+        Haskell comes with enough built-in functions that that was all I needed to implement a Colaltz-sequence generator:
+    </p>
+    <p>
+        <pre><span style="color:#2b91af;">collatz</span>&nbsp;<span style="color:blue;">::</span>&nbsp;<span style="color:blue;">Integral</span>&nbsp;a&nbsp;<span style="color:blue;">=&gt;</span>&nbsp;a&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;[a]
+collatz&nbsp;n&nbsp;=&nbsp;(<span style="color:blue;">takeWhile</span>&nbsp;(1&nbsp;&lt;)&nbsp;$&nbsp;<span style="color:blue;">iterate</span>&nbsp;next&nbsp;n)&nbsp;++&nbsp;[1]</pre>
+    </p>
+    <p>
+        Again, a few examples suggest that it works as intended:
+    </p>
+    <p>
+        <pre>ghci&gt; collatz 1
+[1]
+ghci&gt; collatz 2
+[2,1]
+ghci&gt; collatz 3
+[3,10,5,16,8,4,2,1]
+ghci&gt; collatz 4
+[4,2,1]
+ghci&gt; collatz 5
+[5,16,8,4,2,1]</pre>
+    </p>
+    <p>
+        I should point out, for good measure, that since this is a proof of concept I didn't add a Guard Clause against zero or negative numbers. I'll keep that in the C# code.
+    </p>
+    <h3 id="3c46180459334e86a278f9934fa4b032">
+        Generator <a href="#3c46180459334e86a278f9934fa4b032">#</a>
+    </h3>
+    <p>
+        While C# does come with a <a href="https://learn.microsoft.com/dotnet/api/system.linq.enumerable.takewhile">TakeWhile</a> function, there's no direct equivalent to Haskell's <a href="https://hackage.haskell.org/package/base/docs/Prelude.html#v:iterate">iterate</a> function. It's not difficult to implement, though:
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;IEnumerable&lt;T&gt;&nbsp;Iterate&lt;<span style="color:#2b91af;">T</span>&gt;(Func&lt;T,&nbsp;T&gt;&nbsp;f,&nbsp;T&nbsp;x)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;current&nbsp;=&nbsp;x;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">while</span>&nbsp;(<span style="color:blue;">true</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">yield</span>&nbsp;<span style="color:blue;">return</span>&nbsp;current;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;current&nbsp;=&nbsp;f(current);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+    </p>
+    <p>
+        While this <code>Iterate</code> implementation has a cyclomatic complexity of only <em>2</em>, it exhibits the same kind of problem as the previous attempts at a Collatz-sequence generator: You can't test one branch without testing the other. Here, it even seems as though it's impossible to test the branch that skips the loop.
+    </p>
+    <p>
+        In Haskell this is simply a lazily-evaluated recursive function, but that's not going to solve the problem in the C# case. On the other hand, it helps to know that the <code>yield</code> keyword in C# is just syntactic sugar over a compiler-generated Iterator.
+    </p>
+    <p>
+        Just for the exercise, then, I decided to write an explicit Iterator instead.
+    </p>
+    <h3 id="a834d92c5d864109aff31cb270c06b83">
+        Iterator <a href="#a834d92c5d864109aff31cb270c06b83">#</a>
+    </h3>
+    <p>
+        For the sole purpose of demonstrating that it's possible to refactor the code so that branches are independent of each other, I rewrote the <code>Iterate</code> function to return an explicit <code>IEnumerable&lt;T&gt;</code>:
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;IEnumerable&lt;T&gt;&nbsp;Iterate&lt;<span style="color:#2b91af;">T</span>&gt;(Func&lt;T,&nbsp;T&gt;&nbsp;f,&nbsp;T&nbsp;x)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;Iterable&lt;T&gt;(f,&nbsp;x);
+}</pre>
+    </p>
+    <p>
+        The <code><span style="color:#2b91af;">Iterable</span>&lt;<span style="color:#2b91af;">T</span>&gt;</code> class is a private helper class, and only exists to return an <code>IEnumerator&lt;T&gt;</code>:
+    </p>
+    <p>
+        <pre><span style="color:blue;">private</span>&nbsp;<span style="color:blue;">sealed</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">Iterable</span>&lt;<span style="color:#2b91af;">T</span>&gt;&nbsp;:&nbsp;IEnumerable&lt;T&gt;
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;Func&lt;T,&nbsp;T&gt;&nbsp;f;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;T&nbsp;x;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">Iterable</span>(Func&lt;T,&nbsp;T&gt;&nbsp;f,&nbsp;T&nbsp;x)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.f&nbsp;=&nbsp;f;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.x&nbsp;=&nbsp;x;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;IEnumerator&lt;T&gt;&nbsp;GetEnumerator()
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;Iterator&lt;T&gt;(f,&nbsp;x);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;IEnumerator&nbsp;IEnumerable.GetEnumerator()
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;GetEnumerator();
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+    </p>
+    <p>
+        The <code><span style="color:#2b91af;">Iterator</span>&lt;<span style="color:#2b91af;">T</span>&gt;</code> class does the heavy lifting:
+    </p>
+    <p>
+        <pre><span style="color:blue;">private</span>&nbsp;<span style="color:blue;">sealed</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">Iterator</span>&lt;<span style="color:#2b91af;">T</span>&gt;&nbsp;:&nbsp;IEnumerator&lt;T&gt;
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;Func&lt;T,&nbsp;T&gt;&nbsp;f;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;T&nbsp;original;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">bool</span>&nbsp;iterating;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">internal</span>&nbsp;<span style="color:#2b91af;">Iterator</span>(Func&lt;T,&nbsp;T&gt;&nbsp;f,&nbsp;T&nbsp;x)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.f&nbsp;=&nbsp;f;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;original&nbsp;=&nbsp;x;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Current&nbsp;=&nbsp;x;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;T&nbsp;Current&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">set</span>;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;[MaybeNull]
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">object</span>&nbsp;IEnumerator.Current&nbsp;=&gt;&nbsp;Current;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;Dispose()
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">bool</span>&nbsp;MoveNext()
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;(iterating)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Current&nbsp;=&nbsp;f(Current);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">else</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;iterating&nbsp;=&nbsp;<span style="color:blue;">true</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:blue;">true</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;Reset()
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Current&nbsp;=&nbsp;original;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;iterating&nbsp;=&nbsp;<span style="color:blue;">false</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+    </p>
+    <p>
+        I can't think of a situation where I would write code like this in real production code. Again, I want to stress that this is only an exploration of what's possible. What this does show is that all members have low cyclomatic complexity, and none of them involve looping or recursion. Only one method, <code>MoveNext</code>, has a cyclomatic complexity greater than one, and its branches are independent.
+    </p>
+    <h3 id="f8030072341448bd80c8c0af055abc10">
+        Composition <a href="#f8030072341448bd80c8c0af055abc10">#</a>
+    </h3>
+    <p>
+        All Lego bricks are now in place, enabling me to compose the <code>Sequence</code> like this:
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;IReadOnlyCollection&lt;<span style="color:blue;">int</span>&gt;&nbsp;Sequence(<span style="color:blue;">int</span>&nbsp;n)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;(n&nbsp;&lt;&nbsp;1)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">throw</span>&nbsp;<span style="color:blue;">new</span>&nbsp;ArgumentOutOfRangeException(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;nameof(n),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#a31515;">$&quot;Only&nbsp;natural&nbsp;numbers&nbsp;allowed,&nbsp;but&nbsp;given&nbsp;</span>{n}<span style="color:#a31515;">.&quot;</span>);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;Generator.Iterate(Next,&nbsp;n).TakeWhile(i&nbsp;&nbsp;=&gt;&nbsp;1&nbsp;&lt;&nbsp;i).Append(1).ToList();
+}</pre>
+    </p>
+    <p>
+        This function has a cyclomatic complexity of <em>2</em>, and each branch can be exercised independently of the other.
+    </p>
+    <p>
+        Which is what I wanted to accomplish.
+    </p>
+    <h3 id="e32a8549e23446ba8c9cffd5739d62d6">
+        Conclusion <a href="#e32a8549e23446ba8c9cffd5739d62d6">#</a>
+    </h3>
+    <p>
+        I'm still re-orienting myself when it comes to understanding the relationship between cyclomatic complexity and test coverage. As part of that work, I wanted to refactor the Collatz code I originally showed. This article shows one way to decompose and reassemble the function in such a way that all branches are independent of each other, so that each can be covered by test cases without exercising the other branch.
+    </p>
+    <p>
+        I don't know if this is useful to anyone else, but I found the hours well-spent.
+    </p>
+</div>
