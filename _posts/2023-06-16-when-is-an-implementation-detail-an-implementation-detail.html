@@ -1,0 +1,246 @@
+---
+layout: post
+title: "When is an implementation detail an implementation detail?"
+description: "On the tension between decomposition and testability."
+date: 2023-06-16 6:47 UTC
+tags: [Unit Testing, Software Design, Architecture]
+image: "/content/binary/public-and-internal-system-apis.png"
+image_alt: "A box depicting a program, with a small green slice indicating public-facing APIs, and internal blue slices indicating internal APIs."
+---
+{% include JB/setup %}
+
+<div id="post">
+    <p>
+        <em>{{ page.description }}</em>
+    </p>
+    <p>
+        This article is part of a series called <a href="/2023/02/13/epistemology-of-interaction-testing">Epistemology of interaction testing</a>. A <a href="/2023/03/13/confidence-from-facade-tests">previous article in the series</a> elicited this question:
+    </p>
+    <blockquote>
+        <p>
+            "following your suggestion, aren’t we testing implementation details?"
+        </p>
+        <footer><cite><a href="https://www.relativisticramblings.com/">Christer van der Meeren</a></cite></footer>
+    </blockquote>
+    <p>
+        This frequently asked question reminds me of an old joke. I think that I first heard it in the eighties, a time when phones had <a href="https://en.wikipedia.org/wiki/Rotary_dial">rotary dials</a>, everyone smoked, you'd receive mail through your apartment door's <a href="https://en.wikipedia.org/wiki/Letter_box">letter slot</a>, and unemployment was high. It goes like this:
+    </p>
+    <p>
+        <em>A painter gets a helper from the unemployment office. A few days later the lady from the office calls the painter and apologizes deeply for the mistake.</em>
+    </p>
+    <p>
+        <em>"What mistake?"</em>
+    </p>
+    <p>
+        <em>"I'm so sorry, instead of a painter we sent you a gynaecologist. Please just let him go, we'll send you a..."</em>
+    </p>
+    <p>
+        <em>"Let him go? Are you nuts, he's my best worker! At the last job, they forgot to leave us the keys, and the guy painted the whole room through the letter slot!"</em>
+    </p>
+    <p>
+        I always think of this joke when the topic is testability. Should you test everything through a system's public API, or do you choose to expose some internal APIs in order to make the code more testable?
+    </p>
+    <h3 id="815100cf9c3b492f8abf392528fc5b1e">
+        Letter slots <a href="#815100cf9c3b492f8abf392528fc5b1e">#</a>
+    </h3>
+    <p>
+        Consider the simplest kind of program you could write: <a href="https://en.wikipedia.org/wiki/%22Hello,_World!%22_program">Hello world</a>. If you didn't consider automated testing, then an <a href="/2015/08/03/idiomatic-or-idiosyncratic">idiomatic</a> C# implementation might look like this:
+    </p>
+    <p>
+        <pre><span style="color:blue;">internal</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">Program</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:blue;">void</span>&nbsp;Main(<span style="color:blue;">string</span>[]&nbsp;args)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Console<span style="color:#b4b4b4;">.</span>WriteLine(<span style="color:#a31515;">&quot;Hello,&nbsp;World!&quot;</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+    </p>
+    <p>
+        (Yes, I know that with modern C# you can write such a program using a single <a href="https://learn.microsoft.com/dotnet/csharp/fundamentals/program-structure/top-level-statements">top-level statement</a>, but I'm writing for a broader audience, and only use C# as an example language.)
+    </p>
+    <p>
+        How do we test a program like that? Of course, no-one seriously suggests that we <em>really</em> need to test something that simple, but what if we make it a little more complex? What if we make it possible to supply a name as a command-line argument? What if we want to internationalise the program? What if we want to add a <em>help</em> feature? What if we want to add a feature so that we can send a <em>hello</em> to another recipient, on another machine? When does the behaviour become sufficiently complex to warrant automated testing, and how do we achieve that goal?
+    </p>
+    <p>
+        For now, I wish to focus on <em>how</em> to achieve the goal of testing software. For the sake of argument, then, assume that we want to test the above <em>hello world</em> program.
+    </p>
+    <p>
+        As given, we can run the program and verify that it prints <em>Hello, World!</em> to the console. This is easy to do as a manual test, but harder if you want to automate the test.
+    </p>
+    <p>
+        You could write a test framework that automatically starts a new operating-system process (the program) and waits until it exits. This framework should be able to handle processes that exit with success and failure status codes, as well as processes that hang, or never start, or keep restarting... Such a framework also requires a way to capture the standard output stream in order to verify that the expected text is written to it.
+    </p>
+    <p>
+        I'm sure such frameworks exist for various operating systems and programming languages. There is, however, a simpler solution if you can live with the trade-off: You could open the API of your source code a bit:
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">Program</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:blue;">void</span>&nbsp;Main(<span style="color:blue;">string</span>[]&nbsp;args)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Console.WriteLine(<span style="color:#a31515;">&quot;Hello,&nbsp;World!&quot;</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+    </p>
+    <p>
+        While I haven't changed the structure or the layout of the source code, I've made both class and method <code>public</code>. This means that I can now write a normal C# unit test that calls <code>Program.Main</code>.
+    </p>
+    <p>
+        I still need a way to observe the behaviour of the program, but <a href="https://stackoverflow.com/a/2139303/126014">there are known ways of redirecting the Console output in .NET</a> (and I'd be surprised if that wasn't the case on other platforms and programming languages).
+    </p>
+    <p>
+        As we add more and more features to the command-line program, we may be able to keep testing by calling <code>Program.Main</code> and asserting against the redirected <a href="https://learn.microsoft.com/dotnet/api/system.console">Console</a>. As the complexity of the program grows, however, this starts to look like painting a room through the letter slot.
+    </p>
+    <h3 id="4681beea02be47b89c9a5d7c2618fad7">
+        Adding new APIs <a href="#4681beea02be47b89c9a5d7c2618fad7">#</a>
+    </h3>
+    <p>
+        Real programs are usually more than just a command-line utility. They may be smartphone apps that react to user input or network events, or web services that respond to HTTP requests, or complex asynchronous systems that react to, and send messages over durable queues. Even good old batch jobs are likely to pull data from files in order to write to a database, or the other way around. Thus, the interface to the rest of the world is likely larger than just a single <code>Main</code> method.
+    </p>
+    <p>
+        Smartphone apps or message-based systems have event handlers. Web sites or services have classes, methods, or functions that handle incoming HTTP requests. These are essentially event handlers, too. This increases the size of the 'test surface': There are more than a single method you can invoke in order to exercise the system.
+    </p>
+    <p>
+        Even so, a real program will soon grow to a size where testing entirely through the real-world-facing API becomes reminiscent of painting through a letter slot. <a href="https://www.infoq.com/presentations/integration-tests-scam/">J.B. Rainsberger explains that one major problem is the combinatorial explosion of required test cases</a>.
+    </p>
+    <p>
+        Another problem is that the system may produce side effects that you care about. As a basic example, consider a system that, as part of its operation, sends emails. When testing this system, you want to verify that under certain circumstances, the system sends certain emails. How do you do that?
+    </p>
+    <p>
+        If the system has <em>absolutely no concessions to testability</em>, I can think of two options:
+    </p>
+    <ul>
+        <li>You contact the person to whom the system sends the email, and ask him or her to verify receipt of the email. You do that <em>every time</em> you test.</li>
+        <li>You deploy the System Under Test in an environment with an email gateway that redirects all email to another address.</li>
+    </ul>
+    <p>
+        Clearly the first option is unrealistic. The second option is a little better, but you still have to open an email inbox and look for the expected message. Doing so programmatically is, again, technically possible, and I'm sure that there are <a href="https://en.wikipedia.org/wiki/Post_Office_Protocol">POP3</a> or <a href="https://en.wikipedia.org/wiki/Internet_Message_Access_Protocol">IMAP</a> assertion libraries out there. Still, this seems complicated, error-prone, and slow.
+    </p>
+    <p>
+        What could we do instead? I would usually introduce a polymorphic interface such as <code>IPostOffice</code> as a way to substitute the real <code>SmtpPostOffice</code> with a <a href="https://martinfowler.com/bliki/TestDouble.html">Test Double</a>.
+    </p>
+    <p>
+        Notice what happens in these cases: We introduce (or make public) new APIs in order to facilitate automated testing.
+    </p>
+    <h3 id="0cc85d98c7ae437aa1156e72fc25dcf6">
+        Application-boundary API and internal APIs <a href="#0cc85d98c7ae437aa1156e72fc25dcf6">#</a>
+    </h3>
+    <p>
+        It's helpful to distinguish between the real-world-facing API and everything else. In this diagram, I've indicated the public-facing API as a thin green slice facing upwards (assuming that external stimulus - button clicks, HTTP requests, etc. - arrives from above).
+    </p>
+    <p>
+        <img src="/content/binary/public-and-internal-system-apis.png" alt="A box depicting a program, with a small green slice indicating public-facing APIs, and internal blue slices indicating internal APIs.">
+    </p>
+    <p>
+        The real-world-facing API is the code that <em>must</em> be present for the software to work. It could be a button-click handler or an ASP.NET <em>action method</em>:
+    </p>
+    <p>
+        <pre>[HttpPost(<span style="color:#a31515;">&quot;restaurants/{restaurantId}/reservations&quot;</span>)]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">async</span>&nbsp;Task&lt;ActionResult&gt;&nbsp;Post(<span style="color:blue;">int</span>&nbsp;restaurantId,&nbsp;ReservationDto&nbsp;dto)</pre>
+    </p>
+    <p>
+        Of course, if you're using another web framework or another programming language, the details differ, but the application <em>has</em> to have code that handles an HTTP <em>POST</em> request on matching addresses. Or a button click, or a message that arrives on a message bus. You get the point.
+    </p>
+    <p>
+        These APIs are fairly fixed. If you change them, you change the externally observable behaviour of the system. Such changes could be breaking changes.
+    </p>
+    <p>
+        Based on which framework and programming language you're using, the shape of these APIs will be given. Like I did with the above <code>Main</code> method, you can make it <code>public</code> and use it for testing.
+    </p>
+    <p>
+        A software system of even middling complexity will usually also be decomposed into smaller components. In the figure, I've indicated such subdivisions as boxes with gray outlines. Each of these may present an API to other parts of the system. I've indicated these APIs with light blue.
+    </p>
+    <p>
+        The total size of internal APIs is likely to be larger than the public-facing API. On the other hand, you can (theoretically) change these internal interfaces without breaking the observable behaviour of the system. This is called <em>refactoring</em>.
+    </p>
+    <p>
+        These internal APIs will often have <code>public</code> access modifiers. That doesn't make them real-world-facing. Be careful not to confuse programming-language <a href="https://en.wikipedia.org/wiki/Access_modifiers">access modifiers</a> with architectural concerns. Objects or their members can have <code>public</code> access modifiers even if the object plays an exclusively internal role. <a href="/2011/05/31/AttheBoundaries,ApplicationsareNotObject-Oriented">At the boundaries, applications aren't object-oriented</a>. And <a href="/2022/05/02/at-the-boundaries-applications-arent-functional">neither are they functional</a>.
+    </p>
+    <p>
+        Likewise, as the original <code>Main</code> method example shows, public APIs can be implemented with a <code>private</code> access modifier.
+    </p>
+    <p>
+        Why do such internal APIs exist? Is it to support automated testing?
+    </p>
+    <h3 id="e6bf8d9b8617435f914d976c05cc9731">
+        Decomposition <a href="#e6bf8d9b8617435f914d976c05cc9731">#</a>
+    </h3>
+    <p>
+        If we introduce new code, such as the above <code>IPostOffice</code> interface, in order to facilitate testing, we have to be careful that it doesn't lead to <a href="https://dhh.dk/2014/test-induced-design-damage.html">test-induced design damage</a>. The idea that one might introduce an API exclusively to support automated testing rubs some people the wrong way.
+    </p>
+    <p>
+        On the other hand, we do introduce (or make public) APIs for other reasons, too. One common reason is that we want to decompose an application's source code so that parallel development is possible. One person (or team) works on one part, and other people work on other parts. If those parts need to communicate, we need to agree on a contract.
+    </p>
+    <p>
+        Such a contract exists for purely internal reasons. End users don't care, and never know of it. You can change it without impacting users, but you may need to coordinate with other teams.
+    </p>
+    <p>
+        What remains, though, is that we do decompose systems into internal parts, and we've done this since before <a href="https://en.wikipedia.org/wiki/David_Parnas">Parnas</a> wrote <em>On the Criteria to Be Used in Decomposing Systems into Modules</em>.
+    </p>
+    <p>
+        Successful test-driven development introduces <a href="http://wiki.c2.com/?SoftwareSeam">seams</a> where they ought to be in any case.
+    </p>
+    <h3 id="0df7cb8e24734176b20f4d61e7e24264">
+        Testing implementation details <a href="#0df7cb8e24734176b20f4d61e7e24264">#</a>
+    </h3>
+    <p>
+        An internal seam is an implementation detail. Even so, when designed with care, it can serve multiple purposes. It enables teams to develop in parallel, and it enables automated testing.
+    </p>
+    <p>
+        Consider the example from <a href="/2023/04/03/an-abstract-example-of-refactoring-from-interaction-based-to-property-based-testing">a previous article in this series</a>. I'll repeat one of the tests here:
+    </p>
+    <p>
+        <pre>[Theory]
+[AutoData]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;<span style="font-weight:bold;color:#74531f;">HappyPath</span>(<span style="color:blue;">string</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">state</span>,&nbsp;<span style="color:blue;">string</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">code</span>,&nbsp;(<span style="color:blue;">string</span>,&nbsp;<span style="color:blue;">bool</span>,&nbsp;Uri)&nbsp;<span style="font-weight:bold;color:#1f377f;">knownState</span>,&nbsp;<span style="color:blue;">string</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">response</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;_repository.Add(state,&nbsp;knownState);
+&nbsp;&nbsp;&nbsp;&nbsp;_stateValidator
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.Setup(<span style="font-weight:bold;color:#1f377f;">validator</span>&nbsp;=&gt;&nbsp;validator.Validate(code,&nbsp;knownState))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.Returns(<span style="color:blue;">true</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;_renderer
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.Setup(<span style="font-weight:bold;color:#1f377f;">renderer</span>&nbsp;=&gt;&nbsp;renderer.Success(knownState))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.Returns(response);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;_target
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.Complete(state,&nbsp;code)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.Should().Be(response);
+}</pre>
+    </p>
+    <p>
+        This test exercises a <em>happy-path</em> case by manipulating <code>IStateValidator</code> and <code>IRenderer</code> Test Doubles. It's a common approach to testability, and what <a href="https://en.wikipedia.org/wiki/David_Heinemeier_Hansson">dhh</a> would label test-induced design damage. While I'm sympathetic to that position, that's not my point. My point is that I consider <code>IStateValidator</code> and <code>IRenderer</code> internal APIs. End users (who probably don't even know what C# is) don't care about these interfaces.
+    </p>
+    <p>
+        Tests like these test against implementation details.
+    </p>
+    <p>
+        This need not be a problem. If you've designed good, stable seams then these tests can serve you for a long time. Testing against implementation details become a problem if those details change. Since it's hard to predict how things change in the future, it behoves us to decouple tests from implementation details as much as possible.
+    </p>
+    <p>
+        The alternative, however, is mail-slot testing, which comes with its own set of problems. Thus, judicious introduction of seams is helpful, even if it couples tests to implementation details.
+    </p>
+    <p>
+        Actually, in the question I quoted above, Christer van der Meeren asked whether my proposed alternative isn't testing implementation details. And, yes, that style of testing <em>also</em> relies on implementation details for testing. It's just a different way to design seams. Instead of designing seams around polymorphic objects, we design them around pure functions and immutable data.
+    </p>
+    <p>
+        There are, I think, advantages to functional programming, but when it comes to relying on implementation details, it's only on par with object-oriented design. Not worse, not better, but the same.
+    </p>
+    <h3 id="d5e57741df0247d5a75879a75ca588dc">
+        Conclusion <a href="#d5e57741df0247d5a75879a75ca588dc">#</a>
+    </h3>
+    <p>
+        Every API in use carries a cost. You need to keep the API stable so that users can use it tomorrow like they did yesterday. This may make it difficult to evolve or improve an API, because you risk introducing a breaking change.
+    </p>
+    <p>
+        There are APIs that a system <em>must</em> have. Software exists to be used, and whether that entails a user clicking on a button or another computer system sending a message to your system, your code must handle such stimulus. This is your real-world-facing contract, and you need to be careful to keep it consistent. The smaller that surface area is, the simpler that task is.
+    </p>
+    <p>
+        The same line of reasoning applies to internal APIs. While end users aren't impacted by changes in internal seams, other code is. If you change an implementation detail, this could cost maintenance work somewhere else. (Modern APIs can handle some changes like that automatically, such as method renames. In those cases, the cost of change is low.) Therefore, it pays to minimise the internal seams as much as possible. One way to do this is by <a href="/2022/11/21/decouple-to-delete">decoupling to delete code</a>.
+    </p>
+    <p>
+        Still, some internal APIs are warranted. They help you decompose a large system into smaller subparts. While there's a potential maintenance cost with every internal API, there's also the advantage of working with smaller, independent units of code. Often, the benefits are larger than the cost.
+    </p>
+    <p>
+        When done well, such internal seams are useful testing APIs as well. They're still implementation details, though.
+    </p>
+</div>
