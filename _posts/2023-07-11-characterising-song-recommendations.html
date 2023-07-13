@@ -1,0 +1,371 @@
+---
+layout: post
+title: "Characterising song recommendations"
+description: "Using characterisation tests and mutation testing to describe existing behaviour. An example."
+date: 2023-07-11 15:02 UTC
+tags: [Unit Testing, F#, FsCheck, Property-based Testing]
+---
+{% include JB/setup %}
+
+<div id="post">
+    <p>
+        <em>{{ page.description }}</em>
+    </p>
+    <p>
+        This article is part of an <a href="">article series that presents multiple design alternatives</a> for a given problem that I call the <em>song recommendations</em> problem. In short, the problem is to recommend songs to a user based on a vast repository of scrobbles. The problem was <a href="https://tyrrrz.me/blog/pure-impure-segregation-principle">originally proposed</a> by <a href="https://tyrrrz.me/">Oleksii Holub</a> as a an example of a problem that may not be a good fit for functional programming (FP).
+    </p>
+    <p>
+        As I've outlined in the <a href="">introductory article</a>, I'd like to use the opportunity to demonstrate alternative FP designs. Before I can do that, however, I need a working example of Oleksii Holub's code example, as well as a trustworthy test suite. That's what this article is about.
+    </p>
+    <p>
+        The code in this article mostly come from the <code>master</code> branch of the .NET repository that accompanies this article series, although some of the code is taken from intermediate commits on that branch.
+    </p>
+    <h3 id="28085f8e8de44964823dfc4b13edcca6">
+        Inferred details <a href="#28085f8e8de44964823dfc4b13edcca6">#</a>
+    </h3>
+    <p>
+        The <a href="https://tyrrrz.me/blog/pure-impure-segregation-principle">original article</a> only shows code, but doesn't link to an existing code base. While I suppose I could have asked Oleksii Holub if he had a copy he would share, the existence of such a code base isn't a given. In any case, inferring an entire code base from a comprehensive snippet is an interesting exercise in its own right.
+    </p>
+    <p>
+        The first step was to copy the example code into a code base. Initially it didn't compile because of some missing dependencies that I had to infer. It was only three <a href="https://en.wikipedia.org/wiki/Value_object">Value Objects</a> and an interface:
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">sealed</span>&nbsp;<span style="color:blue;">record</span>&nbsp;<span style="color:#2b91af;">Song</span>(<span style="color:blue;">int</span>&nbsp;Id,&nbsp;<span style="color:blue;">bool</span>&nbsp;IsVerifiedArtist,&nbsp;<span style="color:blue;">byte</span>&nbsp;Rating);
+
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">sealed</span>&nbsp;<span style="color:blue;">record</span>&nbsp;<span style="color:#2b91af;">Scrobble</span>(Song&nbsp;Song,&nbsp;<span style="color:blue;">int</span>&nbsp;ScrobbleCount);
+
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">sealed</span>&nbsp;<span style="color:blue;">record</span>&nbsp;<span style="color:#2b91af;">User</span>(<span style="color:blue;">string</span>&nbsp;UserName,&nbsp;<span style="color:blue;">int</span>&nbsp;TotalScrobbleCount);
+
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">interface</span>&nbsp;<span style="color:#2b91af;">SongService</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;Task&lt;IReadOnlyCollection&lt;User&gt;&gt;&nbsp;GetTopListenersAsync(<span style="color:blue;">int</span>&nbsp;songId);
+&nbsp;&nbsp;&nbsp;&nbsp;Task&lt;IReadOnlyCollection&lt;Scrobble&gt;&gt;&nbsp;GetTopScrobblesAsync(<span style="color:blue;">string</span>&nbsp;userName);
+}</pre>
+    </p>
+    <p>
+        These type declarations are straightforward, but still warrant a few comments. First, <code>Song</code>, <code>Scrobble</code>, and <code>User</code> are C# <a href="https://learn.microsoft.com/dotnet/csharp/language-reference/builtin-types/record">records</a>, which is a more recent addition to the language. If you're reading along here, but using another C-based language, or an older version of C#, you can implement such immutable Value Objects with normal language constructs; it just takes more code, instead of the one-liner syntax. <a href="https://fsharp.org/">F#</a> developers will, of course, be familiar with the concept of <a href="https://learn.microsoft.com/dotnet/fsharp/language-reference/records">records</a>, and <a href="https://www.haskell.org/">Haskell</a> also has them.
+    </p>
+    <p>
+        Another remark about the above type declarations is that while <code>SongService</code> is an interface, it has no <code>I</code> prefix. This is syntactically legal, but not <a href="/2015/08/03/idiomatic-or-idiosyncratic">idiomatic</a> in C#. I've used the name from <a href="https://tyrrrz.me/blog/pure-impure-segregation-principle#interleaved-impurities">the original code sample</a> verbatim, so that's the immediate explanation. It's possible that Oleksii Holub intended the type to be a base class, but for various reasons I prefer interfaces, although in this particular example I don't think it would have made much of a difference. I'm only pointing it out because there's a risk that it might confuse some readers who are used to the C# naming convention. Java programmers, on the other hand, should feel at home.
+    </p>
+    <p>
+        As far as I remember, the only other change I had to make to the code in order to make it compile was to give the <code>RecommendationsProvider</code> class a constructor:
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">RecommendationsProvider</span>(SongService&nbsp;songService)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;_songService&nbsp;=&nbsp;songService;
+}</pre>
+    </p>
+    <p>
+        This is just basic Constructor Injection, and while <a href="/2021/05/17/against-consistency">I find the underscore prefix redundant</a>, I've kept it in order to stay as faithful to the original example as possible.
+    </p>
+    <p>
+        At this point the code compiles.
+    </p>
+    <h3 id="fb05d3091d2c449ab151b60b2ff5b606">
+        Test Double <a href="#fb05d3091d2c449ab151b60b2ff5b606">#</a>
+    </h3>
+    <p>
+        The goal of this article series is to present several alternative designs that implement the same behaviour. This means that as I refactor the code, I need to know that I didn't break existing functionality.
+    </p>
+    <blockquote>
+        <p>
+            "to refactor, the essential precondition is [...] solid tests"
+        </p>
+        <footer><cite>Martin Fowler, <a href="/ref/refactoring">Refactoring</a></cite></footer>
+    </blockquote>
+    <p>
+        Currently, I have no tests, so I'll have to add some. Since <code>RecommendationsProvider</code> makes heavy use of its injected <code>SongService</code>, tests must supply that dependency in order to do meaningful work. Since <a href="/2022/10/17/stubs-and-mocks-break-encapsulation">Stubs and Mocks break encapsulation</a> I instead <a href="/2019/02/18/from-interaction-based-to-state-based-testing">favour state-based testing</a> with <a href="http://xunitpatterns.com/Fake%20Object.html">Fake Objects</a>.
+    </p>
+    <p>
+        After some experimentation, I arrived at this <code>FakeSongService</code>:
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">sealed</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">FakeSongService</span>&nbsp;:&nbsp;SongService
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;ConcurrentDictionary&lt;<span style="color:blue;">int</span>,&nbsp;Song&gt;&nbsp;songs;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;ConcurrentDictionary&lt;<span style="color:blue;">string</span>,&nbsp;ConcurrentDictionary&lt;<span style="color:blue;">int</span>,&nbsp;<span style="color:blue;">int</span>&gt;&gt;&nbsp;users;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">FakeSongService</span>()
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;songs&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;ConcurrentDictionary&lt;<span style="color:blue;">int</span>,&nbsp;Song&gt;();
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;users&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;ConcurrentDictionary&lt;<span style="color:blue;">string</span>,&nbsp;ConcurrentDictionary&lt;<span style="color:blue;">int</span>,&nbsp;<span style="color:blue;">int</span>&gt;&gt;();
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;Task&lt;IReadOnlyCollection&lt;User&gt;&gt;&nbsp;GetTopListenersAsync(<span style="color:blue;">int</span>&nbsp;songId)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;listeners&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">from</span>&nbsp;kvp&nbsp;<span style="color:blue;">in</span>&nbsp;users
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">where</span>&nbsp;kvp.Value.ContainsKey(songId)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">select</span>&nbsp;<span style="color:blue;">new</span>&nbsp;User(kvp.Key,&nbsp;kvp.Value.Values.Sum());
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;Task.FromResult&lt;IReadOnlyCollection&lt;User&gt;&gt;(listeners.ToList());
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;Task&lt;IReadOnlyCollection&lt;Scrobble&gt;&gt;&nbsp;GetTopScrobblesAsync(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">string</span>&nbsp;userName)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;scrobbles&nbsp;=&nbsp;users
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.GetOrAdd(userName,&nbsp;<span style="color:blue;">new</span>&nbsp;ConcurrentDictionary&lt;<span style="color:blue;">int</span>,&nbsp;<span style="color:blue;">int</span>&gt;())
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.Select(kvp&nbsp;=&gt;&nbsp;<span style="color:blue;">new</span>&nbsp;Scrobble(songs[kvp.Key],&nbsp;kvp.Value));
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;Task.FromResult&lt;IReadOnlyCollection&lt;Scrobble&gt;&gt;(scrobbles.ToList());
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;Scrobble(<span style="color:blue;">string</span>&nbsp;userName,&nbsp;Song&nbsp;song,&nbsp;<span style="color:blue;">int</span>&nbsp;scrobbleCount)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;users.AddOrUpdate(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;userName,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;ConcurrentDictionary&lt;<span style="color:blue;">int</span>,&nbsp;<span style="color:blue;">int</span>&gt;(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>[]&nbsp;{&nbsp;KeyValuePair.Create(song.Id,&nbsp;scrobbleCount)&nbsp;}),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(_,&nbsp;scrobbles)&nbsp;=&gt;&nbsp;AddScrobbles(scrobbles,&nbsp;song,&nbsp;scrobbleCount));
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;songs.AddOrUpdate(song.Id,&nbsp;song,&nbsp;(_,&nbsp;_)&nbsp;=&gt;&nbsp;song);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">static</span>&nbsp;ConcurrentDictionary&lt;<span style="color:blue;">int</span>,&nbsp;<span style="color:blue;">int</span>&gt;&nbsp;AddScrobbles(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;ConcurrentDictionary&lt;<span style="color:blue;">int</span>,&nbsp;<span style="color:blue;">int</span>&gt;&nbsp;scrobbles,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Song&nbsp;song,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">int</span>&nbsp;scrobbleCount)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;scrobbles.AddOrUpdate(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;song.Id,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;scrobbleCount,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(_,&nbsp;oldCount)&nbsp;=&gt;&nbsp;oldCount&nbsp;+&nbsp;scrobbleCount);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;scrobbles;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+    </p>
+    <p>
+        If you're wondering about the use of concurrent dictionaries, I use them because it made it easier to write the implementation, and not because I need the implementation to be thread-safe. In fact, I'm fairly sure that it's not thread-safe. That's not an issue. The tests aren't going to use shared mutable state.
+    </p>
+    <p>
+        The <code>GetTopListenersAsync</code> and <code>GetTopScrobblesAsync</code> methods implement the interface, and the <code>Scrobble</code> method (here, <em>scrobble</em> is a verb: <em>to scrobble</em>) is a <a href="http://xunitpatterns.com/Back%20Door%20Manipulation.html">back door</a> that enables tests to populate the <code>FakeSongService</code>.
+    </p>
+    <h3 id="4055e47cf8a5409db41c95bb8099cae6">
+        Icebreaker Test <a href="#4055e47cf8a5409db41c95bb8099cae6">#</a>
+    </h3>
+    <p>
+        While the 'production code' is in C#, I decided to write the tests in F# for two reasons.
+    </p>
+    <p>
+        The first reason was that I wanted to be able to present the various FP designs in both C# and F#. Writing the tests in F# would make it easier to replace the C# code base with an F# alternative.
+    </p>
+    <p>
+        The second reason was that I wanted to leverage a property-based testing framework's ability to produce many randomly-generated test cases. I considered this important to build confidence that my tests weren't just a few specific examples that wouldn't catch errors when I made changes. Since the <code>RecommendationsProvider</code> API is asynchronous, the only .NET property-based framework I knew of that can run <code>Task</code>-valued properties is <a href="https://fscheck.github.io/FsCheck/">FsCheck</a>. While it's possible to use FsCheck from C#, the F# API is more powerful.
+    </p>
+    <p>
+        In order to get started, however, I first wrote an Icebreaker Test without FsCheck:
+    </p>
+    <p>
+        <pre>[&lt;Fact&gt;]
+<span style="color:blue;">let</span>&nbsp;``No&nbsp;data``&nbsp;()&nbsp;=&nbsp;task&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;srvc&nbsp;=&nbsp;FakeSongService&nbsp;()
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;sut&nbsp;=&nbsp;RecommendationsProvider&nbsp;srvc
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;actual&nbsp;=&nbsp;sut.GetRecommendationsAsync&nbsp;<span style="color:#a31515;">&quot;foo&quot;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;Assert.Empty&nbsp;actual&nbsp;}</pre>
+    </p>
+    <p>
+        This is both a trivial case and an edge case, but clearly, if there's no data in the <code>SongService</code>, the <code>RecommendationsProvider</code> can't recommend any songs.
+    </p>
+    <p>
+        As I usually do with <a href="https://en.wikipedia.org/wiki/Characterization_test">Characterisation Tests</a>, I temporarily sabotage the System Under Test so that the test fails. This is to ensure that I didn't write a <a href="/2019/10/14/tautological-assertion">tautological assertion</a>. Once I've <a href="/2019/10/21/a-red-green-refactor-checklist">seen the test fail for the appropriate reason</a>, I undo the sabotage and <a href="https://stackoverflow.blog/2022/12/19/use-git-tactically/">check in the code</a>.
+    </p>
+    <h3 id="cf9aa5f1f470468da943f1c8bbd98698">
+        Refactor to property <a href="#cf9aa5f1f470468da943f1c8bbd98698">#</a>
+    </h3>
+    <p>
+        In the above <code>No data</code> test, the specific input value <code>"foo"</code> is irrelevant. It might as well have been any other string, so why not make it a property?
+    </p>
+    <p>
+        In this particular case, the <code>userName</code> could be any string, but it might be appropriate to write a custom generator that produces 'realistic' user names. Just to make things simple, I'm going to assume that user names are between one and twenty characters and assembled from alphanumeric characters, and that the fist character must be a letter:
+    </p>
+    <p>
+        <pre><span style="color:blue;">module</span>&nbsp;Gen&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;alphaNumeric&nbsp;=&nbsp;Gen.elements&nbsp;([<span style="color:#a31515;">&#39;a&#39;</span>..<span style="color:#a31515;">&#39;z&#39;</span>]&nbsp;@&nbsp;[<span style="color:#a31515;">&#39;A&#39;</span>..<span style="color:#a31515;">&#39;Z&#39;</span>]&nbsp;@&nbsp;[<span style="color:#a31515;">&#39;0&#39;</span>..<span style="color:#a31515;">&#39;9&#39;</span>])
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;userName&nbsp;=&nbsp;gen&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;length&nbsp;=&nbsp;Gen.choose&nbsp;(1,&nbsp;19)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;firstLetter&nbsp;=&nbsp;Gen.elements&nbsp;&lt;|&nbsp;[<span style="color:#a31515;">&#39;a&#39;</span>..<span style="color:#a31515;">&#39;z&#39;</span>]&nbsp;@&nbsp;[<span style="color:#a31515;">&#39;A&#39;</span>..<span style="color:#a31515;">&#39;Z&#39;</span>]
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;rest&nbsp;=&nbsp;alphaNumeric&nbsp;|&gt;&nbsp;Gen.listOfLength&nbsp;length
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;firstLetter&nbsp;::&nbsp;rest&nbsp;|&gt;&nbsp;List.toArray&nbsp;|&gt;&nbsp;String&nbsp;}</pre>
+    </p>
+    <p>
+        Strictly speaking, as long as user names are distinct, the code ought to work, so this generator may be more conservative than necessary. Why am I constraining the generator? For two reasons: First, when FsCheck finds a counter-example, it displays the values that caused the property to fail. A twenty-character alphanumeric string is easier to relate to than some arbitrary string with line breaks and unprintable characters. The second reason is that I'm later going to measure memory load for some of the alternatives, and I wanted data to have realistic size. If user names are chosen by humans, they're unlikely to be longer than twenty characters on average.
+    </p>
+    <p>
+        I can now rewrite the above <code>No data</code> test as an FsCheck property:
+    </p>
+    <p>
+        <pre>[&lt;Property&gt;]
+<span style="color:blue;">let</span>&nbsp;``No&nbsp;data``&nbsp;()&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;Gen.userName&nbsp;|&gt;&nbsp;Arb.fromGen&nbsp;|&gt;&nbsp;Prop.forAll&nbsp;&lt;|&nbsp;<span style="color:blue;">fun</span>&nbsp;userName&nbsp;<span style="color:blue;">-&gt;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;task&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;srvc&nbsp;=&nbsp;FakeSongService&nbsp;()
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;sut&nbsp;=&nbsp;RecommendationsProvider&nbsp;srvc
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;actual&nbsp;=&nbsp;sut.GetRecommendationsAsync&nbsp;userName
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Assert.Empty&nbsp;actual&nbsp;}&nbsp;:&gt;&nbsp;Task</pre>
+    </p>
+    <p>
+        You may think that this is overkill just to be able to supply random user names to the <code>GetRecommendationsAsync</code> method. In isolation, I'd be inclined to agree, but this edit was an occasion to get my FsCheck infrastructure in place. I can now use that to add more properties.
+    </p>
+    <h3 id="ea6e29adf0a9458e98309a0f66394b32">
+        Full coverage <a href="#ea6e29adf0a9458e98309a0f66394b32">#</a>
+    </h3>
+    <p>
+        The cyclomatic complexity of the <code>GetRecommendationsAsync</code> method is only <em>3</em>, so it doesn't require many tests to attain full code coverage. <a href="/2015/11/16/code-coverage-is-a-useless-target-measure">Not that 100% code coverage should be a goal in itself</a>, but when adding tests to an untested code base, it can be useful as an indicator of confidence. Despite its low cyclomatic complexity, the method, with all of its filtering and sorting, is actually quite involved. 100% coverage strikes me as a low bar.
+    </p>
+    <p>
+        The above <code>No data</code> test exercises one of the three branches. <a href="/2019/12/09/put-cyclomatic-complexity-to-good-use">At most two more tests are required</a> to attain full coverage. I'll just show the simplest of them here.
+    </p>
+    <p>
+        The next test case requires a new FsCheck generator, in addition to <code>Gen.userName</code> already shown.
+    </p>
+    <p>
+        <pre><span style="color:blue;">let</span>&nbsp;song&nbsp;=&nbsp;ArbMap.generate&nbsp;ArbMap.defaults&nbsp;|&gt;&nbsp;Gen.map&nbsp;Song</pre>
+    </p>
+    <p>
+        As a fairly simple one-liner, this seems close to the <a href="https://wiki.haskell.org/Fairbairn_threshold">Fairbairn threshold</a>, but I think that giving this generator a name makes the test easier to read.
+    </p>
+    <p>
+        <pre>[&lt;Property&gt;]
+<span style="color:blue;">let</span>&nbsp;``One&nbsp;user,&nbsp;some&nbsp;songs``&nbsp;()&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;gen&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;user&nbsp;=&nbsp;Gen.userName
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;songs&nbsp;=&nbsp;Gen.arrayOf&nbsp;Gen.song
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;scrobbleCounts&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Gen.choose&nbsp;(1,&nbsp;100)&nbsp;|&gt;&nbsp;Gen.arrayOfLength&nbsp;songs.Length
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;(user,&nbsp;Array.zip&nbsp;songs&nbsp;scrobbleCounts)&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;Arb.fromGen&nbsp;|&gt;&nbsp;Prop.forAll&nbsp;&lt;|&nbsp;<span style="color:blue;">fun</span>&nbsp;(user,&nbsp;scrobbles)&nbsp;<span style="color:blue;">-&gt;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;task&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;srvc&nbsp;=&nbsp;FakeSongService&nbsp;()
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;scrobbles&nbsp;|&gt;&nbsp;Array.iter&nbsp;(<span style="color:blue;">fun</span>&nbsp;(s,&nbsp;c)&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;srvc.Scrobble&nbsp;(user,&nbsp;s,&nbsp;c))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;sut&nbsp;=&nbsp;RecommendationsProvider&nbsp;srvc
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;actual&nbsp;=&nbsp;sut.GetRecommendationsAsync&nbsp;user
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Assert.Empty&nbsp;actual&nbsp;}&nbsp;:&gt;&nbsp;Task</pre>
+    </p>
+    <p>
+        This test creates scrobbles for a single user and adds them to the Fake data store. It uses <a href="/2016/05/17/tie-fighter-fscheck-properties">TIE-fighter syntax</a> to connect the generators to the test body. 
+    </p>
+    <p>
+        Since all the scrobble counts are generated between <em>1</em> and <em>100</em>, none of them are greater than or equal to <em>10,000</em> and thus the test expects no recommendations.
+    </p>
+    <p>
+        You may think that I'm cheating - after all, why didn't I choose another range for the scrobble count? To be honest, I was still in an exploratory phase, trying to figure out how to express the tests, and as a first step, I was aiming for full code coverage. Even though this test's assertion is weak, it <em>does</em> exercise another branch of the <code>GetRecommendationsAsync</code> method.
+    </p>
+    <p>
+        I had to write only one more test to fully cover the System Under Test. That method is more complicated, so I'll spare you the details. If you're interested, you may consider consulting the example source code repository.
+    </p>
+    <h3 id="1fcf0b78bfa94dd8b1b3cd1810068dc8">
+        Mutation testing <a href="#1fcf0b78bfa94dd8b1b3cd1810068dc8">#</a>
+    </h3>
+    <p>
+        While I don't think that code coverage is useful as a <em>target</em> measure, it can be illuminating as a tool. In this case, knowing that I've now attained full coverage tells me that I need to resort to other techniques if I want another goal to aim for.
+    </p>
+    <p>
+        I chose <a href="https://en.wikipedia.org/wiki/Mutation_testing">mutation testing</a> as my new technique. The <code>GetRecommendationsAsync</code> method makes heavy use of LINQ methods such as <code>OrderByDescending</code>, <code>Take</code>, and <code>Where</code>. <a href="https://stryker-mutator.io/">Stryker</a> for .NET knows about LINQ, so among all the automated sabotage is does, it tries to see what happens if it removes e.g. <code>Where</code> or <code>Take</code>.
+    </p>
+    <p>
+        Although I find the Stryker jargon childish, I set myself the goal to see if I could 'kill mutants' to a degree that I'd at least get a green rating.
+    </p>
+    <p>
+        I found that I could edge closer to that goal by a combination of appending assertions (thus <a href="/2021/12/13/backwards-compatibility-as-a-profunctor">strengthening postconditions</a>) and adding tests. While I sometimes find it <a href="/2021/02/15/when-properties-are-easier-than-examples">easier to define properties than examples</a>, at other times, it's the other way around. In this case, I found it easier to add single examples, like this one:
+    </p>
+    <p>
+        <pre>[&lt;Fact&gt;]
+<span style="color:blue;">let</span>&nbsp;``One&nbsp;verified&nbsp;recommendation``&nbsp;()&nbsp;=&nbsp;task&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;srvc&nbsp;=&nbsp;FakeSongService&nbsp;()
+&nbsp;&nbsp;&nbsp;&nbsp;srvc.Scrobble&nbsp;(<span style="color:#a31515;">&quot;cat&quot;</span>,&nbsp;Song&nbsp;(1,&nbsp;<span style="color:blue;">false</span>,&nbsp;6uy),&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;10)
+&nbsp;&nbsp;&nbsp;&nbsp;srvc.Scrobble&nbsp;(<span style="color:#a31515;">&quot;ana&quot;</span>,&nbsp;Song&nbsp;(1,&nbsp;<span style="color:blue;">false</span>,&nbsp;5uy),&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;10)
+&nbsp;&nbsp;&nbsp;&nbsp;srvc.Scrobble&nbsp;(<span style="color:#a31515;">&quot;ana&quot;</span>,&nbsp;Song&nbsp;(2,&nbsp;&nbsp;<span style="color:blue;">true</span>,&nbsp;5uy),&nbsp;9_9990)
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;sut&nbsp;=&nbsp;RecommendationsProvider&nbsp;srvc
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;actual&nbsp;=&nbsp;sut.GetRecommendationsAsync&nbsp;<span style="color:#a31515;">&quot;cat&quot;</span>
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;Assert.Equal&lt;Song&gt;&nbsp;([&nbsp;Song&nbsp;(2,&nbsp;<span style="color:blue;">true</span>,&nbsp;5uy)&nbsp;],&nbsp;actual)&nbsp;}&nbsp;:&gt;&nbsp;Task</pre>
+    </p>
+    <p>
+        It adds three scrobbles to the data store, but only one of them is verified (which is what the <code>true</code> value indicates), so this is the only recommendation the test expects to see.
+    </p>
+    <p>
+        Notice that although song number <code>2</code> 'only' has <em>9,9990</em> plays, the user <em>ana</em> has exactly <em>10,000</em> plays in all, so barely makes the cut. By carefully adding five examples like this one, I was able to 'kill all mutants'.
+    </p>
+    <p>
+        In all, I have eight tests; three FsCheck properties and five normal <a href="https://xunit.net/">xUnit.net</a> <em>facts</em>.
+    </p>
+    <p>
+        All tests work exclusively by supplying direct and <a href="http://xunitpatterns.com/indirect%20input.html">indirect input</a> to the System Under Test (SUT), and verify the return value of <code>GetRecommendationsAsync</code>. No <a href="http://xunitpatterns.com/Mock%20Object.html">Mocks</a> or <a href="http://xunitpatterns.com/Test%20Stub.html">Stubs</a> have opinions about how the SUT interacts with the injected <code>SongService</code>. This gives me confidence that the tests constitute a trustworthy regression test suite, and that they're still sufficiently decoupled from implementation details to enable me to completely rewrite the SUT.
+    </p>
+    <h3 id="ab6808bbac564477b6c1fd1751eafd48">
+        Quirks <a href="#ab6808bbac564477b6c1fd1751eafd48">#</a>
+    </h3>
+    <p>
+        When you add tests to an existing code base, you may discover edge cases that the original programmer overlooked. The <code>GetRecommendationsAsync</code> method is only a code example, so I don't blame Oleksii Holub for some casual coding, but it turns out that the code has some quirks.
+    </p>
+    <p>
+        For example, there's no deduplication, so I had to <a href="http://butunclebob.com/ArticleS.TimOttinger.ApologizeIncode">apologise in my test code</a>:
+    </p>
+    <p>
+        <pre>[&lt;Fact&gt;]
+<span style="color:blue;">let</span>&nbsp;``Only&nbsp;top-rated&nbsp;songs``&nbsp;()&nbsp;=&nbsp;task&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;srvc&nbsp;=&nbsp;FakeSongService&nbsp;()
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;Scale&nbsp;ratings&nbsp;to&nbsp;keep&nbsp;them&nbsp;less&nbsp;than&nbsp;or&nbsp;equal&nbsp;to&nbsp;10.</span>
+&nbsp;&nbsp;&nbsp;&nbsp;[1..20]&nbsp;|&gt;&nbsp;List.iter&nbsp;(<span style="color:blue;">fun</span>&nbsp;i&nbsp;<span style="color:blue;">-&gt;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;srvc.Scrobble&nbsp;(<span style="color:#a31515;">&quot;hyle&quot;</span>,&nbsp;Song&nbsp;(i,&nbsp;<span style="color:blue;">true</span>,&nbsp;byte&nbsp;i&nbsp;/&nbsp;2uy),&nbsp;500))
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;sut&nbsp;=&nbsp;RecommendationsProvider&nbsp;srvc
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;actual&nbsp;=&nbsp;sut.GetRecommendationsAsync&nbsp;<span style="color:#a31515;">&quot;hyle&quot;</span>
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;Assert.NotEmpty&nbsp;actual
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;Since&nbsp;there&#39;s&nbsp;only&nbsp;one&nbsp;user,&nbsp;but&nbsp;with&nbsp;20&nbsp;songs,&nbsp;the&nbsp;implementation&nbsp;loops</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;over&nbsp;the&nbsp;same&nbsp;songs&nbsp;20&nbsp;times,&nbsp;so&nbsp;400&nbsp;songs&nbsp;in&nbsp;total&nbsp;(with&nbsp;duplicates).</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;Ordering&nbsp;on&nbsp;rating,&nbsp;only&nbsp;the&nbsp;top-rated&nbsp;200&nbsp;remains,&nbsp;that&nbsp;is,&nbsp;those&nbsp;rated</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;5-10.&nbsp;Note&nbsp;that&nbsp;this&nbsp;is&nbsp;a&nbsp;Characterization&nbsp;Test,&nbsp;so&nbsp;not&nbsp;necessarily</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;reflective&nbsp;of&nbsp;how&nbsp;a&nbsp;real&nbsp;recommendation&nbsp;system&nbsp;should&nbsp;work.</span>
+&nbsp;&nbsp;&nbsp;&nbsp;Assert.All&nbsp;(actual,&nbsp;<span style="color:blue;">fun</span>&nbsp;s&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;Assert.True&nbsp;(5uy&nbsp;&lt;=&nbsp;s.Rating))&nbsp;}&nbsp;:&gt;&nbsp;Task</pre>
+    </p>
+    <p>
+        This test creates twenty scrobbles for one user: One with a zero rating, two with rating <em>1</em>, two with rating <em>2</em>, and so on, up to a single song with rating <em>10</em>.
+    </p>
+    <p>
+        <a href="https://tyrrrz.me/blog/pure-impure-segregation-principle#interleaved-impurities">The implementation of GetRecommendationsAsync</a> uses these twenty songs to find 'other users' who have these top songs as well. In this case, there's only one user, so for every of those twenty songs, you get the same twenty songs, for a total of 400.
+    </p>
+    <p>
+        You might protest that this is because my <code>FakeSongService</code> implementation is too unsophisticated. <em>Obviously</em>, it should not return the 'original' user's songs! Do, however, consider the implied signature of the <code>GetTopListenersAsync</code> method:
+    </p>
+    <p>
+        <pre>Task&lt;IReadOnlyCollection&lt;User&gt;&gt;&nbsp;GetTopListenersAsync(<span style="color:blue;">int</span>&nbsp;songId);</pre>
+    </p>
+    <p>
+        The method only accepts a <code>songId</code> as input, and if we assume that the service is stateless, it doesn't know who the 'original' user is.
+    </p>
+    <p>
+        Should I fix the quirks? In a real system, it might be appropriate, but in this context I find it better to keep the them. Real systems often have quirks in the shape of legacy business rules and the like, so I only find it realistic that the system may exhibit some weird behaviour. The goal of this set of articles isn't to refactor <em>this particular system</em>, but rather to showcase alternative designs for a system sufficiently complicated to warrant refactorings. Simplifying the code might defeat that purpose.
+    </p>
+    <p>
+        As shown, I have an automated test that requires me to keep that behaviour. I think I'm in a good position to make sweeping changes to the code.
+    </p>
+    <h3 id="c114e6c5e6cd4d4fa1c682daf8ed3169">
+        Conclusion <a href="#c114e6c5e6cd4d4fa1c682daf8ed3169">#</a>
+    </h3>
+    <p>
+        As <a href="https://martinfowler.com/">Martin Fowler</a> writes, an essential precondition for refactoring is a trustworthy test suite. On a daily basis, millions of developers prove him wrong by deploying untested changes to production. There <em>are</em> other ways to make changes, including manual testing, <a href="https://en.wikipedia.org/wiki/A/B_testing">A/B testing</a>, testing in production, etc. Some of them may even work in some contexts.
+    </p>
+    <p>
+        In contrast to such real-world concerns, I don't have a production system with real users. Neither do I have a product owner or a department of manual testers. The best I can do is to add enough Characterisation Tests that I feel confident that I've described <em>the behaviour</em>, rather than the implementation, in enough detail to hold it in place. A <em>Software Vise</em>, as <a href="https://michaelfeathers.silvrback.com/bio">Michael Feathers</a> calls it in <a href="/ref/wewlc">Working Effectively with Legacy Code</a>.
+    </p>
+    <p>
+        Most systems in 'the real world' have too few automated tests. Adding tests to a legacy code base is a difficult discipline, so I found it worthwhile to document this work before embarking on the actual design changes promised by this article series. Now that this is out of the way, we can proceed.
+    </p>
+    <p>
+        The next two articles do more groundwork to establish equivalent code bases in F# and Haskell. If you only care about the C# examples, you can go back to the <a href="">first article in this article series</a> and use the table of contents to jump to the next C# example.
+    </p>
+    <p>
+        <strong>Next:</strong> Porting song recommendations to F#.
+    </p>
+</div>
