@@ -1,0 +1,269 @@
+---
+layout: post
+title: "NonEmpty catamorphism"
+description: "The universal API for generic non-empty collections, with examples in C# and Haskell."
+date: 2023-08-07 11:40 UTC
+tags: [Software Design, Haskell]
+image: "/content/binary/non-empty-applicative-x-ys.png"
+image_alt: "Boxes labelled x, x1, x2, x3 over other boxes labelled y, y1, y2, y3. The x and y1, y2, y3 boxes are connected by three arrows labelled with a single f."
+---
+{% include JB/setup %}
+
+<div id="post">
+    <p>
+        <em>{{ page.description }}</em>
+    </p>
+    <p>
+        This article is part of an <a href="/2019/04/29/catamorphisms">article series about catamorphisms</a>. A catamorphism is a <a href="/2017/10/04/from-design-patterns-to-category-theory">universal abstraction</a> that describes how to digest a data structure into a potentially more compact value.
+    </p>
+    <p>
+        I was recently doing some work that required a data structure like a collection, but with the additional constraint that it should be guaranteed to have at least one element. I've known about <a href="https://www.haskell.org/">Haskell</a>'s <a href="https://hackage.haskell.org/package/base/docs/Data-List-NonEmpty.html">NonEmpty</a> type, and <a href="/2017/12/11/semigroups-accumulate">how to port it to C#</a> for years. This time I needed to implement it in a third language, and since I had a little extra time available, I thought it'd be interesting to pursue a conjecture of mine: It seems as though you can implement most (all?) of a generic data structure's API based on its catamorphism.
+    </p>
+    <p>
+        While I could make a guess as to how a catamorphism might look for a non-empty collection, I wasn't sure. A quick web search revealed nothing conclusive, so I decided to deduce it from first principles. As this article series demonstrates, you can derive the catamorphism from a type's isomorphic <a href="https://bartoszmilewski.com/2017/02/28/f-algebras/">F-algebra</a>.
+    </p>
+    <p>
+        The beginning of this article presents the catamorphism in C#, with an example. The rest of the article describes how to deduce the catamorphism. This part of the article presents my work in Haskell. Readers not comfortable with Haskell can just read the first part, and consider the rest of the article as an optional appendix.
+    </p>
+    <h3 id="1e7c622eea7d4a7bad2edc9958d865ce">
+        C# catamorphism <a href="#1e7c622eea7d4a7bad2edc9958d865ce">#</a>
+    </h3>
+    <p>
+        This article will use a custom C# class called <code><span style="color:#2b91af;">NonEmptyCollection</span>&lt;<span style="color:#2b91af;">T</span>&gt;</code>, which is near-identical to the <code><span style="color:#2b91af;">NotEmptyCollection</span>&lt;<span style="color:#2b91af;">T</span>&gt;</code> originally introduced in the article <a href="/2017/12/11/semigroups-accumulate">Semigroups accumulate</a>.
+    </p>
+    <p>
+        I don't know why I originally chose to name the class <code>NotEmptyCollection</code> instead of <code>NonEmptyCollection</code>, but it's annoyed me ever since. I've finally decided to rectify that mistake, so from now on, the name is <code>NonEmptyCollection</code>.
+    </p>
+    <p>
+        The catamorphism for <code>NonEmptyCollection</code> is this instance method:
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;TResult&nbsp;Aggregate&lt;<span style="color:#2b91af;">TResult</span>&gt;(Func&lt;T,&nbsp;IReadOnlyCollection&lt;T&gt;,&nbsp;TResult&gt;&nbsp;algebra)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;algebra(Head,&nbsp;Tail);
+}</pre>
+    </p>
+    <p>
+        Because the <code>NonEmptyCollection</code> class is really just a glorified tuple, the <code>algebra</code> is any function which produces a single value from the two constituent values.
+    </p>
+    <p>
+        It's easy to fall into the trap of thinking of the catamorphism as 'reducing' the data structure to a more compact form. While this is a common kind of operation, loss of data is not inevitable. You can, for example, return a new collection, essentially doing nothing:
+    </p>
+    <p>
+        <pre><span style="color:blue;">var</span>&nbsp;nec&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;NonEmptyCollection&lt;<span style="color:blue;">int</span>&gt;(42,&nbsp;1337,&nbsp;2112,&nbsp;666);
+<span style="color:blue;">var</span>&nbsp;same&nbsp;=&nbsp;nec.Aggregate((x,&nbsp;xs)&nbsp;=&gt;&nbsp;<span style="color:blue;">new</span>&nbsp;NonEmptyCollection&lt;<span style="color:blue;">int</span>&gt;(x,&nbsp;xs.ToArray()));</pre>
+    </p>
+    <p>
+        This <code>Aggregate</code> method enables you to safely find a maximum value:
+    </p>
+    <p>
+        <pre><span style="color:blue;">var</span>&nbsp;nec&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;NonEmptyCollection&lt;<span style="color:blue;">int</span>&gt;(42,&nbsp;1337,&nbsp;2112,&nbsp;666);
+<span style="color:blue;">var</span>&nbsp;max&nbsp;=&nbsp;nec.Aggregate((x,&nbsp;xs)&nbsp;=&gt;&nbsp;xs.Aggregate(x,&nbsp;Math.Max));</pre>
+    </p>
+    <p>
+        or to <a href="/2020/02/03/non-exceptional-averages">safely calculate an average</a>:
+    </p>
+    <p>
+        <pre><span style="color:blue;">var</span>&nbsp;nec&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;NonEmptyCollection&lt;<span style="color:blue;">int</span>&gt;(42,&nbsp;1337,&nbsp;2112,&nbsp;666);
+<span style="color:blue;">var</span>&nbsp;average&nbsp;=&nbsp;nec.Aggregate((x,&nbsp;xs)&nbsp;=&gt;&nbsp;xs.Aggregate(x,&nbsp;(a,&nbsp;b)&nbsp;=&gt;&nbsp;a&nbsp;+&nbsp;b)&nbsp;/&nbsp;(xs.Count&nbsp;+&nbsp;1.0));</pre>
+    </p>
+    <p>
+        Both of these two last examples use the built-in <a href="https://learn.microsoft.com/dotnet/api/system.linq.enumerable.aggregate">Aggregate</a> function to accumulate the <code>xs</code>. It uses the overload that takes a seed, for which it supplies <code>x</code>. This means that there's guaranteed to be at least that one value.
+    </p>
+    <p>
+        The catamorphism given here is not unique. You can create a trivial variation by swapping the two function arguments, so that <code>x</code> comes after <code>xs</code>.
+    </p>
+    <h3 id="3b188484128d4cef935a13426d8fb51b">
+        NonEmpty F-algebra <a href="#3b188484128d4cef935a13426d8fb51b">#</a>
+    </h3>
+    <p>
+        As in the <a href="/2019/05/27/list-catamorphism">previous article</a>, I'll use <code>Fix</code> and <code>cata</code> as explained in <a href="https://bartoszmilewski.com">Bartosz Milewski</a>'s excellent <a href="https://bartoszmilewski.com/2017/02/28/f-algebras/">article on F-algebras</a>.
+    </p>
+    <p>
+        As always, start with the underlying endofunctor:
+    </p>
+    <p>
+        <pre><span style="color:blue;">data</span>&nbsp;NonEmptyF&nbsp;a&nbsp;c&nbsp;=&nbsp;NonEmptyF&nbsp;{&nbsp;<span style="color:blue;">head</span>&nbsp;::&nbsp;a,&nbsp;<span style="color:blue;">tail</span>&nbsp;::&nbsp;ListFix&nbsp;a&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">deriving</span>&nbsp;(<span style="color:#2b91af;">Eq</span>,&nbsp;<span style="color:#2b91af;">Show</span>,&nbsp;<span style="color:#2b91af;">Read</span>)
+ 
+<span style="color:blue;">instance</span>&nbsp;<span style="color:blue;">Functor</span>&nbsp;(<span style="color:blue;">NonEmptyF</span>&nbsp;a)&nbsp;<span style="color:blue;">where</span>
+&nbsp;&nbsp;<span style="color:blue;">fmap</span>&nbsp;_&nbsp;(NonEmptyF&nbsp;x&nbsp;xs)&nbsp;=&nbsp;NonEmptyF&nbsp;x&nbsp;xs</pre>
+    </p>
+    <p>
+        Instead of using Haskell's standard list (<code>[]</code>) for the tail, I've used <code>ListFix</code> from <a href="/2019/05/27/list-catamorphism">the article on list catamorphism</a>. This should, hopefully, demonstrate how you can build on already established definitions derived from first principles.
+    </p>
+    <p>
+        Since a non-empty collection is really just a glorified tuple of <em>head</em> and <em>tail</em>, there's no recursion, and thus, the carrier type <code>c</code> is not used. You could argue that going through all of these motions is overkill, but it still provides some insights. This is similar to the <a href="/2019/05/06/boolean-catamorphism">Boolean catamorphism</a> and <a href="/2019/05/20/maybe-catamorphism">Maybe catamorphism</a>.
+    </p>
+    <p>
+        The <code>fmap</code> function ignores the mapping argument (often called <code>f</code>), since the <code>Functor</code> instance maps <code>NonEmptyF a c</code> to <code>NonEmptyF a c1</code>, but the <code>c</code> or <code>c1</code> type is not used.
+    </p>
+    <p>
+        As was the case when deducing the recent catamorphisms, Haskell isn't too happy about defining instances for a type like <code>Fix (NonEmptyF a)</code>. To address that problem, you can introduce a <code>newtype</code> wrapper:
+    </p>
+    <p>
+        <pre><span style="color:blue;">newtype</span>&nbsp;NonEmptyFix&nbsp;a&nbsp;=
+&nbsp;&nbsp;NonEmptyFix&nbsp;{&nbsp;unNonEmptyFix&nbsp;::&nbsp;Fix&nbsp;(NonEmptyF&nbsp;a)&nbsp;}&nbsp;<span style="color:blue;">deriving</span>&nbsp;(<span style="color:#2b91af;">Eq</span>,&nbsp;<span style="color:#2b91af;">Show</span>,&nbsp;<span style="color:#2b91af;">Read</span>)</pre>
+    </p>
+    <p>
+        You can define <code>Functor</code>, <code>Applicative</code>, <code>Monad</code>, etc. instances for this type without resorting to any funky GHC extensions. Keep in mind that, ultimately, the purpose of all this code is just to figure out what the catamorphism looks like. This code isn't intended for actual use.
+    </p>
+    <p>
+        A helper function makes it easier to define <code>NonEmptyFix</code> values:
+    </p>
+    <p>
+        <pre><span style="color:#2b91af;">createNonEmptyF</span>&nbsp;<span style="color:blue;">::</span>&nbsp;a&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">ListFix</span>&nbsp;a&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">NonEmptyFix</span>&nbsp;a
+createNonEmptyF&nbsp;x&nbsp;xs&nbsp;=&nbsp;NonEmptyFix&nbsp;$&nbsp;Fix&nbsp;$&nbsp;NonEmptyF&nbsp;x&nbsp;xs</pre>
+    </p>
+    <p>
+        Here's how to use it:
+    </p>
+    <p>
+        <pre>ghci&gt; createNonEmptyF 42 $ consF 1337 $ consF 2112 nilF
+NonEmptyFix {
+  unNonEmptyFix = Fix (NonEmptyF 42 (ListFix (Fix (ConsF 1337 (Fix (ConsF 2112 (Fix NilF)))))))}</pre>
+    </p>
+    <p>
+        While this is quite verbose, keep in mind that the code shown here isn't meant to be used in practice. The goal is only to deduce catamorphisms from more basic universal abstractions, and you now have all you need to do that.
+    </p>
+    <h3 id="ccc6b13fcf794ec39f98fdd3e0c61460">
+        Haskell catamorphism <a href="#ccc6b13fcf794ec39f98fdd3e0c61460">#</a>
+    </h3>
+    <p>
+        At this point, you have two out of three elements of an F-Algebra. You have an endofunctor (<code>NonEmptyF a</code>), and an object <code>c</code>, but you still need to find a morphism <code>NonEmptyF a c -&gt; c</code>. Notice that the algebra you have to find is the function that reduces the functor to its <em>carrier type</em> <code>c</code>, not the 'data type' <code>a</code>. This takes some time to get used to, but that's how catamorphisms work. This doesn't mean, however, that you get to ignore <code>a</code>, as you'll see.
+    </p>
+    <p>
+        As in the previous articles, start by writing a function that will become the catamorphism, based on <code>cata</code>:
+    </p>
+    <p>
+        <pre>nonEmptyF&nbsp;=&nbsp;cata&nbsp;alg&nbsp;.&nbsp;unNonEmptyFix
+&nbsp;&nbsp;<span style="color:blue;">where</span>&nbsp;alg&nbsp;(NonEmptyF&nbsp;x&nbsp;xs)&nbsp;=&nbsp;<span style="color:blue;">undefined</span></pre>
+    </p>
+    <p>
+        While this compiles, with its <code>undefined</code> implementation of <code>alg</code>, it obviously doesn't do anything useful. I find, however, that it helps me think. How can you return a value of the type <code>c</code> from <code>alg</code>? You could pass a function argument to the <code>nonEmptyF</code> function and use it with <code>x</code> and <code>xs</code>:
+    </p>
+    <p>
+        <pre><span style="color:#2b91af;">nonEmptyF</span>&nbsp;<span style="color:blue;">::</span>&nbsp;(a&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">ListFix</span>&nbsp;a&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;c)&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">NonEmptyFix</span>&nbsp;a&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;c
+nonEmptyF&nbsp;f&nbsp;=&nbsp;cata&nbsp;alg&nbsp;.&nbsp;unNonEmptyFix
+&nbsp;&nbsp;<span style="color:blue;">where</span>&nbsp;alg&nbsp;(NonEmptyF&nbsp;x&nbsp;xs)&nbsp;=&nbsp;f&nbsp;x&nbsp;xs</pre>
+    </p>
+    <p>
+        This works. Since <code>cata</code> has the type <code>Functor f =&gt; (f a -&gt; a) -&gt; Fix f -&gt; a</code>, that means that <code>alg</code> has the type <code>f a -&gt; a</code>. In the case of <code>NonEmptyF</code>, the compiler infers that the <code>alg</code> function has the type <code>NonEmptyF a c -&gt; c1</code>, which fits the bill, since <code>c</code> may be the same type as <code>c1</code>.
+    </p>
+    <p>
+        This, then, is the catamorphism for a non-empty collection. This one is just a single function. It's still not the only possible catamorphism, since you could trivially flip the arguments to <code>f</code>.
+    </p>
+    <p>
+        I've chosen this representation because the arguments <code>x</code> and <code>xs</code> are defined in the same order as the order of <code>head</code> before <code>tail</code>. Notice how this is the same order as the above C# <code>Aggregate</code> method.
+    </p>
+    <h3 id="2ecc4634c63e40e4a9d47be4bffa4d5f">
+        Basis <a href="#2ecc4634c63e40e4a9d47be4bffa4d5f">#</a>
+    </h3>
+    <p>
+        You can implement most other useful functionality with <code>nonEmptyF</code>. Here's the <code>Semigroup</code> instance and a useful helper function:
+    </p>
+    <p>
+        <pre><span style="color:#2b91af;">toListFix</span>&nbsp;<span style="color:blue;">::</span>&nbsp;<span style="color:blue;">NonEmptyFix</span>&nbsp;a&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">ListFix</span>&nbsp;a
+toListFix&nbsp;=&nbsp;nonEmptyF&nbsp;consF
+ 
+<span style="color:blue;">instance</span>&nbsp;<span style="color:blue;">Semigroup</span>&nbsp;(<span style="color:blue;">NonEmptyFix</span>&nbsp;a)&nbsp;<span style="color:blue;">where</span>
+&nbsp;&nbsp;xs&nbsp;&lt;&gt;&nbsp;ys&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;nonEmptyF&nbsp;(\x&nbsp;xs&#39;&nbsp;-&gt;&nbsp;createNonEmptyF&nbsp;x&nbsp;$&nbsp;xs&#39;&nbsp;&lt;&gt;&nbsp;toListFix&nbsp;ys)&nbsp;xs</pre>
+    </p>
+    <p>
+        The implementation uses <code>nonEmptyF</code> to operate on <code>xs</code>. Inside the lambda expression, it converts <code>ys</code> to a list, and uses <a href="/2019/05/27/list-catamorphism">the <code>ListFix</code> <code>Semigroup</code> instance</a> to concatenate <code>xs</code> with it.
+    </p>
+    <p>
+        Here's the <code>Functor</code> instance:
+    </p>
+    <p>
+        <pre><span style="color:blue;">instance</span>&nbsp;<span style="color:blue;">Functor</span>&nbsp;<span style="color:blue;">NonEmptyFix</span>&nbsp;<span style="color:blue;">where</span>
+&nbsp;&nbsp;<span style="color:blue;">fmap</span>&nbsp;f&nbsp;=&nbsp;nonEmptyF&nbsp;(\x&nbsp;xs&nbsp;-&gt;&nbsp;createNonEmptyF&nbsp;(f&nbsp;x)&nbsp;$&nbsp;<span style="color:blue;">fmap</span>&nbsp;f&nbsp;xs)</pre>
+    </p>
+    <p>
+        Like the <code>Semigroup</code> instance, this <code>fmap</code> implementation uses <code>fmap</code> on <code>xs</code>, which is the <code>ListFix</code> <code>Functor</code> instance.
+    </p>
+    <p>
+        The <code>Applicative</code> instance is much harder to write from scratch (or, at least, I couldn't come up with a simpler way):
+    </p>
+    <p>
+        <pre><span style="color:blue;">instance</span>&nbsp;<span style="color:blue;">Applicative</span>&nbsp;<span style="color:blue;">NonEmptyFix</span>&nbsp;<span style="color:blue;">where</span>
+&nbsp;&nbsp;pure&nbsp;x&nbsp;=&nbsp;createNonEmptyF&nbsp;x&nbsp;nilF
+&nbsp;&nbsp;liftA2&nbsp;f&nbsp;xs&nbsp;ys&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;nonEmptyF
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(\x&nbsp;xs&#39;&nbsp;-&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;nonEmptyF
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(\y&nbsp;ys&#39;&nbsp;-&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;createNonEmptyF
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(f&nbsp;x&nbsp;y)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(liftA2&nbsp;f&nbsp;(consF&nbsp;x&nbsp;nilF)&nbsp;ys&#39;&nbsp;&lt;&gt;&nbsp;liftA2&nbsp;f&nbsp;xs&#39;&nbsp;(consF&nbsp;y&nbsp;ys&#39;)))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;ys)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;xs</pre>
+    </p>
+    <p>
+        While that looks complicated, it's not <em>that</em> bad. It uses <code>nonEmptyF</code> to 'loop' over the <code>xs</code>, and then a nested call to <code>nonEmptyF</code> to 'loop' over the <code>ys</code>. The inner lambda expression uses <code>f x y</code> to calculate the head, but it also needs to calculate all other combinations of values in <code>xs</code> and <code>ys</code>.
+    </p>
+    <p>
+        <img src="/content/binary/non-empty-applicative-x-y.png" alt="Boxes labelled x, x1, x2, x3 over other boxes labelled y, y1, y2, y3. The x and y box are connected by an arrow labelled f.">
+    </p>
+    <p>
+        First, it keeps <code>x</code> fixed and 'loops' through all the remaining <code>ys'</code>; that's the <code>liftA2&nbsp;f&nbsp;(consF&nbsp;x&nbsp;nilF)&nbsp;ys&#39;</code> part:
+    </p>
+    <p>
+        <img src="/content/binary/non-empty-applicative-x-ys.png" alt="Boxes labelled x, x1, x2, x3 over other boxes labelled y, y1, y2, y3. The x and y1, y2, y3 boxes are connected by three arrows labelled with a single f.">
+    </p>
+    <p>
+        Then it 'loops' over all the remaining <code>xs'</code> and all the <code>ys</code>; that is, <code>liftA2&nbsp;f&nbsp;xs&#39;&nbsp;(consF&nbsp;y&nbsp;ys&#39;)</code>.
+    </p>
+    <p>
+        <img src="/content/binary/non-empty-applicative-xs-ys.png" alt="Boxes labelled x, x1, x2, x3 over other boxes labelled y, y1, y2, y3. The x1, x2, x3 boxes are connected to the y, y1, y2, y3 boxes by arrows labelled with a single f.">
+    </p>
+    <p>
+        The two <code>liftA2</code> functions apply to the <code>ListFix</code> <code>Applicative</code> instance.
+    </p>
+    <p>
+        You'll be happy to see, I think, that the <code>Monad</code> instance is simpler:
+    </p>
+    <p>
+        <pre><span style="color:blue;">instance</span>&nbsp;<span style="color:blue;">Monad</span>&nbsp;<span style="color:blue;">NonEmptyFix</span>&nbsp;<span style="color:blue;">where</span>
+&nbsp;&nbsp;xs&nbsp;&gt;&gt;=&nbsp;f&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;nonEmptyF&nbsp;(\x&nbsp;xs&#39;&nbsp;-&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;nonEmptyF
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(\y&nbsp;ys&nbsp;-&gt;&nbsp;createNonEmptyF&nbsp;y&nbsp;$&nbsp;ys&nbsp;&lt;&gt;&nbsp;(xs&#39;&nbsp;&gt;&gt;=&nbsp;toListFix&nbsp;.&nbsp;f))&nbsp;(f&nbsp;x))&nbsp;xs</pre>
+    </p>
+    <p>
+        And fortunately, <code>Foldable</code> and <code>Traversable</code> are even simpler:
+    </p>
+    <p>
+        <pre><span style="color:blue;">instance</span>&nbsp;<span style="color:blue;">Foldable</span>&nbsp;<span style="color:blue;">NonEmptyFix</span>&nbsp;<span style="color:blue;">where</span>
+&nbsp;&nbsp;<span style="color:blue;">foldr</span>&nbsp;f&nbsp;seed&nbsp;=&nbsp;nonEmptyF&nbsp;(\x&nbsp;xs&nbsp;-&gt;&nbsp;f&nbsp;x&nbsp;$&nbsp;<span style="color:blue;">foldr</span>&nbsp;f&nbsp;seed&nbsp;xs)
+ 
+<span style="color:blue;">instance</span>&nbsp;<span style="color:blue;">Traversable</span>&nbsp;<span style="color:blue;">NonEmptyFix</span>&nbsp;<span style="color:blue;">where</span>
+&nbsp;&nbsp;traverse&nbsp;f&nbsp;=&nbsp;nonEmptyF&nbsp;(\x&nbsp;xs&nbsp;-&gt;&nbsp;liftA2&nbsp;createNonEmptyF&nbsp;(f&nbsp;x)&nbsp;(traverse&nbsp;f&nbsp;xs))</pre>
+    </p>
+    <p>
+        Finally, you can implement conversions to and from the <code>NonEmpty</code> type from <code>Data.List.NonEmpty</code>:
+    </p>
+    <p>
+        <pre><span style="color:#2b91af;">toNonEmpty</span>&nbsp;<span style="color:blue;">::</span>&nbsp;<span style="color:blue;">NonEmptyFix</span>&nbsp;a&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">NonEmpty</span>&nbsp;a
+toNonEmpty&nbsp;=&nbsp;nonEmptyF&nbsp;(\x&nbsp;xs&nbsp;-&gt;&nbsp;x&nbsp;:|&nbsp;toList&nbsp;xs)
+ 
+<span style="color:#2b91af;">fromNonEmpty</span>&nbsp;<span style="color:blue;">::</span>&nbsp;<span style="color:blue;">NonEmpty</span>&nbsp;a&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">NonEmptyFix</span>&nbsp;a
+fromNonEmpty&nbsp;(x&nbsp;:|&nbsp;xs)&nbsp;=&nbsp;createNonEmptyF&nbsp;x&nbsp;$&nbsp;fromList&nbsp;xs</pre>
+    </p>
+    <p>
+        This demonstrates that <code>NonEmptyFix</code> is isomorphic to <code>NonEmpty</code>.
+    </p>
+    <h3 id="f57599f8fcbb4b02af85816dff99a790">
+        Conclusion <a href="#f57599f8fcbb4b02af85816dff99a790">#</a>
+    </h3>
+    <p>
+        The catamorphism for a non-empty collection is a single function that produces a single value from the head and the tail of the collection. While it's possible to implement a 'standard fold' (<code>foldr</code> in Haskell), the non-empty catamorphism doesn't require a seed to get started. The data structure guarantees that there's always at least one value available, and this value can then be use to 'kick off' a fold.
+    </p>
+    <p>
+        In C# one can define the catamorphism as the above <code>Aggregate</code> method. You could then define all other instance functions based on <code>Aggregate</code>.
+    </p>
+    <p>
+        <strong>Next:</strong> <a href="/2019/06/03/either-catamorphism">Either catamorphism</a>.
+    </p>
+</div>
