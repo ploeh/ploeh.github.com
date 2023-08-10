@@ -1,0 +1,231 @@
+---
+layout: post
+title: "Replacing Mock and Stub with a Fake"
+description: "A simple C# example."
+date: 2023-08-09 19:57 UTC
+tags: [Unit Testing]
+image: "/content/binary/dos-equis-fakes.jpg"
+image_alt: "Dos Equis meme with the text: I don't always use Test Doubles, but when I do, I use Fakes."
+---
+{% include JB/setup %}
+
+<div id="post">
+    <p>
+        <em>{{ page.description }}</em>
+    </p>
+    <p>
+        A reader recently wrote me about my 2013 article <a href="/2013/10/23/mocks-for-commands-stubs-for-queries">Mocks for Commands, Stubs for Queries</a>, commenting that the 'final' code looks suspect. Since it looks like the following, that's hardly an overstatement.
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;User&nbsp;<span style="font-weight:bold;color:#74531f;">GetUser</span>(<span style="color:blue;">int</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">userId</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">u</span>&nbsp;=&nbsp;<span style="color:blue;">this</span>.userRepository.Read(userId);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">if</span>&nbsp;(u.Id&nbsp;==&nbsp;0)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.userRepository.Create(1234);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;u;
+}</pre>
+    </p>
+    <p>
+        Can you spot what's wrong?
+    </p>
+    <h3 id="a1c674ca5ff049ddac08a7618f95e57b">
+        Missing test cases <a href="#a1c674ca5ff049ddac08a7618f95e57b">#</a>
+    </h3>
+    <p>
+        You might point out that this example seems to violate <a href="https://en.wikipedia.org/wiki/Command%E2%80%93query_separation">Command Query Separation</a>, and probably other design principles as well. I agree that the example is a bit odd, but that's not what I have in mind.
+    </p>
+    <p>
+        The problem with the above example is that while it correctly calls the <code>Read</code> method with the <code>userId</code> parameter, it calls <code>Create</code> with the hardcoded constant <code>1234</code>. It really ought to call <code>Create</code> with <code>userId</code>.
+    </p>
+    <p>
+        Does this mean that the technique that I described in 2013 is wrong? I don't think so. Rather, I left the code in a rather unhelpful state. What I had in mind with that article was the technique I called <em>data flow verification</em>. As soon as I had delivered that message, I was, according to my own goals, done. I wrapped up the article, leaving the code as shown above.
+    </p>
+    <p>
+        As the reader remarked, it's noteworthy that an article about better unit testing leaves the System Under Test (SUT) in an obviously defect state.
+    </p>
+    <p>
+        The short answer is that at least one test case is missing. Since this was only demo code to show an example, the entire test suite is this:
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">SomeControllerTests</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;[Theory]
+&nbsp;&nbsp;&nbsp;&nbsp;[InlineData(1234)]
+&nbsp;&nbsp;&nbsp;&nbsp;[InlineData(9876)]
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;<span style="font-weight:bold;color:#74531f;">GetUserReturnsCorrectValue</span>(<span style="color:blue;">int</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">userId</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">expected</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;User();
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">td</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;Mock&lt;IUserRepository&gt;();
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;td.Setup(<span style="font-weight:bold;color:#1f377f;">r</span>&nbsp;=&gt;&nbsp;r.Read(userId)).Returns(expected);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">sut</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;SomeController(td.Object);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">actual</span>&nbsp;=&nbsp;sut.GetUser(userId);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Assert.Equal(expected,&nbsp;actual);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;[Fact]
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;<span style="font-weight:bold;color:#74531f;">UserIsSavedIfItDoesNotExist</span>()
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">td</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;Mock&lt;IUserRepository&gt;();
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;td.Setup(<span style="font-weight:bold;color:#1f377f;">r</span>&nbsp;=&gt;&nbsp;r.Read(1234)).Returns(<span style="color:blue;">new</span>&nbsp;User&nbsp;{&nbsp;Id&nbsp;=&nbsp;0&nbsp;});
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">sut</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;SomeController(td.Object);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;sut.GetUser(1234);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;td.Verify(<span style="font-weight:bold;color:#1f377f;">r</span>&nbsp;=&gt;&nbsp;r.Create(1234));
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+    </p>
+    <p>
+        There are three test cases: Two for the parametrised <code>GetUserReturnsCorrectValue</code> method and one test case for the <code>UserIsSavedIfItDoesNotExist</code> test. Since the latter only verifies the hardcoded value <code>1234</code> the <a href="/2019/10/07/devils-advocate">Devil's advocate</a> can get by with using that hardcoded value as well.
+    </p>
+    <h3 id="f0bc9ac185d345c29e61efec2ee7e6b9">
+        Adding a test case <a href="#f0bc9ac185d345c29e61efec2ee7e6b9">#</a>
+    </h3>
+    <p>
+        The solution to that problem is simple enough. Add another test case by converting <code>UserIsSavedIfItDoesNotExist</code> to a parametrised test:
+    </p>
+    <p>
+        <pre>[Theory]
+[InlineData(1234)]
+[InlineData(9876)]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;<span style="font-weight:bold;color:#74531f;">UserIsSavedIfItDoesNotExist</span>(<span style="color:blue;">int</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">userId</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">td</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;Mock&lt;IUserRepository&gt;();
+&nbsp;&nbsp;&nbsp;&nbsp;td.Setup(<span style="font-weight:bold;color:#1f377f;">r</span>&nbsp;=&gt;&nbsp;r.Read(userId)).Returns(<span style="color:blue;">new</span>&nbsp;User&nbsp;{&nbsp;Id&nbsp;=&nbsp;0&nbsp;});
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">sut</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;SomeController(td.Object);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;sut.GetUser(userId);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;td.Verify(<span style="font-weight:bold;color:#1f377f;">r</span>&nbsp;=&gt;&nbsp;r.Create(userId));
+}</pre>
+    </p>
+    <p>
+        There's no reason to edit the other test method; this should be enough to elicit a change to the SUT:
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;User&nbsp;<span style="font-weight:bold;color:#74531f;">GetUser</span>(<span style="color:blue;">int</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">userId</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">u</span>&nbsp;=&nbsp;<span style="color:blue;">this</span>.userRepository.Read(userId);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">if</span>&nbsp;(u.Id&nbsp;==&nbsp;0)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.userRepository.Create(userId);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;u;
+}</pre>
+    </p>
+    <p>
+        When you use <a href="http://xunitpatterns.com/Mock%20Object.html">Mocks</a> (or, rather, <a href="http://xunitpatterns.com/Test%20Spy.html">Spies</a>) and <a href="http://xunitpatterns.com/Test%20Stub.html">Stubs</a> the Data Flow Verification technique is useful.
+    </p>
+    <p>
+        On the other hand, I no longer use Spies or Stubs since <a href="/2022/10/17/stubs-and-mocks-break-encapsulation">they tend to break encapsulation</a>.
+    </p>
+    <h3 id="0864ba24b8a841828c3aaba0bc84877c">
+        Fake <a href="#0864ba24b8a841828c3aaba0bc84877c">#</a>
+    </h3>
+    <p>
+        These days, I tend to <a href="/2022/01/03/favor-real-dependencies-for-unit-testing">only model real application dependencies as Test Doubles</a>, and when I do, I use <a href="http://xunitpatterns.com/Fake%20Object.html">Fakes</a>.
+    </p>
+    <p>
+        <img src="/content/binary/dos-equis-fakes.jpg" alt="Dos Equis meme with the text: I don't always use Test Doubles, but when I do, I use Fakes.">
+    </p>
+    <p>
+        While the article series <a href="/2019/02/18/from-interaction-based-to-state-based-testing">From interaction-based to state-based testing</a> goes into more details, I think that this small example is a good opportunity to demonstrate the technique.
+    </p>
+    <p>
+        The <code>IUserRepository</code> interface is defined like this:
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">interface</span>&nbsp;<span style="color:#2b91af;">IUserRepository</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;User&nbsp;<span style="font-weight:bold;color:#74531f;">Read</span>(<span style="color:blue;">int</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">userId</span>);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">void</span>&nbsp;<span style="font-weight:bold;color:#74531f;">Create</span>(<span style="color:blue;">int</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">userId</span>);
+}</pre>
+    </p>
+    <p>
+        A typical Fake is an in-memory collection:
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">sealed</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">FakeUserRepository</span>&nbsp;:&nbsp;Collection&lt;User&gt;,&nbsp;IUserRepository
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;<span style="font-weight:bold;color:#74531f;">Create</span>(<span style="color:blue;">int</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">userId</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Add(<span style="color:blue;">new</span>&nbsp;User&nbsp;{&nbsp;Id&nbsp;=&nbsp;userId&nbsp;});
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;User&nbsp;<span style="font-weight:bold;color:#74531f;">Read</span>(<span style="color:blue;">int</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">userId</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">user</span>&nbsp;=&nbsp;<span style="color:blue;">this</span>.SingleOrDefault(<span style="font-weight:bold;color:#1f377f;">u</span>&nbsp;=&gt;&nbsp;u.Id&nbsp;==&nbsp;userId);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">if</span>&nbsp;(user&nbsp;==&nbsp;<span style="color:blue;">null</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;User&nbsp;{&nbsp;Id&nbsp;=&nbsp;0&nbsp;};
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;user;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+    </p>
+    <p>
+        In my experience, they're typically easy to implement by inheriting from a collection base class. Such an object exhibits typical traits of a Fake object: It fulfils the implied contract, but it lacks some of the 'ilities'.
+    </p>
+    <p>
+        The contract of a Repository is typically that if you add an Entity, you'd expect to be able to retrieve it later. If the Repository offers a <code>Delete</code> method (this one doesn't), you'd expect the deleted Entity to be gone, so that you <em>can't</em> retrieve it. And so on. The <code>FakeUserRepository</code> class fulfils such a contract.
+    </p>
+    <p>
+        On the other hand, you'd also expect a proper Repository implementation to support more than that:
+    </p>
+    <ul>
+        <li>You'd expect a proper implementation to persist data so that you can reboot or change computers without losing data.</li>
+        <li>You'd expect a proper implementation to correctly handle multiple threads.</li>
+        <li>You <em>may</em> expect a proper implementation to support <a href="https://en.wikipedia.org/wiki/ACID">ACID</a> transactions.</li>
+    </ul>
+    <p>
+        The <code>FakeUserRepository</code> does none of that, but in the context of a unit test, it doesn't matter. The data exists as long as the object exists, and that's until it goes out of scope. As long as a test needs the Repository, it remains in scope, and the data is there.
+    </p>
+    <p>
+        Likewise, each test runs in a single thread. Even when tests run in parallel, each test has its own Fake object, so there's no shared state. Therefore, even though <code>FakeUserRepository</code> isn't thread-safe, it doesn't have to be.
+    </p>
+    <h3 id="a479805231124c1e8d74856a2cce2762">
+        Testing with the Fake <a href="#a479805231124c1e8d74856a2cce2762">#</a>
+    </h3>
+    <p>
+        You can now rewrite the tests to use <code>FakeUserRepository</code>:
+    </p>
+    <p>
+        <pre>[Theory]
+[InlineData(1234)]
+[InlineData(9876)]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;<span style="font-weight:bold;color:#74531f;">GetUserReturnsCorrectValue</span>(<span style="color:blue;">int</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">userId</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">expected</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;User&nbsp;{&nbsp;Id&nbsp;=&nbsp;userId&nbsp;};
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">db</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;FakeUserRepository&nbsp;{&nbsp;expected&nbsp;};
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">sut</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;SomeController(db);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">actual</span>&nbsp;=&nbsp;sut.GetUser(userId);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;Assert.Equal(expected,&nbsp;actual);
+}
+ 
+[Theory]
+[InlineData(1234)]
+[InlineData(9876)]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;<span style="font-weight:bold;color:#74531f;">UserIsSavedIfItDoesNotExist</span>(<span style="color:blue;">int</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">userId</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">db</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;FakeUserRepository();
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">sut</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;SomeController(db);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;sut.GetUser(userId);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;Assert.Single(db,&nbsp;<span style="font-weight:bold;color:#1f377f;">u</span>&nbsp;=&gt;&nbsp;u.Id&nbsp;==&nbsp;userId);
+}</pre>
+    </p>
+    <p>
+        Instead of asking a Spy whether or not a particular method was called (which is an implementation detail), the <code>UserIsSavedIfItDoesNotExist</code> test verifies the posterior state of the database.
+    </p>
+    <h3 id="5ce6d826519d44ec905096a2098513ca">
+        Conclusion <a href="#5ce6d826519d44ec905096a2098513ca">#</a>
+    </h3>
+    <p>
+        In my experience, using Fakes simplifies unit tests. While you may have to edit the Fake implementation from time to time, you edit that code in a single place. The alternative is to edit <em>all</em> affected tests, every time you change something about a dependency. This is also known as <a href="https://en.wikipedia.org/wiki/Shotgun_surgery">Shotgun Surgery</a> and considered an antipattern.
+    </p>
+    <p>
+        The code base that accompanies my book <a href="/2021/06/14/new-book-code-that-fits-in-your-head">Code That Fits in Your Head</a> has more realistic examples of this technique, and much else.
+    </p>
+</div>
