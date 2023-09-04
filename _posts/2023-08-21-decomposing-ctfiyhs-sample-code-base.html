@@ -1,0 +1,296 @@
+---
+layout: post
+title: "Decomposing CTFiYH's sample code base"
+description: "An experience report."
+date: 2023-08-21 15:40 UTC
+tags: [Architecture]
+image: "/content/binary/ctfiyh-decomposed-architecture.png"
+image_alt: "Ports-and-adapters architecture diagram."
+---
+{% include JB/setup %}
+
+<div id="post">
+    <p>
+        <em>{{ page.description }}</em>
+    </p>
+    <p>
+        In my book <a href="/2021/06/14/new-book-code-that-fits-in-your-head">Code That Fits in Your Head</a> (CTFiYH) I write in the last chapter:
+    </p>
+    <blockquote>
+        <p>
+            If you've looked at the book's sample code base, you may have noticed that it looks disconcertingly monolithic. If you consider the full code base that includes the integration tests, as [the following figure] illustrates, there are all of three packages[...]. Of those, only one is production code.
+        </p>
+        <p>
+            <img src="/content/binary/ctfiyh-monolith-architecture.png" alt="Three boxes labelled unit tests, integration tests, and REST API.">
+        </p>
+        <p>
+            [Figure caption:] The packages that make up the sample code base. With only a single production package, it reeks of a monolith.
+        </p>
+        <footer><a href="/code-that-fits-in-your-head">Code That Fits in Your Head</a>, subsection 16.2.1.</footer>
+    </blockquote>
+    <p>
+        Later, after discussing dependency cycles, I conclude:
+    </p>
+    <blockquote>
+        <p>
+            I've been writing F# and Haskell for enough years that I naturally follow the beneficial rules that they enforce. I'm confident that the sample code is nicely decoupled, even though it's packaged as a monolith. But unless you have a similar experience, I recommend that you separate your code base into multiple packages.
+        </p>
+        <footer><a href="/code-that-fits-in-your-head">Code That Fits in Your Head</a>, subsection 16.2.2.</footer>
+    </blockquote>
+    <p>
+        Usually, you can't write something that cocksure without it backfiring, but I was really, really confident that this was the case. Still, it's always nagged me, because I believe that I should walk the walk rather than talk the talk. And I do admit that this was one of the few claims in the book that I actually didn't have code to back up.
+    </p>
+    <p>
+        So I decided to spend part of a weekend to verify that what I wrote was true. You won't believe what happened next.
+    </p>
+    <h3 id="850effbb523248579dd4c382ed75f923">
+        Decomposition <a href="#850effbb523248579dd4c382ed75f923">#</a>
+    </h3>
+    <p>
+        Reader, I was right all along.
+    </p>
+    <p>
+        I stopped my experiment when my package graph looked like this:
+    </p>
+    <p>
+        <img src="/content/binary/ctfiyh-decomposed-architecture.png" alt="Ports-and-adapters architecture diagram.">
+    </p>
+    <p>
+        Does that look familiar? It should; it's a poster example of <a href="/2013/12/03/layers-onions-ports-adapters-its-all-the-same">Ports and Adapters</a>, or, if you will, <a href="/ref/clean-architecture">Clean Architecture</a>. Notice how all dependencies point inward, following the <a href="https://en.wikipedia.org/wiki/Dependency_inversion_principle">Dependency Inversion Principle</a>.
+    </p>
+    <p>
+        The Domain Model has no dependencies, while the HTTP Model (Application Layer) only depends on the Domain Model. The outer layer contains the ports and adapters, as well as the <a href="/2011/07/28/CompositionRoot">Composition Root</a>. The Web Host is a small web project that composes everything else. In order to do that, it must reference everything else, either directly (SMTP, SQL, HTTP Model) or transitively (Domain Model).
+    </p>
+    <p>
+        The <a href="https://en.wikipedia.org/wiki/Adapter_pattern">Adapters</a>, on the other hand, depend on the HTTP Model and (not shown) the SDKs that they adapt. The <code>SqlReservationsRepository</code> class, for example, is implemented in the SQL library, adapting the <code>System.Data.SqlClient</code> SDK to look like an <code>IReservationsRepository</code>, which is defined in the HTTP Model.
+    </p>
+    <p>
+        The SMTP library is similar. It contains a concrete implementation called <code>SmtpPostOffice</code> that adapts the <code>System.Net.Mail</code> API to look like an <code>IPostOffice</code> object. Once again, the <code>IPostOffice</code> interface is defined in the HTTP Model.
+    </p>
+    <p>
+        The above figure is not to scale. In reality, the outer ring is quite thin. The SQL library contains only <code>SqlReservationsRepository</code> and some supporting text files with SQL <a href="https://en.wikipedia.org/wiki/Data_definition_language">DDL</a> definitions. The SMTP library contains only the <code>SmtpPostOffice</code> class. And the Web Host contains <code>Program</code>, <code>Startup</code>, and a few configuration file <a href="https://en.wikipedia.org/wiki/Data_transfer_object">DTOs</a> (<em>options</em>, in ASP.NET parlance).
+    </p>
+    <h3 id="813610f5bf6446cfb1daaa22423df14c">
+        Application layer <a href="#813610f5bf6446cfb1daaa22423df14c">#</a>
+    </h3>
+    <p>
+        The majority of code, at least if I use a rough proxy measure like number of files, is in the HTTP Model. I often think of this as the <em>application layer</em>, because it's all the logic that's specific to to the application, in contrast to the Domain Model, which ought to contain code that can be used in a variety of application contexts (REST API, web site, batch job, etc.).
+    </p>
+    <p>
+        In this particular case the application is a REST API, and it turns out that while the Domain Model isn't trivial, more goes on making sure that the REST API behaves correctly: That it returns correctly formatted data, that it <a href="/2022/07/25/an-applicative-reservation-validation-example-in-c">validates input</a>, that it <a href="/2020/11/09/checking-signed-urls-with-aspnet">detects attempts at tampering with URLs</a>, that it <a href="/2020/11/16/redirect-legacy-urls">redirects legacy URLs</a>, etc.
+    </p>
+    <p>
+        This layer also contains the <a href="https://stackoverflow.blog/2022/01/03/favor-real-dependencies-for-unit-testing/">interfaces for the application's real dependencies</a>: <code>IReservationsRepository</code>, <code>IPostOffice</code>, <code>IRestaurantDatabase</code>, and <code>IClock</code>. This explains why the SQL and SMTP packages need to reference the HTTP Model.
+    </p>
+    <p>
+        If you have bought the book, you have access to its example code base, and while it's a Git repository, this particular experiment isn't included. After all, I just made it, two years after finishing the book. Thus, if you want to compare with the code that comes with the book, here's a list of all the files I moved to the HTTP Model package:
+    </p>
+    <ul>
+        <li>AccessControlList.cs</li>
+        <li>CalendarController.cs</li>
+        <li>CalendarDto.cs</li>
+        <li>Day.cs</li>
+        <li>DayDto.cs</li>
+        <li>DtoConversions.cs</li>
+        <li>EmailingReservationsRepository.cs</li>
+        <li>Grandfather.cs</li>
+        <li>HomeController.cs</li>
+        <li>HomeDto.cs</li>
+        <li>Hypertext.cs</li>
+        <li>IClock.cs</li>
+        <li>InMemoryRestaurantDatabase.cs</li>
+        <li>IPeriod.cs</li>
+        <li>IPeriodVisitor.cs</li>
+        <li>IPostOffice.cs</li>
+        <li>IReservationsRepository.cs</li>
+        <li>IRestaurantDatabase.cs</li>
+        <li>Iso8601.cs</li>
+        <li>LinkDto.cs</li>
+        <li>LinksFilter.cs</li>
+        <li>LoggingClock.cs</li>
+        <li>LoggingPostOffice.cs</li>
+        <li>LoggingReservationsRepository.cs</li>
+        <li>Month.cs</li>
+        <li>NullPostOffice.cs</li>
+        <li>Period.cs</li>
+        <li>ReservationDto.cs</li>
+        <li>ReservationsController.cs</li>
+        <li>ReservationsRepository.cs</li>
+        <li>RestaurantDto.cs</li>
+        <li>RestaurantsController.cs</li>
+        <li>ScheduleController.cs</li>
+        <li>SigningUrlHelper.cs</li>
+        <li>SigningUrlHelperFactory.cs</li>
+        <li>SystemClock.cs</li>
+        <li>TimeDto.cs</li>
+        <li>UrlBuilder.cs</li>
+        <li>UrlIntegrityFilter.cs</li>
+        <li>Year.cs</li>
+    </ul>
+    <p>
+        As you can see, this package contains the Controllers, the DTOs, the interfaces, and some REST- and HTTP-specific code such as <a href="/2020/11/02/signing-urls-with-aspnet">SigningUrlHelper</a>, <a href="/2020/11/09/checking-signed-urls-with-aspnet">UrlIntegrityFilter</a>, <a href="/2020/08/24/adding-rest-links-as-a-cross-cutting-concern">LinksFilter</a>, security, <a href="https://en.wikipedia.org/wiki/ISO_8601">ISO 8601</a> formatters, etc.
+    </p>
+    <h3 id="eace4360f69240c0b8077a3c1e236473">
+        Domain Model <a href="#eace4360f69240c0b8077a3c1e236473">#</a>
+    </h3>
+    <p>
+        The Domain Model is small, but not insignificant. Perhaps the most striking quality of it is that (with a single, inconsequential exception) it contains no interfaces. There are no polymorphic types that model application dependencies such as databases, web services, messaging systems, or the system clock. Those are all the purview of the application layer.
+    </p>
+    <p>
+        As the book describes, the architecture is <a href="https://www.destroyallsoftware.com/screencasts/catalog/functional-core-imperative-shell">functional core, imperative shell</a>, and since <a href="/2017/01/27/from-dependency-injection-to-dependency-rejection">dependencies make everything impure</a>, you can't have those in your functional core. While, with a language like C#, <a href="/2020/02/24/discerning-and-maintaining-purity">you can never be sure that a function truly is pure</a>, I believe that the entire Domain Model is <a href="https://en.wikipedia.org/wiki/Referential_transparency">referentially transparent</a>.
+    </p>
+    <p>
+        For those readers who have the book's sample code base, here's a list of the files I moved to the Domain Model:
+    </p>
+    <ul>
+        <li>Email.cs</li>
+        <li>ITableVisitor.cs</li>
+        <li>MaitreD.cs</li>
+        <li>Name.cs</li>
+        <li>Reservation.cs</li>
+        <li>ReservationsVisitor.cs</li>
+        <li>Restaurant.cs</li>
+        <li>Seating.cs</li>
+        <li>Table.cs</li>
+        <li>TimeOfDay.cs</li>
+        <li>TimeSlot.cs</li>
+    </ul>
+    <p>
+        If the entire Domain Model consists of immutable values and <a href="https://en.wikipedia.org/wiki/Pure_function">pure functions</a>, and if impure dependencies make everything impure, what's the <code>ITableVisitor</code> interface doing there?
+    </p>
+    <p>
+        This interface doesn't model any external application dependency, but rather represents <a href="/2018/06/25/visitor-as-a-sum-type">a sum type with the Visitor pattern</a>. The interface looks like this:
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">interface</span>&nbsp;<span style="color:#2b91af;">ITableVisitor</span>&lt;<span style="color:#2b91af;">T</span>&gt;
+{
+&nbsp;&nbsp;&nbsp;&nbsp;T&nbsp;<span style="font-weight:bold;color:#74531f;">VisitStandard</span>(<span style="color:blue;">int</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">seats</span>,&nbsp;Reservation?&nbsp;<span style="font-weight:bold;color:#1f377f;">reservation</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;T&nbsp;<span style="font-weight:bold;color:#74531f;">VisitCommunal</span>(<span style="color:blue;">int</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">seats</span>,&nbsp;IReadOnlyCollection&lt;Reservation&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">reservations</span>);
+}</pre>
+    </p>
+    <p>
+        Restaurant tables are modelled this way because the Domain Model distinguishes between two fundamentally different kinds of tables: Normal restaurant tables, and communal or shared tables. In <a href="https://fsharp.org/">F#</a> or <a href="https://www.haskell.org/">Haskell</a> such a <a href="https://en.wikipedia.org/wiki/Tagged_union">sum type</a> would be a one-liner, but in C# you need to use either the <a href="https://en.wikipedia.org/wiki/Visitor_pattern">Visitor pattern</a> or a <a href="/2018/05/22/church-encoding">Church encoding</a>. For the book, I chose the Visitor pattern in order to keep the code base as object-oriented as possible.
+    </p>
+    <h3 id="c76f92f5413246958cfd31a6edc44845">
+        Circular dependencies <a href="#c76f92f5413246958cfd31a6edc44845">#</a>
+    </h3>
+    <p>
+        In the book I wrote:
+    </p>
+    <blockquote>
+        <p>
+            The passive prevention of cycles [that comes from separate packages] is worth the extra complexity. Unless team members have extensive experience with a language that prevents cycles, I recommend this style of architecture.
+        </p>
+        <p>
+            Such languages do exist, though. F# famously prevents cycles. In it, you can't use a piece of code unless it's already defined above. Newcomers to the language see this as a terrible flaw, but it's actually one of its <a href="https://fsharpforfunandprofit.com/posts/cycles-and-modularity-in-the-wild/">best</a> <a href="http://evelinag.com/blog/2014/06-09-comparing-dependency-networks/">features</a>.
+        </p>
+        <p>
+            Haskell takes a different approach, but ultimately, its explicit treatment of side effects at the type level <a href="/2016/03/18/functional-architecture-is-ports-and-adapters">steers you towards a ports-and-adapters-style architecture</a>. Your code simply doesn't compile otherwise!
+        </p>
+        <p>
+            I've been writing F# and Haskell for enough years that I naturally follow the beneficial rules that they enforce. I'm confident that the sample code is nicely decoupled, even though it's packaged as a monolith. But unless you have a similar experience, I recommend that you separate your code base into multiple packages.
+        </p>
+        <footer><a href="/code-that-fits-in-your-head">Code That Fits in Your Head</a>, subsection 16.2.2.</footer>
+    </blockquote>
+    <p>
+        As so far demonstrated in this article, I'm now sufficiently conditioned to be aware of side effects and non-determinism that I know to avoid them and push them to be boundaries of the application. Even so, it turns out that it's insidiously easy to introduce small cycles when the language doesn't stop you.
+    </p>
+    <p>
+        This wasn't much of a problem in the Domain Model, but one small example may still illustrate how easy it is to let your guard down. In the Domain Model, I'd added a class called <code>TimeOfDay</code> (since this code base predates <a href="https://learn.microsoft.com/dotnet/api/system.timeonly">TimeOnly</a>), but without thinking much of it, I'd added this method:
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">string</span>&nbsp;<span style="font-weight:bold;color:#74531f;">ToIso8601TimeString</span>()
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;durationSinceMidnight.ToIso8601TimeString();
+}</pre>
+    </p>
+    <p>
+        While this doesn't look like much, formatting a time value as an ISO 8601 value isn't a Domain concern. It's an application boundary concern, so belongs in the HTTP Model. And sure enough, once I moved the file that contained the ISO 8601 conversions to the HTTP Model, the <code>TimeOfDay</code> class no longer compiled.
+    </p>
+    <p>
+        In this case, the fix was easy. I removed the method from the <code>TimeOfDay</code> class, but added an extension method to the other ISO 8601 conversions:
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:blue;">string</span>&nbsp;<span style="font-weight:bold;color:#74531f;">ToIso8601TimeString</span>(<span style="color:blue;">this</span>&nbsp;TimeOfDay&nbsp;<span style="font-weight:bold;color:#1f377f;">timeOfDay</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;((TimeSpan)timeOfDay).ToIso8601TimeString();
+}</pre>
+    </p>
+    <p>
+        While I had little trouble moving the files to the Domain Model one-by-one, once I started moving files to the HTTP Model, it turned out that this part of the code base contained more coupling.
+    </p>
+    <p>
+        Since I had made many classes and interfaces <a href="/2021/03/01/pendulum-swing-internal-by-default">internal by default</a>, once I started moving types to the HTTP Model, I was faced with either making them public, or move them en block. Ultimately, I decided to move eighteen files that were transitively linked to each other in one go. I could have moved them in smaller chunks, but that would have made the <code>internal</code> types invisible to the code that (temporarily) stayed behind. I decided to move them all at once. After all, while I prefer to <a href="https://stackoverflow.blog/2022/12/19/use-git-tactically/">move in small, controlled steps</a>, even moving eighteen files isn't that big an operation.
+    </p>
+    <p>
+        In the end, I still had to make <code>LinksFilter</code>, <code>UrlIntegrityFilter</code>, <code>SigningUrlHelperFactory</code>, and <code>AccessControlList.FromUser</code> public, because I needed to reference them from the Web Host.
+    </p>
+    <h3 id="f3da2544f60b4e7f8abc441e3ddaaa7f">
+        Test dependencies <a href="#f3da2544f60b4e7f8abc441e3ddaaa7f">#</a>
+    </h3>
+    <p>
+        You may have noticed that in the above diagram, it doesn't look as though I separated the two test packages into more packages, and that is, indeed, the case. I've recently described <a href="/2023/07/31/test-driving-the-pyramids-top">how I think about distinguishing kinds of tests</a>, and I don't really care too much whether an automated test exercises only a single function, or a whole bundle of objects. What I do care about is whether a test is simple or complex, fast or slow. That kind of thing.
+    </p>
+    <p>
+        The package labelled "Integration tests" on the diagram is really a small test library that exercises some SQL Server-specific behaviour. Some of the tests in it verify that certain race conditions don't occur. They do that by keep trying to make the race condition occur, until they time out. Since the timeout is 30 seconds per test, this test suite is <em>slow</em>. That's the reason it's a separate library, even though it contains only eight tests. The book contains more details.
+    </p>
+    <p>
+        The "Unit tests" package contains the bulk of the tests: 176 tests, <a href="/2021/02/15/when-properties-are-easier-than-examples">some of which</a> are <a href="https://fscheck.github.io/FsCheck/">FsCheck</a> properties that each run a hundred test cases.
+    </p>
+    <p>
+        Some tests are <a href="/2021/01/25/self-hosted-integration-tests-in-aspnet">self-hosted integration tests</a> that rely on the Web Host, and some of them are more 'traditional' unit tests. Dependencies are transitive, so I drew an arrow from the "Unit tests" package to the Web Host. Some unit tests exercise objects in the HTTP Model, and some exercise the Domain Model.
+    </p>
+    <p>
+        You may have another question: If the Integration tests reference the SQL package, then why not the SMTP package? Why is it okay that the unit tests reference the SMTP package?
+    </p>
+    <p>
+        Again, I want to reiterate that the reason I distinguished between these two test packages were related to execution speed rather than architecture. The few SMTP tests are fast enough, so there's no reason to keep them in a separate package.
+    </p>
+    <p>
+        In fact, the SMTP tests don't exercise that the <code>SmtpPostOffice</code> can send email. Rather, I treat that class as a <a href="http://xunitpatterns.com/Humble%20Object.html">Humble Object</a>. The few tests that I do have only verify that the system can parse configuration settings:
+    </p>
+    <p>
+        <pre>[Theory]
+[InlineData(<span style="color:#a31515;">&quot;m.example.net&quot;</span>,&nbsp;587,&nbsp;<span style="color:#a31515;">&quot;grault&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;garply&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;g@example.org&quot;</span>)]
+[InlineData(<span style="color:#a31515;">&quot;n.example.net&quot;</span>,&nbsp;465,&nbsp;<span style="color:#a31515;">&quot;corge&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;waldo&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;c@example.org&quot;</span>)]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;<span style="font-weight:bold;color:#74531f;">ToPostOfficeReturnsSmtpOffice</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">string</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">host</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">int</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">port</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">string</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">userName</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">string</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">password</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">string</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">from</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">sut</span>&nbsp;=&nbsp;Create.SmtpOptions(host,&nbsp;port,&nbsp;userName,&nbsp;password,&nbsp;from);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">db</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;InMemoryRestaurantDatabase();
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">actual</span>&nbsp;=&nbsp;sut.ToPostOffice(db);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">expected</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;SmtpPostOffice(host,&nbsp;port,&nbsp;userName,&nbsp;password,&nbsp;from,&nbsp;db);
+&nbsp;&nbsp;&nbsp;&nbsp;Assert.Equal(expected,&nbsp;actual);
+}</pre>
+    </p>
+    <p>
+        Notice, by the way, the <a href="/2021/05/03/structural-equality-for-better-tests">use of structural equality on a service</a>. Consider doing that more often.
+    </p>
+    <p>
+        In any case, the separation of automated tests into two packages may not be the final iteration. It's worked well so far, in this context, but it's possible that had things been different, I would have chosen to have more test packages.
+    </p>
+    <h3 id="d61ec0b4390b470ba9b3340be8f902f4">
+        Conclusion <a href="#d61ec0b4390b470ba9b3340be8f902f4">#</a>
+    </h3>
+    <p>
+        In the book, I made a bold claim: Although I had developed the example code as a monolith, I asserted that I'd been so careful that I could easily tease it apart into multiple packages should I chose to do so.
+    </p>
+    <p>
+        This sounded so much like <a href="https://en.wikipedia.org/wiki/Hubris">hubris</a> that I was trepidatious writing it. I wrote it anyway, because, while I hadn't tried, I was convinced that I was right.
+    </p>
+    <p>
+        Still, it nagged me ever since. What if, after all, I was wrong? I've been wrong before.
+    </p>
+    <p>
+        So I decided to finally make the experiment, and to my relief it turned out that I'd been right.
+    </p>
+    <p>
+        Don't try this at home, kids.
+    </p>
+</div>
