@@ -1,0 +1,560 @@
+---
+layout: post
+title: "Do ORMs reduce the need for mapping?"
+description: "With some Entity Framework examples in C#."
+date: 2023-09-05 10:50 UTC
+tags: [Software Design, Code, Architecture]
+---
+{% include JB/setup %}
+
+<div id="post">
+    <p>
+        <em>{{ page.description }}</em>
+    </p>
+    <p>
+        In a recent comment, a reader <a href="/2023/07/17/works-on-most-machines#4012c2cddcb64a068c0b06b7989a676e">asked me to expand on my position</a> on <a href="https://en.wikipedia.org/wiki/Object%E2%80%93relational_mapping">object-relational mappers</a> (ORMs), which is that I'm not a fan:
+    </p>
+    <blockquote>
+        <p>
+            I consider ORMs a waste of time: they create more problems than they solve.
+        </p>
+        <footer><cite><a href="/2021/06/14/new-book-code-that-fits-in-your-head">Code That Fits in Your Head</a>, subsection 12.2.2, footnote</cite></footer>
+    </blockquote>
+    <p>
+        While I acknowledge that only a Sith deals in absolutes, I favour clear assertions over guarded language. I don't really mean it that categorically, but I do stand by the general sentiment. In this article I'll attempt to describe why I don't reach for ORMs when querying or writing to a relational database.
+    </p>
+    <p>
+        As always, any exploration of such a kind is made in a <em>context</em>, and this article is no exception. Before proceeding, allow me to delineate the scope. If your context differs from mine, what I write may not apply to your situation.
+    </p>
+    <h3 id="a29a6dfd90604a358c5e2f8e76941f80">
+        Scope <a href="#a29a6dfd90604a358c5e2f8e76941f80">#</a>
+    </h3>
+    <p>
+        It's been decades since I last worked on a system where the database 'came first'. The last time that happened, the database was hidden behind an XML-based <a href="https://en.wikipedia.org/wiki/Remote_procedure_call">RPC</a> API that tunnelled through HTTP. Not a <a href="https://en.wikipedia.org/wiki/REST">REST</a> API by a long shot.
+    </p>
+    <p>
+        Since then, I've worked on various systems. Some used relational databases, some document databases, some worked with CSV, or really old legacy APIs, etc. Common to these systems was that they were <em>not</em> designed around a database. Rather, they were developed with an eye to the <a href="https://en.wikipedia.org/wiki/Dependency_inversion_principle">Dependency Inversion Principle</a>, keeping storage details out of the Domain Model. Many were developed with test-driven development (TDD).
+    </p>
+    <p>
+        When I evaluate whether or not to use an ORM in situations like these, the core application logic is my main design driver. As I describe in <a href="/2021/06/14/new-book-code-that-fits-in-your-head">Code That Fits in Your Head</a>, I usually develop feature slices one at a time, utilising an <a href="/outside-in-tdd">outside-in TDD</a> process, during which I also figure out how to save or retrieve data from persistent storage.
+    </p>
+    <p>
+        Thus, in systems like these, storage implementation is an artefact of the software architecture. If a relational database is involved, the schema must adhere to the needs of the code; not the other way around.
+    </p>
+    <p>
+        To be clear, then, this article doesn't discuss typical <a href="https://en.wikipedia.org/wiki/Create,_read,_update_and_delete">CRUD</a>-heavy applications that are mostly forms over relational data, with little or no application logic. If you're working with such a code base, an ORM might be useful. I can't really tell, since I last worked with such systems at a time when ORMs didn't exist.
+    </p>
+    <h3 id="b6446ab3f8b8410da2679b4fb915a69e">
+        The usual suspects <a href="#b6446ab3f8b8410da2679b4fb915a69e">#</a>
+    </h3>
+    <p>
+        The most common criticism of ORMs (that I've come across) is typically related to the queries they generate. People who are skilled in writing <a href="https://en.wikipedia.org/wiki/SQL">SQL</a> by hand, or who are concerned about performance, may look at the SQL that an ORM generates and dislike it for that reason.
+    </p>
+    <p>
+        It's my impression that ORMs have come a long way over the decades, but frankly, the generated SQL is not really what concerns me. It never was.
+    </p>
+    <p>
+        In the abstract, Ted Neward already outlined the problems in the seminal article <a href="https://blogs.newardassociates.com/blog/2006/the-vietnam-of-computer-science.html">The Vietnam of Computer Science</a>. The problem description may, however, be too theoretical to connect with most programmers. I'll try a more example-driven angle, then.
+    </p>
+    <h3 id="6908e1b735ee41068baeeb9482a15953">
+        Database operations without an ORM <a href="#6908e1b735ee41068baeeb9482a15953">#</a>
+    </h3>
+    <p>
+        Once more I turn to the trusty example code base that accompanies <a href="/2021/06/14/new-book-code-that-fits-in-your-head">Code That Fits in Your Head</a>. In it, I used <a href="https://en.wikipedia.org/wiki/Microsoft_SQL_Server">SQL Server</a> as the example database, and ADO.NET as the data access technology.
+    </p>
+    <p>
+        I considered this more than adequate for saving and reading restaurant reservations. Here, for example, is the code that create a new reservation row in the database:
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">async</span>&nbsp;Task&nbsp;<span style="font-weight:bold;color:#74531f;">Create</span>(<span style="color:blue;">int</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">restaurantId</span>,&nbsp;Reservation&nbsp;<span style="font-weight:bold;color:#1f377f;">reservation</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">if</span>&nbsp;(reservation&nbsp;<span style="color:blue;">is</span>&nbsp;<span style="color:blue;">null</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">throw</span>&nbsp;<span style="color:blue;">new</span>&nbsp;ArgumentNullException(nameof(reservation));
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">using</span>&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">conn</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;SqlConnection(ConnectionString);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">using</span>&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">cmd</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;SqlCommand(createReservationSql,&nbsp;conn);
+&nbsp;&nbsp;&nbsp;&nbsp;cmd.Parameters.AddWithValue(<span style="color:#a31515;">&quot;@Id&quot;</span>,&nbsp;reservation.Id);
+&nbsp;&nbsp;&nbsp;&nbsp;cmd.Parameters.AddWithValue(<span style="color:#a31515;">&quot;@RestaurantId&quot;</span>,&nbsp;restaurantId);
+&nbsp;&nbsp;&nbsp;&nbsp;cmd.Parameters.AddWithValue(<span style="color:#a31515;">&quot;@At&quot;</span>,&nbsp;reservation.At);
+&nbsp;&nbsp;&nbsp;&nbsp;cmd.Parameters.AddWithValue(<span style="color:#a31515;">&quot;@Name&quot;</span>,&nbsp;reservation.Name.ToString());
+&nbsp;&nbsp;&nbsp;&nbsp;cmd.Parameters.AddWithValue(<span style="color:#a31515;">&quot;@Email&quot;</span>,&nbsp;reservation.Email.ToString());
+&nbsp;&nbsp;&nbsp;&nbsp;cmd.Parameters.AddWithValue(<span style="color:#a31515;">&quot;@Quantity&quot;</span>,&nbsp;reservation.Quantity);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">await</span>&nbsp;conn.OpenAsync().ConfigureAwait(<span style="color:blue;">false</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">await</span>&nbsp;cmd.ExecuteNonQueryAsync().ConfigureAwait(<span style="color:blue;">false</span>);
+}
+ 
+<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">const</span>&nbsp;<span style="color:blue;">string</span>&nbsp;createReservationSql&nbsp;=&nbsp;<span style="color:maroon;">@&quot;
+&nbsp;&nbsp;&nbsp;&nbsp;INSERT&nbsp;INTO&nbsp;[dbo].[Reservations]&nbsp;(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;[PublicId],&nbsp;[RestaurantId],&nbsp;[At],&nbsp;[Name],&nbsp;[Email],&nbsp;[Quantity])
+&nbsp;&nbsp;&nbsp;&nbsp;VALUES&nbsp;(@Id,&nbsp;@RestaurantId,&nbsp;@At,&nbsp;@Name,&nbsp;@Email,&nbsp;@Quantity)&quot;</span>;</pre>
+    </p>
+    <p>
+        Yes, there's mapping happening, even if it's 'only' from a Domain Object to command parameter strings. As I'll argue later, if there's a way to escape such mapping, I'm not aware of it. ORMs don't seem to solve that problem.
+    </p>
+    <p>
+        This, however, seems to be the reader's main concern:
+    </p>
+    <blockquote>
+        <p>
+            "I can work with raw SQL ofcourse... but the mapping... oh the mapping..."
+        </p>
+        <footer><cite><a href="/2023/07/17/works-on-most-machines#4012c2cddcb64a068c0b06b7989a676e">qfilip</a></cite></footer>
+    </blockquote>
+    <p>
+        It's not a concern that I share, but again I'll remind you that if your context differs substantially from mine, what doesn't concern me could reasonably concern you.
+    </p>
+    <p>
+        You may argue that the above example isn't representative, since it only involves a single table. No foreign key relationships are involved, so perhaps the example is artificially easy.
+    </p>
+    <p>
+        In order to work with a slightly more complex schema, I decided to port the read-only in-memory restaurant database (the one that keeps track of the restaurants - the <em>tenants</em> - of the system) to SQL Server.
+    </p>
+    <h3 id="ef3d04206a20442dbd2c01336c48fd28">
+        Restaurants schema <a href="#ef3d04206a20442dbd2c01336c48fd28">#</a>
+    </h3>
+    <p>
+        In the book's sample code base, I'd only stored restaurant configurations as JSON config files, since I considered it out of scope to include an online tenant management system. Converting to a relational model wasn't hard, though. Here's the database schema:
+    </p>
+    <p>
+        <pre><span style="color:blue;">CREATE</span>&nbsp;<span style="color:blue;">TABLE</span>&nbsp;[dbo]<span style="color:gray;">.</span>[Restaurants]<span style="color:blue;">&nbsp;</span><span style="color:gray;">(</span>
+&nbsp;&nbsp;&nbsp;&nbsp;[Id]&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">INT</span>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:gray;">NOT</span>&nbsp;<span style="color:gray;">NULL,</span>
+&nbsp;&nbsp;&nbsp;&nbsp;[Name]&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">NVARCHAR&nbsp;</span><span style="color:gray;">(</span>50<span style="color:gray;">)</span>&nbsp;&nbsp;<span style="color:gray;">NOT</span>&nbsp;<span style="color:gray;">NULL</span>&nbsp;<span style="color:blue;">UNIQUE</span><span style="color:gray;">,</span>
+&nbsp;&nbsp;&nbsp;&nbsp;[OpensAt]&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">TIME</span>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:gray;">NOT</span>&nbsp;<span style="color:gray;">NULL,</span>
+&nbsp;&nbsp;&nbsp;&nbsp;[LastSeating]&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">TIME</span>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:gray;">NOT</span>&nbsp;<span style="color:gray;">NULL,</span>
+&nbsp;&nbsp;&nbsp;&nbsp;[SeatingDuration]&nbsp;&nbsp;<span style="color:blue;">TIME</span>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:gray;">NOT</span>&nbsp;<span style="color:gray;">NULL</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">PRIMARY</span>&nbsp;<span style="color:blue;">KEY</span>&nbsp;<span style="color:blue;">CLUSTERED&nbsp;</span><span style="color:gray;">(</span>[Id]&nbsp;<span style="color:blue;">ASC</span><span style="color:gray;">)</span>
+<span style="color:gray;">)</span>
+ 
+<span style="color:blue;">CREATE</span>&nbsp;<span style="color:blue;">TABLE</span>&nbsp;[dbo]<span style="color:gray;">.</span>[Tables]<span style="color:blue;">&nbsp;</span><span style="color:gray;">(</span>
+&nbsp;&nbsp;&nbsp;&nbsp;[Id]&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">INT</span>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:gray;">NOT</span>&nbsp;<span style="color:gray;">NULL</span>&nbsp;<span style="color:blue;">IDENTITY</span><span style="color:gray;">,</span>
+&nbsp;&nbsp;&nbsp;&nbsp;[RestaurantId]&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">INT</span>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:gray;">NOT</span>&nbsp;<span style="color:gray;">NULL</span>&nbsp;<span style="color:blue;">REFERENCES</span>&nbsp;[dbo]<span style="color:gray;">.</span>[Restaurants]<span style="color:gray;">(</span>Id<span style="color:gray;">),</span>
+&nbsp;&nbsp;&nbsp;&nbsp;[Capacity]&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">INT</span>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:gray;">NOT</span>&nbsp;<span style="color:gray;">NULL,</span>
+&nbsp;&nbsp;&nbsp;&nbsp;[IsCommunal]&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">BIT</span>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:gray;">NOT</span>&nbsp;<span style="color:gray;">NULL</span>
+<span style="color:gray;">)</span></pre>
+    </p>
+    <p>
+        This little subsystem requires two database tables: One that keeps track of the overall restaurant configuration, such as name, opening and closing times, and another database table that lists all a restaurant's physical tables.
+    </p>
+    <p>
+        You may argue that this is still too simple to realistically capture the intricacies of existing database systems, but I'll still remind you that the scope of this article is the sort of system where you develop and design the application first; not a system where you're given a relational database upon which you must create an application.
+    </p>
+    <p>
+        Had I been given this assignment in a realistic setting, a relational database wouldn't even have been my first choice. Some kind of document database, or even blob storage, strikes me as a better fit. Still, this article is about ORMs, so I'll pretend that there are external circumstances that dictate a relational database.
+    </p>
+    <p>
+        To test the system, I also created a script to populate these tables. Here's part of it:
+    </p>
+    <p>
+        <pre><span style="color:blue;">INSERT</span>&nbsp;<span style="color:blue;">INTO</span>&nbsp;[dbo]<span style="color:gray;">.</span>[Restaurants]<span style="color:blue;">&nbsp;</span><span style="color:gray;">(</span>[Id]<span style="color:gray;">,</span>&nbsp;[Name]<span style="color:gray;">,</span>&nbsp;[OpensAt]<span style="color:gray;">,</span>&nbsp;[LastSeating]<span style="color:gray;">,</span>&nbsp;[SeatingDuration]<span style="color:gray;">)</span>
+<span style="color:blue;">VALUES&nbsp;</span><span style="color:gray;">(</span>1<span style="color:gray;">,</span>&nbsp;<span style="color:red;">N&#39;Hipgnosta&#39;</span><span style="color:gray;">,</span>&nbsp;<span style="color:red;">&#39;18:00&#39;</span><span style="color:gray;">,</span>&nbsp;<span style="color:red;">&#39;21:00&#39;</span><span style="color:gray;">,</span>&nbsp;<span style="color:red;">&#39;6:00&#39;</span><span style="color:gray;">)</span>
+ 
+<span style="color:blue;">INSERT</span>&nbsp;<span style="color:blue;">INTO</span>&nbsp;[dbo]<span style="color:gray;">.</span>[Tables]<span style="color:blue;">&nbsp;</span><span style="color:gray;">(</span>[RestaurantId]<span style="color:gray;">,</span>&nbsp;[Capacity]<span style="color:gray;">,</span>&nbsp;[IsCommunal]<span style="color:gray;">)</span>
+<span style="color:blue;">VALUES&nbsp;</span><span style="color:gray;">(</span>1<span style="color:gray;">,</span>&nbsp;10<span style="color:gray;">,</span>&nbsp;1<span style="color:gray;">)</span>
+ 
+<span style="color:blue;">INSERT</span>&nbsp;<span style="color:blue;">INTO</span>&nbsp;[dbo]<span style="color:gray;">.</span>[Restaurants]<span style="color:blue;">&nbsp;</span><span style="color:gray;">(</span>[Id]<span style="color:gray;">,</span>&nbsp;[Name]<span style="color:gray;">,</span>&nbsp;[OpensAt]<span style="color:gray;">,</span>&nbsp;[LastSeating]<span style="color:gray;">,</span>&nbsp;[SeatingDuration]<span style="color:gray;">)</span>
+<span style="color:blue;">VALUES&nbsp;</span><span style="color:gray;">(</span>2112<span style="color:gray;">,</span>&nbsp;<span style="color:red;">N&#39;Nono&#39;</span><span style="color:gray;">,</span>&nbsp;<span style="color:red;">&#39;18:00&#39;</span><span style="color:gray;">,</span>&nbsp;<span style="color:red;">&#39;21:00&#39;</span><span style="color:gray;">,</span>&nbsp;<span style="color:red;">&#39;6:00&#39;</span><span style="color:gray;">)</span>
+ 
+<span style="color:blue;">INSERT</span>&nbsp;<span style="color:blue;">INTO</span>&nbsp;[dbo]<span style="color:gray;">.</span>[Tables]<span style="color:blue;">&nbsp;</span><span style="color:gray;">(</span>[RestaurantId]<span style="color:gray;">,</span>&nbsp;[Capacity]<span style="color:gray;">,</span>&nbsp;[IsCommunal]<span style="color:gray;">)</span>
+<span style="color:blue;">VALUES&nbsp;</span><span style="color:gray;">(</span>2112<span style="color:gray;">,</span>&nbsp;6<span style="color:gray;">,</span>&nbsp;1<span style="color:gray;">)</span>
+ 
+<span style="color:blue;">INSERT</span>&nbsp;<span style="color:blue;">INTO</span>&nbsp;[dbo]<span style="color:gray;">.</span>[Tables]<span style="color:blue;">&nbsp;</span><span style="color:gray;">(</span>[RestaurantId]<span style="color:gray;">,</span>&nbsp;[Capacity]<span style="color:gray;">,</span>&nbsp;[IsCommunal]<span style="color:gray;">)</span>
+<span style="color:blue;">VALUES&nbsp;</span><span style="color:gray;">(</span>2112<span style="color:gray;">,</span>&nbsp;4<span style="color:gray;">,</span>&nbsp;1<span style="color:gray;">)</span>
+ 
+<span style="color:blue;">INSERT</span>&nbsp;<span style="color:blue;">INTO</span>&nbsp;[dbo]<span style="color:gray;">.</span>[Tables]<span style="color:blue;">&nbsp;</span><span style="color:gray;">(</span>[RestaurantId]<span style="color:gray;">,</span>&nbsp;[Capacity]<span style="color:gray;">,</span>&nbsp;[IsCommunal]<span style="color:gray;">)</span>
+<span style="color:blue;">VALUES&nbsp;</span><span style="color:gray;">(</span>2112<span style="color:gray;">,</span>&nbsp;2<span style="color:gray;">,</span>&nbsp;0<span style="color:gray;">)</span>
+ 
+<span style="color:blue;">INSERT</span>&nbsp;<span style="color:blue;">INTO</span>&nbsp;[dbo]<span style="color:gray;">.</span>[Tables]<span style="color:blue;">&nbsp;</span><span style="color:gray;">(</span>[RestaurantId]<span style="color:gray;">,</span>&nbsp;[Capacity]<span style="color:gray;">,</span>&nbsp;[IsCommunal]<span style="color:gray;">)</span>
+<span style="color:blue;">VALUES&nbsp;</span><span style="color:gray;">(</span>2112<span style="color:gray;">,</span>&nbsp;2<span style="color:gray;">,</span>&nbsp;0<span style="color:gray;">)</span>
+ 
+<span style="color:blue;">INSERT</span>&nbsp;<span style="color:blue;">INTO</span>&nbsp;[dbo]<span style="color:gray;">.</span>[Tables]<span style="color:blue;">&nbsp;</span><span style="color:gray;">(</span>[RestaurantId]<span style="color:gray;">,</span>&nbsp;[Capacity]<span style="color:gray;">,</span>&nbsp;[IsCommunal]<span style="color:gray;">)</span>
+<span style="color:blue;">VALUES&nbsp;</span><span style="color:gray;">(</span>2112<span style="color:gray;">,</span>&nbsp;4<span style="color:gray;">,</span>&nbsp;0<span style="color:gray;">)</span>
+ 
+<span style="color:blue;">INSERT</span>&nbsp;<span style="color:blue;">INTO</span>&nbsp;[dbo]<span style="color:gray;">.</span>[Tables]<span style="color:blue;">&nbsp;</span><span style="color:gray;">(</span>[RestaurantId]<span style="color:gray;">,</span>&nbsp;[Capacity]<span style="color:gray;">,</span>&nbsp;[IsCommunal]<span style="color:gray;">)</span>
+<span style="color:blue;">VALUES&nbsp;</span><span style="color:gray;">(</span>2112<span style="color:gray;">,</span>&nbsp;4<span style="color:gray;">,</span>&nbsp;0<span style="color:gray;">)</span></pre>
+    </p>
+    <p>
+        There are more rows than this, but this should give you an idea of what data looks like.
+    </p>
+    <h3 id="ba5d810c332945398ab2a870711357f1">
+        Reading restaurant data without an ORM <a href="#ba5d810c332945398ab2a870711357f1">#</a>
+    </h3>
+    <p>
+        Due to the foreign key relationship, reading restaurant data from the database is a little more involved than reading from a single table.
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">async</span>&nbsp;Task&lt;Restaurant?&gt;&nbsp;<span style="font-weight:bold;color:#74531f;">GetRestaurant</span>(<span style="color:blue;">string</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">name</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">using</span>&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">cmd</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;SqlCommand(readByNameSql);
+&nbsp;&nbsp;&nbsp;&nbsp;cmd.Parameters.AddWithValue(<span style="color:#a31515;">&quot;@Name&quot;</span>,&nbsp;name);
+&nbsp;&nbsp;&nbsp;&nbsp;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">restaurants</span>&nbsp;=&nbsp;<span style="color:blue;">await</span>&nbsp;ReadRestaurants(cmd);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;restaurants.SingleOrDefault();
+}
+ 
+<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">const</span>&nbsp;<span style="color:blue;">string</span>&nbsp;readByNameSql&nbsp;=&nbsp;<span style="color:maroon;">@&quot;
+&nbsp;&nbsp;&nbsp;&nbsp;SELECT&nbsp;[Id],&nbsp;[Name],&nbsp;[OpensAt],&nbsp;[LastSeating],&nbsp;[SeatingDuration]
+&nbsp;&nbsp;&nbsp;&nbsp;FROM&nbsp;[dbo].[Restaurants]
+&nbsp;&nbsp;&nbsp;&nbsp;WHERE&nbsp;[Name]&nbsp;=&nbsp;@Name
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;SELECT&nbsp;[RestaurantId],&nbsp;[Capacity],&nbsp;[IsCommunal]
+&nbsp;&nbsp;&nbsp;&nbsp;FROM&nbsp;[dbo].[Tables]
+&nbsp;&nbsp;&nbsp;&nbsp;JOIN&nbsp;[dbo].[Restaurants]
+&nbsp;&nbsp;&nbsp;&nbsp;ON&nbsp;[dbo].[Tables].[RestaurantId]&nbsp;=&nbsp;[dbo].[Restaurants].[Id]
+&nbsp;&nbsp;&nbsp;&nbsp;WHERE&nbsp;[Name]&nbsp;=&nbsp;@Name&quot;</span>;</pre>
+    </p>
+    <p>
+        There are more than one option when deciding how to construct the query. You could make one query with a join, in which case you'd get rows with repeated data, and you'd then need to detect duplicates, or you could do as I've done here: Query each table to get multiple result sets.
+    </p>
+    <p>
+        I'm not claiming that this is better in any way. I only chose this option because I found the code that I had to write less offensive.
+    </p>
+    <p>
+        Since the <code>IRestaurantDatabase</code> interface defines three different kinds of queries (<code>GetAll()</code>, <code>GetRestaurant(int id)</code>, and <code>GetRestaurant(string name)</code>), I invoked the <a href="https://en.wikipedia.org/wiki/Rule_of_three_(computer_programming)">rule of three</a> and extracted a helper method:
+    </p>
+    <p>
+        <pre><span style="color:blue;">private</span>&nbsp;<span style="color:blue;">async</span>&nbsp;Task&lt;IEnumerable&lt;Restaurant&gt;&gt;&nbsp;<span style="font-weight:bold;color:#74531f;">ReadRestaurants</span>(SqlCommand&nbsp;<span style="font-weight:bold;color:#1f377f;">cmd</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">conn</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;SqlConnection(ConnectionString);
+&nbsp;&nbsp;&nbsp;&nbsp;cmd.Connection&nbsp;=&nbsp;conn;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">await</span>&nbsp;conn.OpenAsync();
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">using</span>&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">rdr</span>&nbsp;=&nbsp;<span style="color:blue;">await</span>&nbsp;cmd.ExecuteReaderAsync();
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">restaurants</span>&nbsp;=&nbsp;Enumerable.Empty&lt;Restaurant&gt;();
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">while</span>&nbsp;(<span style="color:blue;">await</span>&nbsp;rdr.ReadAsync())
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;restaurants&nbsp;=&nbsp;restaurants.Append(ReadRestaurantRow(rdr));
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">if</span>&nbsp;(<span style="color:blue;">await</span>&nbsp;rdr.NextResultAsync())
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">while</span>&nbsp;(<span style="color:blue;">await</span>&nbsp;rdr.ReadAsync())
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;restaurants&nbsp;=&nbsp;ReadTableRow(rdr,&nbsp;restaurants);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;restaurants;
+}</pre>
+    </p>
+    <p>
+        The <code>ReadRestaurants</code> method does the overall work of opening the database connection, executing the query, and moving through rows and result sets. Again, we'll find mapping code hidden in helper methods:
+    </p>
+    <p>
+        <pre><span style="color:blue;">private</span>&nbsp;<span style="color:blue;">static</span>&nbsp;Restaurant&nbsp;<span style="color:#74531f;">ReadRestaurantRow</span>(SqlDataReader&nbsp;<span style="font-weight:bold;color:#1f377f;">rdr</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;Restaurant(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(<span style="color:blue;">int</span>)rdr[<span style="color:#a31515;">&quot;Id&quot;</span>],
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(<span style="color:blue;">string</span>)rdr[<span style="color:#a31515;">&quot;Name&quot;</span>],
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;MaitreD(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;TimeOfDay((TimeSpan)rdr[<span style="color:#a31515;">&quot;OpensAt&quot;</span>]),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;TimeOfDay((TimeSpan)rdr[<span style="color:#a31515;">&quot;LastSeating&quot;</span>]),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(TimeSpan)rdr[<span style="color:#a31515;">&quot;SeatingDuration&quot;</span>]));
+}</pre>
+    </p>
+    <p>
+        As the name suggests, <code>ReadRestaurantRow</code> reads a row from the <code>Restaurants</code> table and converts it into a <code>Restaurant</code> object. At this time, however, it creates each <code>MaitreD</code> object without any tables. This is possible because one of the <code>MaitreD</code> constructors takes a <code>params</code> array as the last parameter:
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">MaitreD</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;TimeOfDay&nbsp;<span style="font-weight:bold;color:#1f377f;">opensAt</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;TimeOfDay&nbsp;<span style="font-weight:bold;color:#1f377f;">lastSeating</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;TimeSpan&nbsp;<span style="font-weight:bold;color:#1f377f;">seatingDuration</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">params</span>&nbsp;Table[]&nbsp;<span style="font-weight:bold;color:#1f377f;">tables</span>)&nbsp;:
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>(opensAt,&nbsp;lastSeating,&nbsp;seatingDuration,&nbsp;tables.AsEnumerable())
+{
+}</pre>
+    </p>
+    <p>
+        Only when the <code>ReadRestaurants</code> method moves on to the next result set can it add tables to each restaurant:
+    </p>
+    <p>
+        <pre><span style="color:blue;">private</span>&nbsp;<span style="color:blue;">static</span>&nbsp;IEnumerable&lt;Restaurant&gt;&nbsp;<span style="color:#74531f;">ReadTableRow</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;SqlDataReader&nbsp;<span style="font-weight:bold;color:#1f377f;">rdr</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;IEnumerable&lt;Restaurant&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">restaurants</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">restaurantId</span>&nbsp;=&nbsp;(<span style="color:blue;">int</span>)rdr[<span style="color:#a31515;">&quot;RestaurantId&quot;</span>];
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">capacity</span>&nbsp;=&nbsp;(<span style="color:blue;">int</span>)rdr[<span style="color:#a31515;">&quot;Capacity&quot;</span>];
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">isCommunal</span>&nbsp;=&nbsp;(<span style="color:blue;">bool</span>)rdr[<span style="color:#a31515;">&quot;IsCommunal&quot;</span>];
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">table</span>&nbsp;=&nbsp;isCommunal&nbsp;?&nbsp;Table.Communal(capacity)&nbsp;:&nbsp;Table.Standard(capacity);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;restaurants.Select(<span style="font-weight:bold;color:#1f377f;">r</span>&nbsp;=&gt;&nbsp;r.Id&nbsp;==&nbsp;restaurantId&nbsp;?&nbsp;AddTable(r,&nbsp;table)&nbsp;:&nbsp;r);
+}</pre>
+    </p>
+    <p>
+        As was also the case in <code>ReadRestaurantRow</code>, this method uses string-based indexers on the <code>rdr</code> to extract the data. I'm no fan of stringly-typed code, but at least I have automated tests that exercise these methods.
+    </p>
+    <p>
+        Could an ORM help by creating strongly-typed classes that model database tables? To a degree; I'll discuss that later.
+    </p>
+    <p>
+        In any case, since the entire code base follows the <a href="https://www.destroyallsoftware.com/screencasts/catalog/functional-core-imperative-shell">Functional Core, Imperative Shell</a> architecture, the entire Domain Model is made of immutable data types with pure functions. Thus, <code>ReadTableRow</code> has to iterate over all <code>restaurants</code> and add the table when the <code>Id</code> matches. <code>AddTable</code> does that:
+    </p>
+    <p>
+        <pre><span style="color:blue;">private</span>&nbsp;<span style="color:blue;">static</span>&nbsp;Restaurant&nbsp;<span style="color:#74531f;">AddTable</span>(Restaurant&nbsp;<span style="font-weight:bold;color:#1f377f;">restaurant</span>,&nbsp;Table&nbsp;<span style="font-weight:bold;color:#1f377f;">table</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;restaurant.Select(<span style="font-weight:bold;color:#1f377f;">m</span>&nbsp;=&gt;&nbsp;m.WithTables(m.Tables.Append(table).ToArray()));
+}</pre>
+    </p>
+    <p>
+        I can think of other ways to solve the overall mapping task when using ADO.NET, but this was what made most sense to me.
+    </p>
+    <h3 id="3eda5ebf7165478698c756d59af43a1e">
+        Reading restaurants with Entity Framework <a href="#3eda5ebf7165478698c756d59af43a1e">#</a>
+    </h3>
+    <p>
+        Does an ORM like <a href="https://en.wikipedia.org/wiki/Entity_Framework">Entity Framework</a> (EF) improve things? To a degree, but not enough to outweigh the disadvantages it also brings.
+    </p>
+    <p>
+        In order to investigate, I followed <a href="https://learn.microsoft.com/ef/core/managing-schemas/scaffolding">the EF documentation to scaffold</a> code from a database I'd set up for only that purpose. For the <code>Tables</code> table it created the following <code>Table</code> class and a similar <code>Restaurant</code> class.
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">partial</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">Table</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">int</span>&nbsp;Id&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;<span style="color:blue;">set</span>;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">int</span>&nbsp;RestaurantId&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;<span style="color:blue;">set</span>;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">int</span>&nbsp;Capacity&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;<span style="color:blue;">set</span>;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">bool</span>&nbsp;IsCommunal&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;<span style="color:blue;">set</span>;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">virtual</span>&nbsp;Restaurant&nbsp;Restaurant&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;<span style="color:blue;">set</span>;&nbsp;}&nbsp;=&nbsp;<span style="color:blue;">null</span>!;
+}</pre>
+    </p>
+    <p>
+        Hardly surprising. Also, hardly object-oriented, but more about that later, too.
+    </p>
+    <p>
+        Entity Framework didn't, by itself, add a <code>Tables</code> collection to the <code>Restaurant</code> class, so I had to do that by hand, as well as modify the <a href="https://learn.microsoft.com/dotnet/api/microsoft.entityframeworkcore.dbcontext">DbContext</a>-derived class to tell it about this relationship:
+    </p>
+    <p>
+        <pre>entity.OwnsMany(<span style="font-weight:bold;color:#1f377f;">r</span>&nbsp;=&gt;&nbsp;r.Tables,&nbsp;<span style="font-weight:bold;color:#1f377f;">b</span>&nbsp;=&gt;
+{
+&nbsp;&nbsp;&nbsp;&nbsp;b.Property&lt;<span style="color:blue;">int</span>&gt;(<span style="font-weight:bold;color:#1f377f;">t</span>&nbsp;=&gt;&nbsp;t.Id).ValueGeneratedOnAdd();
+&nbsp;&nbsp;&nbsp;&nbsp;b.HasKey(<span style="font-weight:bold;color:#1f377f;">t</span>&nbsp;=&gt;&nbsp;t.Id);
+});</pre>
+    </p>
+    <p>
+        I thought that such a simple foreign key relationship would be something an ORM would help with, but apparently not.
+    </p>
+    <p>
+        With that in place, I could now rewrite the above <code>GetRestaurant</code> method to use Entity Framework instead of ADO.NET:
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">async</span>&nbsp;Task&lt;Restaurants.Restaurant?&gt;&nbsp;<span style="font-weight:bold;color:#74531f;">GetRestaurant</span>(<span style="color:blue;">string</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">name</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">using</span>&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">db</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;RestaurantsContext(ConnectionString);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">dbRestaurant</span>&nbsp;=&nbsp;<span style="color:blue;">await</span>&nbsp;db.Restaurants.FirstOrDefaultAsync(<span style="font-weight:bold;color:#1f377f;">r</span>&nbsp;=&gt;&nbsp;r.Name&nbsp;==&nbsp;name);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">if</span>&nbsp;(dbRestaurant&nbsp;==&nbsp;<span style="color:blue;">null</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">null</span>;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;ToDomainModel(dbRestaurant);
+}</pre>
+    </p>
+    <p>
+        The method now queries the database, and EF automatically returns a populated object. This would be nice if it was the right kind of object, but alas, it isn't. <code>GetRestaurant</code> still has to call a helper method to convert to the correct Domain Object:
+    </p>
+    <p>
+        <pre><span style="color:blue;">private</span>&nbsp;<span style="color:blue;">static</span>&nbsp;Restaurants.Restaurant&nbsp;<span style="color:#74531f;">ToDomainModel</span>(Restaurant&nbsp;<span style="font-weight:bold;color:#1f377f;">restaurant</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;Restaurants.Restaurant(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;restaurant.Id,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;restaurant.Name,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;MaitreD(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;TimeOfDay(restaurant.OpensAt),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;TimeOfDay(restaurant.LastSeating),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;restaurant.SeatingDuration,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;restaurant.Tables.Select(ToDomainModel).ToList()));
+}</pre>
+    </p>
+    <p>
+        While this helper method converts an EF <code>Restaurant</code> object to a proper Domain Object (<code>Restaurants.Restaurant</code>), it also needs another helper to convert the <code>table</code> objects:
+    </p>
+    <p>
+        <pre><span style="color:blue;">private</span>&nbsp;<span style="color:blue;">static</span>&nbsp;Restaurants.Table&nbsp;<span style="color:#74531f;">ToDomainModel</span>(Table&nbsp;<span style="font-weight:bold;color:#1f377f;">table</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">if</span>&nbsp;(table.IsCommunal)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;Restaurants.Table.Communal(table.Capacity);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">else</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;Restaurants.Table.Standard(table.Capacity);
+}</pre>
+    </p>
+    <p>
+        As should be clear by now, using vanilla EF doesn't reduce the need for mapping.
+    </p>
+    <p>
+        Granted, the mapping code is a bit simpler, but you still need to remember to map <code>restaurant.Name</code> to the right constructor parameter, <code>restaurant.OpensAt</code> and <code>restaurant.LastSeating</code> to <em>their</em> correct places, <code>table.Capacity</code> to a constructor argument, and so on. If you make changes to the database schema or the Domain Model, you'll need to edit this code.
+    </p>
+    <h3 id="b85eb83e5acc4d66baaf9ec51c3be02d">
+        Encapsulation <a href="#b85eb83e5acc4d66baaf9ec51c3be02d">#</a>
+    </h3>
+    <p>
+        This is the point where more than one reader wonders: <em>Can't you just..?</em>
+    </p>
+    <p>
+        In short, no, I can't just.
+    </p>
+    <p>
+        The most common reaction is most likely that I'm doing this all wrong. I'm supposed to use the EF classes as my Domain Model.
+    </p>
+    <p>
+        But I can't, and I won't. I can't because I already have classes in place that serve that purpose. I also will not, because it would violate the Dependency Inversion Principle. As I recently described, <a href="/2023/09/04/decomposing-ctfiyhs-sample-code-base">the architecture is Ports and Adapters</a>, or, if you will, <a href="/ref/clean-architecture">Clean Architecture</a>. The database <a href="https://en.wikipedia.org/wiki/Adapter_pattern">Adapter</a> should depend on the Domain Model; the Domain Model shouldn't depend on the database implementation.
+    </p>
+    <p>
+        Okay, but couldn't I have generated the EF classes in the Domain Model? After all, a class like the above <code>Table</code> is just a <a href="https://en.wikipedia.org/wiki/Plain_old_CLR_object">POCO</a> Entity. It doesn't depend on the Entity Framework. I could have those classes in my Domain Model, put my <code>DbContext</code> in the data access layer, and have the best of both worlds. Right?
+    </p>
+    <p>
+        The code shown so far hints at a particular API afforded by the Domain Model. If you've read <a href="/code-that-fits-in-your-head">my book</a>, you already know what comes next. Here's the <code>Table</code> Domain Model's API:
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">sealed</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">Table</span>
+{ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;Table&nbsp;<span style="color:#74531f;">Standard</span>(<span style="color:blue;">int</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">seats</span>)
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;Table&nbsp;<span style="color:#74531f;">Communal</span>(<span style="color:blue;">int</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">seats</span>)
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">int</span>&nbsp;Capacity&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">int</span>&nbsp;RemainingSeats&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;Table&nbsp;<span style="font-weight:bold;color:#74531f;">Reserve</span>(Reservation&nbsp;<span style="font-weight:bold;color:#1f377f;">reservation</span>)
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;T&nbsp;<span style="font-weight:bold;color:#74531f;">Accept</span>&lt;<span style="color:#2b91af;">T</span>&gt;(ITableVisitor&lt;T&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">visitor</span>)
+}</pre>
+    </p>
+    <p>
+        A couple of qualities of this design should be striking: There's <em>no</em> visible constructor - not even one that takes parameters. Instead, the type affords two static creation functions. One creates a standard table, the other a communal table. My book describes the difference between these types, but so does <a href="/2020/01/27/the-maitre-d-kata">the Maître d' kata</a>.
+    </p>
+    <p>
+        This isn't some frivolous design choice of mine, but rather quite deliberate. That <code>Table</code> class is a <a href="/2018/06/25/visitor-as-a-sum-type">Visitor-encoded sum type</a>. You can debate whether I should have modelled a table as a <a href="https://en.wikipedia.org/wiki/Tagged_union">sum type</a> or a polymorphic object, but now that I've chosen a sum type, it should be explicit in the API design.
+    </p>
+    <blockquote>
+        <p>
+            "Explicit is better than implicit."
+        </p>
+        <footer><cite><a href="https://peps.python.org/pep-0020/">The Zen of Python</a></cite></footer>
+    </blockquote>
+    <p>
+        When we program, we make many mistakes. It's important to discover the mistakes as soon as possible. With a compiled language, <a href="/2011/04/29/Feedbackmechanismsandtradeoffs">the first feedback you get is from the compiler</a>. I favour leveraging the compiler, and its type system, to prevent as many mistakes as possible. That's what <a href="https://buttondown.email/hillelwayne/archive/making-illegal-states-unrepresentable/">Hillel Wayne calls <em>constructive</em> data</a>. <a href="https://blog.janestreet.com/effective-ml-video/">Make illegal states unrepresentable</a>.
+    </p>
+    <p>
+        I could, had I thought of it at the time, have introduced <a href="/2022/08/22/can-types-replace-validation">a predicative natural-number wrapper of integers</a>, in which case I could have strengthened the contract of <code>Table</code> even further:
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">sealed</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">Table</span>
+{ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;Table&nbsp;<span style="color:#74531f;">Standard</span>(NaturalNumber&nbsp;<span style="font-weight:bold;color:#1f377f;">capacity</span>)
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;Table&nbsp;<span style="color:#74531f;">Communal</span>(NaturalNumber&nbsp;<span style="font-weight:bold;color:#1f377f;">capacity</span>)
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;NaturalNumber&nbsp;Capacity&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">int</span>&nbsp;RemainingSeats&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;Table&nbsp;<span style="font-weight:bold;color:#74531f;">Reserve</span>(Reservation&nbsp;<span style="font-weight:bold;color:#1f377f;">reservation</span>)
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;T&nbsp;<span style="font-weight:bold;color:#74531f;">Accept</span>&lt;<span style="color:#2b91af;">T</span>&gt;(ITableVisitor&lt;T&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">visitor</span>)
+}</pre>
+    </p>
+    <p>
+        The point is that I take <a href="/encapsulation-and-solid">encapsulation</a> seriously, and my interpretation of the concept is heavily inspired by <a href="https://en.wikipedia.org/wiki/Bertrand_Meyer">Bertrand Meyer</a>'s <a href="/ref/oosc">Object-Oriented Software Construction</a>. The view of encapsulation emphasises <em>contracts</em> (preconditions, invariants, postconditions) rather than information hiding.
+    </p>
+    <p>
+        As I described in a previous article, <a href="/2022/08/22/can-types-replace-validation">you can't model all preconditions and invariants with types</a>, but you can still let the type system do much heavy lifting.
+    </p>
+    <p>
+        This principle applies to all classes that are part of the Domain Model; not only <code>Table</code>, but also <code>Restaurant</code>:
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">sealed</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">Restaurant</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">Restaurant</span>(<span style="color:blue;">int</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">id</span>,&nbsp;<span style="color:blue;">string</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">name</span>,&nbsp;MaitreD&nbsp;<span style="font-weight:bold;color:#1f377f;">maitreD</span>)
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">int</span>&nbsp;Id&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">string</span>&nbsp;Name&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;MaitreD&nbsp;MaitreD&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;Restaurant&nbsp;<span style="font-weight:bold;color:#74531f;">WithId</span>(<span style="color:blue;">int</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">newId</span>)
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;Restaurant&nbsp;<span style="font-weight:bold;color:#74531f;">WithName</span>(<span style="color:blue;">string</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">newName</span>)
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;Restaurant&nbsp;<span style="font-weight:bold;color:#74531f;">WithMaitreD</span>(MaitreD&nbsp;<span style="font-weight:bold;color:#1f377f;">newMaitreD</span>)
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;Restaurant&nbsp;<span style="font-weight:bold;color:#74531f;">Select</span>(Func&lt;MaitreD,&nbsp;MaitreD&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">selector</span>)
+}</pre>
+    </p>
+    <p>
+        While this class does have a public constructor, it makes use of another design choice that Entity Framework doesn't support: It nests one rich object (<code>MaitreD</code>) inside another. Why does it do that?
+    </p>
+    <p>
+        Again, this is far from a frivolous design choice I made to just to be difficult. Rather, it's a result of a need-to-know principle (which strikes me as closely related to the <a href="https://en.wikipedia.org/wiki/Single-responsibility_principle">Single Responsibility Principle</a>): A class should only contain the information it needs in order to perform its job.
+    </p>
+    <p>
+        The <code>MaitreD</code> class does all the heavy lifting when it comes to deciding whether or not to accept reservations, how to allocate tables, etc. It doesn't, however, need to know the <code>id</code> or <code>name</code> of the restaurant in order to do that. Keeping that information out of <code>MaitreD</code>, and instead in the <code>Restaurant</code> wrapper, makes the code simpler and easier to use.
+    </p>
+    <p>
+        The bottom line of all this is that I value encapsulation over 'easy' database mapping.
+    </p>
+    <h3 id="3cfc364c9a87463aaac98bc358d062d5">
+        Limitations of Entity Framework <a href="#3cfc364c9a87463aaac98bc358d062d5">#</a>
+    </h3>
+    <p>
+        The promise of an object-relational mapper is that it automates mapping between objects and database. Is that promise realised?
+    </p>
+    <p>
+        In its current incarnation, <a href="https://stackoverflow.com/q/77039584/126014">it doesn't look as though Entity Framework supports mapping to and from the Domain Model</a>. With the above tweaks, it supports the database schema that I've described, but only via 'Entity classes'. I still have to map to and from the 'Entity objects' and the actual Domain Model. Not much is gained.
+    </p>
+    <p>
+        One should, of course, be careful not drawing too strong inferences from this example. First, proving anything impossible is generally difficult. Just because <em>I</em> can't find a way to do what I want, I can't conclude that it's impossible. That a few other people tell me, too, that it's impossible still doesn't constitute strong evidence.
+    </p>
+    <p>
+        Second, even if it's impossible today, it doesn't follow that it will be impossible forever. Perhaps Entity Framework will support my Domain Model in the future.
+    </p>
+    <p>
+        Third, we can't conclude that just because Entity Framework (currently) doesn't support my Domain Model it follows that no object-relational mapper (ORM) does. There might be another ORM out there that perfectly supports my design, but I'm just not aware of it.
+    </p>
+    <p>
+        Based on my experience and what I see, read, and hear, I don't think any of that likely. Things might change, though.
+    </p>
+    <h3 id="4002bb8f9ec64b14958233b16b93ec10">
+        Net benefit or drawback? <a href="#4002bb8f9ec64b14958233b16b93ec10">#</a>
+    </h3>
+    <p>
+        Perhaps, despite all of this, you still prefer ORMs. You may compare my ADO.NET code to my Entity Framework code and conclude that the EF code still looks simpler. After all, when using ADO.NET I have to jump through some hoops to load the correct tables associated with each restaurant, whereas EF automatically handles that for me. The EF version requires fewer lines of code.
+    </p>
+    <p>
+        In isolation, the fewer lines of code the better. This seems like an argument for using an ORM after all, even if the original promise remains elusive. Take what you can get.
+    </p>
+    <p>
+        On the other hand, when you take on a dependency, there's usually a cost that comes along. A library like Entity Framework isn't free. While you don't pay a licence fee for it, it comes with other costs. You have to learn how to use it, and so do your colleagues. You also have to keep up to date with changes.
+    </p>
+    <p>
+        Every time some exotic requirement comes up, you'll have to spend time investigating how to address it with that dependency's API. This may lead to a game of <a href="https://en.wikipedia.org/wiki/Whac-A-Mole">Whac-A-Mole</a> where every tweak to the dependency leads you further down the rabbit hole, and couples your code tighter with the dependency.
+    </p>
+    <p>
+        You can only keep up with so many things. What's the best investment of your time, and the time of your team mates? Learning and knowing <a href="https://en.wikipedia.org/wiki/SQL">SQL</a>, or learning and keeping up to date with a particular ORM?
+    </p>
+    <p>
+        I learned SQL decades ago, and that knowledge is still useful. On the other hand, I don't even know how many library and framework APIs that I've both learned and forgotten about.
+    </p>
+    <p>
+        As things currently stand, it looks to me as though the net benefit of using a library like Entity Framework is negative. Yes, it might save me a few lines of code, but I'm not ready to pay the costs just outlined.
+    </p>
+    <p>
+        This balance could tip in the future, or my context may change.
+    </p>
+    <h3 id="e76ec6ffdf3f44949bab3d86786b26ae">
+        Conclusion <a href="#e76ec6ffdf3f44949bab3d86786b26ae">#</a>
+    </h3>
+    <p>
+        For the kind of applications that I tend to become involved with, I don't find object-relational mappers particularly useful. When you have a rich Domain Model where the first design priority is encapsulation, assisted by the type system, it looks as though mapping is unavoidable.
+    </p>
+    <p>
+        While you can ask automated tools to generate code that mirrors a database schema (or the other way around), only classes with poor encapsulation are supported. As soon as you do something out of the ordinary like static factory methods or nested objects, apparently Entity Framework gives up.
+    </p>
+    <p>
+        Can we extrapolate from Entity Framework to other ORMs? Can we infer that Entity Framework will never be able to support objects with proper encapsulation, just because it currently doesn't?
+    </p>
+    <p>
+        I can't say, but I'd be surprised if things change soon, if at all. If, on the other hand, it eventually turns out that I can have my cake and eat it too, then why shouldn't I?
+    </p>
+    <p>
+        Until then, however, I don't find that the benefits of ORMs trump the costs of using them.
+    </p>
+</div>
