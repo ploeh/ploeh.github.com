@@ -1,0 +1,319 @@
+---
+layout: post
+title: "At the boundaries, static types are illusory"
+description: "Static types are useful, but have limitations."
+date: 2023-10-14 15:12 UTC
+tags: [Architecture, Software Design, Services]
+image: "/content/binary/application-boundary.png"
+image_alt: "A application depicted as an opaque disk with a circle emphasising its boundary. Also included are arrows in and out, with some common communication artefacts: Messages, HTTP traffic, and a database."
+---
+{% include JB/setup %}
+
+<div id="post">
+    <p>
+        <em>{{ page.description }}</em>
+    </p>
+    <p>
+        Regular readers of this blog may have noticed that I like static type systems. Not the kind of static types offered by <a href="https://en.wikipedia.org/wiki/C_(programming_language)">C</a>, which strikes me as mostly being able to distinguish between way too many types of integers and pointers. <a href="/2020/01/20/algebraic-data-types-arent-numbers-on-steroids">A good type system is more than just numbers on steroids</a>. A type system like C#'s is <a href="/2019/12/16/zone-of-ceremony">workable, but verbose</a>. The kind of type system I find most useful is when it has <a href="https://en.wikipedia.org/wiki/Algebraic_data_type">algebraic data types</a>. The examples that I know best are the type systems of <a href="https://fsharp.org/">F#</a> and <a href="https://www.haskell.org/">Haskell</a>.
+    </p>
+    <p>
+        As great as static type systems can be, they have limitations. <a href="https://www.hillelwayne.com/post/constructive/">Hillel Wayne has already outlined one kind of distinction</a>, but here I'd like to focus on another constraint.
+    </p>
+    <h3 id="ab0d595d35304a9ea9302197b4f796d3">
+        Application boundaries <a href="#ab0d595d35304a9ea9302197b4f796d3">#</a>
+    </h3>
+    <p>
+        Any piece of software interacts with the 'rest of the world'; effectively everything outside its own process. Sometimes (but increasingly rarely) such interaction is exclusively by way of some user interface, but more and more, an application interacts with other software in some way.
+    </p>
+    <p>
+        <img src="/content/binary/application-boundary.png" alt="A application depicted as an opaque disk with a circle emphasising its boundary. Also included are arrows in and out, with some common communication artefacts: Messages, HTTP traffic, and a database.">
+    </p>
+    <p>
+        Here I've drawn the application as an opaque disc in order to emphasise that what happens inside the process isn't pertinent to the following discussion. The diagram also includes some common kinds of traffic. Many applications rely on some kind of database or send messages (email, SMS, Commands, Events, etc.). We can think of such traffic as the interactions that the application initiates, but many systems also receive and react to incoming data: HTTP traffic or messages that arrive on a queue, and so on.
+    </p>
+    <p>
+        When I talk about application <em>boundaries</em>, I have in mind what goes on in that interface layer.
+    </p>
+    <p>
+        An application can talk to the outside world in multiple ways: It may read or write a file, access shared memory, call operating-system APIs, send or receive network packets, etc. Usually you get to program against higher-level abstractions, but ultimately the application is dealing with various binary protocols.
+    </p>
+    <h3 id="4991578e222e408bb08e261dce6454f1">
+        Protocols <a href="#4991578e222e408bb08e261dce6454f1">#</a>
+    </h3>
+    <p>
+        The bottom line is that at a sufficiently low level of abstraction, what goes in and out of your application has no static type stronger than an array of bytes.
+    </p>
+    <p>
+        You may counter-argue that higher-level APIs deal with that to present the input and output as static types. When you interact with a text file, you'll typically deal with a list of strings: One for each line in the file. Or you may manipulate <a href="https://en.wikipedia.org/wiki/JSON">JSON</a>, <a href="https://en.wikipedia.org/wiki/XML">XML</a>, <a href="https://en.wikipedia.org/wiki/Protocol_Buffers">Protocol Buffers</a>, or another wire format using a serializer/deserializer API. Sometime, as is often the case with <a href="https://en.wikipedia.org/wiki/Comma-separated_values">CSV</a>, you may need to write a very simple parser yourself. Or perhaps <a href="/2023/08/28/a-first-crack-at-the-args-kata">something slightly more involved</a>.
+    </p>
+    <p>
+        To demonstrate what I mean, there's no shortage of APIs like <a href="https://learn.microsoft.com/dotnet/api/system.text.json.jsonserializer.deserialize">JsonSerializer.Deserialize</a>, which enables you to write <a href="/2022/05/02/at-the-boundaries-applications-arent-functional">code like this</a>:
+    </p>
+    <p>
+        <pre><span style="color:blue;">let</span>&nbsp;n&nbsp;=&nbsp;JsonSerializer.Deserialize&lt;Name&gt;&nbsp;(json,&nbsp;opts)</pre>
+    </p>
+    <p>
+        and you may say: <em><code>n</code> is statically typed, and its type is <code>Name</code>! Hooray!</em> But you do realise that that's a lie, don't you?
+    </p>
+    <p>
+        An interaction at the application boundary is expected to follow some kind of <em>protocol</em>. This is even true if you're reading a text file. In these modern times, you may expect a text file to contain <a href="https://unicode.org/">Unicode</a>, but have you ever received a file from a legacy system and have to deal with its <a href="https://en.wikipedia.org/wiki/EBCDIC">EBCDIC</a> encoding? Or an <a href="https://en.wikipedia.org/wiki/ASCII">ASCII</a> file with a <a href="https://en.wikipedia.org/wiki/Code_page">code page</a> different from the one you expect? Or even just a file written on a Unix system, if you're on Windows, or vice versa?
+    </p>
+    <p>
+        In order to correctly interpret or transmit such data, you need to follow a <em>protocol</em>.
+    </p>
+    <p>
+        Such a protocol can be low-level, as the character-encoding examples I just listed, but it may also be much more high-level. You may, for example, consider an HTTP request like this:
+    </p>
+    <p>
+        <pre>POST /restaurants/90125/reservations?sig=aco7VV%2Bh5sA3RBtrN8zI8Y9kLKGC60Gm3SioZGosXVE%3D HTTP/1.1
+Content-Type: application/json
+{
+&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;at&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;2021-12-08&nbsp;20:30&quot;</span>,
+&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;email&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;snomob@example.com&quot;</span>,
+&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;name&quot;</span>:&nbsp;<span style="color:#a31515;">&quot;Snow&nbsp;Moe&nbsp;Beal&quot;</span>,
+&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;quantity&quot;</span>:&nbsp;1
+}</pre>
+    </p>
+    <p>
+        Such an interaction implies a protocol. Part of such a protocol is that the HTTP request's body is a valid JSON document, that it has an <code>at</code> property, that that property encodes a valid date and time, that <code>quantity</code> is a natural number, that <code>email</code> <a href="/2023/07/03/validating-or-verifying-emails">is present</a>, and so on.
+    </p>
+    <p>
+        You can model the expected input as a <a href="https://en.wikipedia.org/wiki/Data_transfer_object">Data Transfer Object</a> (DTO):
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">sealed</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">ReservationDto</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">string</span>?&nbsp;At&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;<span style="color:blue;">set</span>;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">string</span>?&nbsp;Email&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;<span style="color:blue;">set</span>;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">string</span>?&nbsp;Name&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;<span style="color:blue;">set</span>;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">int</span>&nbsp;Quantity&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;<span style="color:blue;">set</span>;&nbsp;}
+}</pre>
+    </p>
+    <p>
+        and even set up your 'protocol handlers' (here, an ASP.NET Core <a href="https://learn.microsoft.com/aspnet/core/mvc/controllers/actions">action method</a>) to use such a DTO:
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;Task&lt;ActionResult&gt;&nbsp;<span style="font-weight:bold;color:#74531f;">Post</span>(ReservationDto&nbsp;<span style="font-weight:bold;color:#1f377f;">dto</span>)</pre>
+    </p>
+    <p>
+        While this may look statically typed, it assumes a particular protocol. What happens when the bytes on the wire don't follow the protocol?
+    </p>
+    <p>
+        Well, we've already been <a href="/2022/08/15/aspnet-validation-revisited">around that block</a> <a href="/2022/07/25/an-applicative-reservation-validation-example-in-c">more than once</a>.
+    </p>
+    <p>
+        The point is that there's always an implied protocol at the application boundary, and you can choose to model it more or less explicitly.
+    </p>
+    <h3 id="41f3b4ad7a4b4429bba3f619c2af55d1">
+        Types as short-hands for protocols <a href="#41f3b4ad7a4b4429bba3f619c2af55d1">#</a>
+    </h3>
+    <p>
+        In the above example, I've relied on <em>some</em> static typing to deal with the problem. After all, I did define a DTO to model the expected shape of input. I could have chosen other alternatives: Perhaps I could have used a JSON parser to explicitly <a href="https://learn.microsoft.com/dotnet/standard/serialization/system-text-json/use-dom">use the JSON DOM</a>, or even more low-level <a href="https://learn.microsoft.com/dotnet/standard/serialization/system-text-json/use-utf8jsonreader">used Utf8JsonReader</a>. Ultimately, I could have decided to write my own JSON parser.
+    </p>
+    <p>
+        I'd rarely (or never?) choose to implement a JSON parser from scratch, so that's not what I'm advocating. Rather, my point is that you can leverage existing APIs to deal with input and output, and some of those APIs offer a convincing illusion that what happens at the boundary is statically typed.
+    </p>
+    <p>
+        This illusion is partly API-specific, and partly language-specific. In .NET, for example, <code>JsonSerializer.Deserialize</code> <em>looks</em> like it'll always deserialize <em>any</em> JSON string into the desired model. Obviously, that's a lie, because the function will throw an exception if the operation is impossible (i.e. when the input is malformed). In .NET (and many other languages or platforms), you can't tell from an API's type what the failure modes might be. In contrast, aeson's <a href="https://hackage.haskell.org/package/aeson/docs/Data-Aeson.html#v:fromJSON">fromJSON</a> function returns a type that explicitly indicates that deserialization may fail. Even in Haskell, however, this is mostly an idiomatic convention, because Haskell also 'supports' exceptions.
+    </p>
+    <p>
+        At the boundary, a static type can be a useful shorthand for a protocol. You declare a static type (e.g. a DTO) and rely on built-in machinery to handle malformed input. You give up some fine-grained control in exchange for a more declarative model.
+    </p>
+    <p>
+        I often choose to do that because I find such a trade-off beneficial, but I'm under no illusion that my static types fully model what goes 'on the wire'.
+    </p>
+    <h3 id="792212e79feb46889e71a6c08dedb88e">
+        Reversed roles <a href="#792212e79feb46889e71a6c08dedb88e">#</a>
+    </h3>
+    <p>
+        So far, I've mostly discussed input validation. <a href="/2022/08/22/can-types-replace-validation">Can types replace validation?</a> No, but they can make most common validation scenarios easier. What happens when you return data?
+    </p>
+    <p>
+        You may decide to return a statically typed value. A serializer can faithfully convert such a value to a proper wire format (JSON, XML, or similar). The recipient may not care about that type. After all, you may return a Haskell value, but the system receiving the data is written in <a href="https://www.python.org/">Python</a>. Or you return a C# object, but the recipient is <a href="https://en.wikipedia.org/wiki/JavaScript">JavaScript</a>.
+    </p>
+    <p>
+        Should we conclude, then, that there's no reason to model return data with static types? Not at all, because by modelling output with static types, you are being <a href="https://en.wikipedia.org/wiki/Robustness_principle">conservative with what you send</a>. Since static types are typically more rigid than 'just code', there may be corner cases that a type can't easily express. While this may pose a problem when it comes to input, it's only a benefit when it comes to output. This means that you're <a href="/2021/11/29/postels-law-as-a-profunctor">narrowing the output funnel</a> and thus making your system easier to work with.
+    </p>
+    <p>
+        <img src="/content/binary/liberal-conservative-at-boundary.png" alt="Funnels labelled 'liberal' and 'conservative' to the left of an line indicating an application boundary.">
+    </p>
+    <p>
+        Now consider another role-reversal: When your application <em>initiates</em> an interaction, it starts by producing output and receives input as a result. This includes any database interaction. When you create, update, or delete a row in a database, you <em>send</em> data, and receive a response.
+    </p>
+    <p>
+        Should you not consider <a href="https://en.wikipedia.org/wiki/Robustness_principle">Postel's law</a> in that case?
+    </p>
+    <p>
+        <img src="/content/binary/conservative-liberal-at-boundary.png" alt="Funnels labelled 'conservative' and 'liberal' to the right of an line indicating an application boundary.">
+    </p>
+    <p>
+        Most people don't, particularly if they rely on <a href="https://en.wikipedia.org/wiki/Object%E2%80%93relational_mapping">object-relational mappers</a> (ORMs). After all, if you have a static type (class) that models a database row, what's the harm using that when updating the database?
+    </p>
+    <p>
+        Probably none. After all, based on what I've just written, using a static type is a good way to be conservative with what you send. Here's an example using <a href="https://en.wikipedia.org/wiki/Entity_Framework">Entity Framework</a>:
+    </p>
+    <p>
+        <pre><span style="color:blue;">using</span>&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">db</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;RestaurantsContext(ConnectionString);
+<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">dbReservation</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;Reservation
+{
+&nbsp;&nbsp;&nbsp;&nbsp;PublicId&nbsp;=&nbsp;reservation.Id,
+&nbsp;&nbsp;&nbsp;&nbsp;RestaurantId&nbsp;=&nbsp;restaurantId,
+&nbsp;&nbsp;&nbsp;&nbsp;At&nbsp;=&nbsp;reservation.At,
+&nbsp;&nbsp;&nbsp;&nbsp;Name&nbsp;=&nbsp;reservation.Name.ToString(),
+&nbsp;&nbsp;&nbsp;&nbsp;Email&nbsp;=&nbsp;reservation.Email.ToString(),
+&nbsp;&nbsp;&nbsp;&nbsp;Quantity&nbsp;=&nbsp;reservation.Quantity
+};
+<span style="color:blue;">await</span>&nbsp;db.Reservations.AddAsync(dbReservation);
+<span style="color:blue;">await</span>&nbsp;db.SaveChangesAsync();</pre>
+    </p>
+    <p>
+        Here we send a statically typed <code>Reservation</code> 'Entity' to the database, and since we use a static type, we're being conservative with what we send. That's only good.
+    </p>
+    <p>
+        What happens when we query a database? Here's a typical example:
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">async</span>&nbsp;Task&lt;Restaurants.Reservation?&gt;&nbsp;<span style="font-weight:bold;color:#74531f;">ReadReservation</span>(<span style="color:blue;">int</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">restaurantId</span>,&nbsp;Guid&nbsp;<span style="font-weight:bold;color:#1f377f;">id</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">using</span>&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">db</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;RestaurantsContext(ConnectionString);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">r</span>&nbsp;=&nbsp;<span style="color:blue;">await</span>&nbsp;db.Reservations.FirstOrDefaultAsync(<span style="font-weight:bold;color:#1f377f;">x</span>&nbsp;=&gt;&nbsp;x.PublicId&nbsp;==&nbsp;id);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">if</span>&nbsp;(r&nbsp;<span style="color:blue;">is</span>&nbsp;<span style="color:blue;">null</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">null</span>;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;Restaurants.Reservation(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;r.PublicId,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;r.At,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;Email(r.Email),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;Name(r.Name),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;r.Quantity);
+}</pre>
+    </p>
+    <p>
+        Here I read a database row <code>r</code> and unquestioning translate it to my domain model. Should I do that? What if the database schema has diverged from my application code?
+    </p>
+    <p>
+        I suspect that much grief and trouble with relational databases, and particularly with ORMs, stem from the illusion that an ORM 'Entity' is a statically-typed view of the database schema. Typically, you can either use an ORM like Entity Framework in a code-first or a database-first fashion, but regardless of what you choose, you have two competing 'truths' about the database: The database schema and the Entity Classes.
+    </p>
+    <p>
+        You need to be disciplined to keep those two views in synch, and I'm not asserting that it's impossible. I'm only suggesting that it may pay to explicitly acknowledge that static types may not represent any truth about what's actually on the other side of the application boundary.
+    </p>
+    <h3 id="1ab46f8e48a74b94ad9aa92cce2d915f">
+        Types are an illusion <a href="#1ab46f8e48a74b94ad9aa92cce2d915f">#</a>
+    </h3>
+    <p>
+        Given that I usually find myself firmly in the static-types-are-great camp, it may seem odd that I now spend an entire article trashing them. Perhaps it looks as though I've had a revelation and made an about-face, but that's not the case. Rather, I'm fond of making the implicit explicit. This often helps improve understanding, because it helps delineate conceptual boundaries.
+    </p>
+    <p>
+        This, too, is the case here. <a href="https://en.wikipedia.org/wiki/All_models_are_wrong">All models are wrong, but some models are useful</a>. So are static types, I believe.
+    </p>
+    <p>
+        A static type system is a useful tool that enables you to model how your application should behave. The types don't really exist at run time. Even though .NET code (just to point out an example) compiles to <a href="https://en.wikipedia.org/wiki/Common_Intermediate_Language">a binary representation that includes type information</a>, once it runs, it <a href="https://en.wikipedia.org/wiki/Just-in-time_compilation">JITs</a> to machine code. In the end, it's just registers and memory addresses, or, if you want to be even more nihilistic, electrons moving around on a circuit board.
+    </p>
+    <p>
+        Even at a higher level of abstraction, you may say: <em>But at least, a static type system can help you encapsulate rules and assumptions.</em> In a language like C#, for example, consider a <a href="https://www.hillelwayne.com/post/constructive/">predicative type</a> like <a href="/2022/08/22/can-types-replace-validation">this NaturalNumber</a> class:
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">struct</span>&nbsp;<span style="color:#2b91af;">NaturalNumber</span>&nbsp;:&nbsp;IEquatable&lt;NaturalNumber&gt;
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;<span style="color:blue;">int</span>&nbsp;i;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">NaturalNumber</span>(<span style="color:blue;">int</span>&nbsp;candidate)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;(candidate&nbsp;&lt;&nbsp;1)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">throw</span>&nbsp;<span style="color:blue;">new</span>&nbsp;ArgumentOutOfRangeException(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;nameof(candidate),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#a31515;">$&quot;The&nbsp;value&nbsp;must&nbsp;be&nbsp;a&nbsp;positive&nbsp;(non-zero)&nbsp;number,&nbsp;but&nbsp;was:&nbsp;</span>{candidate}<span style="color:#a31515;">.&quot;</span>);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.i&nbsp;=&nbsp;candidate;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;Various&nbsp;other&nbsp;members&nbsp;follow...</span></pre>
+    </p>
+    <p>
+        Such a class effectively protects the invariant that a <a href="https://en.wikipedia.org/wiki/Natural_number">natural number</a> is always a positive integer. Yes, that works well until someone does this:
+    </p>
+    <p>
+        <pre><span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">n</span>&nbsp;=&nbsp;(NaturalNumber)FormatterServices.GetUninitializedObject(<span style="color:blue;">typeof</span>(NaturalNumber));</pre>
+    </p>
+    <p>
+        This <code>n</code> value has the internal value <code>0</code>. Yes, <a href="https://learn.microsoft.com/dotnet/api/system.runtime.serialization.formatterservices.getuninitializedobject">FormatterServices.GetUninitializedObject</a> bypasses the constructor. This thing is evil, but it exists, and at least in the current discussion serves to illustrate the point that types are illusions.
+    </p>
+    <p>
+        This isn't just a flaw in C#. Other languages have similar backdoors. One of the most famously statically-typed languages, Haskell, includes <a href="https://hackage.haskell.org/package/base/docs/System-IO-Unsafe.html#v:unsafePerformIO">unsafePerformIO</a>, which enables you to pretend that nothing untoward is going on even if you've written some impure code.
+    </p>
+    <p>
+        You may (and should) institute policies to not use such backdoors in your normal code bases. You don't need them.
+    </p>
+    <h3 id="de28c90a44e14b299f6eb30c09b08821">
+        Types are useful models <a href="#de28c90a44e14b299f6eb30c09b08821">#</a>
+    </h3>
+    <p>
+        All this may seem like an argument that types are useless. That would, however, be to draw the wrong conclusion. Types don't exist at run time to the same degree that Python objects or JavaScript functions don't exist at run time. Any language (except <a href="https://en.wikipedia.org/wiki/Assembly_language">assembler</a>) is a an abstraction: A way to model computer instructions so that programming becomes easier (one would hope). This is true even for C, as low-level and detail-oriented as it may seem.
+    </p>
+    <p>
+        If you grant that high-level programming languages (.e. any language that is <em>not</em> machine code or assembler) are useful, you must also grant that you can't rule out the usefulness of types. Notice that this argument is one of logic, rather than of preference. The only claim I make here is that programming is based on useful illusions. That the abstractions are illusions don't prevent them from being useful.
+    </p>
+    <p>
+        In statically typed languages, we effectively need to pretend that the type system is good enough, strong enough, generally trustworthy enough that it's safe to ignore the underlying reality. We work with, if you will, a provisional truth that serves as a user interface to the computer.
+    </p>
+    <p>
+        Even though a computer program eventually executes on a processor where types don't exist, a good compiler can still check that our models look sensible. We say that it <em>type-checks</em>. I find that indispensable when modelling the internal behaviour of a program. Even in a large code base, a compiler can type-check whether all the various components look like they may compose correctly. That a program compiles is no guarantee that it works correctly, but if it doesn't type-check, it's strong evidence that the code's model is <em>internally</em> inconsistent.
+    </p>
+    <p>
+        In other words, that a statically-typed program type-checks is a necessary, but not a sufficient condition for it to work.
+    </p>
+    <p>
+        This holds as long as we're considering program internals. Some language platforms allow us to take this notion further, because we can link software components together and still type-check them. The .NET platform is a good example of this, since the IL code retains type information. This means that the C#, F#, or <a href="https://en.wikipedia.org/wiki/Visual_Basic_(.NET)">Visual Basic .NET</a> compiler can type-check your code against the APIs exposed by external libraries.
+    </p>
+    <p>
+        On the other hand, you can't extend that line of reasoning to the boundary of an application. What happens at the boundary is ultimately untyped.
+    </p>
+    <p>
+        Are types useless at the boundary, then? Not at all. <a href="https://lexi-lambda.github.io/blog/2020/01/19/no-dynamic-type-systems-are-not-inherently-more-open/">Alexis King has already dealt with this topic better than I could</a>, but the point is that types remain an effective way to capture the result of <a href="https://lexi-lambda.github.io/blog/2019/11/05/parse-don-t-validate/">parsing input</a>. You can view receiving, handling, parsing, or validating input as implementing a protocol, as I've already discussed above. Such protocols are application-specific or domain-specific rather than general-purpose protocols, but they are still protocols.
+    </p>
+    <p>
+        When I decide to write <a href="/2022/07/25/an-applicative-reservation-validation-example-in-c">input validation for my restaurant sample code base as a set of composable parsers</a>, I'm implementing a protocol. My starting point isn't raw bits, but rather a loose static type: A DTO. In other cases, I may decide to use a different level of abstraction.
+    </p>
+    <p>
+        One of the (many) reasons I have for <a href="/2023/09/18/do-orms-reduce-the-need-for-mapping">finding ORMs unhelpful</a> is exactly because they insist on an illusion past its usefulness. Rather, I prefer implementing the protocol that talks to my database with a lower-level API, such as ADO.NET:
+    </p>
+    <p>
+        <pre><span style="color:blue;">private</span>&nbsp;<span style="color:blue;">static</span>&nbsp;Reservation&nbsp;<span style="color:#74531f;">ReadReservationRow</span>(SqlDataReader&nbsp;<span style="font-weight:bold;color:#1f377f;">rdr</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;Reservation(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(Guid)rdr[<span style="color:#a31515;">&quot;PublicId&quot;</span>],
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(DateTime)rdr[<span style="color:#a31515;">&quot;At&quot;</span>],
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;Email((<span style="color:blue;">string</span>)rdr[<span style="color:#a31515;">&quot;Email&quot;</span>]),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;Name((<span style="color:blue;">string</span>)rdr[<span style="color:#a31515;">&quot;Name&quot;</span>]),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;NaturalNumber((<span style="color:blue;">int</span>)rdr[<span style="color:#a31515;">&quot;Quantity&quot;</span>]));
+}</pre>
+    </p>
+    <p>
+        This actually isn't a particular good protocol implementation, because it fails to take Postel's law into account. Really, this code should be a <a href="https://martinfowler.com/bliki/TolerantReader.html">Tolerant Reader</a>. In practice, not that much input contravariance is possible, but perhaps, at least, this code ought to gracefully handle if the <code>Name</code> field was missing.
+    </p>
+    <p>
+        The point of this particular example isn't that it's perfect, because it's not, but rather that it's possible to drop down to a lower level of abstraction, and sometimes, this may be a more honest representation of reality.
+    </p>
+    <h3 id="ce2a1d57f63e4f39a28e801fd23164cf">
+        Conclusion <a href="#ce2a1d57f63e4f39a28e801fd23164cf">#</a>
+    </h3>
+    <p>
+        It may be helpful to acknowledge that static types don't really exist. Even so, internally in a code base, a static type system can be a powerful tool. A good type system enables a compiler to check whether various parts of your code looks internally consistent. Are you calling a procedure with the correct arguments? Have you implemented all methods defined by an interface? Have you handled all cases defined by a <a href="https://en.wikipedia.org/wiki/Tagged_union">sum type</a>? Have you correctly initialized an object?
+    </p>
+    <p>
+        As useful type systems are for this kind of work, you should also be aware of their limitations. A compiler can check whether a code base's internal model makes sense, but it can't verify what happens at run time.
+    </p>
+    <p>
+        As long as one part of your code base sends data to another part of your code base, your type system can still perform a helpful sanity check, but for data that enters (or leaves) your application at run time, bets are off. You may attempt to model what input <em>should</em> look like, and it may even be useful to do that, but it's important to acknowledge that reality may not look like your model.
+    </p>
+    <p>
+        You can write statically-typed, composable parsers. Some of them are quite elegant, but the good ones explicitly model that parsing of input is error-prone. When input is well-formed, the result may be a nicely <a href="/2022/10/24/encapsulation-in-functional-programming">encapsulated</a>, statically-typed value, but when it's malformed, the result is one or more error values.
+    </p>
+    <p>
+        Perhaps the most important message is that databases, other web services, file systems, etc. involve input and output, too. Even if <em>you</em> write code that initiates a database query, or a web service request, should you implicitly trust the data that comes back?
+    </p>
+    <p>
+        This question of trust doesn't have to imply security concerns. Rather, systems evolve and errors happen. Every time you interact with an external system, there's a risk that it has become misaligned with yours. Static types can't protect you against that.
+    </p>
+</div>
