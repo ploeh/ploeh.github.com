@@ -1,0 +1,289 @@
+---
+layout: post
+title: "A C# port of validation with partial round trip"
+description: "A raw port of the previous F# demo code."
+date: 2023-10-30 11:52 UTC
+tags: [Functional Programming]
+---
+{% include JB/setup %}
+
+<div id="post">
+    <p>
+        <em>{{ page.description }}</em>
+    </p>
+    <p>
+        This article is part of <a href="/2020/12/14/validation-a-solved-problem">a short article series</a> on <a href="/2018/11/05/applicative-validation">applicative validation</a> with a twist. The twist is that validation, when it fails, should return not only a list of error messages; it should also retain that part of the input that <em>was</em> valid.
+    </p>
+    <p>
+        In the <a href="/2020/12/28/an-f-demo-of-validation-with-partial-data-round-trip">previous article</a> I showed <a href="https://fsharp.org/">F#</a> demo code, and since <a href="https://forums.fsharp.org/t/thoughts-on-input-validation-pattern-from-a-noob/1541">the original forum question</a> that prompted the article series was about F# code, for a long time, I left it there.
+    </p>
+    <p>
+        Recently, however, I've found myself writing about validation in a broader context:
+    </p>
+    <ul>
+        <li><a href="/2022/07/25/an-applicative-reservation-validation-example-in-c">An applicative reservation validation example in C#</a></li>
+        <li><a href="/2022/08/15/aspnet-validation-revisited">ASP.NET validation revisited</a></li>
+        <li><a href="/2022/08/22/can-types-replace-validation">Can types replace validation?</a></li>
+        <li><a href="/2023/06/26/validation-and-business-rules">Validation and business rules</a></li>
+        <li><a href="/2023/07/03/validating-or-verifying-emails">Validating or verifying emails</a></li>
+    </ul>
+    <p>
+        Perhaps I should consider adding a <em>validation</em> tag to the blog...
+    </p>
+    <p>
+        In that light I thought that it might be illustrative to continue <a href="/2020/12/14/validation-a-solved-problem">this article series</a> with a port to C#.
+    </p>
+    <p>
+        Here, I use techniques already described on this site to perform the translation. Follow the links for details.
+    </p>
+    <p>
+        The translation given here is direct so produces some fairly non-idiomatic C# code.
+    </p>
+    <h3 id="5cee653b6148484fb782d92fea2ca415">
+        Building blocks <a href="#5cee653b6148484fb782d92fea2ca415">#</a>
+    </h3>
+    <p>
+        The original problem is succinctly stated, and I follow it as closely as possible. This includes potential errors that may be present in the original post.
+    </p>
+    <p>
+        The task is to translate some input to a Domain Model with <a href="/2022/10/24/encapsulation-in-functional-programming">good encapsulation</a>. The input type looks like this, translated to a <a href="https://learn.microsoft.com/dotnet/csharp/language-reference/builtin-types/record">C# record</a>:
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">sealed</span>&nbsp;<span style="color:blue;">record</span>&nbsp;<span style="color:#2b91af;">Input</span>(<span style="color:blue;">string</span>?&nbsp;<span style="font-weight:bold;color:#1f377f;">Name</span>,&nbsp;DateTime?&nbsp;<span style="font-weight:bold;color:#1f377f;">DoB</span>,&nbsp;<span style="color:blue;">string</span>?&nbsp;<span style="font-weight:bold;color:#1f377f;">Address</span>)</pre>
+    </p>
+    <p>
+        Notice that every input may be null. This indicates poor encapsulation, but is symptomatic of most input. <a href="/2023/10/16/at-the-boundaries-static-types-are-illusory">At the boundaries, static types are illusory</a>. Perhaps it would have been more idiomatic to model such input as a <a href="https://en.wikipedia.org/wiki/Data_transfer_object">Data Transfer Object</a>, but it makes little difference to what comes next.
+    </p>
+    <p>
+        I consider <a href="/2020/12/14/validation-a-solved-problem">validation a solved problem</a>, because it's possible to model the process as an <a href="/2018/10/01/applicative-functors">applicative functor</a>. Really, <a href="https://lexi-lambda.github.io/blog/2019/11/05/parse-don-t-validate/">validation is a parsing problem</a>.
+    </p>
+    <p>
+        Since my main intent with this article is to demonstrate a technique, I will allow myself a few shortcuts. Like I did <a href="/2023/08/28/a-first-crack-at-the-args-kata">when I first encountered the Args kata</a>, I start by copying the <code>Validated</code> code from <a href="/2022/07/25/an-applicative-reservation-validation-example-in-c">An applicative reservation validation example in C#</a>; you can go there if you're interested in it. I'm not going to repeat it here.
+    </p>
+    <p>
+        The target type looks similar to the above <code>Input</code> record, but doesn't allow null values:
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">sealed</span>&nbsp;<span style="color:blue;">record</span>&nbsp;<span style="color:#2b91af;">ValidInput</span>(<span style="color:blue;">string</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">Name</span>,&nbsp;DateTime&nbsp;<span style="font-weight:bold;color:#1f377f;">DoB</span>,&nbsp;<span style="color:blue;">string</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">Address</span>);</pre>
+    </p>
+    <p>
+        This could also have been a 'proper' class. The following code doesn't depend on that.
+    </p>
+    <h3 id="7af5ab9c8fca4dc193fc5854c2806ff4">
+        Validating names <a href="#7af5ab9c8fca4dc193fc5854c2806ff4">#</a>
+    </h3>
+    <p>
+        Since I'm now working in an ostensibly object-oriented language, I can make the various validation functions methods on the <code>Input</code> record. Since I'm treating validation as a parsing problem, I'm going to name those methods with the <code>TryParse</code> prefix:
+    </p>
+    <p>
+        <pre><span style="color:blue;">private</span>&nbsp;Validated&lt;(Func&lt;Input,&nbsp;Input&gt;,&nbsp;IReadOnlyCollection&lt;<span style="color:blue;">string</span>&gt;),&nbsp;<span style="color:blue;">string</span>&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#74531f;">TryParseName</span>()
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">if</span>&nbsp;(Name&nbsp;<span style="color:blue;">is</span>&nbsp;<span style="color:blue;">null</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;Validated.Fail&lt;(Func&lt;Input,&nbsp;Input&gt;,&nbsp;IReadOnlyCollection&lt;<span style="color:blue;">string</span>&gt;),&nbsp;<span style="color:blue;">string</span>&gt;(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(<span style="font-weight:bold;color:#1f377f;">x</span>&nbsp;=&gt;&nbsp;x,&nbsp;<span style="color:blue;">new</span>[]&nbsp;{&nbsp;<span style="color:#a31515;">&quot;name&nbsp;is&nbsp;required&quot;</span>&nbsp;}));
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">if</span>&nbsp;(Name.Length&nbsp;&lt;=&nbsp;3)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;Validated.Fail&lt;(Func&lt;Input,&nbsp;Input&gt;,&nbsp;IReadOnlyCollection&lt;<span style="color:blue;">string</span>&gt;),&nbsp;<span style="color:blue;">string</span>&gt;(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(<span style="font-weight:bold;color:#1f377f;">i</span>&nbsp;=&gt;&nbsp;i&nbsp;<span style="color:blue;">with</span>&nbsp;{&nbsp;Name&nbsp;=&nbsp;<span style="color:blue;">null</span>&nbsp;},&nbsp;<span style="color:blue;">new</span>[]&nbsp;{&nbsp;<span style="color:#a31515;">&quot;no&nbsp;bob&nbsp;and&nbsp;toms&nbsp;allowed&quot;</span>&nbsp;}));
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;Validated.Succeed&lt;(Func&lt;Input,&nbsp;Input&gt;,&nbsp;IReadOnlyCollection&lt;<span style="color:blue;">string</span>&gt;),&nbsp;<span style="color:blue;">string</span>&gt;(Name);
+}</pre>
+    </p>
+    <p>
+        As the two previous articles have explained, the result of trying to parse input is a type isomorphic to <a href="/2019/01/14/an-either-functor">Either</a>, but here called <code><span style="color:#2b91af;">Validated</span>&lt;<span style="color:#2b91af;">F</span>,&nbsp;<span style="color:#2b91af;">S</span>&gt;</code>. (The reason for this distinction is that we <em>don't</em> want the <a href="/2022/05/09/an-either-monad">monadic behaviour of Either</a>, because monads short-circuit.)
+    </p>
+    <p>
+        When parsing succeeds, the <code>TryParseName</code> method returns the <code>Name</code> wrapped in a <code>Success</code> case.
+    </p>
+    <p>
+        Parsing the name may fail in two different ways. If the name is missing, the method returns the input and the error message <em>"name is required"</em>. If the name is present, but too short, <code>TryParseName</code> returns another error message, and also resets <code>Name</code> to <code>null</code>.
+    </p>
+    <p>
+        Compare the C# code with <a href="/2020/12/28/an-f-demo-of-validation-with-partial-data-round-trip">the corresponding F#</a> or <a href="/2020/12/21/a-haskell-proof-of-concept-of-validation-with-partial-data-round-trip">Haskell code</a> and notice how much more verbose the C# has to be.
+    </p>
+    <p>
+        While it's possible to translate many functional programming concepts to a language like C#, syntax does matter, because it affects readability.
+    </p>
+    <h3 id="2113a955061341ab9e2dba711aaf8457">
+        Validating date of birth <a href="#2113a955061341ab9e2dba711aaf8457">#</a>
+    </h3>
+    <p>
+        From here, the port is direct, if awkward. Here's how to validate the date-of-birth field:
+    </p>
+    <p>
+        <pre><span style="color:blue;">private</span>&nbsp;Validated&lt;(Func&lt;Input,&nbsp;Input&gt;,&nbsp;IReadOnlyCollection&lt;<span style="color:blue;">string</span>&gt;),&nbsp;DateTime&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#74531f;">TryParseDoB</span>(DateTime&nbsp;<span style="font-weight:bold;color:#1f377f;">now</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">if</span>&nbsp;(!DoB.HasValue)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;Validated.Fail&lt;(Func&lt;Input,&nbsp;Input&gt;,&nbsp;IReadOnlyCollection&lt;<span style="color:blue;">string</span>&gt;),&nbsp;DateTime&gt;(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(<span style="font-weight:bold;color:#1f377f;">x</span>&nbsp;=&gt;&nbsp;x,&nbsp;<span style="color:blue;">new</span>[]&nbsp;{&nbsp;<span style="color:#a31515;">&quot;dob&nbsp;is&nbsp;required&quot;</span>&nbsp;}));
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">if</span>&nbsp;(DoB.Value&nbsp;&lt;=&nbsp;now.AddYears(-12))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;Validated.Fail&lt;(Func&lt;Input,&nbsp;Input&gt;,&nbsp;IReadOnlyCollection&lt;<span style="color:blue;">string</span>&gt;),&nbsp;DateTime&gt;(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(<span style="font-weight:bold;color:#1f377f;">i</span>&nbsp;=&gt;&nbsp;i&nbsp;<span style="color:blue;">with</span>&nbsp;{&nbsp;DoB&nbsp;=&nbsp;<span style="color:blue;">null</span>&nbsp;},&nbsp;<span style="color:blue;">new</span>[]&nbsp;{&nbsp;<span style="color:#a31515;">&quot;get&nbsp;off&nbsp;my&nbsp;lawn&quot;</span>&nbsp;}));
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;Validated.Succeed&lt;(Func&lt;Input,&nbsp;Input&gt;,&nbsp;IReadOnlyCollection&lt;<span style="color:blue;">string</span>&gt;),&nbsp;DateTime&gt;(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;DoB.Value);
+}</pre>
+    </p>
+    <p>
+        I suspect that the age check should really have been a greater-than relation, but I'm only reproducing the original code.
+    </p>
+    <h3 id="e1fc6b98e4fb4dad81ee5e354032acb8">
+        Validating addresses <a href="#e1fc6b98e4fb4dad81ee5e354032acb8">#</a>
+    </h3>
+    <p>
+        The final building block is to parse the input address:
+    </p>
+    <p>
+        <pre><span style="color:blue;">private</span>&nbsp;Validated&lt;(Func&lt;Input,&nbsp;Input&gt;,&nbsp;IReadOnlyCollection&lt;<span style="color:blue;">string</span>&gt;),&nbsp;<span style="color:blue;">string</span>&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#74531f;">TryParseAddress</span>()
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">if</span>&nbsp;(Address&nbsp;<span style="color:blue;">is</span>&nbsp;<span style="color:blue;">null</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;Validated.Fail&lt;(Func&lt;Input,&nbsp;Input&gt;,&nbsp;IReadOnlyCollection&lt;<span style="color:blue;">string</span>&gt;),&nbsp;<span style="color:blue;">string</span>&gt;(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(<span style="font-weight:bold;color:#1f377f;">x</span>&nbsp;=&gt;&nbsp;x,&nbsp;<span style="color:blue;">new</span>[]&nbsp;{&nbsp;<span style="color:#a31515;">&quot;add1&nbsp;is&nbsp;required&quot;</span>&nbsp;}));
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;Validated.Succeed&lt;(Func&lt;Input,&nbsp;Input&gt;,&nbsp;IReadOnlyCollection&lt;<span style="color:blue;">string</span>&gt;),&nbsp;<span style="color:blue;">string</span>&gt;(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Address);
+}</pre>
+    </p>
+    <p>
+        The <code>TryParseAddress</code> only checks whether or not the <code>Address</code> field is present.
+    </p>
+    <h3 id="b11153a62fa945568e880cf771a7cb19">
+        Composition <a href="#b11153a62fa945568e880cf771a7cb19">#</a>
+    </h3>
+    <p>
+        The above methods are <code>private</code> because the entire problem is simple enough that I can test the composition as a whole. Had I wanted to, however, I could easily have made them <code>public</code> and tested them individually.
+    </p>
+    <p>
+        You can now use applicative composition to produce a single validation method:
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;Validated&lt;(Input,&nbsp;IReadOnlyCollection&lt;<span style="color:blue;">string</span>&gt;),&nbsp;ValidInput&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#74531f;">TryParse</span>(DateTime&nbsp;<span style="font-weight:bold;color:#1f377f;">now</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">name</span>&nbsp;=&nbsp;TryParseName();
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">dob</span>&nbsp;=&nbsp;TryParseDoB(now);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">address</span>&nbsp;=&nbsp;TryParseAddress();
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;Func&lt;<span style="color:blue;">string</span>,&nbsp;DateTime,&nbsp;<span style="color:blue;">string</span>,&nbsp;ValidInput&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">createValid</span>&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(<span style="font-weight:bold;color:#1f377f;">n</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">d</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">a</span>)&nbsp;=&gt;&nbsp;<span style="color:blue;">new</span>&nbsp;ValidInput(n,&nbsp;d,&nbsp;a);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">static</span>&nbsp;(Func&lt;Input,&nbsp;Input&gt;,&nbsp;IReadOnlyCollection&lt;<span style="color:blue;">string</span>&gt;)&nbsp;<span style="color:#74531f;">combineErrors</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(Func&lt;Input,&nbsp;Input&gt;&nbsp;f,&nbsp;IReadOnlyCollection&lt;<span style="color:blue;">string</span>&gt;&nbsp;es)&nbsp;<span style="font-weight:bold;color:#1f377f;">x</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(Func&lt;Input,&nbsp;Input&gt;&nbsp;g,&nbsp;IReadOnlyCollection&lt;<span style="color:blue;">string</span>&gt;&nbsp;es)&nbsp;<span style="font-weight:bold;color:#1f377f;">y</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;(<span style="font-weight:bold;color:#1f377f;">z</span>&nbsp;=&gt;&nbsp;y.g(x.f(z)),&nbsp;y.es.Concat(x.es).ToArray());
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;createValid
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.Apply(name,&nbsp;combineErrors)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.Apply(dob,&nbsp;combineErrors)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.Apply(address,&nbsp;combineErrors)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.SelectFailure(<span style="font-weight:bold;color:#1f377f;">x</span>&nbsp;=&gt;&nbsp;(x.Item1(<span style="color:blue;">this</span>),&nbsp;x.Item2));
+}</pre>
+    </p>
+    <p>
+        This is where the <code>Validated</code> API is still awkward. You need to explicitly define a function to compose error cases. In this case, <code>combineErrors</code> composes the <a href="/2017/11/13/endomorphism-monoid">endomorphisms</a> and concatenates the collections.
+    </p>
+    <p>
+        The final step 'runs' the endomorphism. <code>x.Item1</code> is the endomorphism, and <code>this</code> is the <code>Input</code> value being validated. Again, this isn't readable in C#, but it's where the endomorphism removes the invalid values from the input.
+    </p>
+    <h3 id="8aa59e20c1924002ae0d4e951df71619">
+        Tests <a href="#8aa59e20c1924002ae0d4e951df71619">#</a>
+    </h3>
+    <p>
+        Since <a href="/2018/11/05/applicative-validation">applicative validation</a> is a functional technique, it's <a href="/2015/05/07/functional-design-is-intrinsically-testable">intrinsically testable</a>.
+    </p>
+    <p>
+        Testing a successful validation is as easy as this:
+    </p>
+    <p>
+        <pre>[Fact]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;<span style="font-weight:bold;color:#74531f;">ValidationSucceeds</span>()
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">now</span>&nbsp;=&nbsp;DateTime.Now;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">eightYearsAgo</span>&nbsp;=&nbsp;now.AddYears(-8);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">input</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;Input(<span style="color:#a31515;">&quot;Alice&quot;</span>,&nbsp;eightYearsAgo,&nbsp;<span style="color:#a31515;">&quot;x&quot;</span>);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">actual</span>&nbsp;=&nbsp;input.TryParse(now);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">expected</span>&nbsp;=&nbsp;Validated.Succeed&lt;(Input,&nbsp;IReadOnlyCollection&lt;<span style="color:blue;">string</span>&gt;),&nbsp;ValidInput&gt;(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;ValidInput(<span style="color:#a31515;">&quot;Alice&quot;</span>,&nbsp;eightYearsAgo,&nbsp;<span style="color:#a31515;">&quot;x&quot;</span>));
+&nbsp;&nbsp;&nbsp;&nbsp;Assert.Equal(expected,&nbsp;actual);
+}</pre>
+    </p>
+    <p>
+        As is often the case, the error conditions are more numerous, or more interesting, if you will, than the success case, so this requires a parametrised test:
+    </p>
+    <p>
+        <pre>[Theory,&nbsp;ClassData(<span style="color:blue;">typeof</span>(ValidationFailureTestCases))]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;<span style="font-weight:bold;color:#74531f;">ValidationFails</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;Input&nbsp;<span style="font-weight:bold;color:#1f377f;">input</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;Input&nbsp;<span style="font-weight:bold;color:#1f377f;">expected</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;IReadOnlyCollection&lt;<span style="color:blue;">string</span>&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">expectedMessages</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">now</span>&nbsp;=&nbsp;DateTime.Now;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">actual</span>&nbsp;=&nbsp;input.TryParse(now);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;var&nbsp;(<span style="font-weight:bold;color:#1f377f;">inp</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">msgs</span>)&nbsp;=&nbsp;Assert.Single(actual.Match(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;onFailure:&nbsp;<span style="font-weight:bold;color:#1f377f;">x</span>&nbsp;=&gt;&nbsp;<span style="color:blue;">new</span>[]&nbsp;{&nbsp;x&nbsp;},
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;onSuccess:&nbsp;<span style="font-weight:bold;color:#1f377f;">_</span>&nbsp;=&gt;&nbsp;Array.Empty&lt;(Input,&nbsp;IReadOnlyCollection&lt;<span style="color:blue;">string</span>&gt;)&gt;()));
+&nbsp;&nbsp;&nbsp;&nbsp;Assert.Equal(expected,&nbsp;inp);
+&nbsp;&nbsp;&nbsp;&nbsp;Assert.Equal(expectedMessages,&nbsp;msgs);
+}</pre>
+    </p>
+    <p>
+        I also had to take <code>actual</code> apart in order to inspects its individual elements. When working with a pure and immutable data structure, I consider that a test smell. Rather, one should be able to use <a href="/2021/05/03/structural-equality-for-better-tests">structural equality for better tests</a>. Unfortunately, .NET collections don't have structural equality, so the test has to pull the message collection out of <code>actual</code> in order to verify it.
+    </p>
+    <p>
+        Again, in F# or <a href="https://www.haskell.org/">Haskell</a> you don't have that problem, and the tests are much more succinct and robust.
+    </p>
+    <p>
+        The test cases are implemented by this nested <code>ValidationFailureTestCases</code> class:
+    </p>
+    <p>
+        <pre><span style="color:blue;">private</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">ValidationFailureTestCases</span>&nbsp;:
+&nbsp;&nbsp;&nbsp;&nbsp;TheoryData&lt;Input,&nbsp;Input,&nbsp;IReadOnlyCollection&lt;<span style="color:blue;">string</span>&gt;&gt;
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">ValidationFailureTestCases</span>()
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Add(<span style="color:blue;">new</span>&nbsp;Input(<span style="color:blue;">null</span>,&nbsp;<span style="color:blue;">null</span>,&nbsp;<span style="color:blue;">null</span>),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;Input(<span style="color:blue;">null</span>,&nbsp;<span style="color:blue;">null</span>,&nbsp;<span style="color:blue;">null</span>),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>[]&nbsp;{&nbsp;<span style="color:#a31515;">&quot;add1&nbsp;is&nbsp;required&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;dob&nbsp;is&nbsp;required&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;name&nbsp;is&nbsp;required&quot;</span>&nbsp;});
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Add(<span style="color:blue;">new</span>&nbsp;Input(<span style="color:#a31515;">&quot;Bob&quot;</span>,&nbsp;<span style="color:blue;">null</span>,&nbsp;<span style="color:blue;">null</span>),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;Input(<span style="color:blue;">null</span>,&nbsp;<span style="color:blue;">null</span>,&nbsp;<span style="color:blue;">null</span>),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>[]&nbsp;{&nbsp;<span style="color:#a31515;">&quot;add1&nbsp;is&nbsp;required&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;dob&nbsp;is&nbsp;required&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;no&nbsp;bob&nbsp;and&nbsp;toms&nbsp;allowed&quot;</span>&nbsp;});
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Add(<span style="color:blue;">new</span>&nbsp;Input(<span style="color:#a31515;">&quot;Alice&quot;</span>,&nbsp;<span style="color:blue;">null</span>,&nbsp;<span style="color:blue;">null</span>),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;Input(<span style="color:#a31515;">&quot;Alice&quot;</span>,&nbsp;<span style="color:blue;">null</span>,&nbsp;<span style="color:blue;">null</span>),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>[]&nbsp;{&nbsp;<span style="color:#a31515;">&quot;add1&nbsp;is&nbsp;required&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;dob&nbsp;is&nbsp;required&quot;</span>&nbsp;});
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">eightYearsAgo</span>&nbsp;=&nbsp;DateTime.Now.AddYears(-8);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Add(<span style="color:blue;">new</span>&nbsp;Input(<span style="color:#a31515;">&quot;Alice&quot;</span>,&nbsp;eightYearsAgo,&nbsp;<span style="color:blue;">null</span>),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;Input(<span style="color:#a31515;">&quot;Alice&quot;</span>,&nbsp;eightYearsAgo,&nbsp;<span style="color:blue;">null</span>),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>[]&nbsp;{&nbsp;<span style="color:#a31515;">&quot;add1&nbsp;is&nbsp;required&quot;</span>&nbsp;});
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">fortyYearsAgo</span>&nbsp;=&nbsp;DateTime.Now.AddYears(-40);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Add(<span style="color:blue;">new</span>&nbsp;Input(<span style="color:#a31515;">&quot;Alice&quot;</span>,&nbsp;fortyYearsAgo,&nbsp;<span style="color:#a31515;">&quot;x&quot;</span>),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;Input(<span style="color:#a31515;">&quot;Alice&quot;</span>,&nbsp;<span style="color:blue;">null</span>,&nbsp;<span style="color:#a31515;">&quot;x&quot;</span>),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>[]&nbsp;{&nbsp;<span style="color:#a31515;">&quot;get&nbsp;off&nbsp;my&nbsp;lawn&quot;</span>&nbsp;});
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Add(<span style="color:blue;">new</span>&nbsp;Input(<span style="color:#a31515;">&quot;Tom&quot;</span>,&nbsp;fortyYearsAgo,&nbsp;<span style="color:#a31515;">&quot;x&quot;</span>),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;Input(<span style="color:blue;">null</span>,&nbsp;<span style="color:blue;">null</span>,&nbsp;<span style="color:#a31515;">&quot;x&quot;</span>),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>[]&nbsp;{&nbsp;<span style="color:#a31515;">&quot;get&nbsp;off&nbsp;my&nbsp;lawn&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;no&nbsp;bob&nbsp;and&nbsp;toms&nbsp;allowed&quot;</span>&nbsp;});
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Add(<span style="color:blue;">new</span>&nbsp;Input(<span style="color:#a31515;">&quot;Tom&quot;</span>,&nbsp;eightYearsAgo,&nbsp;<span style="color:#a31515;">&quot;x&quot;</span>),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;Input(<span style="color:blue;">null</span>,&nbsp;eightYearsAgo,&nbsp;<span style="color:#a31515;">&quot;x&quot;</span>),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>[]&nbsp;{&nbsp;<span style="color:#a31515;">&quot;no&nbsp;bob&nbsp;and&nbsp;toms&nbsp;allowed&quot;</span>&nbsp;});
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+    </p>
+    <p>
+        All eight tests pass.
+    </p>
+    <h3 id="96596b52720f4a2688c216701f48d559">
+        Conclusion <a href="#96596b52720f4a2688c216701f48d559">#</a>
+    </h3>
+    <p>
+        Once you know <a href="/2018/05/22/church-encoding">how to model sum types (discriminated unions) in C#</a>, translating something like applicative validation isn't difficult per se. It's a fairly automatic process.
+    </p>
+    <p>
+        The code is hardly <a href="/2015/08/03/idiomatic-or-idiosyncratic">idiomatic</a> C#, and the type annotations are particularly annoying. Things work as expected though, and it isn't difficult to imagine how one could refactor some of this code to a more idiomatic form.
+    </p>
+</div>
