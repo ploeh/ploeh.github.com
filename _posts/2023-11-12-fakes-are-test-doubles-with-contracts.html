@@ -1,0 +1,476 @@
+---
+layout: post
+title: "Fakes are Test Doubles with contracts"
+description: "Contracts of Fake Objects can be described by properties."
+date: 2023-11-13 17:11 UTC
+tags: [Unit Testing, F#, Property-based Testing]
+---
+{% include JB/setup %}
+
+<div id="post">
+    <p>
+        <em>{{ page.description }}</em>
+    </p>
+    <p>
+        The first time I tried my hand with the <a href="https://codingdojo.org/kata/CQRS_Booking/">CQRS Booking kata</a>, I abandoned it after 45 minutes because I found that I had little to learn from it. After all, I've already done umpteen variations of (restaurant) booking code examples, in several programming languages. The code example that accompanies my book <a href="/2021/06/14/new-book-code-that-fits-in-your-head">Code That Fits in Your Head</a> is only the largest and most complete of those.
+    </p>
+    <p>
+        I also wrote <a href="https://learn.microsoft.com/en-us/archive/msdn-magazine/2011/april/azure-development-cqrs-on-microsoft-azure">an MSDN Magazine article</a> in 2011 about <a href="https://en.wikipedia.org/wiki/Command_Query_Responsibility_Segregation">CQRS</a>, so I think I have that angle covered as well.
+    </p>
+    <p>
+        Still, while at first glance the kata seemed to have little to offer me, I've found myself coming back to it a few times. It does enable me to focus on something else than the 'production code'. In fact, it turns out that even if (or perhaps particularly <em>when</em>) you use test-driven development (TDD), there's precious little production code. Let's get that out of the way first.
+    </p>
+    <h3 id="b1192f76c2ef4f31b6bddcbc944664c7">
+        Production code <a href="#b1192f76c2ef4f31b6bddcbc944664c7">#</a>
+    </h3>
+    <p>
+        The few times I've now done the kata, there's almost no 'production code'. The implied <code>CommandService</code> has two lines of effective code:
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">sealed</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">CommandService</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;IWriteRegistry&nbsp;writeRegistry;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;IReadRegistry&nbsp;readRegistry;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">CommandService</span>(IWriteRegistry&nbsp;<span style="font-weight:bold;color:#1f377f;">writeRegistry</span>,&nbsp;IReadRegistry&nbsp;<span style="font-weight:bold;color:#1f377f;">readRegistry</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.writeRegistry&nbsp;=&nbsp;writeRegistry;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.readRegistry&nbsp;=&nbsp;readRegistry;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;<span style="font-weight:bold;color:#74531f;">BookARoom</span>(Booking&nbsp;<span style="font-weight:bold;color:#1f377f;">booking</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;writeRegistry.Save(booking);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;readRegistry.RoomBooked(booking);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+    </p>
+    <p>
+        The <code>QueryService</code> class isn't much more exciting:
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">sealed</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">QueryService</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;IReadRegistry&nbsp;readRegistry;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">QueryService</span>(IReadRegistry&nbsp;<span style="font-weight:bold;color:#1f377f;">readRegistry</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.readRegistry&nbsp;=&nbsp;readRegistry;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;IReadOnlyCollection&lt;Room&gt;&nbsp;<span style="color:#74531f;">Reserve</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Booking&nbsp;<span style="font-weight:bold;color:#1f377f;">booking</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;IReadOnlyCollection&lt;Room&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">existingView</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;existingView.Where(<span style="font-weight:bold;color:#1f377f;">r</span>&nbsp;=&gt;&nbsp;r.Name&nbsp;!=&nbsp;booking.RoomName).ToList();
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;IReadOnlyCollection&lt;Room&gt;&nbsp;<span style="font-weight:bold;color:#74531f;">GetFreeRooms</span>(DateOnly&nbsp;<span style="font-weight:bold;color:#1f377f;">arrival</span>,&nbsp;DateOnly&nbsp;<span style="font-weight:bold;color:#1f377f;">departure</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;readRegistry.GetFreeRooms(arrival,&nbsp;departure);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+    </p>
+    <p>
+        The kata only suggests the <code>GetFreeRooms</code> method, which is only a single line. The only reason the <code>Reserve</code> function also exists is to pull a bit of testable logic back from the below <a href="http://xunitpatterns.com/Fake%20Object.html">Fake object</a>. I'll return to that shortly.
+    </p>
+    <p>
+        I've also done the exercise in <a href="https://fsharp.org/">F#</a>, essentially porting the C# implementation, which only highlights how simple it all is:
+    </p>
+    <p>
+        <pre><span style="color:blue;">module</span>&nbsp;CommandService&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;bookARoom&nbsp;(writeRegistry&nbsp;:&nbsp;IWriteRegistry)&nbsp;(readRegistry&nbsp;:&nbsp;IReadRegistry)&nbsp;booking&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;writeRegistry.Save&nbsp;booking
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;readRegistry.RoomBooked&nbsp;booking
+ 
+<span style="color:blue;">module</span>&nbsp;QueryService&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;reserve&nbsp;booking&nbsp;existingView&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;existingView&nbsp;|&gt;&nbsp;Seq.filter&nbsp;(<span style="color:blue;">fun</span>&nbsp;r&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;r.Name&nbsp;&lt;&gt;&nbsp;booking.RoomName)
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;getFreeRooms&nbsp;(readRegistry&nbsp;:&nbsp;IReadRegistry)&nbsp;arrival&nbsp;departure&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;readRegistry.GetFreeRooms&nbsp;arrival&nbsp;departure</pre>
+    </p>
+    <p>
+        That's <em>both</em> the Command side and the Query side!
+    </p>
+    <p>
+        This represents my honest interpretation of the kata. Really, there's nothing to it.
+    </p>
+    <p>
+        The reason I still find the exercise interesting is that it explores other aspects of TDD than most katas. The most common katas require you to write a little algorithm: <a href="https://codingdojo.org/kata/Bowling/">Bowling</a>, <a href="https://codingdojo.org/kata/WordWrap/">Word wrap</a>, <a href="https://codingdojo.org/kata/RomanNumerals/">Roman Numerals</a>, <a href="https://codingdojo.org/kata/Diamond/">Diamond</a>, <a href="https://codingdojo.org/kata/Tennis/">Tennis</a>, etc.
+    </p>
+    <p>
+        The CQRS Booking kata suggests no interesting algorithm, but rather teaches some important lessons about software architecture, separation of concerns, and, if you approach it with TDD, real-world test automation. In contrast to all those algorithmic exercises, this one strongly suggests the use of <a href="http://xunitpatterns.com/Test%20Double.html">Test Doubles</a>.
+    </p>
+    <h3 id="6d8d7717cfef428e91418b319c4fe971">
+        Fakes <a href="#6d8d7717cfef428e91418b319c4fe971">#</a>
+    </h3>
+    <p>
+        You could attempt the kata with a dynamic 'mocking' library such as <a href="https://devlooped.com/moq">Moq</a> or <a href="https://site.mockito.org/">Mockito</a>, but I haven't tried. Since <a href="/2022/10/17/stubs-and-mocks-break-encapsulation">Stubs and Mocks break encapsulation</a> I favour Fake Objects instead.
+    </p>
+    <p>
+        Creating a Fake write registry is trivial:
+    </p>
+    <p>
+        <pre><span style="color:blue;">internal</span>&nbsp;<span style="color:blue;">sealed</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">FakeWriteRegistry</span>&nbsp;:&nbsp;Collection&lt;Booking&gt;,&nbsp;IWriteRegistry
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;<span style="font-weight:bold;color:#74531f;">Save</span>(Booking&nbsp;<span style="font-weight:bold;color:#1f377f;">booking</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Add(booking);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+    </p>
+    <p>
+        Its counterpart, the Fake read registry, turns out to be much more involved:
+    </p>
+    <p>
+        <pre><span style="color:blue;">internal</span>&nbsp;<span style="color:blue;">sealed</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">FakeReadRegistry</span>&nbsp;:&nbsp;IReadRegistry
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;IReadOnlyCollection&lt;Room&gt;&nbsp;rooms;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;IDictionary&lt;DateOnly,&nbsp;IReadOnlyCollection&lt;Room&gt;&gt;&nbsp;views;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">FakeReadRegistry</span>(<span style="color:blue;">params</span>&nbsp;Room[]&nbsp;<span style="font-weight:bold;color:#1f377f;">rooms</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.rooms&nbsp;=&nbsp;rooms;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;views&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;Dictionary&lt;DateOnly,&nbsp;IReadOnlyCollection&lt;Room&gt;&gt;();
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;IReadOnlyCollection&lt;Room&gt;&nbsp;<span style="font-weight:bold;color:#74531f;">GetFreeRooms</span>(DateOnly&nbsp;<span style="font-weight:bold;color:#1f377f;">arrival</span>,&nbsp;DateOnly&nbsp;<span style="font-weight:bold;color:#1f377f;">departure</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;EnumerateDates(arrival,&nbsp;departure)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.Select(GetView)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.Aggregate(rooms.AsEnumerable(),&nbsp;Enumerable.Intersect)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.ToList();
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;<span style="font-weight:bold;color:#74531f;">RoomBooked</span>(Booking&nbsp;<span style="font-weight:bold;color:#1f377f;">booking</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">foreach</span>&nbsp;(var&nbsp;<span style="font-weight:bold;color:#1f377f;">d</span>&nbsp;<span style="font-weight:bold;color:#8f08c4;">in</span>&nbsp;EnumerateDates(booking.Arrival,&nbsp;booking.Departure))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">view</span>&nbsp;=&nbsp;GetView(d);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">newView</span>&nbsp;=&nbsp;QueryService.Reserve(booking,&nbsp;view);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;views[d]&nbsp;=&nbsp;newView;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">static</span>&nbsp;IEnumerable&lt;DateOnly&gt;&nbsp;<span style="color:#74531f;">EnumerateDates</span>(DateOnly&nbsp;<span style="font-weight:bold;color:#1f377f;">arrival</span>,&nbsp;DateOnly&nbsp;<span style="font-weight:bold;color:#1f377f;">departure</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">d</span>&nbsp;=&nbsp;arrival;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">while</span>&nbsp;(d&nbsp;&lt;&nbsp;departure)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">yield</span>&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;d;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;d&nbsp;=&nbsp;d.AddDays(1);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;IReadOnlyCollection&lt;Room&gt;&nbsp;<span style="font-weight:bold;color:#74531f;">GetView</span>(DateOnly&nbsp;<span style="font-weight:bold;color:#1f377f;">date</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">if</span>&nbsp;(views.TryGetValue(date,&nbsp;<span style="color:blue;">out</span>&nbsp;var&nbsp;<span style="font-weight:bold;color:#1f377f;">view</span>))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;view;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">else</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;rooms;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+    </p>
+    <p>
+        I think I can predict the most common reaction: <em>That's much more code than the System Under Test!</em> Indeed. For this particular exercise, this may indicate that a 'dynamic mock' library may have been a better choice. I do, however, also think that it's an artefact of the kata description's lack of requirements.
+    </p>
+    <p>
+        As is evident from the restaurant sample code that accompanies <a href="/code-that-fits-in-your-head">Code That Fits in Your Head</a>, once you add <a href="/2020/01/27/the-maitre-d-kata">realistic business rules</a> the production code grows, and the ratio of test code to production code becomes better balanced.
+    </p>
+    <p>
+        The size of the <code>FakeReadRegistry</code> class also stems from the way the .NET base class library API is designed. The <code>GetView</code> helper method demonstrates that it requires four lines of code to look up an entry in a dictionary but return a default value if the entry isn't found. That's a one-liner in F#:
+    </p>
+    <p>
+        <pre><span style="color:blue;">let</span>&nbsp;getView&nbsp;(date&nbsp;:&nbsp;DateOnly)&nbsp;=&nbsp;views&nbsp;|&gt;&nbsp;Map.tryFind&nbsp;date&nbsp;|&gt;&nbsp;Option.defaultValue&nbsp;rooms&nbsp;|&gt;&nbsp;Set.ofSeq</pre>
+    </p>
+    <p>
+        I'll show the entire F# Fake later, but you could also play some CC golf with the C# code. That's a bit besides the point, though.
+    </p>
+    <h3 id="1f5b34534edd4b72947c8d6b4c8921bf">
+        Command service design <a href="#1f5b34534edd4b72947c8d6b4c8921bf">#</a>
+    </h3>
+    <p>
+        Why does <code>FakeReadRegistry</code> look like it does? It's a combination of the kata description and my prior experience with CQRS. When adopting an asynchronous message-based architecture, I would usually not implement the write side exactly like that. Notice how the <code>CommandService</code> class' <code>BookARoom</code> method seems to repeat itself:
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;<span style="font-weight:bold;color:#74531f;">BookARoom</span>(Booking&nbsp;<span style="font-weight:bold;color:#1f377f;">booking</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;writeRegistry.Save(booking);
+&nbsp;&nbsp;&nbsp;&nbsp;readRegistry.RoomBooked(booking);
+}</pre>
+    </p>
+    <p>
+        While semantically it seems to be making two different statements, structurally they're identical. If you rename the methods, you could wrap both method calls in a single <a href="https://en.wikipedia.org/wiki/Composite_pattern">Composite</a>. In a more typical CQRS architecture, you'd post a Command on bus:
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;<span style="font-weight:bold;color:#74531f;">BookARoom</span>(Booking&nbsp;<span style="font-weight:bold;color:#1f377f;">booking</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;bus.BookRoom(booking);
+}</pre>
+    </p>
+    <p>
+        This makes that particular <code>BookARoom</code> method, and perhaps the entire <code>CommandService</code> class, look redundant. Why do we need it?
+    </p>
+    <p>
+        As presented here, we don't, but in a real application, the Command service would likely perform some pre- and post-processing. For example, if this was a web application, the Command service might instead be a Controller concerned with validating and translating HTTP- or Web-based input to a Domain Object before posting to the bus.
+    </p>
+    <p>
+        A realistic code base would also be asynchronous, which, on .NET, would imply the use of the <code>async</code> and <code>await</code> keywords, etc.
+    </p>
+    <h3 id="4dd49e22fe4c479381285eb1b886457e">
+        Read registry design <a href="#4dd49e22fe4c479381285eb1b886457e">#</a>
+    </h3>
+    <p>
+        A central point of CQRS is that you can optimise the read side for the specific tasks that it needs to perform. Instead of performing a dynamic query every time a client requests a view, you can update and persist a view. Imagine having a JSON or HTML file that the system can serve upon request.
+    </p>
+    <p>
+        Part of handling a Command or Event is that the system background processes update persistent views once per event.
+    </p>
+    <p>
+        For the particular hotel booking system, I imagine that the read registry has a set of files, blobs, documents, or denormalised database rows. When it receives notification of a booking, it'll need to remove that room from the dates of the booking.
+    </p>
+    <p>
+        While a booking may stretch over several days, I found it simplest to think of the storage system as subdivided into single dates, instead of ranges. Indeed, the <code>GetFreeRooms</code> method is a ranged query, so if you really wanted to denormalise the views, you could create a persistent view per range. This would, however, require that you precalculate and persist a view for October 2 to October 4, and another one for October 2 to October 5, and so on. The combinatorial explosion suggests that this isn't a good idea, so instead I imagine keeping a persistent view per date, and then perform a bit of on-the-fly calculation per query.
+    </p>
+    <p>
+        That's what <code>FakeReadRegistry</code> does. It also falls back to a default collection of <code>rooms</code> for all the dates that are yet untouched by a booking. This is, again, because I imagine that I might implement a real system like that.
+    </p>
+    <p>
+        You may still protest that the <code>FakeReadRegistry</code> duplicates production code. True, perhaps, but if this really is a concern, you could refactor it to the <a href="https://en.wikipedia.org/wiki/Template_method_pattern">Template Method pattern</a>.
+    </p>
+    <p>
+        Still, it's not really that complicated; it only looks that way because C# and the Dictionary API is too heavy on <a href="/2019/12/16/zone-of-ceremony">ceremony</a>. The Fake looks much simpler in F#:
+    </p>
+    <p>
+        <pre><span style="color:blue;">type</span>&nbsp;FakeReadRegistry&nbsp;(rooms&nbsp;:&nbsp;IReadOnlyCollection&lt;Room&gt;)&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;<span style="color:blue;">mutable</span>&nbsp;views&nbsp;=&nbsp;Map.empty
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;enumerateDates&nbsp;(arrival&nbsp;:&nbsp;DateOnly)&nbsp;departure&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Seq.initInfinite&nbsp;id
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;Seq.map&nbsp;arrival.AddDays
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;Seq.takeWhile&nbsp;(<span style="color:blue;">fun</span>&nbsp;d&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;d&nbsp;&lt;&nbsp;departure)
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;getView&nbsp;(date&nbsp;:&nbsp;DateOnly)&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;views&nbsp;|&gt;&nbsp;Map.tryFind&nbsp;date&nbsp;|&gt;&nbsp;Option.defaultValue&nbsp;rooms&nbsp;|&gt;&nbsp;Set.ofSeq
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">interface</span>&nbsp;IReadRegistry&nbsp;<span style="color:blue;">with</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">member</span>&nbsp;this.GetFreeRooms&nbsp;arrival&nbsp;departure&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;enumerateDates&nbsp;arrival&nbsp;departure
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;Seq.map&nbsp;getView
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;Seq.fold&nbsp;Set.intersect&nbsp;(Set.ofSeq&nbsp;rooms)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;Set.toList&nbsp;:&gt;&nbsp;_
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">member</span>&nbsp;this.RoomBooked&nbsp;booking&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">for</span>&nbsp;d&nbsp;<span style="color:blue;">in</span>&nbsp;enumerateDates&nbsp;booking.Arrival&nbsp;booking.Departure&nbsp;<span style="color:blue;">do</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;newView&nbsp;=&nbsp;getView&nbsp;d&nbsp;|&gt;&nbsp;QueryService.reserve&nbsp;booking&nbsp;|&gt;&nbsp;Seq.toList
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;views&nbsp;<span style="color:blue;">&lt;-</span>&nbsp;Map.add&nbsp;d&nbsp;newView&nbsp;views
+</pre>
+    </p>
+    <p>
+        This isn't just more dense than the corresponding C# code, as F# tends to be, it also has a lower <a href="https://en.wikipedia.org/wiki/Cyclomatic_complexity">cyclomatic complexity</a>. Both the <code>EnumerateDates</code> and <code>GetView</code> C# methods have a cyclomatic complexity of <em>2</em>, while their F# counterparts rate only <em>1</em>.
+    </p>
+    <p>
+        For production code, cyclomatic complexity of <em>2</em> is fine if the code is covered by automatic tests. In test code, however, we should be wary of any branching or looping, since there are (typically) no tests of the test code.
+    </p>
+    <p>
+        While I <em>am</em> going to show some tests of that code in what follows, I do that for a different reason.
+    </p>
+    <h3 id="da4d51ff041c4cf6b4007d53a67f2d76">
+        Contract <a href="#da4d51ff041c4cf6b4007d53a67f2d76">#</a>
+    </h3>
+    <p>
+        When explaining Fake Objects to people, I've begun to use a particular phrase:
+    </p>
+    <blockquote>
+        <p>
+            A Fake Object is a polymorphic implementation of a dependency that fulfils the contract, but lacks some of the <em>ilities</em>.
+        </p>
+    </blockquote>
+    <p>
+        It's funny how you can arrive at something that strikes you as profound, only to discover that it was part of the definition all along:
+    </p>
+    <blockquote>
+        <p>
+            "We acquire or build a very lightweight implementation of the same functionality as provided by a component on which the SUT [System Under Test] depends and instruct the SUT to use it instead of the real DOC [Depended-On Component]. This implementation need not have any of the "-ilities" that the real DOC needs to have"
+        </p>
+        <footer><cite>Gerard Meszaros, <a href="/ref/xunit-patterns">xUnit Test Patterns</a></cite></footer>
+    </blockquote>
+    <p>
+        A common example is a Fake Repository object that pretends to be a database, often by leveraging a built-in collection API. The above <code>FakeWriteRegistry</code> is as simple an example as you could have. A slightly more compelling example is <a href="/2023/08/14/replacing-mock-and-stub-with-a-fake">the FakeUserRepository shown in another article</a>. Such an 'in-memory database' fulfils the implied contract, because if you 'save' something in the 'database' you can later retrieve it again with a query. As long as the object remains in memory.
+    </p>
+    <p>
+        The <em>ilities</em> that such a Fake database lacks are
+    </p>
+    <ul>
+        <li>data persistence</li>
+        <li>thread safety</li>
+        <li>transaction support</li>
+    </ul>
+    <p>
+        and perhaps others. Such qualities are clearly required in a real production environment, but are in the way in an automated testing context. The implied contract, however, is satisfied: What you save you can later retrieve.
+    </p>
+    <p>
+        Now consider the <code>IReadRegistry</code> interface:
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">interface</span>&nbsp;<span style="color:#2b91af;">IReadRegistry</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;IReadOnlyCollection&lt;Room&gt;&nbsp;<span style="font-weight:bold;color:#74531f;">GetFreeRooms</span>(DateOnly&nbsp;<span style="font-weight:bold;color:#1f377f;">arrival</span>,&nbsp;DateOnly&nbsp;<span style="font-weight:bold;color:#1f377f;">departure</span>);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">void</span>&nbsp;<span style="font-weight:bold;color:#74531f;">RoomBooked</span>(Booking&nbsp;<span style="font-weight:bold;color:#1f377f;">booking</span>);
+}</pre>
+    </p>
+    <p>
+        Which contract does it imply, given what you know about the <em>CQRS Booking</em> kata?
+    </p>
+    <p>
+        I would suggest the following:
+    </p>
+    <ul>
+        <li><em>Precondition:</em> <code>arrival</code> should be less than (or equal?) to <code>departure</code>.</li>
+        <li><em>Postcondition:</em> <code>GetFreeRooms</code> should always return a result. Null isn't a valid return value.</li>
+        <li><em>Invariant:</em> After calling <code>RoomBooked</code>, <code>GetFreeRooms</code> should exclude that room when queried on overlapping dates.</li>
+    </ul>
+    <p>
+        There may be other parts of the contract than this, but I find the third one most interesting. This is exactly what you would expect from a real system: If you reserve a room, you'd be surprised to see <code>GetFreeRooms</code> indicating that this room is free if queried about dates that overlap the reservation.
+    </p>
+    <p>
+        This is the sort of implied interaction that <a href="/2022/10/17/stubs-and-mocks-break-encapsulation">Stubs and Mocks break</a>, but that <code>FakeReadRegistry</code> guarantees.
+    </p>
+    <h3 id="6ab8206598ab4bb990d93e5472d36054">
+        Properties <a href="#6ab8206598ab4bb990d93e5472d36054">#</a>
+    </h3>
+    <p>
+        There's a close relationship between contracts and properties. Once you can list preconditions, invariants, and postconditions for an object, there's a good chance that you can write code that exercises those qualities. Indeed, why not use property-based testing to do so?
+    </p>
+    <p>
+        I don't wish to imply that you should (normally) write tests of your test code. The following rather serves as a concretisation of the notion that a Fake Object is a Test Double that implements the 'proper' behaviour. In the following, I'll subject the <code>FakeReadRegistry</code> class to that exercise. To do that, I'll use <a href="https://github.com/AnthonyLloyd/CsCheck">CsCheck</a> 2.14.1 with <a href="https://xunit.net/">xUnit.net</a> 2.5.3.
+    </p>
+    <p>
+        Before tackling the above invariant, there's a simpler invariant specific to the <code>FakeReadRegistry</code> class. A <code>FakeReadRegistry</code> object takes a collection of <code>rooms</code> via its constructor, so for this particular implementation, we may wish to establish the reasonable invariant that <code>GetFreeRooms</code> doesn't 'invent' rooms on its own:
+    </p>
+    <p>
+        <pre><span style="color:blue;">private</span>&nbsp;<span style="color:blue;">static</span>&nbsp;Gen&lt;Room&gt;&nbsp;GenRoom&nbsp;=&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">from</span>&nbsp;name&nbsp;<span style="color:blue;">in</span>&nbsp;Gen.String
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">select</span>&nbsp;<span style="color:blue;">new</span>&nbsp;Room(name);
+ 
+[Fact]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;<span style="font-weight:bold;color:#74531f;">GetFreeRooms</span>()
+{
+&nbsp;&nbsp;&nbsp;&nbsp;(<span style="color:blue;">from</span>&nbsp;rooms&nbsp;<span style="color:blue;">in</span>&nbsp;GenRoom.ArrayUnique
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">from</span>&nbsp;arrival&nbsp;<span style="color:blue;">in</span>&nbsp;Gen.Date.Select(DateOnly.FromDateTime)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">from</span>&nbsp;i&nbsp;<span style="color:blue;">in</span>&nbsp;Gen.Int[1,&nbsp;1_000]
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;departure&nbsp;=&nbsp;arrival.AddDays(i)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">select</span>&nbsp;(rooms,&nbsp;arrival,&nbsp;departure))
+&nbsp;&nbsp;&nbsp;&nbsp;.Sample((<span style="font-weight:bold;color:#1f377f;">rooms</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">arrival</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">departure</span>)&nbsp;=&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">sut</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;FakeReadRegistry(rooms);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">actual</span>&nbsp;=&nbsp;sut.GetFreeRooms(arrival,&nbsp;departure);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Assert.Subset(<span style="color:blue;">new</span>&nbsp;HashSet&lt;Room&gt;(rooms),&nbsp;<span style="color:blue;">new</span>&nbsp;HashSet&lt;Room&gt;(actual));
+&nbsp;&nbsp;&nbsp;&nbsp;});
+}</pre>
+    </p>
+    <p>
+        This property asserts that the <code>actual</code> value returned from <code>GetFreeRooms</code> is a subset of the <code>rooms</code> used to initialise the <code>sut</code>. Recall that the subset relation is <a href="https://en.wikipedia.org/wiki/Reflexive_relation">reflexive</a>; i.e. a set is a subset of itself.
+    </p>
+    <p>
+        The same property written in F# with <a href="https://hedgehog.qa/">Hedgehog</a> 0.13.0 and <a href="https://github.com/SwensenSoftware/unquote">Unquote</a> 6.1.0 may look like this:
+    </p>
+    <p>
+        <pre><span style="color:blue;">module</span>&nbsp;Gen&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;room&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Gen.alphaNum
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;Gen.array&nbsp;(Range.linear&nbsp;1&nbsp;10)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;Gen.map&nbsp;(<span style="color:blue;">fun</span>&nbsp;chars&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;{&nbsp;Name&nbsp;=&nbsp;String&nbsp;chars&nbsp;})
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;dateOnly&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;min&nbsp;=&nbsp;DateOnly(2000,&nbsp;1,&nbsp;1).DayNumber
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;max&nbsp;=&nbsp;DateOnly(2100,&nbsp;1,&nbsp;1).DayNumber
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Range.linear&nbsp;min&nbsp;max&nbsp;|&gt;&nbsp;Gen.int32&nbsp;|&gt;&nbsp;Gen.map&nbsp;DateOnly.FromDayNumber
+ 
+[&lt;Fact&gt;]
+<span style="color:blue;">let</span>&nbsp;GetFreeRooms&nbsp;()&nbsp;=&nbsp;Property.check&nbsp;&lt;|&nbsp;property&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;rooms&nbsp;=&nbsp;Gen.room&nbsp;|&gt;&nbsp;Gen.list&nbsp;(Range.linear&nbsp;0&nbsp;100)
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;arrival&nbsp;=&nbsp;Gen.dateOnly
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;i&nbsp;=&nbsp;Gen.int32&nbsp;(Range.linear&nbsp;1&nbsp;1_000)
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;departure&nbsp;=&nbsp;arrival.AddDays&nbsp;i
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;sut&nbsp;=&nbsp;FakeReadRegistry&nbsp;rooms&nbsp;:&gt;&nbsp;IReadRegistry
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;actual&nbsp;=&nbsp;sut.GetFreeRooms&nbsp;arrival&nbsp;departure
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;test&nbsp;&lt;@&nbsp;Set.isSubset&nbsp;(Set.ofSeq&nbsp;rooms)&nbsp;(Set.ofSeq&nbsp;actual)&nbsp;@&gt;&nbsp;}</pre>
+    </p>
+    <p>
+        Simpler syntax, same idea.
+    </p>
+    <p>
+        Likewise, we can express the contract that describes the relationship between <code>RoomBooked</code> and <code>GetFreeRooms</code> like this:
+    </p>
+    <p>
+        <pre>[Fact]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;<span style="font-weight:bold;color:#74531f;">RoomBooked</span>()
+{
+&nbsp;&nbsp;&nbsp;&nbsp;(<span style="color:blue;">from</span>&nbsp;rooms&nbsp;<span style="color:blue;">in</span>&nbsp;GenRoom.ArrayUnique.Nonempty
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">from</span>&nbsp;arrival&nbsp;<span style="color:blue;">in</span>&nbsp;Gen.Date.Select(DateOnly.FromDateTime)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">from</span>&nbsp;i&nbsp;<span style="color:blue;">in</span>&nbsp;Gen.Int[1,&nbsp;1_000]
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;departure&nbsp;=&nbsp;arrival.AddDays(i)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">from</span>&nbsp;room&nbsp;<span style="color:blue;">in</span>&nbsp;Gen.OneOfConst(rooms)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">from</span>&nbsp;id&nbsp;<span style="color:blue;">in</span>&nbsp;Gen.Guid
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;booking&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;Booking(id,&nbsp;room.Name,&nbsp;arrival,&nbsp;departure)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">select</span>&nbsp;(rooms,&nbsp;booking))
+&nbsp;&nbsp;&nbsp;&nbsp;.Sample((<span style="font-weight:bold;color:#1f377f;">rooms</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">booking</span>)&nbsp;=&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">sut</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;FakeReadRegistry(rooms);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;sut.RoomBooked(booking);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">actual</span>&nbsp;=&nbsp;sut.GetFreeRooms(booking.Arrival,&nbsp;booking.Departure);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Assert.DoesNotContain(booking.RoomName,&nbsp;actual.Select(<span style="font-weight:bold;color:#1f377f;">r</span>&nbsp;=&gt;&nbsp;r.Name));
+&nbsp;&nbsp;&nbsp;&nbsp;});
+}</pre>
+    </p>
+    <p>
+        or, in F#:
+    </p>
+    <p>
+        <pre>[&lt;Fact&gt;]
+<span style="color:blue;">let</span>&nbsp;RoomBooked&nbsp;()&nbsp;=&nbsp;Property.check&nbsp;&lt;|&nbsp;property&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;rooms&nbsp;=&nbsp;Gen.room&nbsp;|&gt;&nbsp;Gen.list&nbsp;(Range.linear&nbsp;1&nbsp;100)
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;arrival&nbsp;=&nbsp;Gen.dateOnly
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;i&nbsp;=&nbsp;Gen.int32&nbsp;(Range.linear&nbsp;1&nbsp;1_000)
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;departure&nbsp;=&nbsp;arrival.AddDays&nbsp;i
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;room&nbsp;=&nbsp;Gen.item&nbsp;rooms
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;id&nbsp;=&nbsp;Gen.guid
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;booking&nbsp;=&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;ClientId&nbsp;=&nbsp;id
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;RoomName&nbsp;=&nbsp;room.Name
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Arrival&nbsp;=&nbsp;arrival
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Departure&nbsp;=&nbsp;departure&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;sut&nbsp;=&nbsp;FakeReadRegistry&nbsp;rooms&nbsp;:&gt;&nbsp;IReadRegistry
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;sut.RoomBooked&nbsp;booking
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;actual&nbsp;=&nbsp;sut.GetFreeRooms&nbsp;arrival&nbsp;departure
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;test&nbsp;&lt;@&nbsp;not&nbsp;(Seq.contains&nbsp;room&nbsp;actual)&nbsp;@&gt;&nbsp;}</pre>
+    </p>
+    <p>
+        In both cases, the property books a room and then proceeds to query <code>GetFreeRooms</code> to see which rooms are free. Since the query is exactly in the range from <code>booking.Arrival</code> to <code>booking.Departure</code>, we expect <em>not</em> to see the name of the booked room among the free rooms.
+    </p>
+    <p>
+        (As I'm writing this, I think that there may be a subtle bug in the F# property. Can you spot it?)
+    </p>
+    <h3 id="fa249347697b49699b7ea62336746651">
+        Conclusion <a href="#fa249347697b49699b7ea62336746651">#</a>
+    </h3>
+    <p>
+        A Fake Object isn't like other Test Doubles. While <a href="/2022/10/17/stubs-and-mocks-break-encapsulation">Stubs and Mocks break encapsulation</a>, a Fake Object not only stays encapsulated, but it also fulfils the contract implied by a polymorphic API (interface or base class).
+    </p>
+    <p>
+        Or, put another way: When is a Fake Object the right Test Double? When you can describe the contract of the dependency.
+    </p>
+    <p>
+        But if you <em>can't</em> describe the contract of a dependency, you should seriously consider if the design is right.
+    </p>
+</div>
