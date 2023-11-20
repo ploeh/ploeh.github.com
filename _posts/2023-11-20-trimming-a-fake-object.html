@@ -1,0 +1,499 @@
+---
+layout: post
+title: "Trimming a Fake Object"
+description: "A refactoring example."
+date: 2023-11-20 6:44 UTC
+tags: [Dependency Injection, Design Patterns]
+---
+{% include JB/setup %}
+
+<div id="post">
+    <p>
+        <em>{{ page.description }}</em>
+    </p>
+    <p>
+        When I introduce the <a href="http://xunitpatterns.com/Fake%20Object.html">Fake Object</a> testing pattern to people, a common concern is the maintenance burden of it. The point of the pattern is that you write some 'working' code only for test purposes. At a glance, it seems as though it'd be more work than using a dynamic mock library like <a href="https://www.devlooped.com/moq/">Moq</a> or <a href="https://site.mockito.org/">Mockito</a>.
+    </p>
+    <p>
+        This article isn't really about that, but the benefit of a Fake Object is that it has a <em>lower</em> maintenance footprint because it gives you a single class to maintain when you change interfaces or base classes. Dynamic mock objects, on the contrary, leads to <a href="https://en.wikipedia.org/wiki/Shotgun_surgery">Shotgun surgery</a> because every time you change an interface or base class, you have to revisit multiple tests.
+    </p>
+    <p>
+        In a <a href="/2023/11/13/fakes-are-test-doubles-with-contracts">recent article</a> I presented a Fake Object that may have looked bigger than most people would find comfortable for test code. In this article I discuss how to trim it via a set of refactorings.
+    </p>
+    <h3 id="22e6648934bb4ae59aa1a181940172ae">
+        Original Fake read registry <a href="#22e6648934bb4ae59aa1a181940172ae">#</a>
+    </h3>
+    <p>
+        The article presented this <code>FakeReadRegistry</code>, repeated here for your convenience:
+    </p>
+    <p>
+        <pre><span style="color:blue;">internal</span>&nbsp;<span style="color:blue;">sealed</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">FakeReadRegistry</span>&nbsp;:&nbsp;IReadRegistry
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;IReadOnlyCollection&lt;Room&gt;&nbsp;rooms;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;IDictionary&lt;DateOnly,&nbsp;IReadOnlyCollection&lt;Room&gt;&gt;&nbsp;views;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">FakeReadRegistry</span>(<span style="color:blue;">params</span>&nbsp;Room[]&nbsp;<span style="font-weight:bold;color:#1f377f;">rooms</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.rooms&nbsp;=&nbsp;rooms;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;views&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;Dictionary&lt;DateOnly,&nbsp;IReadOnlyCollection&lt;Room&gt;&gt;();
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;IReadOnlyCollection&lt;Room&gt;&nbsp;<span style="font-weight:bold;color:#74531f;">GetFreeRooms</span>(DateOnly&nbsp;<span style="font-weight:bold;color:#1f377f;">arrival</span>,&nbsp;DateOnly&nbsp;<span style="font-weight:bold;color:#1f377f;">departure</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;EnumerateDates(arrival,&nbsp;departure)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.Select(GetView)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.Aggregate(rooms.AsEnumerable(),&nbsp;Enumerable.Intersect)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.ToList();
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;<span style="font-weight:bold;color:#74531f;">RoomBooked</span>(Booking&nbsp;<span style="font-weight:bold;color:#1f377f;">booking</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">foreach</span>&nbsp;(var&nbsp;<span style="font-weight:bold;color:#1f377f;">d</span>&nbsp;<span style="font-weight:bold;color:#8f08c4;">in</span>&nbsp;EnumerateDates(booking.Arrival,&nbsp;booking.Departure))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">view</span>&nbsp;=&nbsp;GetView(d);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">newView</span>&nbsp;=&nbsp;QueryService.Reserve(booking,&nbsp;view);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;views[d]&nbsp;=&nbsp;newView;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">static</span>&nbsp;IEnumerable&lt;DateOnly&gt;&nbsp;<span style="color:#74531f;">EnumerateDates</span>(DateOnly&nbsp;<span style="font-weight:bold;color:#1f377f;">arrival</span>,&nbsp;DateOnly&nbsp;<span style="font-weight:bold;color:#1f377f;">departure</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">d</span>&nbsp;=&nbsp;arrival;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">while</span>&nbsp;(d&nbsp;&lt;&nbsp;departure)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">yield</span>&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;d;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;d&nbsp;=&nbsp;d.AddDays(1);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;IReadOnlyCollection&lt;Room&gt;&nbsp;<span style="font-weight:bold;color:#74531f;">GetView</span>(DateOnly&nbsp;<span style="font-weight:bold;color:#1f377f;">date</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">if</span>&nbsp;(views.TryGetValue(date,&nbsp;<span style="color:blue;">out</span>&nbsp;var&nbsp;<span style="font-weight:bold;color:#1f377f;">view</span>))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;view;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">else</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;rooms;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+    </p>
+    <p>
+        This is 47 lines of code, spread over five members (including the constructor). Three of the methods have a <a href="https://en.wikipedia.org/wiki/Cyclomatic_complexity">cyclomatic complexity</a> (CC) of <em>2</em>, which is the maximum for this class. The remaining two have a CC of <em>1</em>.
+    </p>
+    <p>
+        While you <em>can</em> play some <a href="/2023/11/14/cc-golf">CC golf</a> with those CC-2 methods, that tends to pull the code in a direction of being less <a href="/2015/08/03/idiomatic-or-idiosyncratic">idiomatic</a>. For that reason, I chose to present the code as above. Perhaps more importantly, it doesn't save that many lines of code.
+    </p>
+    <p>
+        Had this been a piece of production code, no-one would bat an eye at size or complexity, but this is test code. To add spite to injury, those 47 lines of code implement this two-method interface:
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">interface</span>&nbsp;<span style="color:#2b91af;">IReadRegistry</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;IReadOnlyCollection&lt;Room&gt;&nbsp;<span style="font-weight:bold;color:#74531f;">GetFreeRooms</span>(DateOnly&nbsp;<span style="font-weight:bold;color:#1f377f;">arrival</span>,&nbsp;DateOnly&nbsp;<span style="font-weight:bold;color:#1f377f;">departure</span>);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">void</span>&nbsp;<span style="font-weight:bold;color:#74531f;">RoomBooked</span>(Booking&nbsp;<span style="font-weight:bold;color:#1f377f;">booking</span>);
+}</pre>
+    </p>
+    <p>
+        Can we improve the situation?
+    </p>
+    <h3 id="49f78ebabf3d4875b469e935151c064a">
+        Root cause analysis <a href="#49f78ebabf3d4875b469e935151c064a">#</a>
+    </h3>
+    <p>
+        Before you rush to 'improve' code, it pays to understand why it looks the way it looks.
+    </p>
+    <p>
+        Code is a wonderfully malleable medium, so you should regard nothing as set in stone. On the other hand, there's often a reason it looks like it does. It <em>may</em> be that the previous programmers were incompetent ogres for hire, but often there's a better explanation.
+    </p>
+    <p>
+        I've outlined my thinking process in <a href="/2023/11/13/fakes-are-test-doubles-with-contracts">the previous article</a>, and I'm not going to repeat it all here. To summarise, though, I've applied the <a href="https://en.wikipedia.org/wiki/Dependency_inversion_principle">Dependency Inversion Principle</a>.
+    </p>
+    <blockquote>
+        <p>
+            "clients [...] own the abstract interfaces"
+        </p>
+        <footer><cite>Robert C. Martin, <a href="/ref/appp">APPP</a>, chapter 11</cite></footer>
+    </blockquote>
+    <p>
+        In other words, I let the needs of the clients guide the design of the <code>IReadRegistry</code> interface, and then the implementation (<code>FakeReadRegistry</code>) had to conform.
+    </p>
+    <p>
+        But that's not the whole truth.
+    </p>
+    <p>
+        I was doing a programming exercise - the <a href="https://codingdojo.org/kata/CQRS_Booking/">CQRS booking</a> kata - and I was following the instructions given in the description. They quite explicitly outline the two dependencies and their methods.
+    </p>
+    <p>
+        When trying a new exercise, it's a good idea to follow instructions closely, so that's what I did. Once you get a sense of a kata, though, there's no law saying that you have to stick to the original rules. After all, the purpose of an exercise is to train, and in programming, <a href="/2020/01/13/on-doing-katas">trying new things is training</a>.
+    </p>
+    <h3 id="740cb249aff74666af7af4784cc166b8">
+        Test code that wants to be production code <a href="#740cb249aff74666af7af4784cc166b8">#</a>
+    </h3>
+    <p>
+        A major benefit of test-driven development (TDD) is that it provides feedback. It pays to be tuned in to that channel. The above <code>FakeReadRegistry</code> seems to be trying to tell us something.
+    </p>
+    <p>
+        Consider the <code>GetFreeRooms</code> method. I'll repeat the single-expression body here for your convenience:
+    </p>
+    <p>
+        <pre><span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;EnumerateDates(arrival,&nbsp;departure)
+&nbsp;&nbsp;&nbsp;&nbsp;.Select(GetView)
+&nbsp;&nbsp;&nbsp;&nbsp;.Aggregate(rooms.AsEnumerable(),&nbsp;Enumerable.Intersect)
+&nbsp;&nbsp;&nbsp;&nbsp;.ToList();</pre>
+    </p>
+    <p>
+        Why is that the implementation? Why does it need to first enumerate the dates in the requested interval? Why does it need to call <code>GetView</code> for each date?
+    </p>
+    <p>
+        Why don't I just do the following and be done with it?
+    </p>
+    <p>
+        <pre><span style="color:blue;">internal</span>&nbsp;<span style="color:blue;">sealed</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">FakeStorage</span>&nbsp;:&nbsp;Collection&lt;Booking&gt;,&nbsp;IWriteRegistry,&nbsp;IReadRegistry
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;IReadOnlyCollection&lt;Room&gt;&nbsp;rooms;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">FakeStorage</span>(<span style="color:blue;">params</span>&nbsp;Room[]&nbsp;<span style="font-weight:bold;color:#1f377f;">rooms</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.rooms&nbsp;=&nbsp;rooms;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;IReadOnlyCollection&lt;Room&gt;&nbsp;<span style="font-weight:bold;color:#74531f;">GetFreeRooms</span>(DateOnly&nbsp;<span style="font-weight:bold;color:#1f377f;">arrival</span>,&nbsp;DateOnly&nbsp;<span style="font-weight:bold;color:#1f377f;">departure</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">booked</span>&nbsp;=&nbsp;<span style="color:blue;">this</span>.Where(<span style="font-weight:bold;color:#1f377f;">b</span>&nbsp;=&gt;&nbsp;b.Overlaps(arrival,&nbsp;departure)).ToList();
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;rooms
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.Where(<span style="font-weight:bold;color:#1f377f;">r</span>&nbsp;=&gt;&nbsp;!booked.Any(<span style="font-weight:bold;color:#1f377f;">b</span>&nbsp;=&gt;&nbsp;b.RoomName&nbsp;==&nbsp;r.Name))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.ToList();
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;<span style="font-weight:bold;color:#74531f;">Save</span>(Booking&nbsp;<span style="font-weight:bold;color:#1f377f;">booking</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Add(booking);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+    </p>
+    <p>
+        To be honest, that's what I did <em>first</em>.
+    </p>
+    <p>
+        While there are two interfaces, there's only one Fake Object implementing both. That's often an easy way to address the <a href="https://en.wikipedia.org/wiki/Interface_segregation_principle">Interface Segregation Principle</a> and still keeping the Fake Object simple.
+    </p>
+    <p>
+        This is much simpler than <code>FakeReadRegistry</code>, so why didn't I just keep that?
+    </p>
+    <p>
+        I didn't feel it was an honest attempt at CQRS. In CQRS you typically write the data changes to one system, and then you have another logical process that propagates the information about the data modification to the <em>read</em> subsystem. There's none of that here. Instead of being based on one or more 'materialised views', the query is just that: A query.
+    </p>
+    <p>
+        That was what I attempted to address with <code>FakeReadRegistry</code>, and I think it's a much more faithful CQRS implementation. It's also more complex, as CQRS tends to be.
+    </p>
+    <p>
+        In both cases, however, it seems that there's some production logic trapped in the test code. Shouldn't <code>EnumerateDates</code> be production code? And how about the general 'algorithm' of <code>RoomBooked</code>:
+    </p>
+    <ul>
+        <li>Enumerate the relevant dates</li>
+        <li>Get the 'materialised' view for each date</li>
+        <li>Calculate the new view for that date</li>
+        <li>Update the collection of views for that date</li>
+    </ul>
+    <p>
+        That seems like just enough code to warrant moving it to the production code.
+    </p>
+    <p>
+        A word of caution before we proceed. When deciding to pull some of that test code into the production code, I'm making a decision about architecture.
+    </p>
+    <p>
+        Until now, I'd been following the Dependency Inversion Principle closely. The interfaces exist because the client code needs them. Those interfaces could be implemented in various ways: You could use a relational database, a document database, files, blobs, etc.
+    </p>
+    <p>
+        Once I decide to pull the above algorithm into the production code, I'm choosing a particular persistent data structure. This now locks the data storage system into a design where there's a persistent view per date, and another database of bookings.
+    </p>
+    <p>
+        Now that I'd learned some more about the exercise, I felt confident making that decision.
+    </p>
+    <h3 id="d1515fe093394daf8cf9e4a9ec687770">
+        Template Method <a href="#d1515fe093394daf8cf9e4a9ec687770">#</a>
+    </h3>
+    <p>
+        The first move I made was to create a superclass so that I could employ the <a href="https://en.wikipedia.org/wiki/Template_method_pattern">Template Method</a> pattern:
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">abstract</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">ReadRegistry</span>&nbsp;:&nbsp;IReadRegistry
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;IReadOnlyCollection&lt;Room&gt;&nbsp;<span style="font-weight:bold;color:#74531f;">GetFreeRooms</span>(DateOnly&nbsp;<span style="font-weight:bold;color:#1f377f;">arrival</span>,&nbsp;DateOnly&nbsp;<span style="font-weight:bold;color:#1f377f;">departure</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;EnumerateDates(arrival,&nbsp;departure)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.Select(GetView)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.Aggregate(Rooms.AsEnumerable(),&nbsp;Enumerable.Intersect)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.ToList();
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;<span style="font-weight:bold;color:#74531f;">RoomBooked</span>(Booking&nbsp;<span style="font-weight:bold;color:#1f377f;">booking</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">foreach</span>&nbsp;(var&nbsp;<span style="font-weight:bold;color:#1f377f;">d</span>&nbsp;<span style="font-weight:bold;color:#8f08c4;">in</span>&nbsp;EnumerateDates(booking.Arrival,&nbsp;booking.Departure))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">view</span>&nbsp;=&nbsp;GetView(d);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">newView</span>&nbsp;=&nbsp;QueryService.Reserve(booking,&nbsp;view);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;UpdateView(d,&nbsp;newView);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">protected</span>&nbsp;<span style="color:blue;">abstract</span>&nbsp;<span style="color:blue;">void</span>&nbsp;<span style="font-weight:bold;color:#74531f;">UpdateView</span>(DateOnly&nbsp;<span style="font-weight:bold;color:#1f377f;">date</span>,&nbsp;IReadOnlyCollection&lt;Room&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">view</span>);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">protected</span>&nbsp;<span style="color:blue;">abstract</span>&nbsp;IReadOnlyCollection&lt;Room&gt;&nbsp;Rooms&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">protected</span>&nbsp;<span style="color:blue;">abstract</span>&nbsp;<span style="color:blue;">bool</span>&nbsp;<span style="font-weight:bold;color:#74531f;">TryGetView</span>(DateOnly&nbsp;<span style="font-weight:bold;color:#1f377f;">date</span>,&nbsp;<span style="color:blue;">out</span>&nbsp;IReadOnlyCollection&lt;Room&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">view</span>);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">static</span>&nbsp;IEnumerable&lt;DateOnly&gt;&nbsp;<span style="color:#74531f;">EnumerateDates</span>(DateOnly&nbsp;<span style="font-weight:bold;color:#1f377f;">arrival</span>,&nbsp;DateOnly&nbsp;<span style="font-weight:bold;color:#1f377f;">departure</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">d</span>&nbsp;=&nbsp;arrival;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">while</span>&nbsp;(d&nbsp;&lt;&nbsp;departure)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">yield</span>&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;d;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;d&nbsp;=&nbsp;d.AddDays(1);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;IReadOnlyCollection&lt;Room&gt;&nbsp;<span style="font-weight:bold;color:#74531f;">GetView</span>(DateOnly&nbsp;<span style="font-weight:bold;color:#1f377f;">date</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">if</span>&nbsp;(TryGetView(date,&nbsp;<span style="color:blue;">out</span>&nbsp;var&nbsp;<span style="font-weight:bold;color:#1f377f;">view</span>))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;view;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">else</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;Rooms;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+    </p>
+    <p>
+        This looks similar to <code>FakeReadRegistry</code>, so how is this an improvement?
+    </p>
+    <p>
+        The new <code>ReadRegistry</code> class is production code. It can, and should, be tested. (Due to the history of how we got here, <a href="/2023/11/13/fakes-are-test-doubles-with-contracts">it's already covered by tests</a>, so I'm not going to repeat that effort here.)
+    </p>
+    <p>
+        True to the <a href="https://en.wikipedia.org/wiki/Template_method_pattern">Template Method</a> pattern, three <code>abstract</code> members await a child class' implementation. These are the <code>UpdateView</code> and <code>TryGetView</code> methods, as well as the <code>Rooms</code> read-only property (glorified getter method).
+    </p>
+    <p>
+        Imagine that in the production code, these are implemented based on file/document/blob storage - one per date. <code>TryGetView</code> would attempt to read the document from storage, <code>UpdateView</code> would create or modify the document, while <code>Rooms</code> returns a default set of rooms.
+    </p>
+    <p>
+        A Test Double, however, can still use an in-memory dictionary:
+    </p>
+    <p>
+        <pre><span style="color:blue;">internal</span>&nbsp;<span style="color:blue;">sealed</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">FakeReadRegistry</span>&nbsp;:&nbsp;ReadRegistry
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;IReadOnlyCollection&lt;Room&gt;&nbsp;rooms;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;IDictionary&lt;DateOnly,&nbsp;IReadOnlyCollection&lt;Room&gt;&gt;&nbsp;views;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">protected</span>&nbsp;<span style="color:blue;">override</span>&nbsp;IReadOnlyCollection&lt;Room&gt;&nbsp;Rooms&nbsp;=&gt;&nbsp;rooms;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">FakeReadRegistry</span>(<span style="color:blue;">params</span>&nbsp;Room[]&nbsp;<span style="font-weight:bold;color:#1f377f;">rooms</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.rooms&nbsp;=&nbsp;rooms;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;views&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;Dictionary&lt;DateOnly,&nbsp;IReadOnlyCollection&lt;Room&gt;&gt;();
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">protected</span>&nbsp;<span style="color:blue;">override</span>&nbsp;<span style="color:blue;">void</span>&nbsp;<span style="font-weight:bold;color:#74531f;">UpdateView</span>(DateOnly&nbsp;<span style="font-weight:bold;color:#1f377f;">date</span>,&nbsp;IReadOnlyCollection&lt;Room&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">view</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;views[date]&nbsp;=&nbsp;view;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">protected</span>&nbsp;<span style="color:blue;">override</span>&nbsp;<span style="color:blue;">bool</span>&nbsp;<span style="font-weight:bold;color:#74531f;">TryGetView</span>(DateOnly&nbsp;<span style="font-weight:bold;color:#1f377f;">date</span>,&nbsp;<span style="color:blue;">out</span>&nbsp;IReadOnlyCollection&lt;Room&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">view</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;views.TryGetValue(date,&nbsp;<span style="color:blue;">out</span>&nbsp;view);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+    </p>
+    <p>
+        Each <code>override</code> is a one-liner with cyclomatic complexity <em>1</em>.
+    </p>
+    <h3 id="91153011891b4b7791acfe0edc65f997">
+        First round of clean-up <a href="#91153011891b4b7791acfe0edc65f997">#</a>
+    </h3>
+    <p>
+        An abstract class is already a polymorphic object, so we no longer need the <code>IReadRegistry</code> interface. Delete that, and update all code accordingly. Particularly, the <code>QueryService</code> now depends on <code>ReadRegistry</code> rather than <code>IReadRegistry</code>:
+    </p>
+    <p>
+        <pre><span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;ReadRegistry&nbsp;readRegistry;
+ 
+<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">QueryService</span>(ReadRegistry&nbsp;<span style="font-weight:bold;color:#1f377f;">readRegistry</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.readRegistry&nbsp;=&nbsp;readRegistry;
+}</pre>
+    </p>
+    <p>
+        Now move the <code>Reserve</code> function from <code>QueryService</code> to <code>ReadRegistry</code>. Once this is done, the <code>QueryService</code> looks like this:
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">sealed</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">QueryService</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;ReadRegistry&nbsp;readRegistry;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">QueryService</span>(ReadRegistry&nbsp;<span style="font-weight:bold;color:#1f377f;">readRegistry</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.readRegistry&nbsp;=&nbsp;readRegistry;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;IReadOnlyCollection&lt;Room&gt;&nbsp;<span style="font-weight:bold;color:#74531f;">GetFreeRooms</span>(DateOnly&nbsp;<span style="font-weight:bold;color:#1f377f;">arrival</span>,&nbsp;DateOnly&nbsp;<span style="font-weight:bold;color:#1f377f;">departure</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;readRegistry.GetFreeRooms(arrival,&nbsp;departure);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+    </p>
+    <p>
+        That class is only passing method calls along, so clearly no longer serving any purpose. Delete it.
+    </p>
+    <p>
+        This is a not uncommon in CQRS. One might even argue that if CQRS is done right, there's almost no code on the query side, since all the data view update happens as events propagate.
+    </p>
+    <h3 id="640e19ed6f904d71b925672028aeee45">
+        From abstract class to Dependency Injection <a href="#640e19ed6f904d71b925672028aeee45">#</a>
+    </h3>
+    <p>
+        While the current state of the code is based on an abstract base class, the overall architecture of the system doesn't hinge on inheritance. From <a href="/2018/02/19/abstract-class-isomorphism">Abstract class isomorphism</a> we know that it's possible to refactor an abstract class to Constructor Injection. Let's do that.
+    </p>
+    <p>
+        First add an <code>IViewStorage</code> interface that mirrors the three <code>abstract</code> methods defined by <code>ReadRegistry</code>:
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">interface</span>&nbsp;<span style="color:#2b91af;">IViewStorage</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;IReadOnlyCollection&lt;Room&gt;&nbsp;Rooms&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">void</span>&nbsp;<span style="font-weight:bold;color:#74531f;">UpdateView</span>(DateOnly&nbsp;<span style="font-weight:bold;color:#1f377f;">date</span>,&nbsp;IReadOnlyCollection&lt;Room&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">view</span>);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">bool</span>&nbsp;<span style="font-weight:bold;color:#74531f;">TryGetView</span>(DateOnly&nbsp;<span style="font-weight:bold;color:#1f377f;">date</span>,&nbsp;<span style="color:blue;">out</span>&nbsp;IReadOnlyCollection&lt;Room&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">view</span>);
+}</pre>
+    </p>
+    <p>
+        Then implement it with a Fake Object:
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">sealed</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">FakeViewStorage</span>&nbsp;:&nbsp;IViewStorage
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;IDictionary&lt;DateOnly,&nbsp;IReadOnlyCollection&lt;Room&gt;&gt;&nbsp;views;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;IReadOnlyCollection&lt;Room&gt;&nbsp;Rooms&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">FakeViewStorage</span>(<span style="color:blue;">params</span>&nbsp;Room[]&nbsp;<span style="font-weight:bold;color:#1f377f;">rooms</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Rooms&nbsp;=&nbsp;rooms;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;views&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;Dictionary&lt;DateOnly,&nbsp;IReadOnlyCollection&lt;Room&gt;&gt;();
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;<span style="font-weight:bold;color:#74531f;">UpdateView</span>(DateOnly&nbsp;<span style="font-weight:bold;color:#1f377f;">date</span>,&nbsp;IReadOnlyCollection&lt;Room&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">view</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;views[date]&nbsp;=&nbsp;view;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">bool</span>&nbsp;<span style="font-weight:bold;color:#74531f;">TryGetView</span>(DateOnly&nbsp;<span style="font-weight:bold;color:#1f377f;">date</span>,&nbsp;<span style="color:blue;">out</span>&nbsp;IReadOnlyCollection&lt;Room&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">view</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;views.TryGetValue(date,&nbsp;<span style="color:blue;">out</span>&nbsp;view);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+    </p>
+    <p>
+        Notice the similarity to <code>FakeReadRegistry</code>, which we'll get rid of shortly.
+    </p>
+    <p>
+        Now inject <code>IViewStorage</code> into <code>ReadRegistry</code>, and make <code>ReadRegistry</code> a regular (<code>sealed</code>) class:
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">sealed</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">ReadRegistry</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;IViewStorage&nbsp;viewStorage;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">ReadRegistry</span>(IViewStorage&nbsp;<span style="font-weight:bold;color:#1f377f;">viewStorage</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.viewStorage&nbsp;=&nbsp;viewStorage;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;IReadOnlyCollection&lt;Room&gt;&nbsp;<span style="font-weight:bold;color:#74531f;">GetFreeRooms</span>(DateOnly&nbsp;<span style="font-weight:bold;color:#1f377f;">arrival</span>,&nbsp;DateOnly&nbsp;<span style="font-weight:bold;color:#1f377f;">departure</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;EnumerateDates(arrival,&nbsp;departure)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.Select(GetView)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.Aggregate(viewStorage.Rooms.AsEnumerable(),&nbsp;Enumerable.Intersect)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.ToList();
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;<span style="font-weight:bold;color:#74531f;">RoomBooked</span>(Booking&nbsp;<span style="font-weight:bold;color:#1f377f;">booking</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">foreach</span>&nbsp;(var&nbsp;<span style="font-weight:bold;color:#1f377f;">d</span>&nbsp;<span style="font-weight:bold;color:#8f08c4;">in</span>&nbsp;EnumerateDates(booking.Arrival,&nbsp;booking.Departure))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">view</span>&nbsp;=&nbsp;GetView(d);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">newView</span>&nbsp;=&nbsp;Reserve(booking,&nbsp;view);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;viewStorage.UpdateView(d,&nbsp;newView);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;IReadOnlyCollection&lt;Room&gt;&nbsp;<span style="color:#74531f;">Reserve</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Booking&nbsp;<span style="font-weight:bold;color:#1f377f;">booking</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;IReadOnlyCollection&lt;Room&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">existingView</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;existingView
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.Where(<span style="font-weight:bold;color:#1f377f;">r</span>&nbsp;=&gt;&nbsp;r.Name&nbsp;!=&nbsp;booking.RoomName)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.ToList();
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">static</span>&nbsp;IEnumerable&lt;DateOnly&gt;&nbsp;<span style="color:#74531f;">EnumerateDates</span>(DateOnly&nbsp;<span style="font-weight:bold;color:#1f377f;">arrival</span>,&nbsp;DateOnly&nbsp;<span style="font-weight:bold;color:#1f377f;">departure</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">d</span>&nbsp;=&nbsp;arrival;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">while</span>&nbsp;(d&nbsp;&lt;&nbsp;departure)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">yield</span>&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;d;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;d&nbsp;=&nbsp;d.AddDays(1);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;IReadOnlyCollection&lt;Room&gt;&nbsp;<span style="font-weight:bold;color:#74531f;">GetView</span>(DateOnly&nbsp;<span style="font-weight:bold;color:#1f377f;">date</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">if</span>&nbsp;(viewStorage.TryGetView(date,&nbsp;<span style="color:blue;">out</span>&nbsp;var&nbsp;<span style="font-weight:bold;color:#1f377f;">view</span>))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;view;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">else</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;viewStorage.Rooms;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+    </p>
+    <p>
+        You can now delete the <code>FakeReadRegistry</code> Test Double, since <code>FakeViewStorage</code> has now taken its place.
+    </p>
+    <p>
+        Finally, we may consider if we can make <code>FakeViewStorage</code> even slimmer. While I usually favour composition over inheritance, I've found that deriving Fake Objects from collection base classes is often an efficient way to get a lot of mileage out of a few lines of code. <code>FakeReadRegistry</code>, however, had to inherit from <code>ReadRegistry</code>, so it couldn't derive from any other class.
+    </p>
+    <p>
+        <code>FakeViewStorage</code> isn't constrained in that way, so it's free to inherit from <code>Dictionary&lt;DateOnly,&nbsp;IReadOnlyCollection&lt;Room&gt;&gt;</code>:
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">sealed</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">FakeViewStorage</span>&nbsp;:&nbsp;Dictionary&lt;DateOnly,&nbsp;IReadOnlyCollection&lt;Room&gt;&gt;,&nbsp;IViewStorage
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;IReadOnlyCollection&lt;Room&gt;&nbsp;Rooms&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">FakeViewStorage</span>(<span style="color:blue;">params</span>&nbsp;Room[]&nbsp;<span style="font-weight:bold;color:#1f377f;">rooms</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Rooms&nbsp;=&nbsp;rooms;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;<span style="font-weight:bold;color:#74531f;">UpdateView</span>(DateOnly&nbsp;<span style="font-weight:bold;color:#1f377f;">date</span>,&nbsp;IReadOnlyCollection&lt;Room&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">view</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>[date]&nbsp;=&nbsp;view;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">bool</span>&nbsp;<span style="font-weight:bold;color:#74531f;">TryGetView</span>(DateOnly&nbsp;<span style="font-weight:bold;color:#1f377f;">date</span>,&nbsp;<span style="color:blue;">out</span>&nbsp;IReadOnlyCollection&lt;Room&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">view</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;TryGetValue(date,&nbsp;<span style="color:blue;">out</span>&nbsp;view);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+    </p>
+    <p>
+        This last move isn't strictly necessary, but I found it worth at least mentioning.
+    </p>
+    <p>
+        I hope you'll agree that this is a Fake Object that looks maintainable.
+    </p>
+    <h3 id="cd86ac335816431aa39a6538fd9ce95c">
+        Conclusion <a href="#cd86ac335816431aa39a6538fd9ce95c">#</a>
+    </h3>
+    <p>
+        Test-driven development is a feedback mechanism. If something is difficult to test, it tells you something about your System Under Test (SUT). If your test code looks bloated, that tells you something too. Perhaps part of the test code really belongs in the production code.
+    </p>
+    <p>
+        In this article, we started with a Fake Object that looked like it contained too much production code. Via a series of refactorings I moved the relevant parts to the production code, leaving me with a more idiomatic and conforming implementation.
+    </p>
+</div>
