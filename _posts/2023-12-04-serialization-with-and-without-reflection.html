@@ -1,0 +1,158 @@
+---
+layout: post
+title: "Serialization with and without Reflection"
+description: "An investigation of alternatives."
+date: 2023-12-04 20:53 UTC
+tags: [Software Design, Article Series]
+image: "/content/binary/ernst.jpg"
+image_alt: "Bar seating at Ernst, Berlin."
+---
+{% include JB/setup %}
+
+<div id="post">
+    <p>
+        <em>{{ page.description }}</em>
+    </p>
+    <p>
+        I recently wrote a tweet that caused more responses than usual:
+    </p>
+    <blockquote>
+        <p>
+            "A decade ago, I used .NET Reflection so often that I know most the the API by heart.
+        </p>
+        <p>
+            "Since then, I've learned better ways to solve my problems. I can't remember when was the last time I used .NET Reflection. I never need it.
+        </p>
+        <p>
+            "Do you?"
+        </p>
+        <footer><cite><a href="https://twitter.com/ploeh/status/1727280699051495857">me</a></cite></footer>
+    </blockquote>
+    <p>
+        Most people who read my tweets are programmers, and some are, perhaps, not entirely neurotypical, but I intended the last paragraph to be a <a href="https://en.wikipedia.org/wiki/Rhetorical_question">rhetorical question</a>. My point, really, was to point out that if I tell you it's possible to do without Reflection, one or two readers might keep that in mind and at least explore options the next time the urge to use Reflection arises.
+    </p>
+    <p>
+        A common response was that Reflection is useful for (de)serialization of data. These days, the most common case is going to and from <a href="https://en.wikipedia.org/wiki/JSON">JSON</a>, but the problem is similar if the format is <a href="https://en.wikipedia.org/wiki/XML">XML</a>, <a href="https://en.wikipedia.org/wiki/Comma-separated_values">CSV</a>, or another format. In a sense, even <a href="/2023/10/16/at-the-boundaries-static-types-are-illusory">reading to and from a database is a kind of serialization</a>.
+    </p>
+    <p>
+        In this little series of articles, I'm going to explore some alternatives to Reflection. I'll use the same example throughout, and I'll stick to JSON, but you can easily extrapolate to other serialization formats.
+    </p>
+    <h3 id="4b1340f8fad4452f950c3cfdde275365">
+        Table layouts <a href="#4b1340f8fad4452f950c3cfdde275365">#</a>
+    </h3>
+    <p>
+        As always, I find the example domain of online restaurant reservation systems to be so rich as to furnish a useful example. Imagine a multi-tenant service that enables restaurants to take and manage reservations.
+    </p>
+    <p>
+        When a new reservation request arrives, the system has to make a decision on whether to accept or reject the request. The layout, or configuration, of <a href="/2020/01/27/the-maitre-d-kata">tables plays a role in that decision</a>.
+    </p>
+    <p>
+        Such a multi-tenant system may have an API for configuring the restaurant; essentially, entering data into the system about the size and policies regarding tables in a particular restaurant.
+    </p>
+    <p>
+        Most restaurants have 'normal' tables where, if you reserve a table for three, you'll have the entire table for a duration. Some restaurants also have one or more communal tables, typically bar seating where you may get a view of the kitchen. Quite a few high-end restaurants have tables like these, because it enables them to cater to single diners without reserving an entire table that could instead have served two paying customers.
+    </p>
+    <p>
+        <img src="/content/binary/ernst.jpg" alt="Bar seating at Ernst, Berlin.">
+    </p>
+    <p>
+        In Copenhagen, on the other hand, it's also not uncommon to have a special room for larger parties. I think this has something to do with the general age of the buildings in the city. Most establishments are situated in older buildings, with all the trappings, including load-bearing walls, cellars, etc. As part of a restaurant's location, there may be a big cellar room, second-story room, or other room that's not practical for the daily operation of the place, but which works for parties of, say, 15-30 people. Such 'private dining' rooms can be used for private occasions or company outings.
+    </p>
+    <p>
+        A <a href="https://en.wikipedia.org/wiki/Ma%C3%AEtre_d%27h%C3%B4tel">maître d'hôtel</a> may wish to configure the system with a variety of tables, including communal tables, and private dining tables as described above.
+    </p>
+    <p>
+        One way to model such requirements is to distinguish between two kinds of tables: Communal tables, and 'single' tables, and where single tables come with an additional property that models the minimal reservation required to reserve that table. A JSON representation might look like this:
+    </p>
+    <p>
+        <pre>{
+&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;singleTable&quot;</span>:&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;capacity&quot;</span>:&nbsp;16,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;minimalReservation&quot;</span>:&nbsp;10
+&nbsp;&nbsp;}
+}</pre>
+    </p>
+    <p>
+        This may represent a private dining table that seats up to sixteen people, and where the maître d'hôtel has decided to only accept reservations for at least ten guests.
+    </p>
+    <p>
+        A <code>singleTable</code> can also be used to model 'normal' tables without special limits. If the restaurant has a table for four, but is ready to accept a reservation for one person, you can configure a table for four, with a minimum reservation of one.
+    </p>
+    <p>
+        Communal tables are different, though:
+    </p>
+    <p>
+        <pre>{&nbsp;<span style="color:#2e75b6;">&quot;communalTable&quot;</span>:&nbsp;{&nbsp;<span style="color:#2e75b6;">&quot;capacity&quot;</span>:&nbsp;10&nbsp;}&nbsp;}</pre>
+    </p>
+    <p>
+        Why not just model that as ten single tables that each seat one?
+    </p>
+    <p>
+        You don't want to do that because you want to make sure that parties can eat together. Some restaurants have more than one communal table. Imagine that you only have two communal tables of ten seats each. What happens if you model this as twenty single-person tables?
+    </p>
+    <p>
+        If you do that, you may accept reservations for parties of six, six, and six, because <em>6&nbsp;+&nbsp;6&nbsp;+&nbsp;6&nbsp;=&nbsp;18&nbsp;&lt;&nbsp;20</em>. When those three groups arrive, however, you discover that you have to split one of the parties! The party getting separated may not like that at all, and you are, after all, in the hospitality business.
+    </p>
+    <h3 id="368ebde4f05e434b938327469aba1640">
+        Exploration <a href="#368ebde4f05e434b938327469aba1640">#</a>
+    </h3>
+    <p>
+        In each article in this short series, I'll explore serialization with and without Reflection in a few languages. I'll start with <a href="https://www.haskell.org/">Haskell</a>, since that language doesn't have run-time Reflection. It does have a related facility called <em>generics</em>, not to be confused with .NET or Java generics, which in Haskell are called <em>parametric polymorphism</em>. It's confusing, I know.
+    </p>
+    <p>
+        Haskell generics look a bit like .NET Reflection, and there's some overlap, but it's not quite the same. The main difference is that Haskell generic programming all 'resolves' at compile time, so there's no run-time Reflection in Haskell.
+    </p>
+    <p>
+        If you don't care about Haskell, you can skip that article.
+    </p>
+    <ul>
+        <li>Serializing restaurant tables in Haskell</li>
+        <li>Serializing restaurant tables in F#</li>
+        <li>Serializing restaurant tables in C#</li>
+    </ul>
+    <p>
+        As you can see, the next article repeats the exercise in <a href="https://fsharp.org/">F#</a>, and if you also don't care about that language, you can skip that article as well.
+    </p>
+    <p>
+        The C# article, on the other hand, should be readable to not only C# programmers, but also developers who work in sufficiently equivalent languages.
+    </p>
+    <h3 id="f367d5adccbe4d3792acc8f3828add85">
+        Descriptive, not prescriptive <a href="#f367d5adccbe4d3792acc8f3828add85">#</a>
+    </h3>
+    <p>
+        The purpose of this article series is only to showcase alternatives. Based on the reactions my tweet elicited I take it that some people can't imagine how serialisation might look without Reflection.
+    </p>
+    <p>
+        It is <em>not</em> my intent that you should eschew the Reflection-based APIs available in your languages. In .NET, for example, a framework like ASP.NET MVC expects you to model JSON or XML as <a href="https://en.wikipedia.org/wiki/Data_transfer_object">Data Transfer Objects</a>. This gives you an <a href="/2023/10/16/at-the-boundaries-static-types-are-illusory">illusion of static types at the boundary</a>.
+    </p>
+    <p>
+        Even a Haskell web library like <a href="https://www.servant.dev/">Servant</a> expects you to model web APIs with static types.
+    </p>
+    <p>
+        When working with such a framework, it doesn't always pay to fight against its paradigm. When I work with ASP.NET, I define DTOs just like everyone else. On the other hand, if communicating with a backend system, I <a href="/2022/01/03/to-id-or-not-to-id">sometimes choose to skip static types and instead working directly with a JSON Document Object Model</a> (DOM).
+    </p>
+    <p>
+        I occasionally find that it better fits my use case, but it's not the majority of times.
+    </p>
+    <h3 id="9af8390d4b1b4c50ae9148ea2eb841ad">
+        Conclusion <a href="#9af8390d4b1b4c50ae9148ea2eb841ad">#</a>
+    </h3>
+    <p>
+        While some sort of Reflection or metadata-driven mechanism is often used to implement serialisation, it often turns out that such convenient language capabilities are programmed on top of an ordinary object model. Even isolated to .NET, I think I'm on my third JSON library, and most (all?) turned out to have an underlying DOM that you can manipulate.
+    </p>
+    <p>
+        In this article I've set the stage for exploring how serialisation can work, with or (mostly) without Reflection.
+    </p>
+    <p>
+        If you're interested in the philosophy of science and <a href="https://en.wikipedia.org/wiki/Epistemology">epistemology</a>, you may have noticed a recurring discussion in academia: A wider society benefits not only from learning what works, but also from learning what doesn't work. It would be useful if researchers published their failures along with their successes, yet few do (for fairly obvious reasons).
+    </p>
+    <p>
+        Well, I depend neither on research grants nor salary, so I'm free to publish negative results, such as they are.
+    </p>
+    <p>
+        Not that I want to go so far as to categorize what I present in the present articles as useless, but they're probably best applied in special circumstances. On the other hand, I don't know <em>your context</em>, and perhaps you're doing something I can't even imagine, and what I present here is just what you need.
+    </p>
+    <p>
+        <strong>Next:</strong> Serializing restaurant tables in Haskell.
+    </p>
+</div>
