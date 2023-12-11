@@ -1,0 +1,406 @@
+---
+layout: post
+title: "Serializing restaurant tables in Haskell"
+description: "Using Aeason, with and without generics."
+date: 2023-12-11 7:35 UTC
+tags: [Haskell, Functional Programming]
+---
+{% include JB/setup %}
+
+<div id="post">
+    <p>
+        <em>{{ page.description }}</em>
+    </p>
+    <p>
+        This article is part of a short series of articles about <a href="/2023/12/04/serialization-with-and-without-reflection">serialization with and without Reflection</a>. In this instalment I'll explore some options for serializing <a href="https://en.wikipedia.org/wiki/JSON">JSON</a> using <a href="https://hackage.haskell.org/package/aeson">Aeson</a>.
+    </p>
+    <p>
+        The source code is <a href="https://github.com/ploeh/HaskellJSONSerialization">available on GitHub</a>.
+    </p>
+    <h3 id="013a78e039024c81a204ca10f1a7af69">
+        Natural numbers <a href="#013a78e039024c81a204ca10f1a7af69">#</a>
+    </h3>
+    <p>
+        Before we start investigating how to serialize to and from JSON, we must have something to serialize. As described in the <a href="/2023/12/04/serialization-with-and-without-reflection">introductory article</a> we'd like to parse and write restaurant table configurations like this:
+    </p>
+    <p>
+        <pre>{
+&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;singleTable&quot;</span>:&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;capacity&quot;</span>:&nbsp;16,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;minimalReservation&quot;</span>:&nbsp;10
+&nbsp;&nbsp;}
+}</pre>
+    </p>
+    <p>
+        On the other hand, I'd like to represent the Domain Model in a way that <a href="/2022/10/24/encapsulation-in-functional-programming">encapsulates the rules</a> governing the model, <a href="https://blog.janestreet.com/effective-ml-video/">making illegal states unrepresentable</a>.
+    </p>
+    <p>
+        As the first step, we observe that the numbers involved are all <a href="https://en.wikipedia.org/wiki/Natural_number">natural numbers</a>. While <a href="/2022/01/24/type-level-di-container-prototype">I'm aware</a> that <a href="https://www.haskell.org/">Haskell</a> has built-in <a href="https://hackage.haskell.org/package/base/docs/GHC-TypeLits.html#t:Nat">Nat</a> type, I choose not to use it here, for a couple of reasons. One is that <code>Nat</code> is intended for type-level programming, and while this <em>might</em> be useful here, I don't want to pull in more exotic language features than are required. Another reason is that, in this domain, I want to model natural numbers as excluding zero (and I honestly don't remember if <code>Nat</code> allows zero, but I <em>think</em> that it does..?).
+    </p>
+    <p>
+        Another option is to use <a href="/2019/05/13/peano-catamorphism">Peano numbers</a>, but again, for didactic reasons, I'll stick with something a bit more idiomatic.
+    </p>
+    <p>
+        You can easily introduce a wrapper over, say, <code>Integer</code>, to model natural numbers:
+    </p>
+    <p>
+        <pre><span style="color:blue;">newtype</span>&nbsp;Natural&nbsp;=&nbsp;Natural&nbsp;Integer&nbsp;<span style="color:blue;">deriving</span>&nbsp;(<span style="color:#2b91af;">Eq</span>,&nbsp;<span style="color:#2b91af;">Ord</span>,&nbsp;<span style="color:#2b91af;">Show</span>)</pre>
+    </p>
+    <p>
+        This, however, doesn't prevent you from writing <code>Natural (-1)</code>, so we need to make this a <a href="https://www.hillelwayne.com/post/constructive/">predicative data type</a>. The first step is to only export the type, but <em>not</em> its data constructor:
+    </p>
+    <p>
+        <pre><span style="color:blue;">module</span>&nbsp;Restaurants&nbsp;(
+&nbsp;&nbsp;<span style="color:blue;">Natural</span>,
+&nbsp;&nbsp;<span style="color:green;">--&nbsp;More&nbsp;exports&nbsp;here...</span>
+&nbsp;&nbsp;)&nbsp;<span style="color:blue;">where</span></pre>
+    </p>
+    <p>
+        But this makes it impossible for client code to create values of the type, so we need to supply a <a href="https://wiki.haskell.org/Smart_constructors">smart constructor</a>:
+    </p>
+    <p>
+        <pre><span style="color:#2b91af;">tryNatural</span>&nbsp;<span style="color:blue;">::</span>&nbsp;<span style="color:#2b91af;">Integer</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:#2b91af;">Maybe</span>&nbsp;<span style="color:blue;">Natural</span>
+tryNatural&nbsp;n
+&nbsp;&nbsp;|&nbsp;n&nbsp;&lt;&nbsp;1&nbsp;=&nbsp;Nothing
+&nbsp;&nbsp;|&nbsp;<span style="color:blue;">otherwise</span>&nbsp;=&nbsp;Just&nbsp;(Natural&nbsp;n)</pre>
+    </p>
+    <p>
+        In this, as well as the other articles in this series, I've chosen to model the potential for errors with <code>Maybe</code> values. I could also have chosen to use <code>Either</code> if I wanted to communicate information along the 'error channel', but sticking with <code>Maybe</code> makes the code a bit simpler. Not so much in Haskell or <a href="https://fsharp.org/">F#</a>, but once we reach C#, <a href="/2022/07/25/an-applicative-reservation-validation-example-in-c">applicative validation</a> becomes complicated.
+    </p>
+    <p>
+        There's no loss of generality in this decision, since both <code>Maybe</code> and <code>Either</code> are <code>Applicative</code> instances.
+    </p>
+    <p>
+        With the <code>tryNatural</code> function you can now (attempt to) create <code>Natural</code> values:
+    </p>
+    <p>
+        <pre>ghci&gt; tryNatural (-1)
+Nothing
+ghci&gt; x = tryNatural 42
+ghci&gt; x
+Just (Natural 42)</pre>
+    </p>
+    <p>
+        This enables client developers to create <code>Natural</code> values, and due to the type's <code>Ord</code> instance, you can even compare them:
+    </p>
+    <p>
+        <pre>ghci&gt; y = tryNatural 2112
+ghci&gt; x &lt; y
+True</pre>
+    </p>
+    <p>
+        Even so, there will be cases when you need to extract the underlying <code>Integer</code> from a <code>Natural</code> value. You could supply a normal function for that purpose, but in order to make some of the following code a little more elegant, I chose to do it with pattern synonyms:
+    </p>
+    <p>
+        <pre>{-#&nbsp;COMPLETE&nbsp;N&nbsp;#-}
+pattern&nbsp;N&nbsp;::&nbsp;Integer&nbsp;-&gt;&nbsp;Natural
+pattern&nbsp;N&nbsp;i&nbsp;&lt;-&nbsp;Natural&nbsp;i</pre>
+    </p>
+    <p>
+        That needs to be exported as well.
+    </p>
+    <p>
+        So, eight lines of code to declare a predicative type that models a natural number. Incidentally, this'll be 2-3 lines of code in F#.
+    </p>
+    <h3 id="1e5a116c8a6f4a928cbea3f88eed42ad">
+        Domain Model <a href="#1e5a116c8a6f4a928cbea3f88eed42ad">#</a>
+    </h3>
+    <p>
+        Modelling a restaurant table follows in the same vein. One invariant I would like to enforce is that for a 'single' table, the minimal reservation should be a <code>Natural</code> number less than or equal to the table's capacity. It doesn't make sense to configure a table for four with a minimum reservation of six.
+    </p>
+    <p>
+        In the same spirit as above, then, define this type:
+    </p>
+    <p>
+        <pre><span style="color:blue;">data</span>&nbsp;SingleTable&nbsp;=&nbsp;SingleTable
+&nbsp;&nbsp;{&nbsp;singleCapacity&nbsp;::&nbsp;Natural
+&nbsp;&nbsp;,&nbsp;minimalReservation&nbsp;::&nbsp;Natural
+&nbsp;&nbsp;}&nbsp;<span style="color:blue;">deriving</span>&nbsp;(<span style="color:#2b91af;">Eq</span>,&nbsp;<span style="color:#2b91af;">Ord</span>,&nbsp;<span style="color:#2b91af;">Show</span>)</pre>
+    </p>
+    <p>
+        Again, only export the type, but not its data constructor. In order to extract values, then, supply another pattern synonym:
+    </p>
+    <p>
+        <pre>{-#&nbsp;COMPLETE&nbsp;SingleT&nbsp;#-}
+pattern&nbsp;SingleT&nbsp;::&nbsp;Natural&nbsp;-&gt;&nbsp;Natural&nbsp;-&gt;&nbsp;SingleTable
+pattern&nbsp;SingleT&nbsp;c&nbsp;m&nbsp;&lt;-&nbsp;SingleTable&nbsp;c&nbsp;m</pre>
+    </p>
+    <p>
+        Finally, define a <code>Table</code> type and two smart constructors:
+    </p>
+    <p>
+        <pre><span style="color:blue;">data</span>&nbsp;Table&nbsp;=&nbsp;Single&nbsp;SingleTable&nbsp;|&nbsp;Communal&nbsp;Natural&nbsp;<span style="color:blue;">deriving</span>&nbsp;(<span style="color:#2b91af;">Eq</span>,&nbsp;<span style="color:#2b91af;">Show</span>)
+ 
+<span style="color:#2b91af;">trySingleTable</span>&nbsp;<span style="color:blue;">::</span>&nbsp;<span style="color:#2b91af;">Integer</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:#2b91af;">Integer</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:#2b91af;">Maybe</span>&nbsp;<span style="color:blue;">Table</span>
+trySingleTable&nbsp;capacity&nbsp;minimal&nbsp;=&nbsp;<span style="color:blue;">do</span>
+&nbsp;&nbsp;c&nbsp;&lt;-&nbsp;tryNatural&nbsp;capacity
+&nbsp;&nbsp;m&nbsp;&lt;-&nbsp;tryNatural&nbsp;minimal
+&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;c&nbsp;&lt;&nbsp;m&nbsp;<span style="color:blue;">then</span>&nbsp;Nothing&nbsp;<span style="color:blue;">else</span>&nbsp;Just&nbsp;(Single&nbsp;(SingleTable&nbsp;c&nbsp;m))
+ 
+<span style="color:#2b91af;">tryCommunalTable</span>&nbsp;<span style="color:blue;">::</span>&nbsp;<span style="color:#2b91af;">Integer</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:#2b91af;">Maybe</span>&nbsp;<span style="color:blue;">Table</span>
+tryCommunalTable&nbsp;=&nbsp;<span style="color:blue;">fmap</span>&nbsp;Communal&nbsp;.&nbsp;tryNatural</pre>
+    </p>
+    <p>
+        Notice that <code>trySingleTable</code> checks the invariant that the <code>capacity</code> must be greater than or equal to the minimal reservation.
+    </p>
+    <p>
+        The point of this little exercise, so far, is that it <em>encapsulates</em> the contract implied by the Domain Model. It does this by using the static type system to its advantage.
+    </p>
+    <h3 id="a0f3606b82374c349dc0bf116db14493">
+        JSON serialization by hand <a href="#a0f3606b82374c349dc0bf116db14493">#</a>
+    </h3>
+    <p>
+        At the boundaries of applications, however, <a href="/2023/10/16/at-the-boundaries-static-types-are-illusory">there are no static types</a>. Is the static type system still useful in that situation?
+    </p>
+    <p>
+        For Haskell, the most common JSON library is Aeson, and I admit that I'm no expert. Thus, it's possible that there's an easier way to serialize to and deserialize from JSON. If so, please leave a comment explaining the alternative.
+    </p>
+    <p>
+        The original rationale for this article series was to demonstrate how serialization can be done without Reflection, or, in the case of Haskell, <a href="https://hackage.haskell.org/package/base/docs/GHC-Generics.html">Generics</a> (not to be confused with .NET generics, which in Haskell usually is called <em>parametric polymorphism</em>). We'll return to Generics later in this article.
+    </p>
+    <p>
+        In this article series, I consider the JSON format fixed. A single table should be rendered as shown above, and a communal table should be rendered like this:
+    </p>
+    <p>
+        <pre>{&nbsp;<span style="color:#2e75b6;">&quot;communalTable&quot;</span>:&nbsp;{&nbsp;<span style="color:#2e75b6;">&quot;capacity&quot;</span>:&nbsp;42&nbsp;}&nbsp;}</pre>
+    </p>
+    <p>
+        Often in the real world you'll have to conform to a particular protocol format, or, even if that's not the case, being able to control the shape of the wire format is important to deal with backwards compatibility.
+    </p>
+    <p>
+        As I outlined in the <a href="/2023/12/04/serialization-with-and-without-reflection">introduction article</a> you can usually find a more weakly typed API to get the job done. For serializing <code>Table</code> to JSON it looks like this:
+    </p>
+    <p>
+        <pre><span style="color:blue;">newtype</span>&nbsp;JSONTable&nbsp;=&nbsp;JSONTable&nbsp;Table&nbsp;<span style="color:blue;">deriving</span>&nbsp;(<span style="color:#2b91af;">Eq</span>,&nbsp;<span style="color:#2b91af;">Show</span>)
+ 
+<span style="color:blue;">instance</span>&nbsp;<span style="color:blue;">ToJSON</span>&nbsp;<span style="color:blue;">JSONTable</span>&nbsp;<span style="color:blue;">where</span>
+&nbsp;&nbsp;toJSON&nbsp;(JSONTable&nbsp;(Single&nbsp;(SingleT&nbsp;(N&nbsp;c)&nbsp;(N&nbsp;m))))&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;object&nbsp;[<span style="color:#a31515;">&quot;singleTable&quot;</span>&nbsp;.=&nbsp;object&nbsp;[
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#a31515;">&quot;capacity&quot;</span>&nbsp;.=&nbsp;c,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#a31515;">&quot;minimalReservation&quot;</span>&nbsp;.=&nbsp;m]]
+&nbsp;&nbsp;toJSON&nbsp;(JSONTable&nbsp;(Communal&nbsp;(N&nbsp;c)))&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;object&nbsp;[<span style="color:#a31515;">&quot;communalTable&quot;</span>&nbsp;.=&nbsp;object&nbsp;[<span style="color:#a31515;">&quot;capacity&quot;</span>&nbsp;.=&nbsp;c]]</pre>
+    </p>
+    <p>
+        In order to separate concerns, I've defined this functionality in a new module that references the module that defines the Domain Model. Thus, to avoid orphan instances, I've defined a <code>JSONTable</code> <code>newtype</code> wrapper that I then make a <code>ToJSON</code> instance.
+    </p>
+    <p>
+        The <code>toJSON</code> function pattern-matches on <code>Single</code> and <code>Communal</code> to write two different <a href="https://hackage.haskell.org/package/aeson/docs/Data-Aeson.html#t:Value">Values</a>, using Aeson's underlying Document Object Model (DOM).
+    </p>
+    <h3 id="9c3c05517701474d8ac88c59e6fd11e7">
+        JSON deserialization by hand <a href="#9c3c05517701474d8ac88c59e6fd11e7">#</a>
+    </h3>
+    <p>
+        You can also go the other way, and when it looks more complicated, it's because it is. When serializing an encapsulated value, not a lot can go wrong because the value is already valid. When deserializing a JSON string, on the other hand, all sorts of things can go wrong: It might not even be a valid string, or the string may not be valid JSON, or the JSON may not be a valid <code>Table</code> representation, or the values may be illegal, etc.
+    </p>
+    <p>
+        It's no surprise, then, that the <code>FromJSON</code> instance is bigger:
+    </p>
+    <p>
+        <pre><span style="color:blue;">instance</span>&nbsp;<span style="color:blue;">FromJSON</span>&nbsp;<span style="color:blue;">JSONTable</span>&nbsp;<span style="color:blue;">where</span>
+&nbsp;&nbsp;parseJSON&nbsp;(Object&nbsp;v)&nbsp;=&nbsp;<span style="color:blue;">do</span>
+&nbsp;&nbsp;&nbsp;&nbsp;single&nbsp;&lt;-&nbsp;v&nbsp;.:?&nbsp;<span style="color:#a31515;">&quot;singleTable&quot;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;communal&nbsp;&lt;-&nbsp;v&nbsp;.:?&nbsp;<span style="color:#a31515;">&quot;communalTable&quot;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">case</span>&nbsp;(single,&nbsp;communal)&nbsp;<span style="color:blue;">of</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(Just&nbsp;s,&nbsp;Nothing)&nbsp;-&gt;&nbsp;<span style="color:blue;">do</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;capacity&nbsp;&lt;-&nbsp;s&nbsp;.:&nbsp;<span style="color:#a31515;">&quot;capacity&quot;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;minimal&nbsp;&lt;-&nbsp;s&nbsp;.:&nbsp;<span style="color:#a31515;">&quot;minimalReservation&quot;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">case</span>&nbsp;trySingleTable&nbsp;capacity&nbsp;minimal&nbsp;<span style="color:blue;">of</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Nothing&nbsp;-&gt;&nbsp;<span style="color:blue;">fail</span>&nbsp;<span style="color:#a31515;">&quot;Expected&nbsp;natural&nbsp;numbers.&quot;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Just&nbsp;t&nbsp;-&gt;&nbsp;<span style="color:blue;">return</span>&nbsp;$&nbsp;JSONTable&nbsp;t
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(Nothing,&nbsp;Just&nbsp;c)&nbsp;-&gt;&nbsp;<span style="color:blue;">do</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;capacity&nbsp;&lt;-&nbsp;c&nbsp;.:&nbsp;<span style="color:#a31515;">&quot;capacity&quot;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">case</span>&nbsp;tryCommunalTable&nbsp;capacity&nbsp;<span style="color:blue;">of</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Nothing&nbsp;-&gt;&nbsp;<span style="color:blue;">fail</span>&nbsp;<span style="color:#a31515;">&quot;Expected&nbsp;a&nbsp;natural&nbsp;number.&quot;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Just&nbsp;t&nbsp;-&gt;&nbsp;<span style="color:blue;">return</span>&nbsp;$&nbsp;JSONTable&nbsp;t
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;_&nbsp;-&gt;&nbsp;<span style="color:blue;">fail</span>&nbsp;<span style="color:#a31515;">&quot;Expected&nbsp;exactly&nbsp;one&nbsp;of&nbsp;singleTable&nbsp;or&nbsp;communalTable.&quot;</span>
+&nbsp;&nbsp;parseJSON&nbsp;_&nbsp;=&nbsp;<span style="color:blue;">fail</span>&nbsp;<span style="color:#a31515;">&quot;Expected&nbsp;an&nbsp;object.&quot;</span></pre>
+    </p>
+    <p>
+        I could probably have done this more succinctly if I'd spent even more time on it than I already did, but it gets the job done and demonstrates the point. Instead of relying on run-time Reflection, the <code>FromJSON</code> instance is, unsurprisingly, a parser, composed from Aeson's specialised parser combinator API.
+    </p>
+    <p>
+        Since both serialisation and deserialization is based on string values, you should write automated tests that verify that the code works.
+    </p>
+    <p>
+        Apart from module declaration and imports etc. this hand-written JSON capability requires 27 lines of code. Can we do better with static types and Generics?
+    </p>
+    <h3 id="ddac03fba5134f0da9e613c29888ce83">
+        JSON serialisation based on types <a href="#ddac03fba5134f0da9e613c29888ce83">#</a>
+    </h3>
+    <p>
+        The intent with the Aeson library is that you define a type (a <a href="https://en.wikipedia.org/wiki/Data_transfer_object">Data Transfer Object</a> (DTO) if you will), and then let 'compiler magic' do the rest. In Haskell, it's not run-time Reflection, but a compilation technology called Generics. As I understand it, it automatically 'writes' the serialization and parsing code and turns it into machine code as part of normal compilation.
+    </p>
+    <p>
+        You're supposed to first turn on the
+    </p>
+    <p>
+        <pre>{-#&nbsp;<span style="color:gray;">LANGUAGE</span>&nbsp;DeriveGeneric&nbsp;#-}</pre>
+    </p>
+    <p>
+        language pragma and then tell the compiler to automatically derive <code>Generic</code> for the DTO in question. You'll see an example of that shortly.
+    </p>
+    <p>
+        It's a fairly flexible system that you can tweak in various ways, but if it's possible to do it directly with the above <code>Table</code> type, please leave a comment explaining how. I tried, but couldn't make it work. To be clear, I <em>could</em> make it serializable, but not to the above JSON format.
+    </p>
+    <p>
+        In <a href="/2021/06/14/new-book-code-that-fits-in-your-head">Code That Fits in Your Head</a> I explain how you're usually better off separating the role of serialization from the role of Domain Model. The way to do that is exactly by defining a DTO for serialisation, and let the Domain Model remain exclusively to model the rules of the application. The above <code>Table</code> type plays the latter role, so we need new DTO types.
+    </p>
+    <p>
+        We may start with the building blocks:
+    </p>
+    <p>
+        <pre><span style="color:blue;">newtype</span>&nbsp;CommunalDTO&nbsp;=&nbsp;CommunalDTO
+&nbsp;&nbsp;{&nbsp;communalCapacity&nbsp;::&nbsp;Integer
+&nbsp;&nbsp;}&nbsp;<span style="color:blue;">deriving</span>&nbsp;(<span style="color:#2b91af;">Eq</span>,&nbsp;<span style="color:#2b91af;">Show</span>,&nbsp;<span style="color:#2b91af;">Generic</span>)</pre>
+    </p>
+    <p>
+        Notice how it declaratively derives <code>Generic</code>, which works because of the <code>DeriveGeneric</code> language pragma.
+    </p>
+    <p>
+        From here, in principle, all that you need is just a single declaration to make it serializable:
+    </p>
+    <p>
+        <pre><span style="color:blue;">instance</span>&nbsp;<span style="color:blue;">ToJSON</span>&nbsp;<span style="color:blue;">CommunalDTO</span></pre>
+    </p>
+    <p>
+        While it does serialize to JSON, it doesn't have the right format:
+    </p>
+    <p>
+        <pre>{&nbsp;<span style="color:#2e75b6;">&quot;communalCapacity&quot;</span>:&nbsp;42&nbsp;}</pre>
+    </p>
+    <p>
+        The property name should be <code>capacity</code>, not <code>communalCapacity</code>. Why did I call the record field <code>communalCapacity</code> instead of <code>capacity</code>? Can't I just fix my <code>CommunalDTO</code> record?
+    </p>
+    <p>
+        Unfortunately, I can't just do that, because I also need a <code>capacity</code> JSON property for the single-table case, and Haskell isn't happy about duplicated field names in the same module. (This language feature truly is one of the weak points of Haskell.)
+    </p>
+    <p>
+        Instead, I can tweak the Aeson rules by supplying an <code>Options</code> value to the instance definition:
+    </p>
+    <p>
+        <pre><span style="color:#2b91af;">communalJSONOptions</span>&nbsp;<span style="color:blue;">::</span>&nbsp;<span style="color:blue;">Options</span>
+communalJSONOptions&nbsp;=
+&nbsp;&nbsp;defaultOptions&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;fieldLabelModifier&nbsp;=&nbsp;\s&nbsp;-&gt;&nbsp;<span style="color:blue;">case</span>&nbsp;s&nbsp;<span style="color:blue;">of</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#a31515;">&quot;communalCapacity&quot;</span>&nbsp;-&gt;&nbsp;<span style="color:#a31515;">&quot;capacity&quot;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;_&nbsp;-&gt;&nbsp;s&nbsp;}
+ 
+<span style="color:blue;">instance</span>&nbsp;<span style="color:blue;">ToJSON</span>&nbsp;<span style="color:blue;">CommunalDTO</span>&nbsp;<span style="color:blue;">where</span>
+&nbsp;&nbsp;toJSON&nbsp;=&nbsp;genericToJSON&nbsp;communalJSONOptions
+&nbsp;&nbsp;toEncoding&nbsp;=&nbsp;genericToEncoding&nbsp;communalJSONOptions</pre>
+    </p>
+    <p>
+        This instructs the compiler to modify how it generates the serialization code, and the generated JSON fragment is now correct.
+    </p>
+    <p>
+        We can do the same with the single-table case:
+    </p>
+    <p>
+        <pre><span style="color:blue;">data</span>&nbsp;SingleDTO&nbsp;=&nbsp;SingleDTO
+&nbsp;&nbsp;{&nbsp;singleCapacity&nbsp;::&nbsp;Integer
+&nbsp;&nbsp;,&nbsp;minimalReservation&nbsp;::&nbsp;Integer
+&nbsp;&nbsp;}&nbsp;<span style="color:blue;">deriving</span>&nbsp;(<span style="color:#2b91af;">Eq</span>,&nbsp;<span style="color:#2b91af;">Show</span>,&nbsp;<span style="color:#2b91af;">Generic</span>)
+ 
+<span style="color:#2b91af;">singleJSONOptions</span>&nbsp;<span style="color:blue;">::</span>&nbsp;<span style="color:blue;">Options</span>
+singleJSONOptions&nbsp;=
+&nbsp;&nbsp;defaultOptions&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;fieldLabelModifier&nbsp;=&nbsp;\s&nbsp;-&gt;&nbsp;<span style="color:blue;">case</span>&nbsp;s&nbsp;<span style="color:blue;">of</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#a31515;">&quot;singleCapacity&quot;</span>&nbsp;-&gt;&nbsp;<span style="color:#a31515;">&quot;capacity&quot;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#a31515;">&quot;minimalReservation&quot;</span>&nbsp;-&gt;&nbsp;<span style="color:#a31515;">&quot;minimalReservation&quot;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;_&nbsp;-&gt;&nbsp;s&nbsp;}
+ 
+<span style="color:blue;">instance</span>&nbsp;<span style="color:blue;">ToJSON</span>&nbsp;<span style="color:blue;">SingleDTO</span>&nbsp;<span style="color:blue;">where</span>
+&nbsp;&nbsp;toJSON&nbsp;=&nbsp;genericToJSON&nbsp;singleJSONOptions
+&nbsp;&nbsp;toEncoding&nbsp;=&nbsp;genericToEncoding&nbsp;singleJSONOptions</pre>
+    </p>
+    <p>
+        This takes care of that case, but we still need a container type that will hold either one or the other:
+    </p>
+    <p>
+        <pre><span style="color:blue;">data</span>&nbsp;TableDTO&nbsp;=&nbsp;TableDTO
+&nbsp;&nbsp;{&nbsp;singleTable&nbsp;::&nbsp;Maybe&nbsp;SingleDTO
+&nbsp;&nbsp;,&nbsp;communalTable&nbsp;::&nbsp;Maybe&nbsp;CommunalDTO
+&nbsp;&nbsp;}&nbsp;<span style="color:blue;">deriving</span>&nbsp;(<span style="color:#2b91af;">Eq</span>,&nbsp;<span style="color:#2b91af;">Show</span>,&nbsp;<span style="color:#2b91af;">Generic</span>)
+ 
+<span style="color:#2b91af;">tableJSONOptions</span>&nbsp;<span style="color:blue;">::</span>&nbsp;<span style="color:blue;">Options</span>
+tableJSONOptions&nbsp;=
+&nbsp;&nbsp;defaultOptions&nbsp;{&nbsp;omitNothingFields&nbsp;=&nbsp;True&nbsp;}
+ 
+<span style="color:blue;">instance</span>&nbsp;<span style="color:blue;">ToJSON</span>&nbsp;<span style="color:blue;">TableDTO</span>&nbsp;<span style="color:blue;">where</span>
+&nbsp;&nbsp;toJSON&nbsp;=&nbsp;genericToJSON&nbsp;tableJSONOptions
+&nbsp;&nbsp;toEncoding&nbsp;=&nbsp;genericToEncoding&nbsp;tableJSONOptions</pre>
+    </p>
+    <p>
+        One way to model a <a href="https://en.wikipedia.org/wiki/Tagged_union">sum type</a> with a DTO is to declare both cases as <code>Maybe</code> fields. While it does allow illegal states to be representable (i.e. both kinds of tables defined at the same time, or none of them present) this is only par for the course at the application boundary.
+    </p>
+    <p>
+        That's quite a bit of infrastructure to stand up, but at least most of it can be reused for parsing.
+    </p>
+    <h3 id="0a507081076c4afe9e2197f013f6f107">
+        JSON deserialisation based on types <a href="#0a507081076c4afe9e2197f013f6f107">#</a>
+    </h3>
+    <p>
+        To allow parsing of JSON into the above DTO we can make them all <code>FromJSON</code> instances, e.g.:
+    </p>
+    <p>
+        <pre><span style="color:blue;">instance</span>&nbsp;<span style="color:blue;">FromJSON</span>&nbsp;<span style="color:blue;">CommunalDTO</span>&nbsp;<span style="color:blue;">where</span>
+&nbsp;&nbsp;parseJSON&nbsp;=&nbsp;genericParseJSON&nbsp;communalJSONOptions</pre>
+    </p>
+    <p>
+        Notice that you can reuse the same <code>communalJSONOptions</code> used for the <code>ToJSON</code> instance. Repeat that exercise for the two other record types.
+    </p>
+    <p>
+        That's only half the battle, though, since this only gives you a way to parse and serialize the DTO. What you ultimately want is to persist or dehydrate <code>Table</code> data.
+    </p>
+    <h3 id="7e234848ee2d48b8a1da42c0e05bb088">
+        Converting DTO to Domain Model, and vice versa <a href="#7e234848ee2d48b8a1da42c0e05bb088">#</a>
+    </h3>
+    <p>
+        As usual, converting a nice, encapsulated value to a more relaxed format is safe and trivial:
+    </p>
+    <p>
+        <pre><span style="color:#2b91af;">toTableDTO</span>&nbsp;<span style="color:blue;">::</span>&nbsp;<span style="color:blue;">Table</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">TableDTO</span>
+toTableDTO&nbsp;(Single&nbsp;(SingleT&nbsp;(N&nbsp;c)&nbsp;(N&nbsp;m)))&nbsp;=&nbsp;TableDTO&nbsp;(Just&nbsp;(SingleDTO&nbsp;c&nbsp;m))&nbsp;Nothing
+toTableDTO&nbsp;(Communal&nbsp;(N&nbsp;c))&nbsp;=&nbsp;TableDTO&nbsp;Nothing&nbsp;(Just&nbsp;(CommunalDTO&nbsp;c))</pre>
+    </p>
+    <p>
+        Going the other way is fundamentally a parsing exercise:
+    </p>
+    <p>
+        <pre><span style="color:#2b91af;">tryParseTable</span>&nbsp;<span style="color:blue;">::</span>&nbsp;<span style="color:blue;">TableDTO</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:#2b91af;">Maybe</span>&nbsp;<span style="color:blue;">Table</span>
+tryParseTable&nbsp;(TableDTO&nbsp;(Just&nbsp;(SingleDTO&nbsp;c&nbsp;m))&nbsp;Nothing)&nbsp;=&nbsp;trySingleTable&nbsp;c&nbsp;m
+tryParseTable&nbsp;(TableDTO&nbsp;Nothing&nbsp;(Just&nbsp;(CommunalDTO&nbsp;c)))&nbsp;=&nbsp;tryCommunalTable&nbsp;c
+tryParseTable&nbsp;_&nbsp;=&nbsp;Nothing</pre>
+    </p>
+    <p>
+        Such an operation may fail, so the result is a <code>Maybe Table</code>. It could also have been an <code>Either something Table</code>, if you wanted to return information about errors when things go wrong. It makes the code marginally more complex, but doesn't change the overall thrust of this exploration.
+    </p>
+    <p>
+        Let's take stock of the type-based alternative. It requires 62 lines of code, distributed over three DTO types, their <code>Options</code>, their <code>ToJSON</code> and <code>FromJSON</code> instances, and finally the two conversions <code>tryParseTable</code> and <code>toTableDTO</code>.
+    </p>
+    <h3 id="473295252dbf46bd93fc31b1d2f505e5">
+        Conclusion <a href="#473295252dbf46bd93fc31b1d2f505e5">#</a>
+    </h3>
+    <p>
+        In this article I've explored two alternatives for converting a well-encapsulated Domain Model to and from JSON. One option is to directly manipulate the DOM. Another option is take a more declarative approach and define <em>types</em> that model the shape of the JSON data, and then leverage type-based automation (here, Generics) to automatically produce the code that parses and writes the JSON.
+    </p>
+    <p>
+        I've deliberately chosen a Domain Model with some constraints, in order to demonstrate how persisting a non-trivial data model might work. With that setup, writing 'loosely coupled' code directly against the DOM requires 27 lines of code, while 'taking advantage' of type-based automation requires 62 lines of code.
+    </p>
+    <p>
+        To be fair, the dice don't always land that way. You can't infer a general rule from a single example, and it's possible that I could have done something clever with Aeson to reduce the code. Even so, I think that there's a conclusion to be drawn, and it's this:
+    </p>
+    <p>
+        Type-based automation (Generics, or run-time Reflection) may seem simple at first glance. Just declare a type and let some automation library do the rest. It may happen, however, that you need to tweak the defaults so much that it would be easier skipping the type-based approach and instead directly manipulating the DOM.
+    </p>
+    <p>
+        I love static type systems, but I'm also watchful of their limitations. There's likely to be an inflection point where, on the one side, a type-based declarative API is best, while on the other side of that point, a more 'lightweight' approach is better.
+    </p>
+    <p>
+        The position of such an inflection point will vary from context to context. Just be aware of the possibility, and explore alternatives if things begin to feel awkward.
+    </p>
+    <p>
+        <strong>Next:</strong> Serializing restaurant tables in F#.
+    </p>
+</div>
