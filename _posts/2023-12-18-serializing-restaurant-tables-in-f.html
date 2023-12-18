@@ -1,0 +1,368 @@
+---
+layout: post
+title: "Serializing restaurant tables in F#"
+description: "Using System.Text.Json, with and without Reflection."
+date: 2023-12-18 13:59 UTC
+tags: [F#]
+---
+{% include JB/setup %}
+
+<div id="post">
+    <p>
+        <em>{{ page.description }}</em>
+    </p>
+    <p>
+        This article is part of a short series of articles about <a href="/2023/12/04/serialization-with-and-without-reflection">serialization with and without Reflection</a>. In this instalment I'll explore some options for serializing <a href="https://en.wikipedia.org/wiki/JSON">JSON</a> with <a href="https://fsharp.org/">F#</a> using the API built into .NET: <a href="https://learn.microsoft.com/dotnet/api/system.text.json">System.Text.Json</a>. I'm not going use <a href="https://www.newtonsoft.com/json">Json.NET</a> in this article, but I've <a href="/2022/01/03/to-id-or-not-to-id">done similar things with that library</a> in the past, so what's here is, at least, somewhat generalizable.
+    </p>
+    <h3 id="64e7a2f8c5634026ae4ffd1497dd58f9">
+        Natural numbers <a href="#64e7a2f8c5634026ae4ffd1497dd58f9">#</a>
+    </h3>
+    <p>
+        Before we start investigating how to serialize to and from JSON, we must have something to serialize. As described in the <a href="/2023/12/04/serialization-with-and-without-reflection">introductory article</a> we'd like to parse and write restaurant table configurations like this:
+    </p>
+    <p>
+        <pre>{
+&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;singleTable&quot;</span>:&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;capacity&quot;</span>:&nbsp;16,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;minimalReservation&quot;</span>:&nbsp;10
+&nbsp;&nbsp;}
+}</pre>
+    </p>
+    <p>
+        On the other hand, I'd like to represent the Domain Model in a way that <a href="/2022/10/24/encapsulation-in-functional-programming">encapsulates the rules</a> governing the model, <a href="https://blog.janestreet.com/effective-ml-video/">making illegal states unrepresentable</a>.
+    </p>
+    <p>
+        As the first step, we observe that the numbers involved are all <a href="https://en.wikipedia.org/wiki/Natural_number">natural numbers</a>. In F# it's both <a href="/2015/08/03/idiomatic-or-idiosyncratic">idiomatic</a> and easy to define a <a href="https://www.hillelwayne.com/post/constructive/">predicative data type</a>:
+    </p>
+    <p>
+        <pre><span style="color:blue;">type</span>&nbsp;NaturalNumber&nbsp;=&nbsp;<span style="color:blue;">private</span>&nbsp;NaturalNumber&nbsp;<span style="color:blue;">of</span>&nbsp;int</pre>
+    </p>
+    <p>
+        Since it's defined with a <code>private</code> constructor we need to also supply a way to create valid values of the type:
+    </p>
+    <p>
+        <pre><span style="color:blue;">module</span>&nbsp;NaturalNumber&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;tryCreate&nbsp;n&nbsp;=&nbsp;<span style="color:blue;">if</span>&nbsp;n&nbsp;&lt;&nbsp;1&nbsp;<span style="color:blue;">then</span>&nbsp;None&nbsp;<span style="color:blue;">else</span>&nbsp;Some&nbsp;(NaturalNumber&nbsp;n)</pre>
+    </p>
+    <p>
+        In this, as well as the other articles in this series, I've chosen to model the potential for errors with <code>Option</code> values. I could also have chosen to use <code>Result</code> if I wanted to communicate information along the 'error channel', but sticking with <code>Option</code> makes the code a bit simpler. Not so much in F# or <a href="https://www.haskell.org/">Haskell</a>, but once we reach C#, <a href="/2022/07/25/an-applicative-reservation-validation-example-in-c">applicative validation</a> becomes complicated.
+    </p>
+    <p>
+        There's no loss of generality in this decision, since both <code>Option</code> and <code>Result</code> are <a href="/2018/10/01/applicative-functors">applicative functors</a>.
+    </p>
+    <p>
+        <pre>&gt; NaturalNumber.tryCreate&nbsp;-1;;
+val it: NaturalNumber option = None
+
+&gt; <span style="color:blue;">let</span>&nbsp;x&nbsp;=&nbsp;NaturalNumber.tryCreate&nbsp;42;;
+val x: NaturalNumber option = Some NaturalNumber 42</pre>
+    </p>
+    <p>
+        The <code>tryCreate</code> function enables client developers to create <code>NaturalNumber</code> values, and due to the F#'s default equality and comparison implementation, you can even compare them:
+    </p>
+    <p>
+        <pre>&gt; <span style="color:blue;">let</span>&nbsp;y = NaturalNumber.tryCreate 2112;;
+val y: NaturalNumber option = Some NaturalNumber 2112
+
+&gt; x &lt; y;;
+val it: bool = true</pre>
+    </p>
+    <p>
+        That's it for natural numbers. Three lines of code. Compare that to <a href="/2023/12/11/serializing-restaurant-tables-in-haskell">the Haskell implementation</a>, which required eight lines of code. This is mostly due to F#'s <code>private</code> keyword, which Haskell doesn't have.
+    </p>
+    <h3 id="8957ab6a606a4279a654e040d0788051">
+        Domain Model <a href="#8957ab6a606a4279a654e040d0788051">#</a>
+    </h3>
+    <p>
+        Modelling a restaurant table follows in the same vein. One invariant I would like to enforce is that for a 'single' table, the minimal reservation should be a <code>NaturalNumber</code> less than or equal to the table's capacity. It doesn't make sense to configure a table for four with a minimum reservation of six.
+    </p>
+    <p>
+        In the same spirit as above, then, define this type:
+    </p>
+    <p>
+        <pre><span style="color:blue;">type</span>&nbsp;Table&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;SingleTable&nbsp;<span style="color:blue;">of</span>&nbsp;NaturalNumber&nbsp;*&nbsp;NaturalNumber
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;CommunalTable&nbsp;<span style="color:blue;">of</span>&nbsp;NaturalNumber</pre>
+    </p>
+    <p>
+        Once more the <code>private</code> keyword makes it impossible for client code to create instances directly, so we need a pair of functions to create values:
+    </p>
+    <p>
+        <pre><span style="color:blue;">module</span>&nbsp;Table&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;trySingle&nbsp;capacity&nbsp;minimalReservation&nbsp;=&nbsp;option&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;cap&nbsp;=&nbsp;NaturalNumber.tryCreate&nbsp;capacity
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;min&nbsp;=&nbsp;NaturalNumber.tryCreate&nbsp;minimalReservation
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;cap&nbsp;&lt;&nbsp;min&nbsp;<span style="color:blue;">then</span>&nbsp;<span style="color:blue;">return!</span>&nbsp;None
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">else</span>&nbsp;<span style="color:blue;">return</span>&nbsp;SingleTable&nbsp;(cap,&nbsp;min)&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;tryCommunal&nbsp;=&nbsp;NaturalNumber.tryCreate&nbsp;&gt;&gt;&nbsp;Option.map&nbsp;CommunalTable</pre>
+    </p>
+    <p>
+        Notice that <code>trySingle</code> checks the invariant that the <code>capacity</code> must be greater than or equal to the <code>minimalReservation</code>.
+    </p>
+    <p>
+        Again, notice how much easier it is to define a predicative type in F#, compared to Haskell.
+    </p>
+    <p>
+        This isn't a competition between languages, and while F# certainly scores a couple of points here, Haskell has other advantages.
+    </p>
+    <p>
+        The point of this little exercise, so far, is that it <em>encapsulates</em> the contract implied by the Domain Model. It does this by using the static type system to its advantage.
+    </p>
+    <h3 id="560a74686ec64d36858a893c7c63cbb4">
+        JSON serialization by hand <a href="#560a74686ec64d36858a893c7c63cbb4">#</a>
+    </h3>
+    <p>
+        At the boundaries of applications, however, <a href="/2023/10/16/at-the-boundaries-static-types-are-illusory">there are no static types</a>. Is the static type system still useful in that situation?
+    </p>
+    <p>
+        For a long time, the most popular .NET library for JSON serialization was <a href="https://www.newtonsoft.com/json">Json.NET</a>, but these days I find the built-in API offered in the <a href="https://learn.microsoft.com/dotnet/api/system.text.json">System.Text.Json</a> namespace adequate. This is also the case here.
+    </p>
+    <p>
+        The original rationale for this article series was to demonstrate how serialization can be done without Reflection, so I'll start there and return to Reflection later.
+    </p>
+    <p>
+        In this article series, I consider the JSON format fixed. A single table should be rendered as shown above, and a communal table should be rendered like this:
+    </p>
+    <p>
+        <pre>{&nbsp;<span style="color:#2e75b6;">&quot;communalTable&quot;</span>:&nbsp;{&nbsp;<span style="color:#2e75b6;">&quot;capacity&quot;</span>:&nbsp;42&nbsp;}&nbsp;}</pre>
+    </p>
+    <p>
+        Often in the real world you'll have to conform to a particular protocol format, or, even if that's not the case, being able to control the shape of the wire format is important to deal with backwards compatibility.
+    </p>
+    <p>
+        As I outlined in the <a href="/2023/12/04/serialization-with-and-without-reflection">introduction article</a> you can usually find a more weakly typed API to get the job done. For serializing <code>Table</code> to JSON it looks like this:
+    </p>
+    <p>
+        <pre><span style="color:blue;">let</span>&nbsp;serializeTable&nbsp;=&nbsp;<span style="color:blue;">function</span>
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;SingleTable&nbsp;(NaturalNumber&nbsp;capacity,&nbsp;NaturalNumber&nbsp;minimalReservation)&nbsp;<span style="color:blue;">-&gt;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;j&nbsp;=&nbsp;JsonObject&nbsp;()
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;j[<span style="color:#a31515;">&quot;singleTable&quot;</span>]&nbsp;<span style="color:blue;">&lt;-</span>&nbsp;JsonObject&nbsp;()
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;j[<span style="color:#a31515;">&quot;singleTable&quot;</span>][<span style="color:#a31515;">&quot;capacity&quot;</span>]&nbsp;<span style="color:blue;">&lt;-</span>&nbsp;capacity
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;j[<span style="color:#a31515;">&quot;singleTable&quot;</span>][<span style="color:#a31515;">&quot;minimalReservation&quot;</span>]&nbsp;<span style="color:blue;">&lt;-</span>&nbsp;minimalReservation
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;j.ToJsonString&nbsp;()
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;CommunalTable&nbsp;(NaturalNumber&nbsp;capacity)&nbsp;<span style="color:blue;">-&gt;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;j&nbsp;=&nbsp;JsonObject&nbsp;()
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;j[<span style="color:#a31515;">&quot;communalTable&quot;</span>]&nbsp;<span style="color:blue;">&lt;-</span>&nbsp;JsonObject&nbsp;()
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;j[<span style="color:#a31515;">&quot;communalTable&quot;</span>][<span style="color:#a31515;">&quot;capacity&quot;</span>]&nbsp;<span style="color:blue;">&lt;-</span>&nbsp;capacity
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;j.ToJsonString&nbsp;()</pre>
+    </p>
+    <p>
+        In order to separate concerns, I've defined this functionality in a new module that references the module that defines the Domain Model. The <code>serializeTable</code> function pattern-matches on <code>SingleTable</code> and <code>CommunalTable</code> to write two different <a href="https://learn.microsoft.com/dotnet/api/system.text.json.nodes.jsonobject">JsonObject</a> objects, using the JSON API's underlying Document Object Model (DOM).
+    </p>
+    <h3 id="7fb5251937ac4f86b016f7c782db7680">
+        JSON deserialization by hand <a href="#7fb5251937ac4f86b016f7c782db7680">#</a>
+    </h3>
+    <p>
+        You can also go the other way, and when it looks more complicated, it's because it is. When serializing an encapsulated value, not a lot can go wrong because the value is already valid. When deserializing a JSON string, on the other hand, all sorts of things can go wrong: It might not even be a valid string, or the string may not be valid JSON, or the JSON may not be a valid <code>Table</code> representation, or the values may be illegal, etc.
+    </p>
+    <p>
+        Here I found it appropriate to first define a small API of parsing functions, mostly in order to make the object-oriented API more composable. First, I need some code that looks at the root JSON object to determine which kind of table it is (if it's a table at all). I found it appropriate to do that as a pair of <a href="https://learn.microsoft.com/dotnet/fsharp/language-reference/active-patterns">active patterns</a>:
+    </p>
+    <p>
+        <pre><span style="color:blue;">let</span>&nbsp;<span style="color:blue;">private</span>&nbsp;(|Single|_|)&nbsp;(node&nbsp;:&nbsp;JsonNode)&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">match</span>&nbsp;node[<span style="color:#a31515;">&quot;singleTable&quot;</span>]&nbsp;<span style="color:blue;">with</span>
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:blue;">null</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;None
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;tn&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;Some&nbsp;tn
+ 
+<span style="color:blue;">let</span>&nbsp;<span style="color:blue;">private</span>&nbsp;(|Communal|_|)&nbsp;(node&nbsp;:&nbsp;JsonNode)&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">match</span>&nbsp;node[<span style="color:#a31515;">&quot;communalTable&quot;</span>]&nbsp;<span style="color:blue;">with</span>
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:blue;">null</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;None
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;tn&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;Some&nbsp;tn</pre>
+    </p>
+    <p>
+        It turned out that I also needed a function to even check if a string is a valid JSON document:
+    </p>
+    <p>
+        <pre><span style="color:blue;">let</span>&nbsp;<span style="color:blue;">private</span>&nbsp;tryParseJson&nbsp;(candidate&nbsp;:&nbsp;string)&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">try</span>&nbsp;JsonNode.Parse&nbsp;candidate&nbsp;|&gt;&nbsp;Some
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">with</span>&nbsp;|&nbsp;:?&nbsp;System.Text.Json.JsonException&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;None</pre>
+    </p>
+    <p>
+        If there's a way to do that without a <code>try/with</code> expression, I couldn't find it. Likewise, trying to parse an integer turns out to be surprisingly complicated:
+    </p>
+    <p>
+        <pre><span style="color:blue;">let</span>&nbsp;<span style="color:blue;">private</span>&nbsp;tryParseInt&nbsp;(node&nbsp;:&nbsp;JsonNode)&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">match</span>&nbsp;node&nbsp;<span style="color:blue;">with</span>
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:blue;">null</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;None
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;_&nbsp;<span style="color:blue;">-&gt;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;node.GetValueKind&nbsp;()&nbsp;=&nbsp;JsonValueKind.Number
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">then</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">try</span>&nbsp;node&nbsp;|&gt;&nbsp;int&nbsp;|&gt;&nbsp;Some
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">with</span>&nbsp;|&nbsp;:?&nbsp;FormatException&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;None&nbsp;<span style="color:green;">//&nbsp;Thrown&nbsp;on&nbsp;decimal&nbsp;numbers</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">else</span>&nbsp;None</pre>
+    </p>
+    <p>
+        Both <code>tryParseJson</code> and <code>tryParseInt</code> are, however, general-purpose functions, so if you have a lot of JSON you need to parse, you can put them in a reusable library.
+    </p>
+    <p>
+        With those building blocks you can now define a function to parse a <code>Table</code>:
+    </p>
+    <p>
+        <pre><span style="color:blue;">let</span>&nbsp;tryDeserializeTable&nbsp;(candidate&nbsp;:&nbsp;string)&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">match</span>&nbsp;tryParseJson&nbsp;candidate&nbsp;<span style="color:blue;">with</span>
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;Some&nbsp;(Single&nbsp;node)&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;option&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;capacity&nbsp;=&nbsp;node[<span style="color:#a31515;">&quot;capacity&quot;</span>]&nbsp;|&gt;&nbsp;tryParseInt
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;minimalReservation&nbsp;=&nbsp;node[<span style="color:#a31515;">&quot;minimalReservation&quot;</span>]&nbsp;|&gt;&nbsp;tryParseInt
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return!</span>&nbsp;Table.trySingle&nbsp;capacity&nbsp;minimalReservation&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;Some&nbsp;(Communal&nbsp;node)&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;option&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;capacity&nbsp;=&nbsp;node[<span style="color:#a31515;">&quot;capacity&quot;</span>]&nbsp;|&gt;&nbsp;tryParseInt
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return!</span>&nbsp;Table.tryCommunal&nbsp;capacity&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;_&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;None</pre>
+    </p>
+    <p>
+        Since both serialisation and deserialization is based on string values, you should write automated tests that verify that the code works, and in fact, I did. Here are a few examples:
+    </p>
+    <p>
+        <pre>[&lt;Fact&gt;]
+<span style="color:blue;">let</span>&nbsp;``Deserialize&nbsp;single&nbsp;table&nbsp;for&nbsp;4``&nbsp;()&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;json&nbsp;=&nbsp;<span style="color:#a31515;">&quot;&quot;&quot;{&quot;singleTable&quot;:{&quot;capacity&quot;:4,&quot;minimalReservation&quot;:3}}&quot;&quot;&quot;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;actual&nbsp;=&nbsp;tryDeserializeTable&nbsp;json
+&nbsp;&nbsp;&nbsp;&nbsp;Table.trySingle&nbsp;4&nbsp;3&nbsp;=!&nbsp;actual
+ 
+[&lt;Fact&gt;]
+<span style="color:blue;">let</span>&nbsp;``Deserialize&nbsp;non-table``&nbsp;()&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;json&nbsp;=&nbsp;<span style="color:#a31515;">&quot;&quot;&quot;{&quot;foo&quot;:42}&quot;&quot;&quot;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;actual&nbsp;=&nbsp;tryDeserializeTable&nbsp;json
+&nbsp;&nbsp;&nbsp;&nbsp;None&nbsp;=!&nbsp;actual</pre>
+    </p>
+    <p>
+        Apart from module declaration and imports etc. this hand-written JSON capability requires 46 lines of code, although, to be fair, some of that code (<code>tryParseJson</code> and <code>tryParseInt</code>) are general-purpose functions that belong in a reusable library. Can we do better with static types and Reflection?
+    </p>
+    <h3 id="08491ec39df4485e83cd0b5cf80cdb7e">
+        JSON serialisation based on types <a href="#08491ec39df4485e83cd0b5cf80cdb7e">#</a>
+    </h3>
+    <p>
+        The static <a href="https://learn.microsoft.com/dotnet/api/system.text.json.jsonserializer">JsonSerializer</a> class comes with <code>Serialize&lt;T&gt;</code> and <code>Deserialize&lt;T&gt;</code> methods that use Reflection to convert a statically typed object to and from JSON. You can define a type (a <a href="https://en.wikipedia.org/wiki/Data_transfer_object">Data Transfer Object</a> (DTO) if you will) and let Reflection do the hard work.
+    </p>
+    <p>
+        In <a href="/2021/06/14/new-book-code-that-fits-in-your-head">Code That Fits in Your Head</a> I explain how you're usually better off separating the role of serialization from the role of Domain Model. One way to do that is exactly by defining a DTO for serialisation, and let the Domain Model remain exclusively to model the rules of the application. The above <code>Table</code> type plays the latter role, so we need new DTO types:
+    </p>
+    <p>
+        <pre><span style="color:blue;">type</span>&nbsp;CommunalTableDto&nbsp;=&nbsp;{&nbsp;Capacity&nbsp;:&nbsp;int&nbsp;}
+<span style="color:blue;">type</span>&nbsp;SingleTableDto&nbsp;=&nbsp;{&nbsp;Capacity&nbsp;:&nbsp;int;&nbsp;MinimalReservation&nbsp;:&nbsp;int&nbsp;}
+<span style="color:blue;">type</span>&nbsp;TableDto&nbsp;=&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;CommunalTable&nbsp;:&nbsp;CommunalTableDto&nbsp;option
+&nbsp;&nbsp;&nbsp;&nbsp;SingleTable&nbsp;:&nbsp;SingleTableDto&nbsp;option&nbsp;}</pre>
+    </p>
+    <p>
+        One way to model a <a href="https://en.wikipedia.org/wiki/Tagged_union">sum type</a> with a DTO is to declare both cases as <code>option</code> fields. While it does allow illegal states to be representable (i.e. both kinds of tables defined at the same time, or none of them present) this is only par for the course at the application boundary.
+    </p>
+    <p>
+        While you can serialize values of that type, by default the generated JSON doesn't have the right format:
+    </p>
+    <p>
+        <pre>&gt; val dto: TableDto = { CommunalTable = Some { Capacity = 42 }
+                        SingleTable = None }
+
+&gt; JsonSerializer.Serialize dto;;
+val it: string = "{"CommunalTable":{"Capacity":42},"SingleTable":null}"</pre>
+    </p>
+    <p>
+        There are two problems with the generated JSON document:
+    </p>
+    <ul>
+        <li>The casing is wrong</li>
+        <li>The null value shouldn't be there</li>
+    </ul>
+    <p>
+        None of those are too hard to address, but it does make the API a bit more awkward to use, as this test demonstrates:
+    </p>
+    <p>
+        <pre>[&lt;Fact&gt;]
+<span style="color:blue;">let</span>&nbsp;``Serialize&nbsp;communal&nbsp;table&nbsp;via&nbsp;reflection``&nbsp;()&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;dto&nbsp;=&nbsp;{&nbsp;CommunalTable&nbsp;=&nbsp;Some&nbsp;{&nbsp;Capacity&nbsp;=&nbsp;42&nbsp;};&nbsp;SingleTable&nbsp;=&nbsp;None&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;actual&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;JsonSerializer.Serialize&nbsp;(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;dto,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;JsonSerializerOptions&nbsp;(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;PropertyNamingPolicy&nbsp;=&nbsp;JsonNamingPolicy.CamelCase,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;IgnoreNullValues&nbsp;=&nbsp;<span style="color:blue;">true</span>&nbsp;))
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#a31515;">&quot;&quot;&quot;{&quot;communalTable&quot;:{&quot;capacity&quot;:42}}&quot;&quot;&quot;</span>&nbsp;=!&nbsp;actual</pre>
+    </p>
+    <p>
+        You can, of course, define this particular serialization behaviour as a reusable function, so it's not a problem that you can't address. I just wanted to include this, since it's part of the overall work that you have to do in order to make this work.
+    </p>
+    <h3 id="a215bb56b64446afbe2ca6861f724126">
+        JSON deserialisation based on types <a href="#a215bb56b64446afbe2ca6861f724126">#</a>
+    </h3>
+    <p>
+        To allow parsing of JSON into the above DTO the Reflection-based <code>Deserialize</code> method pretty much works out of the box, although again, it needs to be configured. Here's a passing test that demonstrates how that works:
+    </p>
+    <p>
+        <pre>[&lt;Fact&gt;]
+<span style="color:blue;">let</span>&nbsp;``Deserialize&nbsp;single&nbsp;table&nbsp;via&nbsp;reflection``&nbsp;()&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;json&nbsp;=&nbsp;<span style="color:#a31515;">&quot;&quot;&quot;{&quot;singleTable&quot;:{&quot;capacity&quot;:4,&quot;minimalReservation&quot;:2}}&quot;&quot;&quot;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;actual&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;JsonSerializer.Deserialize&lt;TableDto&gt;&nbsp;(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;json,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;JsonSerializerOptions&nbsp;(&nbsp;PropertyNamingPolicy&nbsp;=&nbsp;JsonNamingPolicy.CamelCase&nbsp;))
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;CommunalTable&nbsp;=&nbsp;None
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;SingleTable&nbsp;=&nbsp;Some&nbsp;{&nbsp;Capacity&nbsp;=&nbsp;4;&nbsp;MinimalReservation&nbsp;=&nbsp;2&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;}&nbsp;=!&nbsp;actual</pre>
+    </p>
+    <p>
+        There's only difference in casing, so you'd expect the <code>Deserialize</code> method to be a <a href="https://martinfowler.com/bliki/TolerantReader.html">Tolerant Reader</a>, but no. It's very particular about that, so the <code>JsonNamingPolicy.CamelCase</code> configuration is necessary. Perhaps the API designers found that <a href="https://peps.python.org/pep-0020/">explicit is better than implicit</a>.
+    </p>
+    <p>
+        In any case, you could package that in a reusable <code>Deserialize</code> function that has all the options that are appropriate in a particular code context, so not a big deal. That takes care of actually writing and parsing JSON, but that's only half the battle. This only gives you a way to parse and serialize the DTO. What you ultimately want is to persist or dehydrate <code>Table</code> data.
+    </p>
+    <h3 id="8faed9f5f0b149d68ec5e1a457046e59">
+        Converting DTO to Domain Model, and vice versa <a href="#8faed9f5f0b149d68ec5e1a457046e59">#</a>
+    </h3>
+    <p>
+        As usual, converting a nice, encapsulated value to a more relaxed format is safe and trivial:
+    </p>
+    <p>
+        <pre><span style="color:blue;">let</span>&nbsp;toTableDto&nbsp;=&nbsp;<span style="color:blue;">function</span>
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;SingleTable&nbsp;(NaturalNumber&nbsp;capacity,&nbsp;NaturalNumber&nbsp;minimalReservation)&nbsp;<span style="color:blue;">-&gt;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;CommunalTable&nbsp;=&nbsp;None
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;SingleTable&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Some
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Capacity&nbsp;=&nbsp;capacity
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;MinimalReservation&nbsp;=&nbsp;minimalReservation
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;CommunalTable&nbsp;(NaturalNumber&nbsp;capacity)&nbsp;<span style="color:blue;">-&gt;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{&nbsp;CommunalTable&nbsp;=&nbsp;Some&nbsp;{&nbsp;Capacity&nbsp;=&nbsp;capacity&nbsp;};&nbsp;SingleTable&nbsp;=&nbsp;None&nbsp;}</pre>
+    </p>
+    <p>
+        Going the other way is <a href="https://lexi-lambda.github.io/blog/2019/11/05/parse-don-t-validate/">fundamentally a parsing exercise</a>:
+    </p>
+    <p>
+        <pre><span style="color:blue;">let</span>&nbsp;tryParseTableDto&nbsp;candidate&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">match</span>&nbsp;candidate.CommunalTable,&nbsp;candidate.SingleTable&nbsp;<span style="color:blue;">with</span>
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;Some&nbsp;{&nbsp;Capacity&nbsp;=&nbsp;capacity&nbsp;},&nbsp;None&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;Table.tryCommunal&nbsp;capacity
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;None,&nbsp;Some&nbsp;{&nbsp;Capacity&nbsp;=&nbsp;capacity;&nbsp;MinimalReservation&nbsp;=&nbsp;minimalReservation&nbsp;}&nbsp;<span style="color:blue;">-&gt;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Table.trySingle&nbsp;capacity&nbsp;minimalReservation
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;_&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;None</pre>
+    </p>
+    <p>
+        Such an operation may fail, so the result is a <code>Table option</code>. It could also have been a <code>Result&lt;Table, 'something&gt;</code>, if you wanted to return information about errors when things go wrong. It makes the code marginally more complex, but doesn't change the overall thrust of this exploration.
+    </p>
+    <p>
+        Ironically, while <code>tryParseTableDto</code> is actually more complex than <code>toTableDto</code> it looks smaller, or at least denser.
+    </p>
+    <p>
+        Let's take stock of the type-based alternative. It requires 26 lines of code, distributed over three DTO types and the two conversions <code>tryParseTableDto</code> and <code>toTableDto</code>, but here I haven't counted configuration of <code>Serialize</code> and <code>Deserialize</code>, since I left that to each test case that I wrote. Since all of this code generally stays within 80 characters in line width, that would realistically add another 10 lines of code, for a total around 36 lines.
+    </p>
+    <p>
+        This is smaller than the DOM-based code, although at the same magnitude.
+    </p>
+    <h3 id="2292c83546d441159ece864f3636cd41">
+        Conclusion <a href="#2292c83546d441159ece864f3636cd41">#</a>
+    </h3>
+    <p>
+        In this article I've explored two alternatives for converting a well-encapsulated Domain Model to and from JSON. One option is to directly manipulate the DOM. Another option is take a more declarative approach and define <em>types</em> that model the shape of the JSON data, and then leverage type-based automation (here, Reflection) to automatically parse and write the JSON.
+    </p>
+    <p>
+        I've deliberately chosen a Domain Model with some constraints, in order to demonstrate how persisting a non-trivial data model might work. With that setup, writing 'loosely coupled' code directly against the DOM requires 46 lines of code, while taking advantage of type-based automation requires 36 lines of code. Contrary to <a href="/2023/12/11/serializing-restaurant-tables-in-haskell">the Haskell example</a>, Reflection does seem to edge out a win this round.
+    </p>
+    <p>
+        <strong>Next:</strong> Serializing restaurant tables in C#.
+    </p>
+</div>
