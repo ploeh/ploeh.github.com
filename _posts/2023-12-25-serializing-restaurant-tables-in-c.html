@@ -1,0 +1,514 @@
+---
+layout: post
+title: "Serializing restaurant tables in C#"
+description: "Using System.Text.Json, with and without Reflection."
+date: 2023-12-25 11:42 UTC
+tags: [Miscellaneous]
+---
+{% include JB/setup %}
+
+<div id="post">
+    <p>
+        <em>{{ page.description }}</em>
+    </p>
+    <p>
+        This article is part of a short series of articles about <a href="/2023/12/04/serialization-with-and-without-reflection">serialization with and without Reflection</a>. In this instalment I'll explore some options for serializing <a href="https://en.wikipedia.org/wiki/JSON">JSON</a> with C# using the API built into .NET: <a href="https://learn.microsoft.com/dotnet/api/system.text.json">System.Text.Json</a>. I'm not going use <a href="https://www.newtonsoft.com/json">Json.NET</a> in this article, but I've <a href="/2022/01/03/to-id-or-not-to-id">done similar things with that library</a> in the past, so what's here is, at least, somewhat generalizable.
+    </p>
+    <p>
+        Since the API is the same, the only difference from <a href="/2023/12/18/serializing-restaurant-tables-in-f">the previous article</a> is the language syntax.
+    </p>
+    <h3 id="e949466d51f647bfbee9016d551d9b78">
+        Natural numbers <a href="#e949466d51f647bfbee9016d551d9b78">#</a>
+    </h3>
+    <p>
+        Before we start investigating how to serialize to and from JSON, we must have something to serialize. As described in the <a href="/2023/12/04/serialization-with-and-without-reflection">introductory article</a> we'd like to parse and write restaurant table configurations like this:
+    </p>
+    <p>
+        <pre>{
+&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;singleTable&quot;</span>:&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;capacity&quot;</span>:&nbsp;16,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;minimalReservation&quot;</span>:&nbsp;10
+&nbsp;&nbsp;}
+}</pre>
+    </p>
+    <p>
+        On the other hand, I'd like to represent the Domain Model in a way that <a href="/encapsulation-and-solid">encapsulates the rules</a> governing the model, <a href="https://blog.janestreet.com/effective-ml-video/">making illegal states unrepresentable</a>. Even though that's a catchphrase associated with functional programming, it applies equally well to a statically typed object-oriented language like C#.
+    </p>
+    <p>
+        As the first step, we observe that the numbers involved are all <a href="https://en.wikipedia.org/wiki/Natural_number">natural numbers</a>. In C# it's rarer to define <a href="https://www.hillelwayne.com/post/constructive/">predicative data types</a> than in a language like <a href="https://fsharp.org/">F#</a>, but people should do it more.
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;<span style="color:blue;">struct</span>&nbsp;<span style="color:#2b91af;">NaturalNumber</span>&nbsp;:&nbsp;IEquatable&lt;NaturalNumber&gt;
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;<span style="color:blue;">int</span>&nbsp;value;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">NaturalNumber</span>(<span style="color:blue;">int</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">value</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">if</span>&nbsp;(value&nbsp;&lt;&nbsp;1)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">throw</span>&nbsp;<span style="color:blue;">new</span>&nbsp;ArgumentOutOfRangeException(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;nameof(value),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#a31515;">&quot;Value&nbsp;must&nbsp;be&nbsp;a&nbsp;natural&nbsp;number&nbsp;greater&nbsp;than&nbsp;zero.&quot;</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.value&nbsp;=&nbsp;value;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;NaturalNumber?&nbsp;<span style="font-weight:bold;color:#74531f;">TryCreate</span>(<span style="color:blue;">int</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">candidate</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">if</span>&nbsp;(candidate&nbsp;&lt;&nbsp;1)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">null</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;NaturalNumber(candidate);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:blue;">bool</span>&nbsp;<span style="color:blue;">operator</span>&nbsp;&lt;(NaturalNumber&nbsp;<span style="font-weight:bold;color:#1f377f;">left</span>,&nbsp;NaturalNumber&nbsp;<span style="font-weight:bold;color:#1f377f;">right</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;left.value&nbsp;&lt;&nbsp;right.value;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:blue;">bool</span>&nbsp;<span style="color:blue;">operator</span>&nbsp;&gt;(NaturalNumber&nbsp;<span style="font-weight:bold;color:#1f377f;">left</span>,&nbsp;NaturalNumber&nbsp;<span style="font-weight:bold;color:#1f377f;">right</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;left.value&nbsp;&gt;&nbsp;right.value;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:blue;">bool</span>&nbsp;<span style="color:blue;">operator</span>&nbsp;&lt;=(NaturalNumber&nbsp;<span style="font-weight:bold;color:#1f377f;">left</span>,&nbsp;NaturalNumber&nbsp;<span style="font-weight:bold;color:#1f377f;">right</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;left.value&nbsp;&lt;=&nbsp;right.value;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:blue;">bool</span>&nbsp;<span style="color:blue;">operator</span>&nbsp;&gt;=(NaturalNumber&nbsp;<span style="font-weight:bold;color:#1f377f;">left</span>,&nbsp;NaturalNumber&nbsp;<span style="font-weight:bold;color:#1f377f;">right</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;left.value&nbsp;&gt;=&nbsp;right.value;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:blue;">bool</span>&nbsp;<span style="color:blue;">operator</span>&nbsp;==(NaturalNumber&nbsp;<span style="font-weight:bold;color:#1f377f;">left</span>,&nbsp;NaturalNumber&nbsp;<span style="font-weight:bold;color:#1f377f;">right</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;left.value&nbsp;==&nbsp;right.value;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:blue;">bool</span>&nbsp;<span style="color:blue;">operator</span>&nbsp;!=(NaturalNumber&nbsp;<span style="font-weight:bold;color:#1f377f;">left</span>,&nbsp;NaturalNumber&nbsp;<span style="font-weight:bold;color:#1f377f;">right</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;left.value&nbsp;!=&nbsp;right.value;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:blue;">explicit</span>&nbsp;<span style="color:blue;">operator</span>&nbsp;<span style="color:blue;">int</span>(NaturalNumber&nbsp;<span style="font-weight:bold;color:#1f377f;">number</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;number.value;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">override</span>&nbsp;<span style="color:blue;">bool</span>&nbsp;<span style="font-weight:bold;color:#74531f;">Equals</span>(<span style="color:blue;">object</span>?&nbsp;<span style="font-weight:bold;color:#1f377f;">obj</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;obj&nbsp;<span style="color:blue;">is</span>&nbsp;NaturalNumber&nbsp;<span style="font-weight:bold;color:#1f377f;">number</span>&nbsp;&amp;&amp;&nbsp;Equals(number);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">bool</span>&nbsp;<span style="font-weight:bold;color:#74531f;">Equals</span>(NaturalNumber&nbsp;<span style="font-weight:bold;color:#1f377f;">other</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;value&nbsp;==&nbsp;other.value;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">override</span>&nbsp;<span style="color:blue;">int</span>&nbsp;<span style="font-weight:bold;color:#74531f;">GetHashCode</span>()
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;HashCode.Combine(value);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+    </p>
+    <p>
+        When comparing all that boilerplate code to the <a href="/2023/12/18/serializing-restaurant-tables-in-f">three lines required to achieve the same result in F#</a>, it seems, at first glance, understandable that C# developers rarely reach for that option. Still, <a href="/2018/09/17/typing-is-not-a-programming-bottleneck">typing is not a programming bottleneck</a>, and most of that code was generated by a combination of Visual Studio and <a href="https://github.com/features/copilot">GitHub Copilot</a>.
+    </p>
+    <p>
+        The <code>TryCreate</code> method may not be <em>strictly</em> necessary, but I consider it good practice to give client code a way to perform a fault-prone operation in a safe manner, without having to resort to a <code>try/catch</code> construct.
+    </p>
+    <p>
+        That's it for natural numbers. 72 lines of code. Compare that to <a href="/2023/12/18/serializing-restaurant-tables-in-f">the F# implementation</a>, which required three lines of code. Syntax does matter.
+    </p>
+    <h3 id="542d19e6713f46d79cfc013fc577980a">
+        Domain Model <a href="#542d19e6713f46d79cfc013fc577980a">#</a>
+    </h3>
+    <p>
+        Modelling a restaurant table follows in the same vein. One invariant I would like to enforce is that for a 'single' table, the minimal reservation should be a <code>NaturalNumber</code> less than or equal to the table's capacity. It doesn't make sense to configure a table for four with a minimum reservation of six.
+    </p>
+    <p>
+        In the same spirit as above, then, define this type:
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;<span style="color:blue;">struct</span>&nbsp;<span style="color:#2b91af;">Table</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;NaturalNumber&nbsp;capacity;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;NaturalNumber?&nbsp;minimalReservation;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:#2b91af;">Table</span>(NaturalNumber&nbsp;<span style="font-weight:bold;color:#1f377f;">capacity</span>,&nbsp;NaturalNumber?&nbsp;<span style="font-weight:bold;color:#1f377f;">minimalReservation</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.capacity&nbsp;=&nbsp;capacity;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.minimalReservation&nbsp;=&nbsp;minimalReservation;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;Table?&nbsp;<span style="font-weight:bold;color:#74531f;">TryCreateSingle</span>(<span style="color:blue;">int</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">capacity</span>,&nbsp;<span style="color:blue;">int</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">minimalReservation</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">cap</span>&nbsp;=&nbsp;NaturalNumber.TryCreate(capacity);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">if</span>&nbsp;(cap&nbsp;<span style="color:blue;">is</span>&nbsp;<span style="color:blue;">null</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">null</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">min</span>&nbsp;=&nbsp;NaturalNumber.TryCreate(minimalReservation);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">if</span>&nbsp;(min&nbsp;<span style="color:blue;">is</span>&nbsp;<span style="color:blue;">null</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">null</span>;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">if</span>&nbsp;(cap&nbsp;&lt;&nbsp;min)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">null</span>;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;Table(cap.Value,&nbsp;min.Value);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;Table?&nbsp;<span style="font-weight:bold;color:#74531f;">TryCreateCommunal</span>(<span style="color:blue;">int</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">capacity</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">cap</span>&nbsp;=&nbsp;NaturalNumber.TryCreate(capacity);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">if</span>&nbsp;(cap&nbsp;<span style="color:blue;">is</span>&nbsp;<span style="color:blue;">null</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">null</span>;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;Table(cap.Value,&nbsp;<span style="color:blue;">null</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;T&nbsp;<span style="font-weight:bold;color:#74531f;">Accept</span>&lt;<span style="color:#2b91af;">T</span>&gt;(ITableVisitor&lt;T&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">visitor</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">if</span>&nbsp;(minimalReservation&nbsp;<span style="color:blue;">is</span>&nbsp;<span style="color:blue;">null</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;visitor.VisitCommunal(capacity);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">else</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;visitor.VisitSingle(capacity,&nbsp;minimalReservation.Value);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+    </p>
+    <p>
+        Here I've <a href="/2018/06/25/visitor-as-a-sum-type">Visitor-encoded</a> the <a href="https://en.wikipedia.org/wiki/Tagged_union">sum type</a> that <code>Table</code> is. It can either be a 'single' table or a communal table.
+    </p>
+    <p>
+        Notice that <code>TryCreateSingle</code> checks the invariant that the <code>capacity</code> must be greater than or equal to the <code>minimalReservation</code>.
+    </p>
+    <p>
+        The point of this little exercise, so far, is that it <em>encapsulates</em> the contract implied by the Domain Model. It does this by using the static type system to its advantage.
+    </p>
+    <h3 id="13ac203cee494ec18420959fbad03003">
+        JSON serialization by hand <a href="#13ac203cee494ec18420959fbad03003">#</a>
+    </h3>
+    <p>
+        At the boundaries of applications, however, <a href="/2023/10/16/at-the-boundaries-static-types-are-illusory">there are no static types</a>. Is the static type system still useful in that situation?
+    </p>
+    <p>
+        For a long time, the most popular .NET library for JSON serialization was <a href="https://www.newtonsoft.com/json">Json.NET</a>, but these days I find the built-in API offered in the <a href="https://learn.microsoft.com/dotnet/api/system.text.json">System.Text.Json</a> namespace adequate. This is also the case here.
+    </p>
+    <p>
+        The original rationale for this article series was to demonstrate how serialization can be done without Reflection, so I'll start there and return to Reflection later.
+    </p>
+    <p>
+        In this article series, I consider the JSON format fixed. A single table should be rendered as shown above, and a communal table should be rendered like this:
+    </p>
+    <p>
+        <pre>{&nbsp;<span style="color:#2e75b6;">&quot;communalTable&quot;</span>:&nbsp;{&nbsp;<span style="color:#2e75b6;">&quot;capacity&quot;</span>:&nbsp;42&nbsp;}&nbsp;}</pre>
+    </p>
+    <p>
+        Often in the real world you'll have to conform to a particular protocol format, or, even if that's not the case, being able to control the shape of the wire format is important to deal with backwards compatibility.
+    </p>
+    <p>
+        As I outlined in the <a href="/2023/12/04/serialization-with-and-without-reflection">introduction article</a> you can usually find a more weakly typed API to get the job done. For serializing <code>Table</code> to JSON it looks like this:
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:blue;">string</span>&nbsp;<span style="font-weight:bold;color:#74531f;">Serialize</span>(<span style="color:blue;">this</span>&nbsp;Table&nbsp;<span style="font-weight:bold;color:#1f377f;">table</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;table.Accept(<span style="color:blue;">new</span>&nbsp;TableVisitor());
+}
+ 
+<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">sealed</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">TableVisitor</span>&nbsp;:&nbsp;ITableVisitor&lt;<span style="color:blue;">string</span>&gt;
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">string</span>&nbsp;<span style="font-weight:bold;color:#74531f;">VisitCommunal</span>(NaturalNumber&nbsp;<span style="font-weight:bold;color:#1f377f;">capacity</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">j</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;JsonObject
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;[<span style="color:#a31515;">&quot;communalTable&quot;</span>]&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;JsonObject
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;[<span style="color:#a31515;">&quot;capacity&quot;</span>]&nbsp;=&nbsp;(<span style="color:blue;">int</span>)capacity
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;};
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;j.ToJsonString();
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">string</span>&nbsp;<span style="font-weight:bold;color:#74531f;">VisitSingle</span>(NaturalNumber&nbsp;<span style="font-weight:bold;color:#1f377f;">capacity</span>,&nbsp;NaturalNumber&nbsp;<span style="font-weight:bold;color:#1f377f;">value</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">j</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;JsonObject
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;[<span style="color:#a31515;">&quot;singleTable&quot;</span>]&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;JsonObject
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;[<span style="color:#a31515;">&quot;capacity&quot;</span>]&nbsp;=&nbsp;(<span style="color:blue;">int</span>)capacity,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;[<span style="color:#a31515;">&quot;minimalReservation&quot;</span>]&nbsp;=&nbsp;(<span style="color:blue;">int</span>)value
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;};
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;j.ToJsonString();
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+    </p>
+    <p>
+        In order to separate concerns, I've defined this functionality in a new static class that references the Domain Model. The <code>Serialize</code> extension method uses a <code>private</code> Visitor to write two different <a href="https://learn.microsoft.com/dotnet/api/system.text.json.nodes.jsonobject">JsonObject</a> objects, using the JSON API's underlying Document Object Model (DOM).
+    </p>
+    <h3 id="53c250b548c64292b2d704be12c91aa5">
+        JSON deserialization by hand <a href="#53c250b548c64292b2d704be12c91aa5">#</a>
+    </h3>
+    <p>
+        You can also go the other way, and when it looks more complicated, it's because it is. When serializing an encapsulated value, not a lot can go wrong because the value is already valid. When deserializing a JSON string, on the other hand, all sorts of things can go wrong: It might not even be a valid string, or the string may not be valid JSON, or the JSON may not be a valid <code>Table</code> representation, or the values may be illegal, etc.
+    </p>
+    <p>
+        Since there are several values that explicitly must be integers, it makes sense to define a helper method to try to parse an integer:
+    </p>
+    <p>
+        <pre><span style="color:blue;">private</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:blue;">int</span>?&nbsp;<span style="font-weight:bold;color:#74531f;">TryInt</span>(<span style="color:blue;">this</span>&nbsp;JsonNode?&nbsp;<span style="font-weight:bold;color:#1f377f;">node</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">if</span>&nbsp;(node&nbsp;<span style="color:blue;">is</span>&nbsp;<span style="color:blue;">null</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">null</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">if</span>&nbsp;(node.GetValueKind()&nbsp;!=&nbsp;JsonValueKind.Number)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">null</span>;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">try</span>
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;(<span style="color:blue;">int</span>)node;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">catch</span>&nbsp;(FormatException)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">null</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+    </p>
+    <p>
+        I'm surprised that there's no built-in way to do that, but if there is, I couldn't find it.
+    </p>
+    <p>
+        With a helper method like that you can now implement the <code>Deserialize</code> method:
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;Table?&nbsp;<span style="font-weight:bold;color:#74531f;">Deserialize</span>(<span style="color:blue;">string</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">json</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">try</span>
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">node</span>&nbsp;=&nbsp;JsonNode.Parse(json);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">cnode</span>&nbsp;=&nbsp;node?[<span style="color:#a31515;">&quot;communalTable&quot;</span>];
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">if</span>&nbsp;(cnode&nbsp;<span style="color:blue;">is</span>&nbsp;{&nbsp;})
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">capacity</span>&nbsp;=&nbsp;cnode[<span style="color:#a31515;">&quot;capacity&quot;</span>].TryInt();
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">if</span>&nbsp;(capacity&nbsp;<span style="color:blue;">is</span>&nbsp;<span style="color:blue;">null</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">null</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;Table.TryCreateCommunal(capacity.Value);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">snode</span>&nbsp;=&nbsp;node?[<span style="color:#a31515;">&quot;singleTable&quot;</span>];
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">if</span>&nbsp;(snode&nbsp;<span style="color:blue;">is</span>&nbsp;{&nbsp;})
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">capacity</span>&nbsp;=&nbsp;snode[<span style="color:#a31515;">&quot;capacity&quot;</span>].TryInt();
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">minimalReservation</span>&nbsp;=&nbsp;snode[<span style="color:#a31515;">&quot;minimalReservation&quot;</span>].TryInt();
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">if</span>&nbsp;(capacity&nbsp;<span style="color:blue;">is</span>&nbsp;<span style="color:blue;">null</span>&nbsp;||&nbsp;minimalReservation&nbsp;<span style="color:blue;">is</span>&nbsp;<span style="color:blue;">null</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">null</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;Table.TryCreateSingle(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;capacity.Value,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;minimalReservation.Value);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">null</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">catch</span>&nbsp;(JsonException)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">null</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+    </p>
+    <p>
+        Since both serialisation and deserialization is based on string values, you should write automated tests that verify that the code works, and in fact, I did. Here are a few examples:
+    </p>
+    <p>
+        <pre>[Fact]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;<span style="font-weight:bold;color:#74531f;">DeserializeSingleTableFor4</span>()
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">json</span>&nbsp;=&nbsp;<span style="color:#a31515;">&quot;&quot;&quot;{&quot;singleTable&quot;:{&quot;capacity&quot;:4,&quot;minimalReservation&quot;:3}}&quot;&quot;&quot;</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">actual</span>&nbsp;=&nbsp;TableJson.Deserialize(json);
+&nbsp;&nbsp;&nbsp;&nbsp;Assert.Equal(Table.TryCreateSingle(4,&nbsp;3),&nbsp;actual);
+}
+ 
+[Fact]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;<span style="font-weight:bold;color:#74531f;">DeserializeNonTable</span>()
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">json</span>&nbsp;=&nbsp;<span style="color:#a31515;">&quot;&quot;&quot;{&quot;foo&quot;:42}&quot;&quot;&quot;</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">actual</span>&nbsp;=&nbsp;TableJson.Deserialize(json);
+&nbsp;&nbsp;&nbsp;&nbsp;Assert.Null(actual);
+}</pre>
+    </p>
+    <p>
+        Apart from using directives and namespace declaration this hand-written JSON capability requires 87 lines of code, although, to be fair, <code>TryInt</code> is a general-purpose method that ought to be part of the <code>System.Text.Json</code> API. Can we do better with static types and Reflection?
+    </p>
+    <h3 id="fc6832fe72874427b32a0ee062d4fbf6">
+        JSON serialisation based on types <a href="#fc6832fe72874427b32a0ee062d4fbf6">#</a>
+    </h3>
+    <p>
+        The static <a href="https://learn.microsoft.com/dotnet/api/system.text.json.jsonserializer">JsonSerializer</a> class comes with <code>Serialize&lt;T&gt;</code> and <code>Deserialize&lt;T&gt;</code> methods that use Reflection to convert a statically typed object to and from JSON. You can define a type (a <a href="https://en.wikipedia.org/wiki/Data_transfer_object">Data Transfer Object</a> (DTO) if you will) and let Reflection do the hard work.
+    </p>
+    <p>
+        In <a href="/2021/06/14/new-book-code-that-fits-in-your-head">Code That Fits in Your Head</a> I explain how you're usually better off separating the role of serialization from the role of Domain Model. One way to do that is exactly by defining a DTO for serialisation, and let the Domain Model remain exclusively to model the rules of the application. The above <code>Table</code> type plays the latter role, so we need new DTO types:
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">sealed</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">TableDto</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;CommunalTableDto?&nbsp;CommunalTable&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;<span style="color:blue;">set</span>;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;SingleTableDto?&nbsp;SingleTable&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;<span style="color:blue;">set</span>;&nbsp;}
+}
+
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">sealed</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">CommunalTableDto</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">int</span>&nbsp;Capacity&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;<span style="color:blue;">set</span>;&nbsp;}
+}
+
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">sealed</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">SingleTableDto</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">int</span>&nbsp;Capacity&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;<span style="color:blue;">set</span>;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">int</span>&nbsp;MinimalReservation&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;<span style="color:blue;">set</span>;&nbsp;}
+}</pre>
+    </p>
+    <p>
+        One way to model a <a href="https://en.wikipedia.org/wiki/Tagged_union">sum type</a> with a DTO is to declare both cases as nullable fields. While it does allow illegal states to be representable (i.e. both kinds of tables defined at the same time, or none of them present) this is only par for the course at the application boundary.
+    </p>
+    <p>
+        While you can serialize values of that type, by default the generated JSON doesn't have the right format. Instead, a serialized communal table looks like this:
+    </p>
+    <p>
+        <pre>{
+&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;CommunalTable&quot;</span>:&nbsp;{&nbsp;<span style="color:#2e75b6;">&quot;Capacity&quot;</span>:&nbsp;42&nbsp;},
+&nbsp;&nbsp;<span style="color:#2e75b6;">&quot;SingleTable&quot;</span>:&nbsp;<span style="color:blue;">null</span>
+}</pre>
+    </p>
+    <p>
+        There are two problems with the generated JSON document:
+    </p>
+    <ul>
+        <li>The casing is wrong</li>
+        <li>The null value shouldn't be there</li>
+    </ul>
+    <p>
+        None of those are too hard to address, but it does make the API a bit more awkward to use, as this test demonstrates:
+    </p>
+    <p>
+        <pre>[Fact]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;<span style="font-weight:bold;color:#74531f;">SerializeCommunalTableViaReflection</span>()
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">dto</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;TableDto
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;CommunalTable&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;CommunalTableDto&nbsp;{&nbsp;Capacity&nbsp;=&nbsp;42&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;};
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">actual</span>&nbsp;=&nbsp;JsonSerializer.Serialize(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;dto,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;JsonSerializerOptions
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;PropertyNamingPolicy&nbsp;=&nbsp;JsonNamingPolicy.CamelCase,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;DefaultIgnoreCondition&nbsp;=&nbsp;JsonIgnoreCondition.WhenWritingNull
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;});
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;Assert.Equal(<span style="color:#a31515;">&quot;&quot;&quot;{&quot;communalTable&quot;:{&quot;capacity&quot;:42}}&quot;&quot;&quot;</span>,&nbsp;actual);
+}</pre>
+    </p>
+    <p>
+        You can, of course, define this particular serialization behaviour as a reusable method, so it's not a problem that you can't address. I just wanted to include this, since it's part of the overall work that you have to do in order to make this work.
+    </p>
+    <h3 id="213e3959eb49407ab3cdf59a4d2aed06">
+        JSON deserialisation based on types <a href="#213e3959eb49407ab3cdf59a4d2aed06">#</a>
+    </h3>
+    <p>
+        To allow parsing of JSON into the above DTO the Reflection-based <code>Deserialize</code> method pretty much works out of the box, although again, it needs to be configured. Here's a passing test that demonstrates how that works:
+    </p>
+    <p>
+        <pre>[Fact]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;<span style="font-weight:bold;color:#74531f;">DeserializeSingleTableViaReflection</span>()
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">json</span>&nbsp;=&nbsp;<span style="color:#a31515;">&quot;&quot;&quot;{&quot;singleTable&quot;:{&quot;capacity&quot;:4,&quot;minimalReservation&quot;:2}}&quot;&quot;&quot;</span>;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">actual</span>&nbsp;=&nbsp;JsonSerializer.Deserialize&lt;TableDto&gt;(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;json,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;JsonSerializerOptions&nbsp;{&nbsp;PropertyNamingPolicy&nbsp;=&nbsp;JsonNamingPolicy.CamelCase&nbsp;});
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;Assert.Null(actual?.CommunalTable);
+&nbsp;&nbsp;&nbsp;&nbsp;Assert.Equal(4,&nbsp;actual?.SingleTable?.Capacity);
+&nbsp;&nbsp;&nbsp;&nbsp;Assert.Equal(2,&nbsp;actual?.SingleTable?.MinimalReservation);
+}</pre>
+    </p>
+    <p>
+        There's only difference in casing, so you'd expect the <code>Deserialize</code> method to be a <a href="https://martinfowler.com/bliki/TolerantReader.html">Tolerant Reader</a>, but no. It's very particular about that, so the <code>JsonNamingPolicy.CamelCase</code> configuration is necessary. Perhaps the API designers found that <a href="https://peps.python.org/pep-0020/">explicit is better than implicit</a>.
+    </p>
+    <p>
+        In any case, you could package that in a reusable <code>Deserialize</code> function that has all the options that are appropriate in a particular code context, so not a big deal. That takes care of actually writing and parsing JSON, but that's only half the battle. This only gives you a way to parse and serialize the DTO. What you ultimately want is to persist or dehydrate <code>Table</code> data.
+    </p>
+    <h3 id="ef08c05a3ae84141b2e8b20238af83df">
+        Converting DTO to Domain Model, and vice versa <a href="#ef08c05a3ae84141b2e8b20238af83df">#</a>
+    </h3>
+    <p>
+        As usual, converting a nice, encapsulated value to a more relaxed format is safe and trivial:
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;TableDto&nbsp;<span style="font-weight:bold;color:#74531f;">ToDto</span>(<span style="color:blue;">this</span>&nbsp;Table&nbsp;<span style="font-weight:bold;color:#1f377f;">table</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;table.Accept(<span style="color:blue;">new</span>&nbsp;TableDtoVisitor());
+}
+ 
+<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">sealed</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">TableDtoVisitor</span>&nbsp;:&nbsp;ITableVisitor&lt;TableDto&gt;
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;TableDto&nbsp;<span style="font-weight:bold;color:#74531f;">VisitCommunal</span>(NaturalNumber&nbsp;<span style="font-weight:bold;color:#1f377f;">capacity</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;TableDto
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;CommunalTable&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;CommunalTableDto
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Capacity&nbsp;=&nbsp;(<span style="color:blue;">int</span>)capacity
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;};
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;TableDto&nbsp;<span style="font-weight:bold;color:#74531f;">VisitSingle</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;NaturalNumber&nbsp;<span style="font-weight:bold;color:#1f377f;">capacity</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;NaturalNumber&nbsp;<span style="font-weight:bold;color:#1f377f;">value</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;TableDto
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;SingleTable&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;SingleTableDto
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Capacity&nbsp;=&nbsp;(<span style="color:blue;">int</span>)capacity,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;MinimalReservation&nbsp;=&nbsp;(<span style="color:blue;">int</span>)value
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;};
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+    </p>
+    <p>
+        Going the other way is <a href="https://lexi-lambda.github.io/blog/2019/11/05/parse-don-t-validate/">fundamentally a parsing exercise</a>:
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;Table?&nbsp;<span style="font-weight:bold;color:#74531f;">TryParse</span>()
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">if</span>&nbsp;(CommunalTable&nbsp;<span style="color:blue;">is</span>&nbsp;{&nbsp;})
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;Table.TryCreateCommunal(CommunalTable.Capacity);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">if</span>&nbsp;(SingleTable&nbsp;<span style="color:blue;">is</span>&nbsp;{&nbsp;})
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;Table.TryCreateSingle(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;SingleTable.Capacity,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;SingleTable.MinimalReservation);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">null</span>;
+}</pre>
+    </p>
+    <p>
+        Here, like in <a href="/code-that-fits-in-your-head">Code That Fits in Your Head</a>, I've made that conversion an instance method on <code>TableDto</code>.
+    </p>
+    <p>
+        Such an operation may fail, so the result is a nullable <code>Table</code> object.
+    </p>
+    <p>
+        Let's take stock of the type-based alternative. It requires 58 lines of code, distributed over three DTO types and the two conversions <code>ToDto</code> and <code>TryParse</code>, but here I haven't counted configuration of <code>Serialize</code> and <code>Deserialize</code>, since I left that to each test case that I wrote. Since all of this code generally stays within 80 characters in line width, that would realistically add another 10 lines of code, for a total around 68 lines.
+    </p>
+    <p>
+        This is smaller than the DOM-based code, but not by much.
+    </p>
+    <h3 id="bfac4d5d5ca940a2a61f964c4336adcf">
+        Conclusion <a href="#bfac4d5d5ca940a2a61f964c4336adcf">#</a>
+    </h3>
+    <p>
+        In this article I've explored two alternatives for converting a well-encapsulated Domain Model to and from JSON. One option is to directly manipulate the DOM. Another option is take a more declarative approach and define <em>types</em> that model the shape of the JSON data, and then leverage type-based automation (here, Reflection) to automatically parse and write the JSON.
+    </p>
+    <p>
+        I've deliberately chosen a Domain Model with some constraints, in order to demonstrate how persisting a non-trivial data model might work. With that setup, writing 'loosely coupled' code directly against the DOM requires 87 lines of code, while taking advantage of type-based automation requires 68 lines of code. Again, Reflection seems 'easier' if you count lines of code, but the difference is marginal.
+    </p>
+</div>
