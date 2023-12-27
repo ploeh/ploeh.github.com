@@ -8,6 +8,21 @@ Comments for a particular post are kept as part of the post itself.
 
 If you wish to comment on a particular post, send me a pull request for that post. If you're in doubt about the format, just look at how previous comments are formatted. For an example of a post with comments, see e.g. [the very first post on this blog](/_posts/2009-01-28-LivingInInterestingTimes.html).
 
+If you're using [Visual Studio Code](https://code.visualstudio.com/), you may use this [code snippet](https://code.visualstudio.com/docs/editor/userdefinedsnippets) if you like:
+
+```
+"Add comment": {
+	"prefix": "addcomment",
+	"body": ["<div class=\"comment\" id=\"${1:guid}\">",
+		"\t<div class=\"comment-author\"><a href=\"${2:url}\">${3:name}</a> <a href=\"#$1\">#</a></div>",
+		"\t<div class=\"comment-content\">",
+		"\t</div>",
+		"\t<div class=\"comment-date\">$CURRENT_YEAR-$CURRENT_MONTH-$CURRENT_DATE ${4:hour}:$CURRENT_MINUTE UTC</div>",
+	"</div>"],
+	"description": "Adds a single comment, but not the surrounding divs that separate the comment section from the main article. This, you should add yourself. The snippet makes a guess at the current date and time, but you should check it, particularly around midnight. Also, be sure to check the minutes if you're in a time zone not hour-aligned to UTC. The time should be in UTC."
+}
+```
+
 If you only wish to comment, you don't have to read on, but if you're curious, here follows some background.
 
 Why is the comment system implemented this way? Partly, it's for historical reasons, but increasingly, it's also for longevity reasons.
