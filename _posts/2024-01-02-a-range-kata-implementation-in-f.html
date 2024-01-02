@@ -1,0 +1,221 @@
+---
+layout: post
+title: "A Range kata implementation in F#"
+description: "This time with some property-based testing."
+date: 2024-01-02 13:28 UTC
+tags: [Functional Programming, F#, Property-based Testing]
+---
+{% include JB/setup %}
+
+<div id="post">
+    <p>
+        <em>{{ page.description }}</em>
+    </p>
+    <p>
+        This article is an instalment in <a href="/2024/01/01/variations-of-the-range-kata">a short series of articles on the Range kata</a>. In the <a href="">previous article</a> I described my first attempt at the kata, and also complained that I had to think of test cases myself. When I find it tedious coming up with new test cases, I usually start to wonder if it'd be easier to use property-based testing.
+    </p>
+    <p>
+        Thus, when I decided to revisit <a href="https://codingdojo.org/kata/Range/">the kata</a>, the variation that I was most interested in pursuing was to explore whether it would make sense to use property-based testing instead of a set of existing examples.
+    </p>
+    <p>
+        Since I also wanted to do the second attempt in <a href="https://fsharp.org/">F#</a>, I had a choice between <a href="https://fscheck.github.io/FsCheck/">FsCheck</a> and <a href="https://hedgehog.qa/">Hedgehog</a>. Each have their strengths and weaknesses, but since I already know FsCheck so well, I decided to go with Hedgehog.
+    </p>
+    <p>
+        I also soon discovered that I had no interest in developing the full suite of capabilities implied by the kata. Instead, I decided to focus on just the data structure itself, as well as the <code>contains</code> function. As in the previous article, this function can also be used to cover the kata's <em>ContainsRange</em> feature.
+    </p>
+    <h3 id="81447639b1a54c8c9437b81f3856018f">
+        Getting started <a href="#81447639b1a54c8c9437b81f3856018f">#</a>
+    </h3>
+    <p>
+        There's no rule that you can't combine property-based testing with test-driven development (TDD). On the contrary, that's how I often do it. In this exercise, I first wrote this test:
+    </p>
+    <p>
+        <pre>[&lt;Fact&gt;]
+<span style="color:blue;">let</span>&nbsp;``Closed&nbsp;range&nbsp;contains&nbsp;list``&nbsp;()&nbsp;=&nbsp;Property.check&nbsp;&lt;|&nbsp;property&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;xs&nbsp;=&nbsp;Gen.int16&nbsp;(Range.linearBounded&nbsp;())&nbsp;|&gt;&nbsp;Gen.list&nbsp;(Range.linear&nbsp;1&nbsp;99)
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;min&nbsp;=&nbsp;List.min&nbsp;xs
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;max&nbsp;=&nbsp;List.max&nbsp;xs
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;actual&nbsp;=&nbsp;(Closed&nbsp;min,&nbsp;Closed&nbsp;max)&nbsp;|&gt;&nbsp;Range.contains&nbsp;xs
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;Assert.True&nbsp;(actual,&nbsp;sprintf&nbsp;<span style="color:#a31515;">&quot;Range&nbsp;[%i,&nbsp;%i]&nbsp;expected&nbsp;to&nbsp;contain&nbsp;list.&quot;</span>&nbsp;min&nbsp;max)&nbsp;}</pre>
+    </p>
+    <p>
+        We have to be careful when reading and understanding this code: There are two <code>Range</code> modules in action here!
+    </p>
+    <p>
+        Hedgehog comes with a <code>Range</code> module that you must use to define how it samples values from <a href="https://en.wikipedia.org/wiki/Domain_of_a_function">domains</a>. Examples of that here are <code>Range.linearBounded</code> and <code>Range.linear</code>.
+    </p>
+    <p>
+        On the other hand, I've defined <em>my</em> <code>contains</code> function in a <code>Range</code> module, too. As long as there's no ambiguity, the F# compiler doesn't have a problem with that. Since there's no <code>contains</code> function in the Hedgehog <code>Range</code> module, the F# compiler isn't confused.
+    </p>
+    <p>
+        We humans, on the other hand, might be confused, and had this been a code base that I had to maintain for years, I might seriously consider whether I should rename my own <code>Range</code> module to something else, like <code>Interval</code>, perhaps.
+    </p>
+    <p>
+        In any case, the first test (or property, if you will) uses a technique that I often use with property-based testing. I'm still searching for a catchy name for this, but here we may call it something like <em>reverse test-case assembly</em>. My <em>goal</em> is to test a predicate, and this particular property should verify that for a given <a href="https://en.wikipedia.org/wiki/Equivalence_class">Equivalence Class</a>, the predicate is always true.
+    </p>
+    <p>
+        While we may think of an Equivalence Class as a set from which we pick test cases, I don't actually have a full enumeration of such a set. I can't have that, since that set is infinitely big. Instead of randomly picking values from a set that I can't fully populate, I instead carefully pick test case values in such a way that they would all belong to the same <a href="https://en.wikipedia.org/wiki/Partition_of_a_set">set partition</a> (Equivalence Class).
+    </p>
+    <p>
+        The <a href="/2022/06/13/some-thoughts-on-naming-tests">test name suggests the test case</a>: I'd like to verify that given I have a closed range, when I ask it whether a list <em>within</em> that range is contained, then the answer is <em>true</em>. How do I pick such a test case?
+    </p>
+    <p>
+        I do it in reverse. You can say that the sampling is the dual of the test. I start with a list (<code>xs</code>) and only then do I create a range that contains it. Since the first test case is for a closed range, the <code>min</code> and <code>max</code> values are sufficient to define such a range.
+    </p>
+    <p>
+        How do I pass that property?
+    </p>
+    <p>
+        Degenerately, as is often the case with TDD beginnings:
+    </p>
+    <p>
+        <pre><span style="color:blue;">module</span>&nbsp;Range&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;contains&nbsp;_&nbsp;_&nbsp;=&nbsp;<span style="color:blue;">true</span></pre>
+    </p>
+    <p>
+        Even though the <code>Closed range contains list</code> property effectively executes a hundred test cases, the <a href="/2019/10/07/devils-advocate">Devil's Advocate</a> can easily ignore that and instead return hard-coded <code>true</code>.
+    </p>
+    <p>
+        More properties are required to flesh out the behaviour of the function.
+    </p>
+    <h3 id="50564e684f074ae1956b106333320c9b">
+        Open range <a href="#50564e684f074ae1956b106333320c9b">#</a>
+    </h3>
+    <p>
+        While I do keep the <a href="https://blog.cleancoder.com/uncle-bob/2013/05/27/TheTransformationPriorityPremise.html">transformation priority premise</a> in mind when picking the next test (or, here, <em>property</em>), I'm rarely particularly analytic about it. Since the first property tests that a closed range barely contains a list of values from its minimum to its maximum, it seemed like a promising next step to consider the case where the range consisted of open endpoints. That was the second test I wrote, then:
+    </p>
+    <p>
+        <pre>[&lt;Fact&gt;]
+<span style="color:blue;">let</span>&nbsp;``Open&nbsp;range&nbsp;doesn&#39;t&nbsp;contain&nbsp;endpoints``&nbsp;()&nbsp;=&nbsp;Property.check&nbsp;&lt;|&nbsp;property&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;min&nbsp;=&nbsp;Gen.int32&nbsp;(Range.linearBounded&nbsp;())
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;max&nbsp;=&nbsp;Gen.int32&nbsp;(Range.linearBounded&nbsp;())
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;actual&nbsp;=&nbsp;(Open&nbsp;min,&nbsp;Open&nbsp;max)&nbsp;|&gt;&nbsp;Range.contains&nbsp;[min;&nbsp;max]
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;Assert.False&nbsp;(actual,&nbsp;sprintf&nbsp;<span style="color:#a31515;">&quot;Range&nbsp;(%i,&nbsp;%i)&nbsp;expected&nbsp;not&nbsp;to&nbsp;contain&nbsp;list.&quot;</span>&nbsp;min&nbsp;max)&nbsp;}</pre>
+    </p>
+    <p>
+        This property simply states that if you query the <code>contains</code> predicate about a list that only contains the endpoints of an open range, then the answer is <code>false</code> because the endpoints are <code>Open</code>.
+    </p>
+    <p>
+        One implementation that passes both tests is this one:
+    </p>
+    <p>
+        <pre><span style="color:blue;">module</span>&nbsp;Range&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;contains&nbsp;_&nbsp;endpoints&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">match</span>&nbsp;endpoints&nbsp;<span style="color:blue;">with</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;Open&nbsp;_,&nbsp;Open&nbsp;_&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">false</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;_&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">true</span></pre>
+    </p>
+    <p>
+        This implementation is obviously still incorrect, but we have reason to believe that we're moving closer to something that will eventually work.
+    </p>
+    <h3 id="f01d9a05b57d470fac8f48bcfc85df4d">
+        Tick-tock <a href="#f01d9a05b57d470fac8f48bcfc85df4d">#</a>
+    </h3>
+    <p>
+        In the spirit of the transformation priority premise, I've often found that when test-driving a predicate, I seem to fall into a tick-tock pattern where I alternate between tests for a <code>true</code> return value, followed by a test for a <code>false</code> return value, or the other way around. This was also the case here. The previous test was for a <code>false</code> value, so the third test requires <code>true</code> to be returned:
+    </p>
+    <p>
+        <pre>[&lt;Fact&gt;]
+<span style="color:blue;">let</span>&nbsp;``Open&nbsp;range&nbsp;contains&nbsp;list``&nbsp;()&nbsp;=&nbsp;Property.check&nbsp;&lt;|&nbsp;property&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;xs&nbsp;=&nbsp;Gen.int64&nbsp;(Range.linearBounded&nbsp;())&nbsp;|&gt;&nbsp;Gen.list&nbsp;(Range.linear&nbsp;1&nbsp;99)
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;min&nbsp;=&nbsp;List.min&nbsp;xs&nbsp;-&nbsp;1L
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;max&nbsp;=&nbsp;List.max&nbsp;xs&nbsp;+&nbsp;1L
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;actual&nbsp;=&nbsp;(Open&nbsp;min,&nbsp;Open&nbsp;max)&nbsp;|&gt;&nbsp;Range.contains&nbsp;xs
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;Assert.True&nbsp;(actual,&nbsp;sprintf&nbsp;<span style="color:#a31515;">&quot;Range&nbsp;(%i,&nbsp;%i)&nbsp;expected&nbsp;to&nbsp;contain&nbsp;list.&quot;</span>&nbsp;min&nbsp;max)&nbsp;}</pre>
+    </p>
+    <p>
+        This then led to this implementation of the <code>contains</code> function:
+    </p>
+    <p>
+        <pre><span style="color:blue;">module</span>&nbsp;Range&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;contains&nbsp;ys&nbsp;endpoints&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">match</span>&nbsp;endpoints&nbsp;<span style="color:blue;">with</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;Open&nbsp;x,&nbsp;Open&nbsp;z&nbsp;<span style="color:blue;">-&gt;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;ys&nbsp;|&gt;&nbsp;List.forall&nbsp;(<span style="color:blue;">fun</span>&nbsp;y&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;x&nbsp;&lt;&nbsp;y&nbsp;&amp;&amp;&nbsp;y&nbsp;&lt;&nbsp;z)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;_&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">true</span></pre>
+    </p>
+    <p>
+        Following up on the above <code>true</code>-demanding test, I added one that tested a <code>false</code> scenario:
+    </p>
+    <p>
+        <pre>[&lt;Fact&gt;]
+<span style="color:blue;">let</span>&nbsp;``Open-closed&nbsp;range&nbsp;doesn&#39;t&nbsp;contain&nbsp;endpoints``&nbsp;()&nbsp;=&nbsp;Property.check&nbsp;&lt;|&nbsp;property&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;min&nbsp;=&nbsp;Gen.int16&nbsp;(Range.linearBounded&nbsp;())
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;max&nbsp;=&nbsp;Gen.int16&nbsp;(Range.linearBounded&nbsp;())
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;actual&nbsp;=&nbsp;(Open&nbsp;min,&nbsp;Closed&nbsp;max)&nbsp;|&gt;&nbsp;Range.contains&nbsp;[min;&nbsp;max]
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;Assert.False&nbsp;(actual,&nbsp;sprintf&nbsp;<span style="color:#a31515;">&quot;Range&nbsp;(%i,&nbsp;%i]&nbsp;expected&nbsp;not&nbsp;to&nbsp;contain&nbsp;list.&quot;</span>&nbsp;min&nbsp;max)&nbsp;}</pre>
+    </p>
+    <p>
+        This again led to this implementation:
+    </p>
+    <p>
+        <pre><span style="color:blue;">module</span>&nbsp;Range&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;contains&nbsp;ys&nbsp;endpoints&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">match</span>&nbsp;endpoints&nbsp;<span style="color:blue;">with</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;Open&nbsp;x,&nbsp;Open&nbsp;z&nbsp;<span style="color:blue;">-&gt;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;ys&nbsp;|&gt;&nbsp;List.forall&nbsp;(<span style="color:blue;">fun</span>&nbsp;y&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;x&nbsp;&lt;&nbsp;y&nbsp;&amp;&amp;&nbsp;y&nbsp;&lt;&nbsp;z)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;Open&nbsp;x,&nbsp;Closed&nbsp;z&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">false</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;_&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">true</span></pre>
+    </p>
+    <p>
+        I had to add four more tests before I felt confident that I had the right implementation. I'm not going to show them all here, but you can look at the <a href="">repository on GitHub</a> if you're interested in the interim steps.
+    </p>
+    <h3 id="0cd66550fe5a43b0a7e8a6d3a2b0ea32">
+        Types and functionality <a href="#0cd66550fe5a43b0a7e8a6d3a2b0ea32">#</a>
+    </h3>
+    <p>
+        So far I had treated a range as a pair (two-tuple), just as I had done with the code in <a href="">my first attempt</a>. I did, however, have a few other things planned for this code base, so I introduced a set of explicit types:
+    </p>
+    <p>
+        <pre><span style="color:blue;">type</span>&nbsp;Endpoint&lt;&#39;a&gt;&nbsp;=&nbsp;Open&nbsp;<span style="color:blue;">of</span>&nbsp;&#39;a&nbsp;|&nbsp;Closed&nbsp;<span style="color:blue;">of</span>&nbsp;&#39;a
+ 
+<span style="color:blue;">type</span>&nbsp;Range&lt;&#39;a&gt;&nbsp;=&nbsp;{&nbsp;LowerBound&nbsp;:&nbsp;Endpoint&lt;&#39;a&gt;;&nbsp;UpperBound&nbsp;:&nbsp;Endpoint&lt;&#39;a&gt;&nbsp;}</pre>
+    </p>
+    <p>
+        The <code>Range</code> record type is isomorphic to a pair of <code>Endpoint</code> values, so it's not strictly required, but does make things <a href="https://peps.python.org/pep-0020/">more explicit</a>.
+    </p>
+    <p>
+        To support the new type, I added an <code>ofEndpoints</code> function, and finalized the implementation of <code>contains</code>:
+    </p>
+    <p>
+        <pre><span style="color:blue;">module</span>&nbsp;Range&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;ofEndpoints&nbsp;(lowerBound,&nbsp;upperBound)&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{&nbsp;LowerBound&nbsp;=&nbsp;lowerBound;&nbsp;UpperBound&nbsp;=&nbsp;upperBound&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;contains&nbsp;ys&nbsp;r&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">match</span>&nbsp;r.LowerBound,&nbsp;r.UpperBound&nbsp;<span style="color:blue;">with</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;&nbsp;&nbsp;Open&nbsp;x,&nbsp;&nbsp;&nbsp;Open&nbsp;z&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;ys&nbsp;|&gt;&nbsp;List.forall&nbsp;(<span style="color:blue;">fun</span>&nbsp;y&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;x&nbsp;&nbsp;&lt;&nbsp;y&nbsp;&amp;&amp;&nbsp;y&nbsp;&nbsp;&lt;&nbsp;z)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;&nbsp;&nbsp;Open&nbsp;x,&nbsp;Closed&nbsp;z&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;ys&nbsp;|&gt;&nbsp;List.forall&nbsp;(<span style="color:blue;">fun</span>&nbsp;y&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;x&nbsp;&nbsp;&lt;&nbsp;y&nbsp;&amp;&amp;&nbsp;y&nbsp;&lt;=&nbsp;z)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;Closed&nbsp;x,&nbsp;&nbsp;&nbsp;Open&nbsp;z&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;ys&nbsp;|&gt;&nbsp;List.forall&nbsp;(<span style="color:blue;">fun</span>&nbsp;y&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;x&nbsp;&lt;=&nbsp;y&nbsp;&amp;&amp;&nbsp;y&nbsp;&nbsp;&lt;&nbsp;z)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;Closed&nbsp;x,&nbsp;Closed&nbsp;z&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;ys&nbsp;|&gt;&nbsp;List.forall&nbsp;(<span style="color:blue;">fun</span>&nbsp;y&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;x&nbsp;&lt;=&nbsp;y&nbsp;&amp;&amp;&nbsp;y&nbsp;&lt;=&nbsp;z)</pre>
+    </p>
+    <p>
+        As is so often the case in F#, pattern matching makes such functions a pleasure to implement.
+    </p>
+    <h3 id="c00252811495433987c37f7bcfc751a5">
+        Conclusion <a href="#c00252811495433987c37f7bcfc751a5">#</a>
+    </h3>
+    <p>
+        I was curious whether using property-based testing would make the development process of the Range kata simpler. While each property was simple, I still had to write eight of them before I felt I'd fully described the problem. This doesn't seem like much of an improvement over the example-driven approach I took the first time around. It seems to be a comparable amount of code, and on one hand a property is more abstract than an example, but on the hand usually also covers more ground. I feel more confident that this implementation works, because I know that it's being exercised more rigorously.
+    </p>
+    <p>
+        When I find myself writing a property per branch, so to speak, I always feel that I missed a better way to describe the problem. As an example, for years <a href="https://youtu.be/2oN9caQflJ8?si=em1VvFqYFA_AjDlk">I would demonstrate</a> how to test <a href="https://codingdojo.org/kata/FizzBuzz/">the FizzBuzz kata</a> with property-based testing by dividing the problem into Equivalence Classes and then writing a property for each partition. Just as I've done here. This is usually possible, but smells of being too coupled to the implementation.
+    </p>
+    <p>
+        Sometimes, if you think about the problem long enough, you may be able to produce an alternative set of properties that describe the problem in a way that's entirely decoupled from the implementation. After years, <a href="/2021/06/28/property-based-testing-is-not-the-same-as-partition-testing">I finally managed to do that with the FizzBuzz kata</a>.
+    </p>
+    <p>
+        I didn't succeed doing that with the Range kata this time around, but maybe later.
+    </p>
+    <p>
+        <strong>Next:</strong> A Range kata implementation in C#.
+    </p>
+</div>
