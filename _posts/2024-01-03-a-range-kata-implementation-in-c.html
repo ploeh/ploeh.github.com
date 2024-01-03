@@ -1,0 +1,198 @@
+---
+layout: post
+title: "A Range kata implementation in C#"
+description: "A port of the corresponding F# code."
+date: 2024-01-03 6:37 UTC
+tags: [Functional Programming]
+---
+{% include JB/setup %}
+
+<div id="post">
+    <p>
+        <em>{{ page.description }}</em>
+    </p>
+    <p>
+        This article is an instalment in <a href="/2024/01/01/variations-of-the-range-kata">a short series of articles on the Range kata</a>. In the <a href="">previous article</a> I made a pass at <a href="https://codingdojo.org/kata/Range/">the kata</a> in <a href="https://fsharp.org/">F#</a>, using property-based testing with <a href="https://hedgehog.qa/">Hedgehog</a> to generate test data.
+    </p>
+    <p>
+        In the conclusion I mused about the properties I was able to come up with. Is it possible to describe open, closed, and mixed ranges in a way that's less coupled to the implementation? To be honest, I still don't have an answer to that question. Instead, in this article, I describe a straight port of the F# code to C#. There's value in that, too, for people who wonder <a href="/2015/04/15/c-will-eventually-get-all-f-features-right">how to reap the benefits of F# in C#</a>.
+    </p>
+    <p>
+        The code is <a href="">available on GitHub</a>.
+    </p>
+    <h3 id="2b05848a3b494ec99cc0e50da22bdd15">
+        First property <a href="#2b05848a3b494ec99cc0e50da22bdd15">#</a>
+    </h3>
+    <p>
+        Both F# and C# are .NET languages. They run in the same substrate, and are interoperable. Hedgehog is written in F#, but it's possible to consume F# libraries from C#, and vice versa. I've done this multiple times with <a href="https://fscheck.github.io/FsCheck/">FsCheck</a>, but I admit to never having tried it with Hedgehog.
+    </p>
+    <p>
+        If you want to try property-based testing in C#, a third alternative is available: <a href="https://github.com/AnthonyLloyd/CsCheck">CsCheck</a>. It's written in C# and is more <a href="https://blog.ploeh.dk/2015/08/03/idiomatic-or-idiosyncratic/">idiomatic</a> in that context. While I sometimes <a href="/2021/02/15/when-properties-are-easier-than-examples">still use FsCheck from C#</a>, I often choose CsCheck for didactic reasons.
+    </p>
+    <p>
+        The first property I wrote was a direct port of the idea of the first property I wrote in F#:
+    </p>
+    <p>
+        <pre>[Fact]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;<span style="font-weight:bold;color:#74531f;">ClosedRangeContainsList</span>()
+{
+&nbsp;&nbsp;&nbsp;&nbsp;(<span style="color:blue;">from</span>&nbsp;xs&nbsp;<span style="color:blue;">in</span>&nbsp;Gen.Short.Enumerable.Nonempty
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;min&nbsp;=&nbsp;xs.Min()
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;max&nbsp;=&nbsp;xs.Max()
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">select</span>&nbsp;(xs,&nbsp;min,&nbsp;max))
+&nbsp;&nbsp;&nbsp;&nbsp;.Sample(<span style="font-weight:bold;color:#1f377f;">t</span>&nbsp;=&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">sut</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;Range&lt;<span style="color:blue;">short</span>&gt;(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;ClosedEndpoint&lt;<span style="color:blue;">short</span>&gt;(t.min),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;ClosedEndpoint&lt;<span style="color:blue;">short</span>&gt;(t.max));
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">actual</span>&nbsp;=&nbsp;sut.Contains(t.xs);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Assert.True(actual,&nbsp;<span style="color:#a31515;">$&quot;</span><span style="color:#a31515;">Expected&nbsp;</span>{t.xs}<span style="color:#a31515;">&nbsp;to&nbsp;be&nbsp;contained&nbsp;in&nbsp;</span>{sut}<span style="color:#a31515;">.</span><span style="color:#a31515;">&quot;</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;});
+}</pre>
+    </p>
+    <p>
+        This test (or property, if you will) uses a technique that I often use with property-based testing. I'm still searching for a catchy name for this, but here we may call it something like <em>reverse test-case assembly</em>. My <em>goal</em> is to test a predicate, and this particular property should verify that for a given <a href="https://en.wikipedia.org/wiki/Equivalence_class">Equivalence Class</a>, the predicate is always true.
+    </p>
+    <p>
+        While we may think of an Equivalence Class as a set from which we pick test cases, I don't actually have a full enumeration of such a set. I can't have that, since that set is infinitely big. Instead of randomly picking values from a set that I can't fully populate, I instead carefully pick test case values in such a way that they would all belong to the same <a href="https://en.wikipedia.org/wiki/Partition_of_a_set">set partition</a> (Equivalence Class).
+    </p>
+    <p>
+        The <a href="/2022/06/13/some-thoughts-on-naming-tests">test name suggests the test case</a>: I'd like to verify that given I have a closed range, when I ask it whether a list <em>within</em> that range is contained, then the answer is <em>true</em>. How do I pick such a test case?
+    </p>
+    <p>
+        I do it in reverse. You can say that the sampling is the dual of the test. I start with a list (<code>xs</code>) and only then do I create a range that contains it. Since the first test case is for a closed range, the <code>min</code> and <code>max</code> values are sufficient to define such a range.
+    </p>
+    <p>
+        How do I pass that property?
+    </p>
+    <p>
+        Degenerately, as is often the case with TDD beginnings:
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">bool</span>&nbsp;<span style="font-weight:bold;color:#74531f;">Contains</span>(IEnumerable&lt;T&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">candidates</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">true</span>;
+}</pre>
+    </p>
+    <p>
+        Even though the <code>ClosedRangeContainsList</code> property effectively executes a hundred test cases, the <a href="/2019/10/07/devils-advocate">Devil's Advocate</a> can easily ignore that and instead return hard-coded <code>true</code>.
+    </p>
+    <h3 id="61c1050202934baa99baeaa4dfed40e1">
+        Endpoint sum type <a href="#61c1050202934baa99baeaa4dfed40e1">#</a>
+    </h3>
+    <p>
+        I'm not going to bore you with the remaining properties. The repository is available on GitHub if you're interested in those details.
+    </p>
+    <p>
+        If you've programmed in F# for some time, you typically miss <a href="https://en.wikipedia.org/wiki/Algebraic_data_type">algebraic data types</a> when forced to return to C#. A language like C# does have <a href="https://en.wikipedia.org/wiki/Product_type">product types</a>, but lack native <a href="https://en.wikipedia.org/wiki/Tagged_union">sum types</a>. Even so, not all is lost. I've previously demonstrated that <a href="/2018/06/25/visitor-as-a-sum-type">you can employ the Visitor pattern to encode a sum type</a>. Another option is to use <a href="/2018/05/22/church-encoding">Church encoding</a>, which I've decided to do here.
+    </p>
+    <p>
+        When choosing between Church encoding and the <a href="https://en.wikipedia.org/wiki/Visitor_pattern">Visitor</a> pattern, Visitor is more object-oriented (after all, it's an original <a href="/ref/dp">GoF</a> design pattern), but Church encoding has fewer moving parts. Since I was just doing an exercise, I went for the simpler implementation.
+    </p>
+    <p>
+        An <code>Endpoint</code> object should allow one of two cases: <code>Open</code> or <code>Closed</code>. To avoid <a href="https://wiki.c2.com/?PrimitiveObsession">primitive obsession</a> I gave the class a <code>private</code> constructor:
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">sealed</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">Endpoint</span>&lt;<span style="color:#2b91af;">T</span>&gt;
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;T&nbsp;value;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;<span style="color:blue;">bool</span>&nbsp;isClosed;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:#2b91af;">Endpoint</span>(T&nbsp;<span style="font-weight:bold;color:#1f377f;">value</span>,&nbsp;<span style="color:blue;">bool</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">isClosed</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.value&nbsp;=&nbsp;value;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.isClosed&nbsp;=&nbsp;isClosed;
+&nbsp;&nbsp;&nbsp;&nbsp;}</pre>
+    </p>
+    <p>
+        Since the constructor is <code>private</code> you need another way to create <code>Endpoint</code> objects. Two factory methods provide that affordance:
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;Endpoint&lt;T&gt;&nbsp;<span style="font-weight:bold;color:#74531f;">Closed</span>&lt;<span style="color:#2b91af;">T</span>&gt;(T&nbsp;<span style="font-weight:bold;color:#1f377f;">value</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;Endpoint&lt;T&gt;.Closed(value);
+}
+ 
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;Endpoint&lt;T&gt;&nbsp;<span style="font-weight:bold;color:#74531f;">Open</span>&lt;<span style="color:#2b91af;">T</span>&gt;(T&nbsp;<span style="font-weight:bold;color:#1f377f;">value</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;Endpoint&lt;T&gt;.Open(value);
+}</pre>
+    </p>
+    <p>
+        The heart of the Church encoding is the <code>Match</code> method:
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;TResult&nbsp;<span style="font-weight:bold;color:#74531f;">Match</span>&lt;<span style="color:#2b91af;">TResult</span>&gt;(
+&nbsp;&nbsp;&nbsp;&nbsp;Func&lt;T,&nbsp;TResult&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">whenClosed</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;Func&lt;T,&nbsp;TResult&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">whenOpen</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">if</span>&nbsp;(isClosed)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;whenClosed(value);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">else</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;whenOpen(value);
+}</pre>
+    </p>
+    <p>
+        Such an API is an example of <a href="https://en.wikipedia.org/wiki/Poka-yoke">poka-yoke</a> because it obliges you to deal with both cases. The compiler will keep you honest: <em>Did you remember to deal with both the open and the closed case?</em> When calling the <code>Match</code> method, you must supply both arguments, or your code doesn't compile. <a href="https://blog.janestreet.com/effective-ml-video/">Make illegal states unrepresentable</a>.
+    </p>
+    <h3 id="484d1f121cc44050b76f23d92bca429c">
+        Containment <a href="#484d1f121cc44050b76f23d92bca429c">#</a>
+    </h3>
+    <p>
+        With the <code>Endpoint</code> class in place, you can implement a <code>Range</code> class.
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">sealed</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">Range</span>&lt;<span style="color:#2b91af;">T</span>&gt;&nbsp;<span style="color:blue;">where</span>&nbsp;T&nbsp;:&nbsp;IComparable&lt;T&gt;</pre>
+    </p>
+    <p>
+        It made sense to me to constrain the <code>T</code> type argument to <code>IComparable&lt;T&gt;</code>, although it's possible that I could have deferred that constraint to the actual <code>Contains</code> method, like I did with <a href="">my Haskell implementation</a>.
+    </p>
+    <p>
+        A <code>Range</code> holds two <code>Endpoint</code> values:
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">Range</span>(Endpoint&lt;T&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">min</span>,&nbsp;Endpoint&lt;T&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">max</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.min&nbsp;=&nbsp;min;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.max&nbsp;=&nbsp;max;
+}</pre>
+    </p>
+    <p>
+        The <code>Contains</code> method makes use of the built-in <a href="https://learn.microsoft.com/dotnet/api/system.linq.enumerable.all">All</a> method, using a <code>private</code> helper function as the predicate:
+    </p>
+    <p>
+        <pre><span style="color:blue;">private</span>&nbsp;<span style="color:blue;">bool</span>&nbsp;<span style="font-weight:bold;color:#74531f;">IsInRange</span>(T&nbsp;<span style="font-weight:bold;color:#1f377f;">candidate</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;min.Match(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;whenClosed:&nbsp;<span style="font-weight:bold;color:#1f377f;">l</span>&nbsp;=&gt;&nbsp;max.Match(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;whenClosed:&nbsp;<span style="font-weight:bold;color:#1f377f;">h</span>&nbsp;=&gt;&nbsp;l.CompareTo(candidate)&nbsp;&lt;=&nbsp;0&nbsp;&amp;&amp;&nbsp;candidate.CompareTo(h)&nbsp;&lt;=&nbsp;0,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;whenOpen:&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">h</span>&nbsp;=&gt;&nbsp;l.CompareTo(candidate)&nbsp;&lt;=&nbsp;0&nbsp;&amp;&amp;&nbsp;candidate.CompareTo(h)&nbsp;&lt;&nbsp;&nbsp;0),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;whenOpen:&nbsp;<span style="font-weight:bold;color:#1f377f;">l</span>&nbsp;=&gt;&nbsp;max.Match(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;whenClosed:&nbsp;<span style="font-weight:bold;color:#1f377f;">h</span>&nbsp;=&gt;&nbsp;l.CompareTo(candidate)&nbsp;&lt;&nbsp;&nbsp;0&nbsp;&amp;&amp;&nbsp;candidate.CompareTo(h)&nbsp;&lt;=&nbsp;0,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;whenOpen:&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">h</span>&nbsp;=&gt;&nbsp;l.CompareTo(candidate)&nbsp;&lt;&nbsp;&nbsp;0&nbsp;&amp;&amp;&nbsp;candidate.CompareTo(h)&nbsp;&lt;&nbsp;&nbsp;0));
+}</pre>
+    </p>
+    <p>
+        This implementation performs a nested <code>Match</code> to arrive at the appropriate answer. The code isn't as elegant or readable as its F# counterpart, but it comes with comparable compile-time safety. You can't forget a combination, because if you do, your code isn't going to compile.
+    </p>
+    <p>
+        Still, you can't deny that C# involves more <a href="/2019/12/16/zone-of-ceremony">ceremony</a>.
+    </p>
+    <h3 id="54fd635d237d4f57891bda8ef5d13623">
+        Conclusion <a href="#54fd635d237d4f57891bda8ef5d13623">#</a>
+    </h3>
+    <p>
+        Once you know how, it's not that difficult to port a functional design from F# or <a href="https://www.haskell.org/">Haskell</a> to a language like C#. The resulting code tends to be more complicated, but to a large degree, it's possible to retain the type safety.
+    </p>
+    <p>
+        In this article you saw a sketch of how to make that transition, using the Range kata as an example. The resulting C# API is perfectly serviceable, as the test code demonstrates.
+    </p>
+    <p>
+        Now that we have covered the fundamentals of the Range kata we have learned enough about it to go beyond the exercise and examine some more abstract properties.
+    </p>
+    <p>
+        <strong>Next:</strong> Range as a functor.
+    </p>
+</div>
