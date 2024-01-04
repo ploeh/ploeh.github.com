@@ -1,0 +1,512 @@
+---
+layout: post
+title: "Range as a functor"
+description: "With examples in C#, F#, and Haskell."
+date: 2024-01-04 7:15 UTC
+tags: [Functional Programming, Software Design, F#, Haskell, Property-based Testing]
+image: "/content/binary/three-ranges-on-number-lines.png"
+image_alt: "Four number lines, each with a range interpretation drawn in."
+---
+{% include JB/setup %}
+
+<div id="post">
+    <p>
+        <em>{{ page.description }}</em>
+    </p>
+    <p>
+        This article is an instalment in <a href="/2024/01/01/variations-of-the-range-kata">a short series of articles on the Range kata</a>. In the previous three articles you've seen <a href="https://codingdojo.org/kata/Range/">the Range kata</a> implemented <a href="">in Haskell</a>, <a href="">in F#</a>, and <a href="">in C#</a>.
+    </p>
+    <p>
+        The reason I engaged with this kata was that I find that it provides a credible example of a how a pair of <a href="/2018/03/22/functors">functors</a> itself forms a functor. In this article, you'll see how that works out in three languages. If you don't care about one or two of those languages, just skip that section.
+    </p>
+    <h3 id="f8b28f239ca6444c8f32c768e725fad7">
+        Haskell perspective <a href="#f8b28f239ca6444c8f32c768e725fad7">#</a>
+    </h3>
+    <p>
+        If you've done any <a href="https://www.haskell.org/">Haskell</a> programming, you may be thinking that I have in mind the default <code>Functor</code> instances for tuples. As part of the <a href="https://hackage.haskell.org/package/base">base</a> library, tuples (pair, triple, quadruple, etc.) are already <code>Functor</code> instances. Specifically for pairs, we have this instance:
+    </p>
+    <p>
+        <pre>instance Functor ((,) a)</pre>
+    </p>
+    <p>
+        Those are not the functor instances I have in mind. To a degree, I find these default <code>Functor</code> instances unfortunate, or at least arbitrary. Let's briefly explore the above instance to see why that is.
+    </p>
+    <p>
+        Haskell is a notoriously terse language, but if we expand the above instance to (invalid) pseudocode, it says something like this:
+    </p>
+    <p>
+        <pre>instance Functor ((a,b) b)</pre>
+    </p>
+    <p>
+        What I'm trying to get across here is that the <code>a</code> type argument is fixed, and only the second type argument <code>b</code> can be mapped. Thus, you can map a <code>(Bool, String)</code> pair to a <code>(Bool, Int)</code> pair:
+    </p>
+    <p>
+        <pre>ghci&gt; fmap length (True, "foo")
+(True,3)</pre>
+    </p>
+    <p>
+        but the first element (<code>Bool</code>, in this example) is fixed, and you can't map that. To be clear, the first element can be any type, but once you've fixed it, you can't change it (within the constraints of the <code>Functor</code> API, mind):
+    </p>
+    <p>
+        <pre>ghci&gt; fmap (replicate 3) (42, 'f')
+(42,"fff")
+ghci&gt; fmap ($ 3) ("bar", (* 2))
+("bar",6)</pre>
+    </p>
+    <p>
+        The reason I find these default instances arbitrary is that this isn't the only possible <code>Functor</code> instance. Pairs, in particular, are also <a href="https://hackage.haskell.org/package/base/docs/Data-Bifunctor.html">Bifunctor</a> instances, so you can easily map over the first element, instead of the second:
+    </p>
+    <p>
+        <pre>ghci&gt; first show (42, 'f')
+("42",'f')</pre>
+    </p>
+    <p>
+        Similarly, one can easily imagine a <code>Functor</code> instance for triples (three-tuples) that map the middle element. The default instance, however, maps the third (i.e. last) element only.
+    </p>
+    <p>
+        There are some hand-wavy rationalizations out there that argue that in Haskell, application and reduction is usually done from the right, so therefore it's most appropriate to map over the rightmost element of tuples. I admit that it at least argues from a position of consistency, and it does make it easier to remember, but from a didactic perspective I still find it a bit unfortunate. It suggests that a tuple functor only maps the last element.
+    </p>
+    <p>
+        What I had in mind for <em>ranges</em> however, wasn't to map only the first or the last element. Neither did I wish to treat ranges as <a href="/2018/12/24/bifunctors">bifunctors</a>. What I really wanted was the ability to project an entire range.
+    </p>
+    <p>
+        In my Haskell Range implementation, I'd simply treated ranges as tuples of <code>Endpoint</code> values, and although I didn't show that in the article, I ultimately declared <code>Endpoint</code> as a <code>Functor</code> instance:
+    </p>
+    <p>
+        <pre><span style="color:blue;">data</span>&nbsp;Endpoint&nbsp;a&nbsp;=&nbsp;Open&nbsp;a&nbsp;|&nbsp;Closed&nbsp;a&nbsp;<span style="color:blue;">deriving</span>&nbsp;(<span style="color:#2b91af;">Eq</span>,&nbsp;<span style="color:#2b91af;">Show</span>,&nbsp;<span style="color:#2b91af;">Functor</span>)</pre>
+    </p>
+    <p>
+        This enables you to map a single <code>Endpoint</code> value:
+    </p>
+    <p>
+        <pre>ghci&gt; fmap length $ Closed "foo"
+Closed 3</pre>
+    </p>
+    <p>
+        That's just a single value, but the Range kata API operates with pairs of <code>Endpoint</code> value. For example, the <code>contains</code> function has this type:
+    </p>
+    <p>
+        <pre><span style="color:#2b91af;">contains</span>&nbsp;<span style="color:blue;">::</span>&nbsp;(<span style="color:blue;">Foldable</span>&nbsp;t,&nbsp;<span style="color:blue;">Ord</span>&nbsp;a)&nbsp;<span style="color:blue;">=&gt;</span>&nbsp;(<span style="color:blue;">Endpoint</span>&nbsp;a,&nbsp;<span style="color:blue;">Endpoint</span>&nbsp;a)&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;t&nbsp;a&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:#2b91af;">Bool</span></pre>
+    </p>
+    <p>
+        Notice the <code>(Endpoint a, Endpoint a)</code> input type.
+    </p>
+    <p>
+        Is it possible to treat such a pair as a functor? Yes, indeed, just import <a href="https://hackage.haskell.org/package/base/docs/Data-Functor-Product.html">Data.Functor.Product</a>, which enables you to package two functor values in a single wrapper:
+    </p>
+    <p>
+        <pre>ghci&gt; import Data.Functor.Product
+ghci&gt; Pair (Closed "foo") (Open "corge")
+Pair (Closed "foo") (Open "corge")</pre>
+    </p>
+    <p>
+        Now, granted, the <code>Pair</code> data constructor doesn't wrap a <em>tuple</em>, but that's easily fixed:
+    </p>
+    <p>
+        <pre>ghci&gt; uncurry Pair (Closed "foo", Open "corge")
+Pair (Closed "foo") (Open "corge")</pre>
+    </p>
+    <p>
+        The resulting <code>Pair</code> value is a <code>Functor</code> instance, which means that you can project it:
+    </p>
+    <p>
+        <pre>ghci&gt; fmap length $ uncurry Pair (Closed "foo", Open "corge")
+Pair (Closed 3) (Open 5)</pre>
+    </p>
+    <p>
+        Now, granted, I find the <code>Data.Functor.Product</code> API a bit lacking in convenience. For instance, there's no <code>getPair</code> function to retrieve the underlying values; you'd have to use pattern matching for that.
+    </p>
+    <p>
+        In any case, my motivation for covering this ground wasn't to argue that <code>Data.Functor.Product</code> is all we need. The point was rather to observe that when you have two functors, you can combine them, and the combination is also a functor.
+    </p>
+    <p>
+        This is one of the many reasons I get so much value out of Haskell. Its abstraction level is so high that it substantiates relationships that may also exist in other code bases, written in other programming languages. Even if a language like <a href="https://fsharp.org/">F#</a> or C# can't formally express some of those abstraction, you can still make use of them as 'design patterns' (for lack of a better term).
+    </p>
+    <h3 id="ba94968ed2bc4780b995639212f8371b">
+        F# functor <a href="#ba94968ed2bc4780b995639212f8371b">#</a>
+    </h3>
+    <p>
+        What we've learned from Haskell is that if we have two functors we can combine them into one. Specifically, I made <code>Endpoint</code> a <code>Functor</code> instance, and from that followed automatically that a <code>Pair</code> of those was also a <code>Functor</code> instance.
+    </p>
+    <p>
+        I can do the same in F#, starting with <code>Endpoint</code>. In F# I've unsurprisingly defined the type like this:
+    </p>
+    <p>
+        <pre><span style="color:blue;">type</span>&nbsp;Endpoint&lt;&#39;a&gt;&nbsp;=&nbsp;Open&nbsp;<span style="color:blue;">of</span>&nbsp;&#39;a&nbsp;|&nbsp;Closed&nbsp;<span style="color:blue;">of</span>&nbsp;&#39;a</pre>
+    </p>
+    <p>
+        That's just a standard <a href="https://en.wikipedia.org/wiki/Tagged_union">discriminated union</a>. In order to make it a functor, you'll have to add a <code>map</code> function:
+    </p>
+    <p>
+        <pre><span style="color:blue;">module</span>&nbsp;Endpoint&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;map&nbsp;f&nbsp;=&nbsp;<span style="color:blue;">function</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;Open&nbsp;&nbsp;&nbsp;x&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;Open&nbsp;&nbsp;&nbsp;(f&nbsp;x)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;Closed&nbsp;x&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;Closed&nbsp;(f&nbsp;x)</pre>
+    </p>
+    <p>
+        The function alone, however, isn't enough to give rise to a functor. We must also convince ourselves that the <code>map</code> function obeys the functor laws. One way to do that is to write tests. While tests aren't <em>proofs</em>, we may still be sufficiently reassured by the tests that that's good enough for us. While I could, I'm not going to <em>prove</em> that <code>Endpoint.map</code> satisfies the functor laws. I will, later, do just that with the pair, but I'll leave this one as an exercise for the interested reader.
+    </p>
+    <p>
+        Since I was already using <a href="https://hedgehog.qa/">Hedgehog</a> for property-based testing in my F# code, it was obvious to write properties for the functor laws as well.
+    </p>
+    <p>
+        <pre>[&lt;Fact&gt;]
+<span style="color:blue;">let</span>&nbsp;``First&nbsp;functor&nbsp;law``&nbsp;()&nbsp;=&nbsp;Property.check&nbsp;&lt;|&nbsp;property&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;genInt32&nbsp;=&nbsp;Gen.int32&nbsp;(Range.linearBounded&nbsp;())
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;expected&nbsp;=&nbsp;Gen.choice&nbsp;[Gen.map&nbsp;Open&nbsp;genInt32;&nbsp;Gen.map&nbsp;Closed&nbsp;genInt32]
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;actual&nbsp;=&nbsp;Endpoint.map&nbsp;id&nbsp;expected
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;expected&nbsp;=!&nbsp;actual&nbsp;}</pre>
+    </p>
+    <p>
+        This property exercises the first functor law for integer endpoints. Recall that this law states that if you map a value with the <a href="https://en.wikipedia.org/wiki/Identity_function">identity function</a>, nothing really happens.
+    </p>
+    <p>
+        The second functor law is more interesting.
+    </p>
+    <p>
+        <pre>[&lt;Fact&gt;]
+<span style="color:blue;">let</span>&nbsp;``Second&nbsp;functor&nbsp;law``&nbsp;()&nbsp;=&nbsp;Property.check&nbsp;&lt;|&nbsp;property&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;genInt32&nbsp;=&nbsp;Gen.int32&nbsp;(Range.linearBounded&nbsp;())
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;endpoint&nbsp;=&nbsp;Gen.choice&nbsp;[Gen.map&nbsp;Open&nbsp;genInt32;&nbsp;Gen.map&nbsp;Closed&nbsp;genInt32]
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;f&nbsp;=&nbsp;Gen.item&nbsp;[id;&nbsp;((+)&nbsp;1);&nbsp;((*)&nbsp;2)]
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;g&nbsp;=&nbsp;Gen.item&nbsp;[id;&nbsp;((+)&nbsp;1);&nbsp;((*)&nbsp;2)]
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;actual&nbsp;=&nbsp;Endpoint.map&nbsp;(f&nbsp;&lt;&lt;&nbsp;g)&nbsp;endpoint
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;Endpoint.map&nbsp;f&nbsp;(Endpoint.map&nbsp;g&nbsp;endpoint)&nbsp;=!&nbsp;actual&nbsp;}</pre>
+    </p>
+    <p>
+        This property again exercises the property for integer endpoints. Not only does the property pick a random integer and varies whether the <code>Endpoint</code> is <code>Open</code> or <code>Closed</code>, it also picks two random functions from a small list of functions: The identity function (again), a function that increments by one, and a function that doubles the input. These two functions, <code>f</code> and <code>g</code>, might then be the same, but might also be different from each other. Thus, the composition <code>f&nbsp;&lt;&lt;&nbsp;g</code> <em>might</em> be <code>id &lt;&lt; id</code> or <code>((+) 1) &lt;&lt; ((+) 1)</code>, but might just as well be <code>((+) 1) &lt;&lt; ((*) 2)</code>, or one of the other possible combinations.
+    </p>
+    <p>
+        The law states that the result should be the same regardless of whether you first compose the functions and then map them, or map them one after the other.
+    </p>
+    <p>
+        Which is the case.
+    </p>
+    <p>
+        A <code>Range</code> is defined like this:
+    </p>
+    <p>
+        <pre><span style="color:blue;">type</span>&nbsp;Range&lt;&#39;a&gt;&nbsp;=&nbsp;{&nbsp;LowerBound&nbsp;:&nbsp;Endpoint&lt;&#39;a&gt;;&nbsp;UpperBound&nbsp;:&nbsp;Endpoint&lt;&#39;a&gt;&nbsp;}</pre>
+    </p>
+    <p>
+        This record type also gives rise to a functor:
+    </p>
+    <p>
+        <pre><span style="color:blue;">module</span>&nbsp;Range&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;map&nbsp;f&nbsp;{&nbsp;LowerBound&nbsp;=&nbsp;lowerBound;&nbsp;UpperBound&nbsp;=&nbsp;upperBound&nbsp;}&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{&nbsp;LowerBound&nbsp;=&nbsp;Endpoint.map&nbsp;f&nbsp;lowerBound
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;UpperBound&nbsp;=&nbsp;Endpoint.map&nbsp;f&nbsp;upperBound&nbsp;}</pre>
+    </p>
+    <p>
+        This <code>map</code> function uses the projection <code>f</code> on both the <code>lowerBound</code> and the <code>upperBound</code>. It, too, obeys the functor laws:
+    </p>
+    <p>
+        <pre>[&lt;Fact&gt;]
+<span style="color:blue;">let</span>&nbsp;``First&nbsp;functor&nbsp;law``&nbsp;()&nbsp;=&nbsp;Property.check&nbsp;&lt;|&nbsp;property&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;genInt64&nbsp;=&nbsp;Gen.int64&nbsp;(Range.linearBounded&nbsp;())
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;genEndpoint&nbsp;=&nbsp;Gen.choice&nbsp;[Gen.map&nbsp;Open&nbsp;genInt64;&nbsp;Gen.map&nbsp;Closed&nbsp;genInt64]
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;expected&nbsp;=&nbsp;Gen.tuple&nbsp;genEndpoint&nbsp;|&gt;&nbsp;Gen.map&nbsp;Range.ofEndpoints
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;actual&nbsp;=&nbsp;expected&nbsp;|&gt;&nbsp;Ploeh.Katas.Range.map&nbsp;id
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;expected&nbsp;=!&nbsp;actual&nbsp;}
+ 
+[&lt;Fact&gt;]
+<span style="color:blue;">let</span>&nbsp;``Second&nbsp;functor&nbsp;law``&nbsp;()&nbsp;=&nbsp;Property.check&nbsp;&lt;|&nbsp;property&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;genInt16&nbsp;=&nbsp;Gen.int16&nbsp;(Range.linearBounded&nbsp;())
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;genEndpoint&nbsp;=&nbsp;Gen.choice&nbsp;[Gen.map&nbsp;Open&nbsp;genInt16;&nbsp;Gen.map&nbsp;Closed&nbsp;genInt16]
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;range&nbsp;=&nbsp;Gen.tuple&nbsp;genEndpoint&nbsp;|&gt;&nbsp;Gen.map&nbsp;Range.ofEndpoints
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;f&nbsp;=&nbsp;Gen.item&nbsp;[id;&nbsp;((+)&nbsp;1s);&nbsp;((*)&nbsp;2s)]
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;g&nbsp;=&nbsp;Gen.item&nbsp;[id;&nbsp;((+)&nbsp;1s);&nbsp;((*)&nbsp;2s)]
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;actual&nbsp;=&nbsp;range&nbsp;|&gt;&nbsp;Ploeh.Katas.Range.map&nbsp;(f&nbsp;&lt;&lt;&nbsp;g)
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;Ploeh.Katas.Range.map&nbsp;f&nbsp;(Ploeh.Katas.Range.map&nbsp;g&nbsp;range)&nbsp;=!&nbsp;actual&nbsp;}</pre>
+    </p>
+    <p>
+        These two Hedgehog properties are cast in the same mould as the <code>Endpoint</code> properties, only they create 64-bit and 16-bit ranges for variation's sake.
+    </p>
+    <h3 id="c91ec56a7b22445b85ac4253f81c5c74">
+        C# functor <a href="#c91ec56a7b22445b85ac4253f81c5c74">#</a>
+    </h3>
+    <p>
+        As I wrote about the Haskell result, it teaches us which abstractions are possible, even if we can't formalise them to the same degree in, say, C# as we can in Haskell. It should come as no surprise, then, that we can also make <code><span style="color:#2b91af;">Range</span>&lt;<span style="color:#2b91af;">T</span>&gt;</code> a functor in C#.
+    </p>
+    <p>
+        In C# we <a href="/2015/08/03/idiomatic-or-idiosyncratic">idiomatically</a> do that by giving a class a <code>Select</code> method. Again, we'll have to begin with <code>Endpoint</code>:
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;Endpoint&lt;TResult&gt;&nbsp;<span style="font-weight:bold;color:#74531f;">Select</span>&lt;<span style="color:#2b91af;">TResult</span>&gt;(Func&lt;T,&nbsp;TResult&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">selector</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;Match(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;whenClosed:&nbsp;<span style="font-weight:bold;color:#1f377f;">x</span>&nbsp;=&gt;&nbsp;Endpoint.Closed(selector(x)),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;whenOpen:&nbsp;<span style="font-weight:bold;color:#1f377f;">x</span>&nbsp;=&gt;&nbsp;Endpoint.Open(selector(x)));
+}</pre>
+    </p>
+    <p>
+        Does that <code>Select</code> method obey the functor laws? Yes, as we can demonstrate (not prove) with a few properties:
+    </p>
+    <p>
+        <pre>[Fact]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;<span style="font-weight:bold;color:#74531f;">FirstFunctorLaw</span>()
+{
+&nbsp;&nbsp;&nbsp;&nbsp;Gen.OneOf(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Gen.Int.Select(Endpoint.Open),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Gen.Int.Select(Endpoint.Closed))
+&nbsp;&nbsp;&nbsp;&nbsp;.Sample(<span style="font-weight:bold;color:#1f377f;">expected</span>&nbsp;=&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">actual</span>&nbsp;=&nbsp;expected.Select(<span style="font-weight:bold;color:#1f377f;">x</span>&nbsp;=&gt;&nbsp;x);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Assert.Equal(expected,&nbsp;actual);
+&nbsp;&nbsp;&nbsp;&nbsp;});
+}
+ 
+[Fact]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;<span style="font-weight:bold;color:#74531f;">ScondFunctorLaw</span>()
+{
+&nbsp;&nbsp;&nbsp;&nbsp;(<span style="color:blue;">from</span>&nbsp;endpoint&nbsp;<span style="color:blue;">in</span>&nbsp;Gen.OneOf(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Gen.Int.Select(Endpoint.Open),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Gen.Int.Select(Endpoint.Closed))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">from</span>&nbsp;f&nbsp;<span style="color:blue;">in</span>&nbsp;Gen.OneOfConst&lt;Func&lt;<span style="color:blue;">int</span>,&nbsp;<span style="color:blue;">int</span>&gt;&gt;(<span style="font-weight:bold;color:#1f377f;">x</span>&nbsp;=&gt;&nbsp;x,&nbsp;<span style="font-weight:bold;color:#1f377f;">x</span>&nbsp;=&gt;&nbsp;x&nbsp;+&nbsp;1,&nbsp;<span style="font-weight:bold;color:#1f377f;">x</span>&nbsp;=&gt;&nbsp;x&nbsp;*&nbsp;2)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">from</span>&nbsp;g&nbsp;<span style="color:blue;">in</span>&nbsp;Gen.OneOfConst&lt;Func&lt;<span style="color:blue;">int</span>,&nbsp;<span style="color:blue;">int</span>&gt;&gt;(<span style="font-weight:bold;color:#1f377f;">x</span>&nbsp;=&gt;&nbsp;x,&nbsp;<span style="font-weight:bold;color:#1f377f;">x</span>&nbsp;=&gt;&nbsp;x&nbsp;+&nbsp;1,&nbsp;<span style="font-weight:bold;color:#1f377f;">x</span>&nbsp;=&gt;&nbsp;x&nbsp;*&nbsp;2)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">select</span>&nbsp;(endpoint,&nbsp;f,&nbsp;g))
+&nbsp;&nbsp;&nbsp;&nbsp;.Sample(<span style="font-weight:bold;color:#1f377f;">t</span>&nbsp;=&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">actual</span>&nbsp;=&nbsp;t.endpoint.Select(<span style="font-weight:bold;color:#1f377f;">x</span>&nbsp;=&gt;&nbsp;t.g(t.f(x)));
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Assert.Equal(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;t.endpoint.Select(t.f).Select(t.g),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;actual);
+&nbsp;&nbsp;&nbsp;&nbsp;});
+}</pre>
+    </p>
+    <p>
+        These two tests follow the scheme laid out by the above F# properties, and they both pass.
+    </p>
+    <p>
+        The <code>Range</code> class gets the same treatment. First, a <code>Select</code> method:
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;Range&lt;TResult&gt;&nbsp;<span style="font-weight:bold;color:#74531f;">Select</span>&lt;<span style="color:#2b91af;">TResult</span>&gt;(Func&lt;T,&nbsp;TResult&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">selector</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">where</span>&nbsp;TResult&nbsp;:&nbsp;IComparable&lt;TResult&gt;
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;Range&lt;TResult&gt;(min.Select(selector),&nbsp;max.Select(selector));
+}</pre>
+    </p>
+    <p>
+        which, again, can be demonstrated with two properties that exercise the functor laws:
+    </p>
+    <p>
+        <pre>[Fact]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;<span style="font-weight:bold;color:#74531f;">FirstFunctorLaw</span>()
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">genEndpoint</span>&nbsp;=&nbsp;Gen.OneOf(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Gen.Int.Select(Endpoint.Closed),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Gen.Int.Select(Endpoint.Open));
+&nbsp;&nbsp;&nbsp;&nbsp;genEndpoint.SelectMany(<span style="font-weight:bold;color:#1f377f;">min</span>&nbsp;=&gt;&nbsp;genEndpoint
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.Select(<span style="font-weight:bold;color:#1f377f;">max</span>&nbsp;=&gt;&nbsp;<span style="color:blue;">new</span>&nbsp;Range&lt;<span style="color:blue;">int</span>&gt;(min,&nbsp;max)))
+&nbsp;&nbsp;&nbsp;&nbsp;.Sample(<span style="font-weight:bold;color:#1f377f;">sut</span>&nbsp;=&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">actual</span>&nbsp;=&nbsp;sut.Select(<span style="font-weight:bold;color:#1f377f;">x</span>&nbsp;=&gt;&nbsp;x);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Assert.Equal(sut,&nbsp;actual);
+&nbsp;&nbsp;&nbsp;&nbsp;});
+}
+ 
+[Fact]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;<span style="font-weight:bold;color:#74531f;">SecondFunctorLaw</span>()
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">genEndpoint</span>&nbsp;=&nbsp;Gen.OneOf(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Gen.Int.Select(Endpoint.Closed),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Gen.Int.Select(Endpoint.Open));
+&nbsp;&nbsp;&nbsp;&nbsp;(<span style="color:blue;">from</span>&nbsp;min&nbsp;<span style="color:blue;">in</span>&nbsp;genEndpoint
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">from</span>&nbsp;max&nbsp;<span style="color:blue;">in</span>&nbsp;genEndpoint
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">from</span>&nbsp;f&nbsp;<span style="color:blue;">in</span>&nbsp;Gen.OneOfConst&lt;Func&lt;<span style="color:blue;">int</span>,&nbsp;<span style="color:blue;">int</span>&gt;&gt;(<span style="font-weight:bold;color:#1f377f;">x</span>&nbsp;=&gt;&nbsp;x,&nbsp;<span style="font-weight:bold;color:#1f377f;">x</span>&nbsp;=&gt;&nbsp;x&nbsp;+&nbsp;1,&nbsp;<span style="font-weight:bold;color:#1f377f;">x</span>&nbsp;=&gt;&nbsp;x&nbsp;*&nbsp;2)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">from</span>&nbsp;g&nbsp;<span style="color:blue;">in</span>&nbsp;Gen.OneOfConst&lt;Func&lt;<span style="color:blue;">int</span>,&nbsp;<span style="color:blue;">int</span>&gt;&gt;(<span style="font-weight:bold;color:#1f377f;">x</span>&nbsp;=&gt;&nbsp;x,&nbsp;<span style="font-weight:bold;color:#1f377f;">x</span>&nbsp;=&gt;&nbsp;x&nbsp;+&nbsp;1,&nbsp;<span style="font-weight:bold;color:#1f377f;">x</span>&nbsp;=&gt;&nbsp;x&nbsp;*&nbsp;2)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">select</span>&nbsp;(sut&nbsp;:&nbsp;<span style="color:blue;">new</span>&nbsp;Range&lt;<span style="color:blue;">int</span>&gt;(min,&nbsp;max),&nbsp;f,&nbsp;g))
+&nbsp;&nbsp;&nbsp;&nbsp;.Sample(<span style="font-weight:bold;color:#1f377f;">t</span>&nbsp;=&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">actual</span>&nbsp;=&nbsp;t.sut.Select(<span style="font-weight:bold;color:#1f377f;">x</span>&nbsp;=&gt;&nbsp;t.g(t.f(x)));
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Assert.Equal(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;t.sut.Select(t.f).Select(t.g),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;actual);
+&nbsp;&nbsp;&nbsp;&nbsp;});
+}</pre>
+    </p>
+    <p>
+        These tests also pass.
+    </p>
+    <h3 id="222d65b253b145679994d1b9336069c7">
+        Laws <a href="#222d65b253b145679994d1b9336069c7">#</a>
+    </h3>
+    <p>
+        Exercising a pair of properties can give us a good warm feeling that the data structures and functions defined above are proper functors. Sometimes, tests are all we have, but in this case we can do better. We can prove that the functor laws always hold.
+    </p>
+    <p>
+        The various above incarnations of a <code>Range</code> type are all <a href="https://en.wikipedia.org/wiki/Product_type">product types</a>, and the canonical form of a product type is a tuple (see e.g. <a href="https://thinkingwithtypes.com/">Thinking with Types</a> for a clear explanation of why that is). That's the reason I stuck with a tuple in my Haskell code.
+    </p>
+    <p>
+        Consider the implementation of the <code>fmap</code> implementation of <code>Pair</code>:
+    </p>
+    <p>
+        <pre>fmap f (Pair x y) = Pair (fmap f x) (fmap f y)</pre>
+    </p>
+    <p>
+        We can use equational reasoning, and as always I'll use the <a href="https://bartoszmilewski.com/2015/01/20/functors/">the notation that Bartosz Milewski uses</a>. It's only natural to begin with the first functor law, using <code>F</code> and <code>G</code> as placeholders for two arbitrary <code>Functor</code> data constructors.
+    </p>
+    <p>
+        <pre>  fmap id (Pair (F x) (G y))
+= { definition of fmap }
+  Pair (fmap id (F x)) (fmap id (G y))
+= { first functor law }
+  Pair (F x) (G y)
+= { definition of id }
+  id (Pair (F x) (G y))</pre>
+    </p>
+    <p>
+        Keep in mind that in this notation, the equal signs are true equalities, going both ways. Thus, you can read this proof from the top to the bottom, or from the bottom to the top. The equality holds both ways, as should be the case for a true equality.
+    </p>
+    <p>
+        We can proceed in the same vein to prove the second functor law, being careful to distinguish between <code>Functor</code> instances (<code>F</code> and <code>G</code>) and functions (<code>f</code> and <code>g</code>):
+    </p>
+    <p>
+        <pre>  fmap (g . f) (Pair (F x) (G y))
+= { definition of fmap }
+  Pair (fmap (g . f) (F x)) (fmap (g . f) (G y))
+= { second functor law }
+  Pair ((fmap g . fmap f) (F x)) ((fmap g . fmap f) (G y))
+= { definition of composition }
+  Pair (fmap g (fmap f (F x))) (fmap g (fmap f (G y)))
+= { definition of fmap }
+  fmap g (Pair (fmap f (F x)) (fmap f (G y)))
+= { definition of fmap }
+  fmap g (fmap f (Pair (F x) (G y)))
+= { definition of composition }
+  (fmap g . fmap f) (Pair (F x) (G y))</pre>
+    </p>
+    <p>
+        Notice that both proofs make use of the functor laws. This may seem self-referential, but is rather recursive. When the proofs refer to the functor laws, they refer to the functors <code>F</code> and <code>G</code>, which are both assumed to be lawful.
+    </p>
+    <p>
+        This is how we know that the product of two lawful functors is itself a functor.
+    </p>
+    <h3 id="54ac7f2fadef46c4a295333a2037656e">
+        Negations <a href="#54ac7f2fadef46c4a295333a2037656e">#</a>
+    </h3>
+    <p>
+        During all of this, you may have thought: <em>What happens if we project a range with a negation?</em>
+    </p>
+    <p>
+        As a simple example, let's consider the range from <em>-1</em> to <em>2:</em>
+    </p>
+    <p>
+        <pre>ghci&gt; uncurry Pair (Closed (-1), Closed 2)
+Pair (Closed (-1)) (Closed 2)</pre>
+    </p>
+    <p>
+        We may draw this range on the number line like this:
+    </p>
+    <p>
+        <img src="/content/binary/single-range-on-number-line.png" alt="The range from -1 to 2 drawn on the number line.">
+    </p>
+    <p>
+        What happens if we map that range by multiplying with <em>-1?</em>
+    </p>
+    <p>
+        <pre>ghci&gt; fmap negate $ uncurry Pair (Closed (-1), Closed 2)
+Pair (Closed 1) (Closed (-2))</pre>
+    </p>
+    <p>
+        We get a range from <em>1</em> to <em>-2!</em>
+    </p>
+    <p>
+        <em>Aha!</em> you say, <em>clearly that's wrong!</em> We've just found a counterexample. After all, <em>range</em> isn't a functor.
+    </p>
+    <p>
+        Not so. The functor laws say nothing about the interpretation of projections (but I'll get back to that in a moment). Rather, they say something about composition, so let's consider an example that reaches a similar, seemingly wrong result:
+    </p>
+    <p>
+        <pre>ghci&gt; fmap ((+1) . negate) $ uncurry Pair (Closed (-1), Closed 2)
+Pair (Closed 2) (Closed (-1))</pre>
+    </p>
+    <p>
+        This is a range from <em>2</em> to <em>-1</em>, so just as problematic as before.
+    </p>
+    <p>
+        The second functor law states that the outcome should be the same if we map piecewise:
+    </p>
+    <p>
+        <pre>ghci&gt; (fmap (+ 1) . fmap negate) $ uncurry Pair (Closed (-1), Closed 2)
+Pair (Closed 2) (Closed (-1))</pre>
+    </p>
+    <p>
+        Still a range from <em>2</em> to <em>-1</em>. The second functor law holds.
+    </p>
+    <p>
+        <em>But,</em> you protest, <em>that's doesn't make any sense!</em>
+    </p>
+    <p>
+        I disagree. It could make sense in at least three different ways.
+    </p>
+    <p>
+        What does a range from <em>2</em> to <em>-1</em> mean? I can think of three interpretations:
+    </p>
+    <ul>
+        <li>It's the empty set</li>
+        <li>It's the range from <em>-1</em> to <em>2</em></li>
+        <li>It's the set of numbers that are either less than or equal to <em>-1</em> or greater than or equal to <em>2</em></li>
+    </ul>
+    <p>
+        We may illustrate those three interpretations, together with the original range, like this:
+    </p>
+    <p>
+        <img src="/content/binary/three-ranges-on-number-lines.png" alt="Four number lines, each with a range interpretation drawn in.">
+    </p>
+    <p>
+        According to the first interpretation, we consider the range as the Boolean <em>and</em> of two predicates. In this interpretation the initial range is really the Boolean expression <em>-1 ≤ x ∧ x ≤ 2</em>. The projected range then becomes the expression <em>2 ≤ x ∧ x ≤ -1</em>, which is not possible. This is how I've chosen to implement the <code>contains</code> function:
+    </p>
+    <p>
+        <pre>ghci&gt; Pair x y = fmap ((+1) . negate) $ uncurry Pair (Closed (-1), Closed 2)
+ghci&gt; contains (x, y) [0]
+False
+ghci&gt; contains (x, y) [-3]
+False
+ghci&gt; contains (x, y) [4]
+False</pre>
+    </p>
+    <p>
+        In this interpretation, the result is the empty set. The range isn't impossible; it's just empty. That's the second number line from the top in the above illustration.
+    </p>
+    <p>
+        This isn't, however, the only interpretation. Instead, we may choose to <a href="https://en.wikipedia.org/wiki/Robustness_principle">be liberal in what we accept</a> and interpret the range from <em>2</em> to <em>-1</em> as a 'programmer mistake': <em>What you asked me to do is formally wrong, but I think that I understand that you meant the range from </em>-1<em> to </em>2.
+    </p>
+    <p>
+        That's the third number line in the above illustration.
+    </p>
+    <p>
+        The fourth interpretation is that when the first element of the range is greater than the second, the range represents the <a href="https://en.wikipedia.org/wiki/Complement_(set_theory)">complement</a> of the range. That's the fourth number line in the above illustration.
+    </p>
+    <p>
+        The reason I spent some time on this is that it's easy to confuse the functor laws with other properties that you may associate with a data structure. This may lead you to falsely conclude that a functor isn't a functor, because you feel that it violates some other invariant.
+    </p>
+    <p>
+        If this happens, consider instead whether you could possibly expand the interpretation of the data structure in question.
+    </p>
+    <h3 id="859ece7acfdb415da1ba52578189e9ca">
+        Conclusion <a href="#859ece7acfdb415da1ba52578189e9ca">#</a>
+    </h3>
+    <p>
+        You can model a <em>range</em> as a functor, which enables you to project ranges, either moving them around on an imaginary number line, or changing the type of the range. This might for example enable you to map a date range to an integer range, or vice versa.
+    </p>
+    <p>
+        A functor enables mapping or projection, and some maps may produce results that you find odd or counter-intuitive. In this article you saw an example of that in the shape of a negated range where the first element (the 'minimum', in one interpretation) becomes greater than the second element (the 'maximum'). You may take that as an indication that the functor isn't, after all, a functor.
+    </p>
+    <p>
+        This isn't the case. A data structure and its <em>map</em> function is a functor if the the mapping obeys the functor laws, which is the case for the range structures you've seen here.
+    </p>
+</div>
