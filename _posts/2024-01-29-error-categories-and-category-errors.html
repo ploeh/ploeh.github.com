@@ -1,0 +1,232 @@
+---
+layout: post
+title: "Error categories and category errors"
+description: "How I currently think about errors in programming."
+date: 2024-01-29 16:05 UTC
+tags: [Software Design]
+---
+{% include JB/setup %}
+
+<div id="post">
+    <p>
+        <em>{{ page.description }}</em>
+    </p>
+    <p>
+        A reader <a href="/2023/08/14/replacing-mock-and-stub-with-a-fake#0afe67b375254fe193a3fd10234a1ce9">recently asked a question</a> that caused me to reflect on the way I think about errors in software. While my approach to error handling has remained largely the same for years, I don't think I've described it in an organized way. I'll try to present those thoughts here.
+    </p>
+    <p>
+        This article is, for lack of a better term, a <em>think piece</em>. I don't pretend that it represents any fundamental truth, or that this is the only way to tackle problems. Rather, I write this article for two reasons.
+    </p>
+    <ul>
+        <li>Writing things down often helps clarifying your thoughts. While I already feel that my thinking on the topic of error handling is fairly clear, I've written enough articles that I know that by writing this one, I'll learn something new.</li>
+        <li>Publishing this article enables the exchange of ideas. By sharing my thoughts, I enable readers to point out errors in my thinking, or to improve on my work. Again, I may learn something. Perhaps others will, too.</li>
+    </ul>
+    <p>
+        Although I don't claim that the following is universal, I've found it useful for years.
+    </p>
+    <h3 id="43e58fcae3184b0597def9a4ec5629d7">
+        Error categories <a href="#43e58fcae3184b0597def9a4ec5629d7">#</a>
+    </h3>
+    <p>
+        Almost all software is at risk of failing for a myriad of reasons: User input, malformed data, network partitions, cosmic rays, race conditions, bugs, etc. Even so, we may categorize errors like this:
+    </p>
+    <ul>
+        <li>Predictable errors we can handle</li>
+        <li>Predictable errors we can't handle</li>
+        <li>Errors we've failed to predict</li>
+    </ul>
+    <p>
+        This distinction is hardly original. I believe I've picked it up from Michael Feathers, but although I've searched, I can't find the source, so perhaps I'm remembering it wrong.
+    </p>
+    <p>
+        You may find these three error categories underwhelming, but I find it useful to first consider what may be done about an error. Plenty of error situations are predictable. For example, all input should be considered suspect. This includes user input, but also data you receive from other systems. This kind of potential error you can typically solve with input validation, which I believe is <a href="/2020/12/14/validation-a-solved-problem">a solved problem</a>. Another predictable kind of error is unavailable services. Many systems store data in databases. You can easily predict that the database <em>will</em>, sooner or later, be unreachable. Potential causes include network partitions, a misconfigured connection string, logs running full, a crashed server, denial-of-service attacks, etc.
+    </p>
+    <p>
+        With some experience with software development, it's not that hard producing a list of things that could go wrong. The next step is to decide what to do about it.
+    </p>
+    <p>
+        There are scenarios that are so likely to happen, and where the solution is so well-known, that they fall into the category of predictable errors that you can handle. User input belongs here. You examine the input and inform the user if it's invalid.
+    </p>
+    <p>
+        Even with input, however, other scenarios may lead you down different paths. What if, instead of a system with a user interface, you're developing a batch job that receives a big data file every night? How do you deal with invalid input in that scenario? Do you reject the entire data set, or do you filter it so that you only handle the valid input? Do you raise a notification to asynchronously inform the sender that input was malformed?
+    </p>
+    <p>
+        Notice how categorization is context-dependent. It would be a (category?) error to interpret the above model as fixed and universal. Rather, it's an analysis framework that helps identifying how to categorize various fault scenarios in a particular application context.
+    </p>
+    <p>
+        Another example may be in order. If your system depends on a database, a predictable error is that the database will be unavailable. Can you handle that situation?
+    </p>
+    <p>
+        A common reaction is that there's really not a lot one can do about that. You may retry the operation, log the problem, or notify an on-call engineer, but ultimately the system <em>depends</em> on the database. If the database is unreachable, the system can't work. You can't handle that problem, so this falls in the category of predictable errors that you can't handle.
+    </p>
+    <p>
+        Or does it?
+    </p>
+    <h3 id="b703b2c68f3b4656a1cf1f4042974ab7">
+        Trade-offs of error handling <a href="#b703b2c68f3b4656a1cf1f4042974ab7">#</a>
+    </h3>
+    <p>
+        The example of an unreachable database is useful to explore in order to demonstrate that error handling isn't writ in stone, but rather an architectural design decision. Consider <a href="/2014/08/11/cqs-versus-server-generated-ids">a common API design</a> like this:
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">interface</span>&nbsp;<span style="color:#2b91af;">IRepository</span>&lt;T&gt;
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">int</span>&nbsp;Create(T&nbsp;item);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;other&nbsp;members</span>
+}</pre>
+    </p>
+    <p>
+        What happens if client code calls <code>Create</code> but the database is unreachable? This is C# code, but the problem generalizes. With most implementations, the <code>Create</code> method will throw an exception.
+    </p>
+    <p>
+        Can you handle that situation? You may retry a couple of times, but if you have a user waiting for a response, you can't retry for too long. Once time is up, you'll have to accept that the operation failed. In a language like C#, the most robust implementation is to <em>not</em> handle the specific exception, but instead let it bubble up to be handled by a global exception handler that usually can't do much else than showing the user a generic error message, and then log the exception.
+    </p>
+    <p>
+        This isn't your only option, though. You may find yourself in a context where this kind of attitude towards errors is unacceptable. If you're working with <a href="https://twitter.com/ploeh/status/530320252790669313">BLOBAs</a> it's probably fine, but if you're working with medical life-support systems, or deep-space probes, or in other high-value contexts, the overall error-tolerance may be lower. Then what do you do?
+    </p>
+    <p>
+        You may try to address the concern with IT operations: Configure failover systems for the database, installing two network cards in every machine, and so on. This may (also) be a way to address the problem, but isn't your only option. You may also consider changing the software architecture.
+    </p>
+    <p>
+        One option may be to switch to an asynchronous message-based system where messages are transmitted via durable queues. Granted, durables queues may fail as well (everything may fail), but when done right, they tend to be more robust. Even a machine that has lost all network connectivity may queue messages on its local disk until the network returns. Yes, the disk may run full, etc. but it's <em>less</em> likely to happen than a network partition or an unreachable database.
+    </p>
+    <p>
+        Notice that an unreachable database now goes into the category of errors that you've predicted, and that you can handle. On the other hand, failing to send an asynchronous message is now a new kind of error in your system: One that you can predict, but can't handle.
+    </p>
+    <p>
+        Making this change, however, impacts your software architecture. You can no longer have an interface method like the above <code>Create</code> method, because you can't rely on it returning an <code>int</code> in reasonable time. During error scenarios, messages may sit in queues for hours, if not days, so you can't block on such code.
+    </p>
+    <p>
+        As <a href="/2014/08/11/cqs-versus-server-generated-ids">I've explained elsewhere</a> you can instead model a <code>Create</code> method like this:
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">interface</span>&nbsp;<span style="color:#2b91af;">IRepository</span>&lt;T&gt;
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">void</span>&nbsp;Create(<span style="color:#2b91af;">Guid</span>&nbsp;id,&nbsp;T&nbsp;item);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;other&nbsp;members</span>
+}</pre>
+    </p>
+    <p>
+        Not only does this follow the <a href="https://en.wikipedia.org/wiki/Command%E2%80%93query_separation">Command Query Separation</a> principle, it also makes it easier for you to adopt an asynchronous message-based architecture. Done consistently, however, this requires that you approach application design in a way different from a design where you assume that the database is reachable.
+    </p>
+    <p>
+        It may even impact a user interface, because it'd be a good idea to design user experience in such a way that it helps the user have a congruent mental model of how the system works. This may include making the concept of an <em>outbox</em> explicit in the user interface, as it may help users realize that writes happen asynchronously. Most users understand that email works that way, so it's not inconceivable that they may be able to adopt a similar mental model of other applications.
+    </p>
+    <p>
+        The point is that this is an <em>option</em> that you may consider as an architect. Should you always design systems that way? I wouldn't. There's much extra complexity that you have to deal with in order to make asynchronous messaging work: UX, out-of-order messages, dead-letter queues, message versioning, etc. Getting to <a href="https://en.wikipedia.org/wiki/High_availability">five nines</a> is expensive, and often not warranted.
+    </p>
+    <p>
+        The point is rather that what goes in the <em>predictable errors we can't handle</em> category isn't fixed, but context-dependent. Perhaps we should rather name the category <em>predictable errors we've decided not to handle</em>.
+    </p>
+    <h3 id="529bcc700301441aa3337bdb1911f74d">
+        Bugs <a href="#529bcc700301441aa3337bdb1911f74d">#</a>
+    </h3>
+    <p>
+        How about the third category of errors, those we've failed to predict? We also call these <em>bugs</em> or <em>defects</em>. By definition, we only learn about them when they manifest. As soon as they become apparent, however, they fall into one of the other categories. If an error occurs once, it may occur again. It is now up to you to decide what to do about it.
+    </p>
+    <p>
+        I usually consider <a href="/2023/01/23/agilean">errors as stop-the-line-issues</a>, so I'd be inclined to immediately address them. On they other hand, if you don't do that, you've implicitly decided to put them in the category of predictable errors that you've decided not to handle.
+    </p>
+    <p>
+        We don't intentionally write bugs; there will always be some of those around. On the other hand, various practices help reducing them: Test-driven development, code reviews, property-based testing, but also up-front design.
+    </p>
+    <h3 id="4f0b84e839d54f16af37d0295140dc17">
+        Error-free code <a href="#4f0b84e839d54f16af37d0295140dc17">#</a>
+    </h3>
+    <p>
+        Do consider explicitly how code may fail.
+    </p>
+    <p>
+        Despite the title of this section, there's no such thing as error-free code. Still, you can explicitly think about edge cases. For example, how might the following function fail?
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:#2b91af;">TimeSpan</span>&nbsp;<span style="color:#74531f;">Average</span>(<span style="color:blue;">this</span>&nbsp;<span style="color:#2b91af;">IEnumerable</span>&lt;<span style="color:#2b91af;">TimeSpan</span>&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">timeSpans</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">sum</span>&nbsp;=&nbsp;<span style="color:#2b91af;">TimeSpan</span>.Zero;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">count</span>&nbsp;=&nbsp;0;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">foreach</span>&nbsp;(<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">ts</span>&nbsp;<span style="font-weight:bold;color:#8f08c4;">in</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">timeSpans</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">sum</span>&nbsp;<span style="font-weight:bold;color:#74531f;">+=</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">ts</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">count</span>++;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">sum</span>&nbsp;<span style="font-weight:bold;color:#74531f;">/</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">count</span>;
+}</pre>
+    </p>
+    <p>
+        In at least two ways: The input collection may be empty or infinite. I've <a href="/2020/02/03/non-exceptional-averages">already suggested a few ways to address those problems</a>. Some of them are similar to what Michael Feathers calls <a href="https://youtu.be/AnZ0uTOerUI?si=1gJXYFoVlNTSbjEt">unconditional code</a>, in that we may change the <a href="https://en.wikipedia.org/wiki/Domain_of_a_function">domain</a>. Another option, that I didn't cover in the linked article, is to expand the <a href="https://en.wikipedia.org/wiki/Codomain">codomain</a>:
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;TimeSpan?&nbsp;<span style="font-weight:bold;color:#74531f;">Average</span>(<span style="color:blue;">this</span>&nbsp;IReadOnlyCollection&lt;TimeSpan&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">timeSpans</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">if</span>&nbsp;(!timeSpans.Any())
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">null</span>;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">sum</span>&nbsp;=&nbsp;TimeSpan.Zero;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">foreach</span>&nbsp;(var&nbsp;<span style="font-weight:bold;color:#1f377f;">ts</span>&nbsp;<span style="font-weight:bold;color:#8f08c4;">in</span>&nbsp;timeSpans)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;sum&nbsp;+=&nbsp;ts;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;sum&nbsp;/&nbsp;timeSpans.Count;
+}</pre>
+    </p>
+    <p>
+        Now, instead of diminishing the domain, we expand the codomain by allowing the return value to be null. (Interestingly, this is the inverse of <a href="/2021/12/06/the-liskov-substitution-principle-as-a-profunctor">my profunctor description of the Liskov Substitution Principle</a>. I don't yet know what to make of that. See: Just by writing things down, I learn something I hadn't realized before.)
+    </p>
+    <p>
+        This is beneficial in a statically typed language, because such a change makes hidden knowledge explicit. It makes it so explicit that a type checker can point out when we make mistakes. <a href="https://blog.janestreet.com/effective-ml-video/">Make illegal states unrepresentable</a>. <a href="https://en.wikipedia.org/wiki/Poka-yoke">Poka-yoke</a>. A potential run-time is now a compile-time error, and it's firmly in the category of errors that we've predicted and decided to handle.
+    </p>
+    <p>
+        In the above example, we could use the built-in .NET <a href="https://learn.microsoft.com/dotnet/api/system.nullable-1">Nullable&lt;T&gt;</a> (with the <code>?</code> syntactic-sugar alias). In other cases, you may resort to returning a <a href="/2018/03/26/the-maybe-functor">Maybe</a> (AKA <em>option</em>).
+    </p>
+    <h3 id="0855ccbcd46f4c29980a219993293279">
+        Modelling errors <a href="#0855ccbcd46f4c29980a219993293279">#</a>
+    </h3>
+    <p>
+        Explicitly expanding the codomain of functions to signal potential errors is beneficial if you expect the caller to be able to handle the problem. If callers can't handle an error, forcing them to deal with it is just going to make things more difficult. I've never done any professional <a href="https://www.java.com/">Java</a> programming, but I've heard plenty of Java developers complain about checked exceptions. As far as I can tell, the problem in Java isn't so much with the language feature per se, but rather with the exception types that APIs force you to handle.
+    </p>
+    <p>
+        As an example, imagine that every time you call a database API, the compiler forces you to handle an <a href="https://learn.microsoft.com/dotnet/api/system.io.ioexception">IOException</a>. Unless you explicitly architect around it (as outlined above), this is likely to be one of the errors you can predict, but decide not to handle. But if the compiler forces you to handle it, then what do you do? You probably find some workaround that involves re-throwing the exception, or, as I understand that some Java developers do, declare that their own APIs may throw <em>any</em> exception, and by that means just pass the buck. Not helpful.
+    </p>
+    <p>
+        As far as I can tell, (checked) exceptions are equivalent to the <a href="/2018/06/11/church-encoded-either">Either</a> container, also known as <em>Result</em>. We may imagine that instead of throwing exceptions, a function may return an Either value: <em>Right</em> for a right result (explicit mnemonic, there!), and left for an error.
+    </p>
+    <p>
+        It might be tempting to model all error-producing operations as Either-returning, but <a href="https://eiriktsarpalis.wordpress.com/2017/02/19/youre-better-off-using-exceptions/">you're often better off using exceptions</a>. Throw exceptions in those situations that you expect most clients can't recover from. Return <em>left</em> (or <em>error</em>) cases in those situations that you expect that a typical client would want to handle.
+    </p>
+    <p>
+        Again, it's context-specific, so if you're developing a reusable library, there's a balance to strike in API design (or overloads to supply).
+    </p>
+    <h3 id="4ecf10fdb9a842e88aeecf1024cd466a">
+        Most errors are just branches <a href="#4ecf10fdb9a842e88aeecf1024cd466a">#</a>
+    </h3>
+    <p>
+        In many languages, errors are somehow special. Most modern languages include a facility to model errors as exceptions, and special syntax to throw or catch them. (The odd man out may be C, with its reliance on error codes as return values, but that is incredible awkward for other reasons. You may also reasonably argue that C is hardly a modern language.)
+    </p>
+    <p>
+        Even Haskell has exceptions, even though it also has deep language support for <code>Maybe</code> and <code>Either</code>. Fortunately, Haskell APIs <em>tend</em> to only throw exceptions in those cases where average clients are unlikely to handle them: Timeouts, I/O failures, and so on.
+    </p>
+    <p>
+        It's unfortunate that languages treat errors as something exceptional, because this nudges us to make a proper category error: That errors are somehow special, and that we can't use normal coding constructs or API design practices to model them.
+    </p>
+    <p>
+        But you can. That's what <a href="https://youtu.be/AnZ0uTOerUI?si=1gJXYFoVlNTSbjEt">Michael Feathers' presentation is about</a>, and that's what you can do by <a href="https://blog.janestreet.com/effective-ml-video/">making illegal states unrepresentable</a>, or by returning Maybe or Either values.
+    </p>
+    <p>
+        Most errors are just branches in your code; where it diverges from the happy path in order to do something else.
+    </p>
+    <h3 id="a0e442d5e5c842108555236745f23155">
+        Conclusion <a href="#a0e442d5e5c842108555236745f23155">#</a>
+    </h3>
+    <p>
+        This article presents a framework for thinking about software errors. There are those you can predict may happen, and you choose to handle; those you predict may happen, but you choose to ignore; and those that you have not yet predicted: bugs.
+    </p>
+    <p>
+        A little up-front thinking will often help you predict some errors, but I'm not advocating that you foresee all errors. Some errors are programmer errors, and we make those errors because we're human, exactly because we're failing to predict the behaviour of a particular state of the code. Once you discover a bug, however, you have a choice: Do you address it or ignore it?
+    </p>
+    <p>
+        There are error conditions that you may deliberately choose to ignore. This doesn't necessarily make you an irresponsible programmer, but may rather be the result of a deliberate feasibility study. For example, every network operation may fail. How important is it that your application can keep running without the network? Is it worthwhile to make the code so robust that it can handle that situation? Or can you rather live with a few hours of downtime per quarter? If the latter, it may be best to let a human deal with network partitions when they occur.
+    </p>
+    <p>
+        The three error categories I suggest here are context-dependent. You decide which problems to deal with, and which ones to ignore, but apart from that, error-handling doesn't have to be difficult.
+    </p>
+</div>
