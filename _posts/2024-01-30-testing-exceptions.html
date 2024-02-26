@@ -1,0 +1,295 @@
+---
+layout: post
+title: "Testing exceptions"
+description: "Some thoughts on testing past the happy path."
+date: 2024-01-30 7:22 UTC
+tags: [Unit Testing]
+---
+{% include JB/setup %}
+
+<div id="post">
+    <p>
+        <em>{{ page.description }}</em>
+    </p>
+    <p>
+        Test-driven development is a great development technique that enables you to get rapid feedback on design and implementation ideas. It enables you to rapidly move towards a working solution.
+    </p>
+    <p>
+        The emphasis on the <em>happy path</em>, however, can make you forget about all the things that may go wrong. Sooner or later, though, you may realize that the  implementation can fail for a number of reasons, and, wanting to make things more robust, you may want to also subject your error-handling code to automated testing.
+    </p>
+    <p>
+        This doesn't have to be difficult, but can raise some interesting questions. In this article, I'll try to address a few.
+    </p>
+    <h3 id="ead73eb4bc4b45eba0bde0cf61269814">
+        Throwing exceptions with a dynamic mock <a href="#ead73eb4bc4b45eba0bde0cf61269814">#</a>
+    </h3>
+    <p>
+        In <a href="/2023/08/14/replacing-mock-and-stub-with-a-fake#0afe67b375254fe193a3fd10234a1ce9">a question to another article</a> AmirB asks how to use a <a href="http://xunitpatterns.com/Fake%20Object.html">Fake Object</a> to test exceptions. Specifically, since <a href="/2023/11/13/fakes-are-test-doubles-with-contracts">a Fake is a Test Double with a coherent contract</a> it'll be inappropriate to let it throw exceptions that relate to different implementations.
+    </p>
+    <p>
+        Egads, that was quite abstract, so let's consider a concrete example.
+    </p>
+    <p>
+        <a href="/2023/08/14/replacing-mock-and-stub-with-a-fake">The original article</a> that AmirB asked about used this interface as an example:
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">interface</span>&nbsp;<span style="color:#2b91af;">IUserRepository</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;User&nbsp;<span style="font-weight:bold;color:#74531f;">Read</span>(<span style="color:blue;">int</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">userId</span>);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">void</span>&nbsp;<span style="font-weight:bold;color:#74531f;">Create</span>(<span style="color:blue;">int</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">userId</span>);
+}</pre>
+    </p>
+    <p>
+        Granted, this interface is a little odd, but it should be good enough for the present purpose. As AmirB wrote:
+    </p>
+    <blockquote>
+        <p>
+            "In scenarios where dynamic mocks (like Moq) are employed, we can mock a method to throw an exception, allowing us to test the expected behavior of the System Under Test (SUT)."
+        </p>
+        <footer><cite><a href="/2023/08/14/replacing-mock-and-stub-with-a-fake#0afe67b375254fe193a3fd10234a1ce9">AmirB</a></cite></footer>
+    </blockquote>
+    <p>
+        Specifically, this might look like this, using <a href="https://github.com/devlooped/moq">Moq</a>:
+    </p>
+    <p>
+        <pre>[Fact]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;<span style="font-weight:bold;color:#74531f;">CreateThrows</span>()
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">td</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;Mock&lt;IUserRepository&gt;();
+&nbsp;&nbsp;&nbsp;&nbsp;td.Setup(<span style="font-weight:bold;color:#1f377f;">r</span>&nbsp;=&gt;&nbsp;r.Read(1234)).Returns(<span style="color:blue;">new</span>&nbsp;User&nbsp;{&nbsp;Id&nbsp;=&nbsp;0&nbsp;});
+&nbsp;&nbsp;&nbsp;&nbsp;td.Setup(<span style="font-weight:bold;color:#1f377f;">r</span>&nbsp;=&gt;&nbsp;r.Create(It.IsAny&lt;<span style="color:blue;">int</span>&gt;())).Throws(MakeSqlException());
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">sut</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;SomeController(td.Object);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">actual</span>&nbsp;=&nbsp;sut.GetUser(1234);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;Assert.NotNull(actual);
+}</pre>
+    </p>
+    <p>
+        It's just an example, but the point is that since you can make a dynamic mock do anything that you can define in code, you can also use it to simulate database exceptions. This test pretends that the <code>IUserRepository</code> throws a <a href="https://learn.microsoft.com/dotnet/api/system.data.sqlclient.sqlexception">SqlException</a> from the <code>Create</code> method.
+    </p>
+    <p>
+        Perhaps the <code>GetUser</code> implementation now looks like this:
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;User&nbsp;<span style="font-weight:bold;color:#74531f;">GetUser</span>(<span style="color:blue;">int</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">userId</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">u</span>&nbsp;=&nbsp;<span style="color:blue;">this</span>.userRepository.Read(userId);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">if</span>&nbsp;(u.Id&nbsp;==&nbsp;0)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">try</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.userRepository.Create(userId);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">catch</span>&nbsp;(SqlException)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;u;
+}</pre>
+    </p>
+    <p>
+        If you find the example contrived, I don't blame you. The <code>IUserRepository</code> interface, the <code>User</code> class, and the <code>GetUser</code> method that orchestrates them are all degenerate in various ways. I originally created this little code example to discuss <a href="/2013/10/23/mocks-for-commands-stubs-for-queries">data flow verification</a>, and I'm now stretching it beyond any reason. I hope that you can look past that. The point I'm making here is more general, and doesn't hinge on particulars.
+    </p>
+    <h3 id="ed58e2e387234a7ebd3c97a384841d9f">
+        Fake <a href="#ed58e2e387234a7ebd3c97a384841d9f">#</a>
+    </h3>
+    <p>
+        <a href="/2023/08/14/replacing-mock-and-stub-with-a-fake">The article</a> also suggests a <code>FakeUserRepository</code> that is small enough that I can repeat it here.
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">sealed</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">FakeUserRepository</span>&nbsp;:&nbsp;Collection&lt;User&gt;,&nbsp;IUserRepository
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;<span style="font-weight:bold;color:#74531f;">Create</span>(<span style="color:blue;">int</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">userId</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Add(<span style="color:blue;">new</span>&nbsp;User&nbsp;{&nbsp;Id&nbsp;=&nbsp;userId&nbsp;});
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;User&nbsp;<span style="font-weight:bold;color:#74531f;">Read</span>(<span style="color:blue;">int</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">userId</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">user</span>&nbsp;=&nbsp;<span style="color:blue;">this</span>.SingleOrDefault(<span style="font-weight:bold;color:#1f377f;">u</span>&nbsp;=&gt;&nbsp;u.Id&nbsp;==&nbsp;userId);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">if</span>&nbsp;(user&nbsp;==&nbsp;<span style="color:blue;">null</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;User&nbsp;{&nbsp;Id&nbsp;=&nbsp;0&nbsp;};
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;user;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+    </p>
+    <p>
+        The question is how to use something like this when you want to test exceptions? It's possible that this little class may produce <a href="/2024/01/29/error-categories-and-category-errors">errors that I've failed to predict</a>, but it certainly doesn't throw any <code>SqlExceptions</code>!
+    </p>
+    <p>
+        Should we inflate <code>FakeUserRepository</code> by somehow also giving it the capability to throw particular exceptions?
+    </p>
+    <h3 id="c116b036864348b7938dfb6805e0c2dd">
+        Throwing exceptions from Test Doubles <a href="#c116b036864348b7938dfb6805e0c2dd">#</a>
+    </h3>
+    <p>
+        I understand why AmirB asks that question, because it doesn't seem right. As a start, it would go against the <a href="https://en.wikipedia.org/wiki/Single_responsibility_principle">Single Responsibility Principle</a>. The <code>FakeUserRepository</code> would then have more than reason to change: You'd have to change it if the <code>IUserRepository</code> changes, but you'd also have to change it if you wanted to simulate a different error situation.
+    </p>
+    <p>
+        Good coding practices apply to test code as well. Test code is code that you have to read and maintain, so all the good practices that keep production code in good shape also apply to test code. This may include <a href="https://en.wikipedia.org/wiki/SOLID">the SOLID principles</a>, unless you're of the mind that <a href="https://dannorth.net/cupid-for-joyful-coding/">SOLID ought to be a thing of the past</a>.
+    </p>
+    <p>
+        If you really <em>must</em> throw exceptions from a <a href="https://martinfowler.com/bliki/TestDouble.html">Test Double</a>, perhaps a dynamic mock object as shown above is the best option. No-one says that if you use a Fake Object for most of your tests you can't use a dynamic mock library for truly one-off test cases.Or perhaps a one-off Test Double that throws the desired exception.
+    </p>
+    <p>
+        I would, however, consider it a code smell if this happens too often. Not a test smell, but a code smell.
+    </p>
+    <h3 id="302a9e4462744a55974b8fdab6f70054">
+        Is the exception part of the contract? <a href="#302a9e4462744a55974b8fdab6f70054">#</a>
+    </h3>
+    <p>
+        You may ask yourself whether a particular exception type is part of an object's contract. As I always do, when I use the word <em>contract</em>, I refer to a set of invariants, pre-, and postconditions, taking a cue from <a href="/ref/oosc">Object-Oriented Software Construction</a>. See also my video course <a href="/encapsulation-and-solid">Encapsulation and SOLID</a> for more details.
+    </p>
+    <p>
+        You can <em>imply</em> many things about a contract when you have a static type system at your disposal, but there are always rules that you can't express that way. Parts of a contract are implicitly understood, or communicated in other ways. Code comments, <a href="https://en.wikipedia.org/wiki/Docstring">docstrings</a>, or similar, are good options.
+    </p>
+    <p>
+        What may you infer from the <code>IUserRepository</code> interface? What should you <em>not</em> infer?
+    </p>
+    <p>
+        I'd expect the <code>Read</code> method to return a <code>User</code> object. This code example hails us <a href="/2013/10/23/mocks-for-commands-stubs-for-queries">from 2013</a>, before C# had <a href="https://learn.microsoft.com/dotnet/csharp/nullable-references">nullable reference types</a>. Around that time I'd begun using <a href="/2018/03/26/the-maybe-functor">Maybe</a> to signal that the return value might be missing. This is a <em>convention</em>, so the reader needs to be aware of it in order to correctly infer that part of the contract. Since the <code>Read</code> method does <em>not</em> return <code>Maybe&lt;User&gt;</code> I might infer that a non-null <code>User</code> object is guaranteed; that's a post-condition.
+    </p>
+    <p>
+        These days, I'd also use <a href="/2020/07/27/task-asynchronous-programming-as-an-io-surrogate">asynchronous APIs to hint that I/O is involved</a>, but again, the example is so old and simplified that this isn't the case here. Still, regardless of how this is communicated to the reader, if an interface (or base class) is intended for I/O, we may expect it to fail at times. In most languages, such errors manifest as exceptions.
+    </p>
+    <p>
+        At least two questions arise from such deliberations:
+    </p>
+    <ul>
+        <li>Which exception types may the methods throw?</li>
+        <li>Can you even handle such exceptions?</li>
+    </ul>
+    <p>
+        Should <code>SqlException</code> even be part of the contract? Isn't that an implementation detail?
+    </p>
+    <p>
+        The <code>FakeUserRepository</code> class neither uses SQL Server nor throws <code>SqlExceptions</code>. You may imagine other implementations that use a document database, or even just another relational database than SQL Server (Oracle, MySQL, PostgreSQL, etc.). Those wouldn't throw <code>SqlExceptions</code>, but perhaps other exception types.
+    </p>
+    <p>
+        According to the <a href="https://en.wikipedia.org/wiki/Dependency_inversion_principle">Dependency Inversion Principle</a>,
+    </p>
+    <blockquote>
+        <p>
+            "Abstractions should not depend upon details. Details should depend upon abstractions."
+        </p>
+        <footer><cite>Robert C. Martin, <a href="/ref/appp">Agile Principles, Patterns, and Practices in C#</a></cite></footer>
+    </blockquote>
+    <p>
+        If we make <code>SqlException</code> part of the contract, an implementation detail becomes part of the contract. Not only that: With an implementation like the above <code>GetUser</code> method, which catches <code>SqlException</code>, we've also violated the <a href="https://en.wikipedia.org/wiki/Liskov_substitution_principle">Liskov Substitution Principle</a>. If you injected another implementation, one that throws a different type of exception, the code would no longer work as intended.
+    </p>
+    <p>
+        Loosely coupled code shouldn't look like that.
+    </p>
+    <p>
+        Many specific exceptions are of <a href="/2024/01/29/error-categories-and-category-errors">a kind that you can't handle anyway</a>. On the other hand, if you do decide to handle particular error scenarios, make it part of the contract, or, as Michael Feathers puts it, <a href="https://youtu.be/AnZ0uTOerUI?si=1gJXYFoVlNTSbjEt">extend the domain</a>.
+    </p>
+    <h3 id="ed86f41415724219a0afbf9d669ec1b7">
+        Integration testing <a href="#ed86f41415724219a0afbf9d669ec1b7">#</a>
+    </h3>
+    <p>
+        How should we unit test specific exception? <a href="https://en.wikipedia.org/wiki/Mu_(negative)">Mu</a>, we shouldn't.
+    </p>
+    <blockquote>
+        <p>
+            "Personally, I avoid using try-catch blocks in repositories or controllers and prefer handling exceptions in middleware (e.g., ErrorHandler). In such cases, I write separate unit tests for the middleware. Could this be a more fitting approach?"
+        </p>
+        <footer><cite><a href="/2023/08/14/replacing-mock-and-stub-with-a-fake#0afe67b375254fe193a3fd10234a1ce9">AmirB</a></cite></footer>
+    </blockquote>
+    <p>
+        That is, I think, an excellent approach to those exceptions that that you've decided to not handle explicitly. Such middleware would typically log or otherwise notify operators that a problem has arisen. You could also write some general-purpose middleware that performs retries or implements the <a href="https://martinfowler.com/bliki/CircuitBreaker.html">Circuit Breaker</a> pattern, but reusable libraries that do that already exist. Consider using one.
+    </p>
+    <p>
+        Still, you may have decided to implement a particular feature by leveraging a capability of a particular piece of technology, and the code you intent to write is complicated enough, or important enough, that you'd like to have good test coverage. How do you do that?
+    </p>
+    <p>
+        I'd suggest an integration test.
+    </p>
+    <p>
+        I don't have a good example lying around that involves throwing specific exceptions, but something similar may be of service. The example code base that accompanies my book <a href="/code-that-fits-in-your-head">Code That Fits in Your Head</a> pretends to be an online restaurant reservation system. Two concurrent clients may compete for the last table on a particular date; a typical race condition.
+    </p>
+    <p>
+        There are more than one way to address such a concern. As implied in <a href="/2024/01/29/error-categories-and-category-errors">a previous article</a>, you may decide to rearchitect the entire application to be able to handle such edge cases in a robust manner. For the purposes of the book's example code base, however, I considered a <em>lock-free architecture</em> out of scope. Instead, I had in mind dealing with that issue by taking advantage of .NET and SQL Server's support for lightweight transactions via a <a href="https://learn.microsoft.com/dotnet/api/system.transactions.transactionscope">TransactionScope</a>. While this is a handy solution, it's utterly dependent on the technology stack. It's a good example of an implementation detail that I'd rather not expose to a unit test.
+    </p>
+    <p>
+        Instead, I wrote a <a href="/2021/01/25/self-hosted-integration-tests-in-aspnet">self-hosted integration test</a> that runs against a real SQL Server instance (automatically deployed and configured on demand). It tests <em>behaviour</em> rather than implementation details:
+    </p>
+    <p>
+        <pre>[Fact]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">async</span>&nbsp;Task&nbsp;<span style="font-weight:bold;color:#74531f;">NoOverbookingRace</span>()
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">start</span>&nbsp;=&nbsp;DateTimeOffset.UtcNow;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">timeOut</span>&nbsp;=&nbsp;TimeSpan.FromSeconds(30);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">i</span>&nbsp;=&nbsp;0;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">while</span>&nbsp;(DateTimeOffset.UtcNow&nbsp;-&nbsp;start&nbsp;&lt;&nbsp;timeOut)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">await</span>&nbsp;PostTwoConcurrentLiminalReservations(start.DateTime.AddDays(++i));
+}
+ 
+<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:blue;">async</span>&nbsp;Task&nbsp;<span style="font-weight:bold;color:#74531f;">PostTwoConcurrentLiminalReservations</span>(DateTime&nbsp;<span style="font-weight:bold;color:#1f377f;">date</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;date&nbsp;=&nbsp;date.Date.AddHours(18.5);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">using</span>&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">service</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;RestaurantService();
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">task1</span>&nbsp;=&nbsp;service.PostReservation(<span style="color:blue;">new</span>&nbsp;ReservationDtoBuilder()
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.WithDate(date)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.WithQuantity(10)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.Build());
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">task2</span>&nbsp;=&nbsp;service.PostReservation(<span style="color:blue;">new</span>&nbsp;ReservationDtoBuilder()
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.WithDate(date)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.WithQuantity(10)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.Build());
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">actual</span>&nbsp;=&nbsp;<span style="color:blue;">await</span>&nbsp;Task.WhenAll(task1,&nbsp;task2);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;Assert.Single(actual,&nbsp;<span style="font-weight:bold;color:#1f377f;">msg</span>&nbsp;=&gt;&nbsp;msg.IsSuccessStatusCode);
+&nbsp;&nbsp;&nbsp;&nbsp;Assert.Single(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;actual,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">msg</span>&nbsp;=&gt;&nbsp;msg.StatusCode&nbsp;==&nbsp;HttpStatusCode.InternalServerError);
+}</pre>
+    </p>
+    <p>
+        This test attempts to make two concurrent reservations for ten people. This is also the maximum capacity of the restaurant: It's impossible to seat twenty people. We'd like for one of the requests to win that race, while the server should reject the loser.
+    </p>
+    <p>
+        This test is only concerned with the behaviour that clients can observe, and since this code base contains hundreds of other tests that inspect HTTP response messages, this one only looks at the status codes.
+    </p>
+    <p>
+        The implementation handles the potential overbooking scenario like this:
+    </p>
+    <p>
+        <pre><span style="color:blue;">private</span>&nbsp;<span style="color:blue;">async</span>&nbsp;Task&lt;ActionResult&gt;&nbsp;<span style="font-weight:bold;color:#74531f;">TryCreate</span>(Restaurant&nbsp;<span style="font-weight:bold;color:#1f377f;">restaurant</span>,&nbsp;Reservation&nbsp;<span style="font-weight:bold;color:#1f377f;">reservation</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">using</span>&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">scope</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;TransactionScope(TransactionScopeAsyncFlowOption.Enabled);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">reservations</span>&nbsp;=&nbsp;<span style="color:blue;">await</span>&nbsp;Repository.ReadReservations(restaurant.Id,&nbsp;reservation.At);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">now</span>&nbsp;=&nbsp;Clock.GetCurrentDateTime();
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">if</span>&nbsp;(!restaurant.MaitreD.WillAccept(now,&nbsp;reservations,&nbsp;reservation))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;NoTables500InternalServerError();
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">await</span>&nbsp;Repository.Create(restaurant.Id,&nbsp;reservation);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;scope.Complete();
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;Reservation201Created(restaurant.Id,&nbsp;reservation);
+}</pre>
+    </p>
+    <p>
+        Notice the <code>TransactionScope</code>.
+    </p>
+    <p>
+        I'm under the illusion that I could radically change this implementation detail without breaking the above test. Granted, unlike <a href="/2023/09/04/decomposing-ctfiyhs-sample-code-base">another experiment</a>, this hypothesis isn't one I've put to the test.
+    </p>
+    <h3 id="9659f21863e74c288d5c2d36534eaa37">
+        Conclusion <a href="#9659f21863e74c288d5c2d36534eaa37">#</a>
+    </h3>
+    <p>
+        How does one automatically test error branches? Most unit testing frameworks come with APIs that makes it easy to verify that specific exceptions were thrown, so that's not the hard part. If a particular exception is part of the System Under Test's contract, just test it like that.
+    </p>
+    <p>
+        On the other hand, when it comes to objects composed with other objects, implementation details may easily leak through in the shape of specific exception types. I'd think twice before writing a test that verifies whether a piece of client code (such as the above <code>SomeController</code>) handles a particular exception type (such as <code>SqlException</code>).
+    </p>
+    <p>
+        If such a test is difficult to write because all you have is a Fake Object (e.g. <code>FakeUserRepository</code>), that's only good. The rapid feedback furnished by test-driven development strikes again. Listen to your tests.
+    </p>
+    <p>
+        You should probably not write that test at all, because there seems to be an issue with the planned structure of the code. Address that problem.
+    </p>
+</div>
