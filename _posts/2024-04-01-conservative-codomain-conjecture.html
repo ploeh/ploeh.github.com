@@ -1,0 +1,487 @@
+---
+layout: post
+title: "Conservative codomain conjecture"
+description: "An API design heuristic."
+date: 2024-04-01 15:09 UTC
+tags: [Software Design, F#, Haskell]
+image: "/content/binary/pipe-partially-filled-with-liquid.png"
+image_alt: "Pipe partially filled with liquid."
+---
+{% include JB/setup %}
+
+<div id="post">
+    <p>
+        <em>{{ page.description }}</em>
+    </p>
+    <p>
+        For a while now, I've been wondering whether, in the language of <a href="https://en.wikipedia.org/wiki/Robustness_principle">Postel's law</a>, one should favour being liberal in what one accepts over being conservative in what one sends. I've recently, however, reached the tentative conclusion that it may be a good idea favouring being conservative in what one sends.
+    </p>
+    <p>
+        Good API design explicitly considers <em>contracts</em>. What are the preconditions for invoking an operation? What are the postconditions? Are there any invariants? These questions are relevant far beyond object-oriented design. They are <a href="https://blog.ploeh.dk/2022/10/24/encapsulation-in-functional-programming/">equally important in Functional Programming</a>, as well as <a href="">in service-oriented design</a>.
+    </p>
+    <p>
+        If you have a type system at your disposal, you can often model pre- and postconditions as types. In practice, however, it often turns out that there's more than one way of doing that. You can model an additional precondition with an input type, but you can also model potential errors as a return type. Which option is best?
+    </p>
+    <p>
+        That's what this article is about, and my conjecture is that constraining the input type may be preferable, thus being conservative about what is returned.
+    </p>
+    <h3 id="7ef0610940fb4670b7cf12a21bdd725f">
+        An average example <a href="#7ef0610940fb4670b7cf12a21bdd725f">#</a>
+    </h3>
+    <p>
+        That's all quite abstract, so for the rest of this article, I'll discuss this kind of problem in the context of an example. We'll revisit the <a href="/2020/02/03/non-exceptional-averages">good old example of calculating an average value</a>. This example, however, is only a placeholder for any kind of API design problem. This article is only superficially about designing an API for calculating an <a href="https://en.wikipedia.org/wiki/Average">average</a>. More generally, this is about API design. I like the average example because it's easy to follow, and it does exhibit some characteristics that you can hopefully extrapolate from.
+    </p>
+    <p>
+        In short, what is the contract of the following method?
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:#2b91af;">TimeSpan</span>&nbsp;<span style="color:#74531f;">Average</span>(<span style="color:blue;">this</span>&nbsp;<span style="color:#2b91af;">IEnumerable</span>&lt;<span style="color:#2b91af;">TimeSpan</span>&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">timeSpans</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">sum</span>&nbsp;=&nbsp;<span style="color:#2b91af;">TimeSpan</span>.Zero;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">count</span>&nbsp;=&nbsp;0;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">foreach</span>&nbsp;(<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">ts</span>&nbsp;<span style="font-weight:bold;color:#8f08c4;">in</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">timeSpans</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">sum</span>&nbsp;<span style="font-weight:bold;color:#74531f;">+=</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">ts</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">count</span>++;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">sum</span>&nbsp;<span style="font-weight:bold;color:#74531f;">/</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">count</span>;
+}</pre>
+    </p>
+    <p>
+        What are the preconditions? What are the postconditions? Are there any invariants?
+    </p>
+    <p>
+        Before I answer these questions, I'll offer equivalent code in two other languages. Here it is in <a href="https://fsharp.org/">F#</a>:
+    </p>
+    <p>
+        <pre>let&nbsp;average&nbsp;(timeSpans&nbsp;:&nbsp;TimeSpan&nbsp;seq)&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;timeSpans
+&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;Seq.averageBy&nbsp;(_.Ticks&nbsp;&gt;&gt;&nbsp;double)
+&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;int64
+&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;TimeSpan.FromTicks</pre>
+    </p>
+    <p>
+        And in <a href="https://www.haskell.org/">Haskell</a>:
+    </p>
+    <p>
+        <pre><span style="color:#2b91af;">average</span>&nbsp;<span style="color:blue;">::</span>&nbsp;(<span style="color:blue;">Fractional</span>&nbsp;a,&nbsp;<span style="color:blue;">Foldable</span>&nbsp;t)&nbsp;<span style="color:blue;">=&gt;</span>&nbsp;t&nbsp;a&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;a
+average&nbsp;xs&nbsp;=&nbsp;<span style="color:blue;">sum</span>&nbsp;xs&nbsp;/&nbsp;<span style="color:blue;">fromIntegral</span>&nbsp;(<span style="color:blue;">length</span>&nbsp;xs)</pre>
+    </p>
+    <p>
+        These three examples have somewhat different implementations, but the same externally observable behaviour. What is the contract?
+    </p>
+    <p>
+        It seems straightforward: If you input a sequence of values, you get the average of all of those values. Are there any preconditions? Yes, the sequence can't be empty. Given an empty sequence, all three implementations throw an exception. (The Haskell version is a little more nuanced than that, but given an empty list of <a href="https://hackage.haskell.org/package/time/docs/Data-Time-Clock.html#t:NominalDiffTime">NominalDiffTime</a>, it does throw an exception.)
+    </p>
+    <p>
+        Any other preconditions? At least one more: The sequence must be finite. All three functions allow infinite streams as input, but if given one, they will fail to return an average.
+    </p>
+    <p>
+        Are there any postconditions? I can only think of a statement that relates to the preconditions: <em>If</em> the preconditions are fulfilled, the functions will return the correct average value (within the precision allowed by floating-point calculations).
+    </p>
+    <p>
+        All of this, however, is just warming up. We've <a href="/2020/02/03/non-exceptional-averages">been over this ground before</a>.
+    </p>
+    <h3 id="7922b269c9924877abe993cb282440a8">
+        Modelling contracts <a href="#7922b269c9924877abe993cb282440a8">#</a>
+    </h3>
+    <p>
+        Keep in mind that this <em>average</em> function is just an example. Think of it as a stand-in for a procedure that's much more complicated. Think of the most complicated operation in your code base.
+    </p>
+    <p>
+        Not only do real code bases have many complicated operations. Each comes with its own contract, different from the other operations, and if the team isn't explicitly thinking in terms of contracts, these contracts may change over time, as the team adds new features and fixes bugs.
+    </p>
+    <p>
+        It's difficult work to keep track of all those contracts. As I argue in <a href="/2021/06/14/new-book-code-that-fits-in-your-head">Code That Fits in Your Head</a>, it helps if you can automate away some of that work. One way is having good test coverage. Another is to leverage a static type system, if you're fortunate enough to work in a language that has one. As I've <em>also</em> already covered, <a href="/2022/08/22/can-types-replace-validation">you can't replace all rules with types</a>, but it doesn't mean that using the type system is ineffectual. Quite the contrary. Every part of a contract that you can offload to the type system frees up your brain to think about something else - something more important, hopefully.
+    </p>
+    <p>
+        Sometimes there's no good way to to model a precondition with a type, or <a href="https://buttondown.email/hillelwayne/archive/making-illegal-states-unrepresentable/">perhaps it's just too awkward</a>. At other times, there's really only a single way to address a concern. When it comes to the precondition that you can't pass an infinite sequence to the <em>Average</em> function, <a href="/2020/02/03/non-exceptional-averages">change the type so that it takes some finite collection</a> instead. That's not what this article is about, though.
+    </p>
+    <p>
+        Assuming that you've already dealt with the infinite-sequence issue, how do you address the other precondition?
+    </p>
+    <h3 id="03c13848cbd54058a3dfed204bc85878">
+        Error-handling <a href="#03c13848cbd54058a3dfed204bc85878">#</a>
+    </h3>
+    <p>
+        A typical object-oriented move is to introduce a Guard Clause:
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:#2b91af;">TimeSpan</span>&nbsp;<span style="color:#74531f;">Average</span>(<span style="color:blue;">this</span>&nbsp;<span style="color:#2b91af;">IReadOnlyCollection</span>&lt;<span style="color:#2b91af;">TimeSpan</span>&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">timeSpans</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">if</span>&nbsp;(!<span style="font-weight:bold;color:#1f377f;">timeSpans</span>.<span style="font-weight:bold;color:#74531f;">Any</span>())
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">throw</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">ArgumentOutOfRangeException</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">nameof</span>(<span style="font-weight:bold;color:#1f377f;">timeSpans</span>),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#a31515;">&quot;Can&#39;t&nbsp;calculate&nbsp;the&nbsp;average&nbsp;of&nbsp;an&nbsp;empty&nbsp;collection.&quot;</span>);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">sum</span>&nbsp;=&nbsp;<span style="color:#2b91af;">TimeSpan</span>.Zero;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">foreach</span>&nbsp;(<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">ts</span>&nbsp;<span style="font-weight:bold;color:#8f08c4;">in</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">timeSpans</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">sum</span>&nbsp;<span style="font-weight:bold;color:#74531f;">+=</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">ts</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">sum</span>&nbsp;<span style="font-weight:bold;color:#74531f;">/</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">timeSpans</span>.Count;
+}</pre>
+    </p>
+    <p>
+        You could do the same in F#:
+    </p>
+    <p>
+        <pre>let&nbsp;average&nbsp;(timeSpans&nbsp;:&nbsp;TimeSpan&nbsp;seq)&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;if&nbsp;Seq.isEmpty&nbsp;timeSpans&nbsp;then
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;raise&nbsp;(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;ArgumentOutOfRangeException(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;nameof&nbsp;timeSpans,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&quot;Can&#39;t&nbsp;calculate&nbsp;the&nbsp;average&nbsp;of&nbsp;an&nbsp;empty&nbsp;collection.&quot;))
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;timeSpans
+&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;Seq.averageBy&nbsp;(_.Ticks&nbsp;&gt;&gt;&nbsp;double)
+&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;int64
+&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;TimeSpan.FromTicks</pre>
+    </p>
+    <p>
+        You <em>could</em> also replicate such behaviour in Haskell, but it'd be highly unidiomatic. Instead, I'd rather discuss one <a href="/2015/08/03/idiomatic-or-idiosyncratic">idiomatic</a> solution in Haskell, and then back-port it.
+    </p>
+    <p>
+        While you can throw exceptions in Haskell, you typically handle <a href="/2024/01/29/error-categories-and-category-errors">predictable errors</a> with a <a href="https://en.wikipedia.org/wiki/Tagged_union">sum type</a>. Here's a version of the Haskell function equivalent to the above C# code:
+    </p>
+    <p>
+        <pre><span style="color:#2b91af;">average</span>&nbsp;<span style="color:blue;">::</span>&nbsp;(<span style="color:blue;">Foldable</span>&nbsp;t,&nbsp;<span style="color:blue;">Fractional</span>&nbsp;a)&nbsp;<span style="color:blue;">=&gt;</span>&nbsp;t&nbsp;a&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:#2b91af;">Either</span>&nbsp;<span style="color:#2b91af;">String</span>&nbsp;a
+average&nbsp;xs&nbsp;=
+&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;<span style="color:blue;">null</span>&nbsp;xs
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">then</span>&nbsp;Left&nbsp;<span style="color:#a31515;">&quot;Can&#39;t&nbsp;calculate&nbsp;the&nbsp;average&nbsp;of&nbsp;an&nbsp;empty&nbsp;collection.&quot;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">else</span>&nbsp;Right&nbsp;$&nbsp;<span style="color:blue;">sum</span>&nbsp;xs&nbsp;/&nbsp;<span style="color:blue;">fromIntegral</span>&nbsp;(<span style="color:blue;">length</span>&nbsp;xs)
+</pre>
+    </p>
+    <p>
+        For the readers that don't know the Haskell <a href="https://hackage.haskell.org/package/base">base</a> library by heart, <a href="https://hackage.haskell.org/package/base/docs/Data-List.html#v:null">null</a> is a predicate that checks whether or not a collection is empty. It has nothing to do with <a href="https://en.wikipedia.org/wiki/Null_pointer">null pointers</a>.
+    </p>
+    <p>
+        This variation returns an <a href="/2018/06/11/church-encoded-either">Either</a> value. In practice you shouldn't just return a <code>String</code> as the error value, but rather a strongly-typed value that other code can deal with in a robust manner.
+    </p>
+    <p>
+        On the other hand, in this particular example, there's really only one error condition that the function is able to detect, so you often see a variation where instead of a single error message, such a function just doesn't return anything:
+    </p>
+    <p>
+        <pre><span style="color:#2b91af;">average</span>&nbsp;<span style="color:blue;">::</span>&nbsp;(<span style="color:blue;">Foldable</span>&nbsp;t,&nbsp;<span style="color:blue;">Fractional</span>&nbsp;a)&nbsp;<span style="color:blue;">=&gt;</span>&nbsp;t&nbsp;a&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:#2b91af;">Maybe</span>&nbsp;a
+average&nbsp;xs&nbsp;=&nbsp;<span style="color:blue;">if</span>&nbsp;<span style="color:blue;">null</span>&nbsp;xs&nbsp;<span style="color:blue;">then</span>&nbsp;Nothing&nbsp;<span style="color:blue;">else</span>&nbsp;Just&nbsp;$&nbsp;<span style="color:blue;">sum</span>&nbsp;xs&nbsp;/&nbsp;<span style="color:blue;">fromIntegral</span>&nbsp;(<span style="color:blue;">length</span>&nbsp;xs)
+</pre>
+    </p>
+    <p>
+        This iteration of the function returns a <a href="/2018/03/26/the-maybe-functor">Maybe</a> value, indicating that a return value may or may not be present.
+    </p>
+    <h3 id="ccc6a2a1804740a8942feee3b637db90">
+        Liberal domain <a href="#ccc6a2a1804740a8942feee3b637db90">#</a>
+    </h3>
+    <p>
+        We can back-port this design to F#, where I'd also consider it idiomatic:
+    </p>
+    <p>
+        <pre>let&nbsp;average&nbsp;(timeSpans&nbsp;:&nbsp;IReadOnlyCollection&lt;TimeSpan&gt;)&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;if&nbsp;timeSpans.Count&nbsp;=&nbsp;0&nbsp;then&nbsp;None&nbsp;else
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;timeSpans
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;Seq.averageBy&nbsp;(_.Ticks&nbsp;&gt;&gt;&nbsp;double)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;int64
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;TimeSpan.FromTicks
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;Some</pre>
+    </p>
+    <p>
+        This version returns a <code>TimeSpan option</code> rather than just a <code>TimeSpan</code>. While this may seem to put the burden of error-handling on the caller, nothing has really changed. The fundamental situation is the same. Now the function is just being more <a href="https://peps.python.org/pep-0020/">explicit</a> (more honest, you could say) about the pre- and postconditions. The type system also now insists that you deal with the possibility of error, rather than just hoping that the problem doesn't occur.
+    </p>
+    <p>
+        In C# you can <a href="/2024/01/29/error-categories-and-category-errors">expand the codomain by returning a nullable TimeSpan value</a>, but such an option may not always be available at the language level. Keep in mind that the <code>Average</code> method is just an example standing in for something that may be more complicated. If the original return type is a <a href="https://learn.microsoft.com/dotnet/csharp/language-reference/keywords/reference-types">reference type</a> rather than a <a href="https://learn.microsoft.com/dotnet/csharp/language-reference/builtin-types/value-types">value type</a>, only recent versions of C# allows statically-checked <a href="https://learn.microsoft.com/dotnet/csharp/nullable-references">nullable reference types</a>. What if you're working in an older version of C#, or another language that doesn't have that feature?
+    </p>
+    <p>
+        In that case, you may need to introduce an explicit <a href="/2018/03/26/the-maybe-functor">Maybe</a> class and return that:
+    </p>
+    <p>
+        <pre>public&nbsp;static&nbsp;Maybe&lt;TimeSpan&gt;&nbsp;Average(this&nbsp;IReadOnlyCollection&lt;TimeSpan&gt;&nbsp;timeSpans)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;if&nbsp;(timeSpans.Count&nbsp;==&nbsp;0)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;return&nbsp;new&nbsp;Maybe&lt;TimeSpan&gt;();
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;var&nbsp;sum&nbsp;=&nbsp;TimeSpan.Zero;
+&nbsp;&nbsp;&nbsp;&nbsp;foreach&nbsp;(var&nbsp;ts&nbsp;in&nbsp;timeSpans)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;sum&nbsp;+=&nbsp;ts;
+&nbsp;&nbsp;&nbsp;&nbsp;return&nbsp;new&nbsp;Maybe&lt;TimeSpan&gt;(sum&nbsp;/&nbsp;timeSpans.Count);
+}</pre>
+    </p>
+    <p>
+        Two things are going on here; one is obvious while the other is more subtle. Clearly, all of these alternatives change the static type of the function in order to make the pre- and postconditions more explicit. So far, they've all been loosening the <a href="https://en.wikipedia.org/wiki/Codomain">codomain</a> (the return <a href="/2021/11/15/types-as-sets">type</a>). This suggests a connection with <a href="https://en.wikipedia.org/wiki/Robustness_principle">Postel's law</a>: <em>be conservative in what you send, be liberal in what you accept</em>. These variations are all liberal in what they accept, but it seems that the API design pays the price by also having to widen the set of possible return values. In other words, such designs aren't conservative in what they send.
+    </p>
+    <p>
+        Do we have other options?
+    </p>
+    <h3 id="4fb2cc5775c44f80965cacbc37825f27">
+        Conservative codomain <a href="#4fb2cc5775c44f80965cacbc37825f27">#</a>
+    </h3>
+    <p>
+        Is it possible to instead design the API in such a way that it's conservative in what it returns? Ideally, we'd like it to guarantee that it returns a value. This is possible by making the preconditions even more explicit. I've also <a href="/2020/02/03/non-exceptional-averages">covered that alternative already</a>, so I'm just going to repeat the C# code here without further comments:
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:#2b91af;">TimeSpan</span>&nbsp;<span style="color:#74531f;">Average</span>(<span style="color:blue;">this</span>&nbsp;<span style="color:#2b91af;">NotEmptyCollection</span>&lt;<span style="color:#2b91af;">TimeSpan</span>&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">timeSpans</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">sum</span>&nbsp;=&nbsp;<span style="font-weight:bold;color:#1f377f;">timeSpans</span>.Head;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">foreach</span>&nbsp;(<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">ts</span>&nbsp;<span style="font-weight:bold;color:#8f08c4;">in</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">timeSpans</span>.Tail)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">sum</span>&nbsp;<span style="font-weight:bold;color:#74531f;">+=</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">ts</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">sum</span>&nbsp;<span style="font-weight:bold;color:#74531f;">/</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">timeSpans</span>.Count;
+}</pre>
+    </p>
+    <p>
+        This variation promotes another precondition to a type. The precondition that the input collection mustn't be empty can be explicitly modelled with a type. This enables us to be conservative about the codomain. The method now guarantees that it will return a value.
+    </p>
+    <p>
+        This idea is also easily ported to F#:
+    </p>
+    <p>
+        <pre>type&nbsp;NonEmpty&lt;&#39;a&gt;&nbsp;=&nbsp;{&nbsp;Head&nbsp;:&nbsp;&#39;a;&nbsp;Tail&nbsp;:&nbsp;IReadOnlyCollection&lt;&#39;a&gt;&nbsp;}
+ 
+let&nbsp;average&nbsp;(timeSpans&nbsp;:&nbsp;NonEmpty&lt;TimeSpan&gt;)&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;[&nbsp;timeSpans.Head&nbsp;]&nbsp;@&nbsp;List.ofSeq&nbsp;timeSpans.Tail
+&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;List.averageBy&nbsp;(_.Ticks&nbsp;&gt;&gt;&nbsp;double)
+&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;int64
+&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;TimeSpan.FromTicks</pre>
+    </p>
+    <p>
+        The <code>average</code> function now takes a <code>NonEmpty</code> collection as input, and always returns a proper <code>TimeSpan</code> value.
+    </p>
+    <p>
+        Haskell already comes with a built-in <a href="https://hackage.haskell.org/package/base/docs/Data-List-NonEmpty.html">NonEmpty</a> collection type, and while it oddly doesn't come with an <code>average</code> function, it's easy enough to write:
+    </p>
+    <p>
+        <pre><span style="color:blue;">import</span>&nbsp;<span style="color:blue;">qualified</span>&nbsp;Data.List.NonEmpty&nbsp;<span style="color:blue;">as</span>&nbsp;NE
+
+<span style="color:#2b91af;">average</span>&nbsp;<span style="color:blue;">::</span>&nbsp;<span style="color:blue;">Fractional</span>&nbsp;a&nbsp;<span style="color:blue;">=&gt;</span>&nbsp;<span style="color:blue;">NE</span>.<span style="color:blue;">NonEmpty</span>&nbsp;a&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;a
+average&nbsp;xs&nbsp;=&nbsp;<span style="color:blue;">sum</span>&nbsp;xs&nbsp;/&nbsp;<span style="color:blue;">fromIntegral</span>&nbsp;(NE.<span style="color:blue;">length</span>&nbsp;xs)
+</pre>
+    </p>
+    <p>
+        You can find a recent example of using a variation of that function <a href="/2024/04/08/extracting-curve-coordinates-from-a-bitmap">here</a>.
+    </p>
+    <h3 id="6f42a53e7c5f4ddb994e85c9d15ec37a">
+        Choosing between the two alternatives <a href="#6f42a53e7c5f4ddb994e85c9d15ec37a">#</a>
+    </h3>
+    <p>
+        While Postel's law recommends having liberal domains and conservative codomains, in the case of the <em>average</em> API, we can't have both. If we design the API with a liberal input type, the output type has to be liberal as well. If we design with a restrictive input type, the output can be guaranteed. In my experience, you'll often find yourself in such a conundrum. The <em>average</em> API examined in this article is just an example, while the problem occurs often.
+    </p>
+    <p>
+        Given such a choice, what should you choose? Is it even possible to give general guidance on this sort of problem?
+    </p>
+    <p>
+        For decades, I considered such a choice a toss-up. After all, these solutions seem to be equivalent. Perhaps even isomorphic?
+    </p>
+    <p>
+        When I recently began to explore this isomorphism more closely, it dawned on me that there's a small asymmetry in the isomorphism that favours the <em>conservative codomain</em> option.
+    </p>
+    <h3 id="976ac8645de44d51a5796be7481b1c12">
+        Isomorphism <a href="#976ac8645de44d51a5796be7481b1c12">#</a>
+    </h3>
+    <p>
+        An <a href="https://en.wikipedia.org/wiki/Isomorphism">isomorphism</a> is a two-way translation between two representations. You can go back and forth between the two alternatives without loss of information.
+    </p>
+    <p>
+        Is this possible with the two alternatives outlined above? For example, if you have the conservative version, can create the liberal alternative? Yes, you can:
+    </p>
+    <p>
+        <pre><span style="color:#2b91af;">average&#39;</span>&nbsp;<span style="color:blue;">::</span>&nbsp;<span style="color:blue;">Fractional</span>&nbsp;a&nbsp;<span style="color:blue;">=&gt;</span>&nbsp;[a]&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:#2b91af;">Maybe</span>&nbsp;a
+average&#39;&nbsp;=&nbsp;<span style="color:blue;">fmap</span>&nbsp;average&nbsp;.&nbsp;NE.nonEmpty</pre>
+    </p>
+    <p>
+        Not surprisingly, this is trivial in Haskell. If you have the conservative version, you can just map it over a more liberal input.
+    </p>
+    <p>
+        In F# it looks like this:
+    </p>
+    <p>
+        <pre>module&nbsp;NonEmpty&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;let&nbsp;tryOfSeq&nbsp;xs&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;if&nbsp;Seq.isEmpty&nbsp;xs&nbsp;then&nbsp;None
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;else&nbsp;Some&nbsp;{&nbsp;Head&nbsp;=&nbsp;Seq.head&nbsp;xs;&nbsp;Tail&nbsp;=&nbsp;Seq.tail&nbsp;xs&nbsp;|&gt;&nbsp;List.ofSeq&nbsp;}
+ 
+let&nbsp;average&#39;&nbsp;(timeSpans&nbsp;:&nbsp;IReadOnlyCollection&lt;TimeSpan&gt;)&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;NonEmpty.tryOfSeq&nbsp;timeSpans&nbsp;|&gt;&nbsp;Option.map&nbsp;average</pre>
+    </p>
+    <p>
+        In C# we can create a liberal overload that calls the conservative method:
+    </p>
+    <p>
+        <pre>public&nbsp;static&nbsp;TimeSpan?&nbsp;Average(this&nbsp;IReadOnlyCollection&lt;TimeSpan&gt;&nbsp;timeSpans)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;if&nbsp;(timeSpans.Count&nbsp;==&nbsp;0)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;return&nbsp;null;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;var&nbsp;arr&nbsp;=&nbsp;timeSpans.ToArray();
+&nbsp;&nbsp;&nbsp;&nbsp;return&nbsp;new&nbsp;NotEmptyCollection&lt;TimeSpan&gt;(arr[0],&nbsp;arr[1..]).Average();
+}</pre>
+    </p>
+    <p>
+        Here I just used a Guard Clause and explicit construction of the <code>NotEmptyCollection</code>. I could also have added a <code>NotEmptyCollection.TryCreate</code> method, like in the F# and Haskell examples, but I chose the above slightly more imperative style in order to demonstrate that my point isn't tightly coupled to the concept of <a href="/2018/03/22/functors">functors</a>, mapping, and other Functional Programming trappings.
+    </p>
+    <p>
+        These examples highlight how you can trivially make a conservative API look like a liberal API. Is it possible to go the other way? Can you make a liberal API look like a conservative API?
+    </p>
+    <p>
+        Yes and no.
+    </p>
+    <p>
+        Consider the liberal Haskell version of <code>average</code>, shown above; that's the one that returns <code>Maybe a</code>. Can you make a conservative function based on that?
+    </p>
+    <p>
+        <pre><span style="color:#2b91af;">average&#39;</span>&nbsp;<span style="color:blue;">::</span>&nbsp;<span style="color:blue;">Fractional</span>&nbsp;a&nbsp;<span style="color:blue;">=&gt;</span>&nbsp;<span style="color:blue;">NE</span>.<span style="color:blue;">NonEmpty</span>&nbsp;a&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;a
+average&#39;&nbsp;xs&nbsp;=&nbsp;fromJust&nbsp;$&nbsp;average&nbsp;xs</pre>
+    </p>
+    <p>
+        Yes, this is possible, but only by resorting to the <a href="https://wiki.haskell.org/Partial_functions">partial function</a> <a href="https://hackage.haskell.org/package/base/docs/Data-Maybe.html#v:fromJust">fromJust</a>. I'll explain why that is a problem once we've covered examples in the two other languages, such as F#:
+    </p>
+    <p>
+        <pre>let&nbsp;average&#39;&nbsp;(timeSpans&nbsp;:&nbsp;NonEmpty&lt;TimeSpan&gt;)&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;[&nbsp;timeSpans.Head&nbsp;]&nbsp;@&nbsp;List.ofSeq&nbsp;timeSpans.Tail&nbsp;|&gt;&nbsp;average&nbsp;|&gt;&nbsp;Option.get</pre>
+    </p>
+    <p>
+        In this variation, <code>average</code> is the liberal version shown above; the one that returns a <code>TimeSpan option</code>. In order to make a conservative version, the <code>average'</code> function can call the liberal <code>average</code> function, but has to resort to the partial function <code>Option.get</code>.
+    </p>
+    <p>
+        The same issue repeats a third time in C#:
+    </p>
+    <p>
+        <pre>public&nbsp;static&nbsp;TimeSpan&nbsp;Average(this&nbsp;NotEmptyCollection&lt;TimeSpan&gt;&nbsp;timeSpans)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;return&nbsp;timeSpans.ToList().Average().Value;
+}</pre>
+    </p>
+    <p>
+        This time, the partial function is the unsafe <a href="https://learn.microsoft.com/dotnet/api/system.nullable-1.value">Value</a> property, which throws an <code>InvalidOperationException</code> if there's no value.
+    </p>
+    <p>
+        This even violates Microsoft's own design guidelines:
+    </p>
+    <blockquote>
+        <p>
+            "AVOID throwing exceptions from property getters."
+        </p>
+        <footer><cite><a href="https://learn.microsoft.com/dotnet/standard/design-guidelines/property">Krzystof Cwalina and Brad Abrams</a></cite></footer>
+    </blockquote>
+    <p>
+        I've cited Cwalina and Abrams as the authors, since this rule can be found in my 2006 edition of <a href="/ref/fdg">Framework Design Guidelines</a>. This isn't a new insight.
+    </p>
+    <p>
+        While the two alternatives are 'isomorphic enough' that we can translate both ways, the translations are asymmetric in the sense that one is safe, while the other has to resort to an inherently unsafe operation to make it work.
+    </p>
+    <h3 id="e10b4b0269b74efa9d89275644c88d8e">
+        Encapsulation <a href="#e10b4b0269b74efa9d89275644c88d8e">#</a>
+    </h3>
+    <p>
+        I've called the operations <code>fromJust</code>, <code>Option.get</code>, and <code>Value</code> <em>partial</em>, and only just now used the word <em>unsafe</em>. You may protest that neither of the three examples are unsafe in practice, since we know that the input is never empty. Thus, we know that the liberal function will always return a value, and therefore it's safe to call a partial function, even though these operations are unsafe in the general case.
+    </p>
+    <p>
+        While that's true, consider how the burden shifts. When you want to promote a conservative variant to a liberal variant, you can rely on all the operations being total. On the other hand, if you want to make a liberal variant look conservative, the onus is on you. None of the three type systems on display here can perform that analysis for you.
+    </p>
+    <p>
+        This may not be so bad when the example is as simple as taking the average of a collection of numbers, but does it scale? What if the operation you're invoking is much more complicated? Can you still be sure that you safely invoke a partial function on the return value?
+    </p>
+    <p>
+        As <a href="/ctfiyh">Code That Fits in Your Head</a> argues, procedures quickly become so complicated that they no longer fit in your head. If you don't have well-described and patrolled contracts, you don't know what the postconditions are. You can't trust the return values from method calls, or even the state of the objects you passed as arguments. This tend to lead to <a href="/2013/07/08/defensive-coding">defensive coding</a>, where you write code that checks the state of everything all too often.
+    </p>
+    <p>
+        The remedy is, as always, good old <a href="/encapsulation-and-solid">encapsulation</a>. In this case, check the preconditions at the beginning, and capture the result of that check in an object or type that is guaranteed to be always valid. This goes beyond <a href="https://blog.janestreet.com/effective-ml-video/">making illegal states unrepresentable</a> because it also works with <a href="https://www.hillelwayne.com/post/constructive/">predicative</a> types. Once you're past the Guard Clauses, you don't have to check the preconditions <em>again</em>.
+    </p>
+    <p>
+        This kind of thinking illustrates why you need a multidimensional view on API design. As useful as Postel's law sometimes is, it doesn't address all problems. In fact, it turned out to be unhelpful in this context, while another perspective proves more fruitful. Encapsulation is the art and craft of designing APIs in such a way that they suggest or even compels correct interactions. The more I think of this, the more it strikes me that a <em>ranking</em> is implied: Preconditions are more important than postconditions, because if the preconditions are unfulfilled, you can't trust the postconditions, either.
+    </p>
+    <h3 id="35bb4abc87b8402da82c82c5baa71235">
+        Mapping <a href="#35bb4abc87b8402da82c82c5baa71235">#</a>
+    </h3>
+    <p>
+        What's going on here? One perspective is to view <a href="/2021/11/15/types-as-sets">types as sets</a>. In the <em>average</em> example, the function maps from one set to another:
+    </p>
+    <p>
+        <img src="/content/binary/mapping-from-collections-to-reals.png" alt="Mapping from the set of collections to the set of real numbers.">
+    </p>
+    <p>
+        Which sets are they? We can think of the <em>average</em> function as a mapping from the set of non-empty collections of numbers to the set of <a href="https://en.wikipedia.org/wiki/Real_number">real numbers</a>. In programming, we can't represent real numbers, so instead, the left set is going to be the set of all the non-empty collections the computer or the language can represent and hold in (virtual) memory, and the right-hand set is the set of all the possible numbers of whichever type you'd like (32-bit signed integers, <a href="https://en.wikipedia.org/wiki/Double-precision_floating-point_format">64-bit floating-point numbers</a>, 8-bit unsigned integers, etc.).
+    </p>
+    <p>
+        In reality, the left-hand set is much larger than the set to the right.
+    </p>
+    <p>
+        Drawing all those arrows quickly becomes awkward , so instead, we may <a href="/2021/11/22/functions-as-pipes">draw each mapping as a pipe</a>. Such a pipe also corresponds to a function. Here's an intermediate step in such a representation:
+    </p>
+    <p>
+        <img src="/content/binary/mapping-from-collections-to-reals-transparent-pipe.png" alt="Mapping from one set to the other, drawn inside a transparent pipe.">
+    </p>
+    <p>
+        One common element is, however, missing from the left set. Which one?
+    </p>
+    <h3 id="8920c8df3b9f4f978a5c560d5c9cdcb4">
+        Pipes <a href="#8920c8df3b9f4f978a5c560d5c9cdcb4">#</a>
+    </h3>
+    <p>
+        The above mapping corresponds to the conservative variation of the function. It's a total function that maps all values in the domain to a value in the codomain. It accomplishes this trick by explicitly constraining the domain to only those elements on which it's defined. Due to the preconditions, that excludes the empty collection, which is therefore absent from the left set.
+    </p>
+    <p>
+        What if we also want to allow the empty collection to be a valid input?
+    </p>
+    <p>
+        Unless we find ourselves in some special context where it makes sense to define a 'default average value', we can't map an empty collection to any meaningful number. Rather, we'll have to map it to some special value, such as <code>Nothing</code>, <code>None</code>, or <code>null</code>:
+    </p>
+    <p>
+        <img src="/content/binary/mapping-with-none-channel-transparent-pipe.png" alt="Mapping the empty collection to null in a pipe separate, but on top of, the proper function pipe.">
+    </p>
+    <p>
+        This extra pipe is free, because it's supplied by the <a href="/2018/03/26/the-maybe-functor">Maybe functor</a>'s mapping (<code>Select</code>, <code>map</code>, <code>fmap</code>).
+    </p>
+    <p>
+        What happens if we need to go the other way? If the function is the liberal variant that also maps the empty collection to a special element that indicates a missing value?
+    </p>
+    <p>
+        <img src="/content/binary/mapping-from-all-collections-to-reals-transparent-pipe.png" alt="Mapping all collections, including the empty collection, to the set of real numbers.">
+    </p>
+    <p>
+        In this case, it's much harder to disentangle the mappings. If you imagine that a liquid flows through the pipes, we can try to be careful and avoid 'filling up' the pipe.
+    </p>
+    <p>
+        <img src="/content/binary/pipe-partially-filled-with-liquid.png" alt="Pipe partially filled with liquid.">
+    </p>
+    <p>
+        The liquid represents the data that we <em>do</em> want to transmit through the pipe. As this illustration suggests, we now have to be careful that nothing goes wrong. In order to catch just the right outputs on the right side, you need to know how high the liquid may go, and attach a an 'flat-top' pipe to it:
+    </p>
+    <p>
+        <img src="/content/binary/pipe-composed-with-open-top-pipe.png" alt="Pipe composed with open-top pipe.">
+    </p>
+    <p>
+        As this illustration tries to get across, this kind of composition is awkward and error-prone. What's worse is that you need to know how high the liquid is going to get on the right side. This depends on what actually goes on inside the pipe, and what kind of input goes into the left-hand side.
+    </p>
+    <p>
+        This is a metaphor. The longer the pipe is, the more difficult it gets to keep track of that knowledge. The stubby little pipe in these illustrations may correspond to the <em>average</em> function, which is an operation that easily fits in our heads. It's not too hard to keep track of the preconditions, and how they map to postconditions.
+    </p>
+    <p>
+        Thus, turning such a small liberal function into a conservative function is possible, but already awkward. If the operation is complicated, you can no longer keep track of all the details of how the inputs relate to the outputs.
+    </p>
+    <h3 id="18b682600e5a4d1baf542b0cd1dcda7f">
+        Additive extensibility <a href="#18b682600e5a4d1baf542b0cd1dcda7f">#</a>
+    </h3>
+    <p>
+        This really shouldn't surprise us. Most programming languages come with all sorts of facilities that enable <em>extensibility</em>: The ability to <em>add</em> more functionality, more behaviour, more capabilities, to existing building blocks. Conversely, few languages come with <em>removability</em> facilities. You can't, commonly, declare that an object is an instance of a class, <em>except</em> one method, or that a function is just like another function, <em>except</em> that it doesn't accept a particular subset of input.
+    </p>
+    <p>
+        This explains why we can safely make a conservative function liberal, but why it's difficult to make a liberal function conservative. This is because making a conservative function liberal <em>adds</em> functionality, while making a liberal function conservative attempts to remove functionality.
+    </p>
+    <h3 id="6545430a4e1f47a38e121aee1a342b40">
+        Conjecture <a href="#6545430a4e1f47a38e121aee1a342b40">#</a>
+    </h3>
+    <p>
+        All this leads me to the following conjecture: When faced with a choice between two versions of an API, where one has a liberal domain, and the other a conservative codomain, choose the design with the conservative codomain.
+    </p>
+    <p>
+        If you need the liberal version, you can create it from the conservative operation. The converse need not be true.
+    </p>
+    <h3 id="312f8f4df0c44390a43f4f0f92d2c9d6">
+        Conclusion <a href="#312f8f4df0c44390a43f4f0f92d2c9d6">#</a>
+    </h3>
+    <p>
+        Postel's law encourages us to be liberal with what we accept, but conservative with what we return. This is a good design heuristic, but sometimes you're faced with mutually exclusive alternatives. If you're liberal with what you accept, you'll also need to be too loose with what you return, because there are input values that you can't handle. On the other hand, sometimes the only way to be conservative with the output is to also be restrictive when it comes to input.
+    </p>
+    <p>
+        Given two such alternatives, which one should you choose?
+    </p>
+    <p>
+        This article conjectures that you should choose the conservative alternative. This isn't a political statement, but simply a result of the conservative design being the smaller building block. From a small building block, you can compose something bigger, whereas from a bigger unit, you can't easily extract something smaller that's still robust and useful.
+    </p>
+</div>
