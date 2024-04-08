@@ -1,0 +1,278 @@
+---
+layout: post
+title: "Extracting curve coordinates from a bitmap"
+description: "Another example of using Haskell as an ad-hoc scripting language."
+date: 2024-02-27 16:12 UTC
+tags: [Haskell, Languages]
+image: "/content/binary/hype-cycle-pyplot.png"
+image_alt: "Coordinates plotted with Python."
+---
+{% include JB/setup %}
+
+<div id="post">
+    <p>
+        <em>{{ page.description }}</em>
+    </p>
+    <p>
+        This article is part of a short series titled <a href="">Trying to fit the hype cycle</a>. In the first article, I outlined what it is that I'm trying to do. In this article, I'll describe how I extract a set of <em>x</em> and <em>y</em> coordinates from this bitmap:
+    </p>
+    <p>
+        <img src="/content/binary/hype-cycle-cleaned.png" alt="Gartner hype cycle.">
+    </p>
+    <p>
+        (Actually, this is scaled-down version of the image. The file I work with is a bit larger.)
+    </p>
+    <p>
+        As I already mentioned in the previous article, these days there are online tools for just about everything. Most likely, there's also an online tool that will take a bitmap like that and return a set of <em>(x, y)</em> coordinates.
+    </p>
+    <p>
+        Since I'm doing this for the programming exercise, I'm not interested in that. Rather, I'd like to write a little <a href="https://www.haskell.org/">Haskell</a> script to do it for me.
+    </p>
+    <h3 id="2ed7ee24ae244f3688dc8a362e149c17">
+        Module and imports <a href="#2ed7ee24ae244f3688dc8a362e149c17">#</a>
+    </h3>
+    <p>
+        Yes, I wrote Haskell <em>script</em>. As I've described before, with good type inference, <a href="/2024/02/05/statically-and-dynamically-typed-scripts">a statically typed language can be as good for scripting as a dynamic one</a>. Just as might be the case with, say, a <a href="https://www.python.org/">Python</a> script, you'll be iterating, trying things out until finally the script settles into its final form. What I present here is the result of my exercise. You should imagine that I made lots of mistakes underway, tried things that didn't work, commented out code and print statements, imported modules I eventually didn't need, etc. Just like I imagine you'd also do with a script in a dynamically typed language. At least, that's how I write Python, when I'm forced to do that.
+    </p>
+    <p>
+        In other words, the following is far from the result of perfect foresight, but rather the equilibrium into which the script settled.
+    </p>
+    <p>
+        I named the module <code>HypeCoords</code>, because the purpose of it is to extract the <em>(x, y)</em> coordinates from the above <a href="https://en.wikipedia.org/wiki/Gartner_hype_cycle">Gartner hype cycle</a> image. These are the imports it turned out that I ultimately needed:
+    </p>
+    <p>
+        <pre><span style="color:blue;">module</span>&nbsp;HypeCoords&nbsp;<span style="color:blue;">where</span>
+ 
+<span style="color:blue;">import</span>&nbsp;<span style="color:blue;">qualified</span>&nbsp;Data.List.NonEmpty&nbsp;<span style="color:blue;">as</span>&nbsp;NE
+<span style="color:blue;">import</span>&nbsp;Data.List.NonEmpty&nbsp;(<span style="color:blue;">NonEmpty</span>((:|)))
+<span style="color:blue;">import</span>&nbsp;Codec.Picture
+<span style="color:blue;">import</span>&nbsp;Codec.Picture.Types</pre>
+    </p>
+    <p>
+        The <code>Codec.Picture</code> modules come from the <a href="https://hackage.haskell.org/package/JuicyPixels">JuicyPixels</a> package. This is what enables me to read a <code>.png</code> file and extract the pixels.
+    </p>
+    <h3 id="e0f66bef266249ea8a9546c0edf0b15c">
+        Black and white <a href="#e0f66bef266249ea8a9546c0edf0b15c">#</a>
+    </h3>
+    <p>
+        If you look at the above bitmap, you may notice that it has some vertical lines in a lighter grey than the curve itself. My first task, then, is to get rid of those. The easiest way to do that is to convert the image to a black-and-white bitmap, with no grey scale.
+    </p>
+    <p>
+        Since this is a one-off exercise, I could easily do that with a bitmap editor, but on the other hand, I thought that this was a good first task to give myself. After all, I didn't know the JuicyPixels library <em>at all</em>, so this was an opportunity to start with a task just a notch simpler than the one that was my actual goal.
+    </p>
+    <p>
+        I thought that the easiest way to convert to a black-and-white image would be to turn all pixels white if they are lighter than some threshold, and black otherwise.
+    </p>
+    <p>
+        A <a href="https://en.wikipedia.org/wiki/PNG">PNG</a> file has more information than I need, so I first converted the image to an 8-bit <a href="https://en.wikipedia.org/wiki/RGB_color_model">RGB</a> bitmap. Even though the above image looks as though it's entirely grey scale, each pixel is actually composed of three colours. In order to compare a pixel with a threshold, I needed a single measure of how light or dark it is.
+    </p>
+    <p>
+        That turned out to be about as simple as it sounds: Just take the average of the three colours. Later, I'd need a function to compute the average for another reason, so I made it a reusable function:
+    </p>
+    <p>
+        <pre><span style="color:#2b91af;">average</span>&nbsp;<span style="color:blue;">::</span>&nbsp;<span style="color:blue;">Integral</span>&nbsp;a&nbsp;<span style="color:blue;">=&gt;</span>&nbsp;<span style="color:blue;">NE</span>.<span style="color:blue;">NonEmpty</span>&nbsp;a&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;a
+average&nbsp;nel&nbsp;=&nbsp;<span style="color:blue;">sum</span>&nbsp;nel&nbsp;`div`&nbsp;<span style="color:blue;">fromIntegral</span>&nbsp;(NE.<span style="color:blue;">length</span>&nbsp;nel)</pre>
+    </p>
+    <p>
+        It's a bit odd that the Haskell <a href="https://hackage.haskell.org/package/base">base</a> library doesn't come with such a function (at least to my knowledge), but anyway, this one is specialized to do integer division. Notice that this function computes only <a href="/2020/02/03/non-exceptional-averages">non-exceptional averages</a>, since it requires the input to be a <a href="https://hackage.haskell.org/package/base/docs/Data-List-NonEmpty.html">NonEmpty</a> list. No division-by-zero errors here, please!
+    </p>
+    <p>
+        Once I'd computed a pixel average and compared it to a threshold value, I wanted to replace it with either black or white. In order to make the code more readable I defined two named constants:
+    </p>
+    <p>
+        <pre><span style="color:#2b91af;">black</span>&nbsp;<span style="color:blue;">::</span>&nbsp;<span style="color:blue;">PixelRGB8</span>
+black&nbsp;=&nbsp;PixelRGB8&nbsp;<span style="color:blue;">minBound</span>&nbsp;<span style="color:blue;">minBound</span>&nbsp;<span style="color:blue;">minBound</span>
+<span style="color:#2b91af;">white</span>&nbsp;<span style="color:blue;">::</span>&nbsp;<span style="color:blue;">PixelRGB8</span>
+white&nbsp;=&nbsp;PixelRGB8&nbsp;<span style="color:blue;">maxBound</span>&nbsp;<span style="color:blue;">maxBound</span>&nbsp;<span style="color:blue;">maxBound</span></pre>
+    </p>
+    <p>
+        With that in place, converting to black-and-white is only a few more lines of code:
+    </p>
+    <p>
+        <pre><span style="color:#2b91af;">toBW</span>&nbsp;<span style="color:blue;">::</span>&nbsp;<span style="color:blue;">PixelRGB8</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">PixelRGB8</span>
+toBW&nbsp;(PixelRGB8&nbsp;r&nbsp;g&nbsp;b)&nbsp;=
+&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;threshold&nbsp;=&nbsp;192&nbsp;::&nbsp;Integer
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;lum&nbsp;=&nbsp;average&nbsp;(<span style="color:blue;">fromIntegral</span>&nbsp;r&nbsp;:|&nbsp;[<span style="color:blue;">fromIntegral</span>&nbsp;g,&nbsp;<span style="color:blue;">fromIntegral</span>&nbsp;b])
+&nbsp;&nbsp;<span style="color:blue;">in</span>&nbsp;<span style="color:blue;">if</span>&nbsp;lum&nbsp;&lt;=&nbsp;threshold&nbsp;<span style="color:blue;">then</span>&nbsp;black&nbsp;<span style="color:blue;">else</span>&nbsp;white</pre>
+    </p>
+    <p>
+        I arrived at the threshold of <code>192</code> after a bit of trial-and-error. That's dark enough that the light vertical lines fall to the <code>white</code> side, while the real curve becomes <code>black</code>.
+    </p>
+    <p>
+        What remained was to glue the parts together to save the black-and-white file:
+    </p>
+    <p>
+        <pre><span style="color:#2b91af;">main</span>&nbsp;<span style="color:blue;">::</span>&nbsp;<span style="color:#2b91af;">IO</span>&nbsp;()
+main&nbsp;=&nbsp;<span style="color:blue;">do</span>
+&nbsp;&nbsp;readResult&nbsp;&lt;-&nbsp;readImage&nbsp;<span style="color:#a31515;">&quot;hype-cycle-cleaned.png&quot;</span>
+&nbsp;&nbsp;<span style="color:blue;">case</span>&nbsp;readResult&nbsp;<span style="color:blue;">of</span>
+&nbsp;&nbsp;&nbsp;&nbsp;Left&nbsp;msg&nbsp;-&gt;&nbsp;<span style="color:blue;">putStrLn</span>&nbsp;msg
+&nbsp;&nbsp;&nbsp;&nbsp;Right&nbsp;img&nbsp;-&gt;&nbsp;<span style="color:blue;">do</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;bwImg&nbsp;=&nbsp;pixelMap&nbsp;toBW&nbsp;$&nbsp;convertRGB8&nbsp;img
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;writePng&nbsp;<span style="color:#a31515;">&quot;hype-cycle-bw.png&quot;</span>&nbsp;bwImg</pre>
+    </p>
+    <p>
+        The <a href="https://hackage.haskell.org/package/JuicyPixels/docs/Codec-Picture.html#v:convertRGB8">convertRGB8</a> function comes from JuicyPixels.
+    </p>
+    <p>
+        The <code>hype-cycle-bw.png</code> picture unsurprisingly looks like this:
+    </p>
+    <p>
+        <img src="/content/binary/hype-cycle-bw.png" alt="Black-and-white Gartner hype cycle.">
+    </p>
+    <p>
+        Ultimately, I didn't need the black-and-white bitmap <em>file</em>. I just wrote the script to create the file in order to be able to get some insights into what I was doing. Trust me, I made a lot of stupid mistakes along the way, and among other issues had some <a href="https://stackoverflow.com/q/77952762/126014">'fun' with integer overflows</a>.
+    </p>
+    <h3 id="2bd5b7d3dbd44e4a93594030bf5faca5">
+        Extracting image coordinates <a href="#2bd5b7d3dbd44e4a93594030bf5faca5">#</a>
+    </h3>
+    <p>
+        Now I had a general feel for how to work with the JuicyPixels library. It still required quite a bit of spelunking through the documentation before I found a useful API to extract all the pixels from a bitmap:
+    </p>
+    <p>
+        <pre><span style="color:#2b91af;">pixelCoordinates</span>&nbsp;<span style="color:blue;">::</span>&nbsp;<span style="color:blue;">Pixel</span>&nbsp;a&nbsp;<span style="color:blue;">=&gt;</span>&nbsp;<span style="color:blue;">Image</span>&nbsp;a&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;[((<span style="color:#2b91af;">Int</span>,&nbsp;<span style="color:#2b91af;">Int</span>),&nbsp;a)]
+pixelCoordinates&nbsp;=&nbsp;pixelFold&nbsp;(\acc&nbsp;x&nbsp;y&nbsp;px&nbsp;-&gt;&nbsp;((x,y),px):acc)&nbsp;<span style="color:blue;">[]</span></pre>
+    </p>
+    <p>
+        While this is, after all, just a one-liner, I'm surprised that something like this doesn't come in the box. It returns a list of tuples, where the first element contains the pixel coordinates (another tuple), and the second element the pixel information (e.g. the RGB value).
+    </p>
+    <h3 id="2b2a30265e1b4577b845bb8d235a97eb">
+        One y value per x value <a href="#2b2a30265e1b4577b845bb8d235a97eb">#</a>
+    </h3>
+    <p>
+        There were a few more issues to be addressed. The black curve in the black-and-white bitmap is thicker than a single pixel. This means that for each <em>x</em> value, there will be several black pixels. In order to do linear regression, however, we need a single <em>y</em> value per <em>x</em> value.
+    </p>
+    <p>
+        One easy way to address that concern is to calculate the average <em>y</em> value for each <em>x</em> value. This may not always be the best choice, but as far as we can see in the above black-and-white image, it doesn't look as though there's any noise left in the picture. This means that we don't have to worry about outliers pulling the average value away from the curve. In other words, finding the average <em>y</em> value is an easy way to get what we need.
+    </p>
+    <p>
+        <pre><span style="color:#2b91af;">averageY</span>&nbsp;<span style="color:blue;">::</span>&nbsp;<span style="color:blue;">Integral</span>&nbsp;b&nbsp;<span style="color:blue;">=&gt;</span>&nbsp;<span style="color:blue;">NonEmpty</span>&nbsp;(a,&nbsp;b)&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;(a,&nbsp;b)
+averageY&nbsp;nel&nbsp;=&nbsp;(<span style="color:blue;">fst</span>&nbsp;$&nbsp;NE.<span style="color:blue;">head</span>&nbsp;nel,&nbsp;average&nbsp;$&nbsp;<span style="color:blue;">snd</span>&nbsp;&lt;$&gt;&nbsp;nel)</pre>
+    </p>
+    <p>
+        The <code>averageY</code> function converts a <code>NonEmpty</code> list of tuples to a single tuple. <em>Watch out!</em> The input tuples are not the 'outer' tuples that <code>pixelCoordinates</code> returns, but rather a list of actual pixel coordinates. Each tuple is a set of coordinates, but since the function never manipulates the <em>x</em> coordinate, the type of the first element is just unconstrained <code>a</code>. It can literally be anything, but will, in practice, be an integer.
+    </p>
+    <p>
+        The assumption is that the input is a small list of coordinates that all share the same <em>x</em> coordinate, such as <code>(42, 99) :| [(42, 100), (42, 102)]</code>. The function simply returns a single tuple that it creates on the fly. For the first element of the return tuple, it picks the <code>head</code> tuple from the input (<code>(42, 99)</code> in the example), and then that tuple's <code>fst</code> element (<code>42</code>). For the second element, the function averages all the <code>snd</code> elements (<code>99</code>, <code>100</code>, and <code>102</code>) to get <code>100</code> (integer division, you may recall):
+    </p>
+    <p>
+        <pre>ghci&gt; averageY ((42, 99) :| [(42, 100), (42, 102)])
+(42,100)</pre>
+    </p>
+    <p>
+        What remains is to glue together the building blocks.
+    </p>
+    <h3 id="305d72ac4dd94c41aa23f6581f7aa716">
+        Extracting curve coordinates <a href="#305d72ac4dd94c41aa23f6581f7aa716">#</a>
+    </h3>
+    <p>
+        A few more steps were required, but these I just composed <em>in situ</em>. I found no need to define them as individual functions.
+    </p>
+    <p>
+        The final composition looks like this:
+    </p>
+    <p>
+        <pre><span style="color:#2b91af;">main</span>&nbsp;<span style="color:blue;">::</span>&nbsp;<span style="color:#2b91af;">IO</span>&nbsp;()
+main&nbsp;=&nbsp;<span style="color:blue;">do</span>
+&nbsp;&nbsp;readResult&nbsp;&lt;-&nbsp;readImage&nbsp;<span style="color:#a31515;">&quot;hype-cycle-cleaned.png&quot;</span>
+&nbsp;&nbsp;<span style="color:blue;">case</span>&nbsp;readResult&nbsp;<span style="color:blue;">of</span>
+&nbsp;&nbsp;&nbsp;&nbsp;Left&nbsp;msg&nbsp;-&gt;&nbsp;<span style="color:blue;">putStrLn</span>&nbsp;msg
+&nbsp;&nbsp;&nbsp;&nbsp;Right&nbsp;img&nbsp;-&gt;&nbsp;<span style="color:blue;">do</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;bwImg&nbsp;=&nbsp;pixelMap&nbsp;toBW&nbsp;$&nbsp;convertRGB8&nbsp;img
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;blackPixels&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">fst</span>&nbsp;&lt;$&gt;&nbsp;<span style="color:blue;">filter</span>&nbsp;((black&nbsp;==)&nbsp;.&nbsp;<span style="color:blue;">snd</span>)&nbsp;(pixelCoordinates&nbsp;bwImg)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;h&nbsp;=&nbsp;imageHeight&nbsp;bwImg
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;lineCoords&nbsp;=&nbsp;<span style="color:blue;">fmap</span>&nbsp;(h&nbsp;-)&nbsp;.&nbsp;averageY&nbsp;&lt;$&gt;&nbsp;NE.groupAllWith&nbsp;<span style="color:blue;">fst</span>&nbsp;blackPixels
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">writeFile</span>&nbsp;<span style="color:#a31515;">&quot;coords.txt&quot;</span>&nbsp;$
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">unlines</span>&nbsp;$&nbsp;(\(x,y)&nbsp;-&gt;&nbsp;<span style="color:blue;">show</span>&nbsp;x&nbsp;++&nbsp;<span style="color:#a31515;">&quot;,&quot;</span>&nbsp;++&nbsp;<span style="color:blue;">show</span>&nbsp;y)&nbsp;&lt;$&gt;&nbsp;lineCoords</pre>
+    </p>
+    <p>
+        The first lines of code, until and including <code>let bwImg</code>, are identical to what you've already seen.
+    </p>
+    <p>
+        We're only interested in the black pixels, so the <code>main</code> action uses the standard <code>filter</code> function to keep only those that are equal to the <code>black</code> constant value. Once the white pixels are gone, we no longer need the pixel information. The expression that defines the <code>blackPixels</code> value finally (remember, you read Haskell code from right to left) throws away the pixel information by only retaining the <code>fst</code> element. That's the tuple that contains the coordinates. You may want to refer back to the type signature of <code>pixelCoordinates</code> to see what I mean.
+    </p>
+    <p>
+        The <code>blackPixels</code> value has the type <code>[(Int, Int)]</code>.
+    </p>
+    <p>
+        Two more things need to happen. One is to group the pixels together per <em>x</em> value so that we can use <code>averageY</code>. The other is that we want the coordinates as normal Cartesian coordinates, and right now, they're in screen coordinates.
+    </p>
+    <p>
+        When working with bitmaps, it's quite common that pixels are measured out from the top left corner, instead of from the bottom left corner. It's not difficult to flip the coordinates, but we need to know the height of the image:
+    </p>
+    <p>
+        <pre><span style="color:blue;">let</span>&nbsp;h&nbsp;=&nbsp;imageHeight&nbsp;bwImg</pre>
+    </p>
+    <p>
+        The <a href="https://hackage.haskell.org/package/JuicyPixels/docs/Codec-Picture.html#v:imageHeight">imageHeight</a> function is another JuicyPixels function.
+    </p>
+    <p>
+        Because I sometimes get carried away, I write the code in a 'nice' compact style that could be more readable. I accomplished both of the above remaining tasks with a single line of code:
+    </p>
+    <p>
+        <pre><span style="color:blue;">let</span>&nbsp;lineCoords&nbsp;=&nbsp;<span style="color:blue;">fmap</span>&nbsp;(h&nbsp;-)&nbsp;.&nbsp;averageY&nbsp;&lt;$&gt;&nbsp;NE.groupAllWith&nbsp;<span style="color:blue;">fst</span>&nbsp;blackPixels</pre>
+    </p>
+    <p>
+        This first groups the coordinates according to <em>x</em> value, so that all coordinates that share an <em>x</em> value are collected in a single <code>NonEmpty</code> list. This means that we can map all of those groups over <code>averageY</code>. Finally, the expression flips from screen coordinates to Cartesian coordinates by subtracting the <em>y</em> coordinate from the height <code>h</code>.
+    </p>
+    <p>
+        The final <code>writeFile</code> expression writes the coordinates to a text file as <a href="https://en.wikipedia.org/wiki/Comma-separated_values">comma-separated values</a>. The first ten lines of that file looks like this:
+    </p>
+    <p>
+        <pre>9,13
+10,13
+11,13
+12,14
+13,15
+14,15
+15,16
+16,17
+17,17
+18,18
+...</pre>
+    </p>
+    <p>
+        Do these points plot the Gartner hype cycle?
+    </p>
+    <h3 id="eed82185c8cd43dda147bce839454ca9">
+        Sanity checking by plotting the coordinates <a href="#eed82185c8cd43dda147bce839454ca9">#</a>
+    </h3>
+    <p>
+        To check whether the coordinates look useful, we could plot them. If I wanted to use a few more hours, I could probably figure out how to do that with JuicyPixels as well, but on the other hand, I already know how to do that with Python:
+    </p>
+    <p>
+        <pre>data&nbsp;=&nbsp;numpy.loadtxt(<span style="color:#a31515;">&#39;coords.txt&#39;</span>,&nbsp;delimiter=<span style="color:#a31515;">&#39;,&#39;</span>)
+x&nbsp;=&nbsp;data[:,&nbsp;0]
+t&nbsp;=&nbsp;data[:,&nbsp;1]
+plt.scatter(x,&nbsp;t,&nbsp;s=10,&nbsp;c=<span style="color:#a31515;">&#39;g&#39;</span>)
+plt.show()</pre>
+    </p>
+    <p>
+        That produces this plot:
+    </p>
+    <p>
+        <img src="/content/binary/hype-cycle-pyplot.png" alt="Coordinates plotted with Python.">
+    </p>
+    <p>
+        LGTM.
+    </p>
+    <h3 id="9836c90de9ac487f9295acfb667090b7">
+        Conclusion <a href="#9836c90de9ac487f9295acfb667090b7">#</a>
+    </h3>
+    <p>
+        In this article, you've seen how a single Haskell script can extract curve coordinates from a bitmap. The file is 41 lines all in all, including module declaration and white space. This article shows every single line in that file, apart from some blank lines.
+    </p>
+    <p>
+        I loaded the file into GHCi and ran the <code>main</code> action in order to produce the CSV file.
+    </p>
+    <p>
+        I did spend a few hours looking around in the JuicyPixels documentation before I'd identified the functions that I needed. All in all I used some hours on this exercise. I didn't keep track of time, but I guess that I used more than three, but probably fewer than six, hours on this.
+    </p>
+    <p>
+        This was the successful part of the overall exercise. Now onto the fiasco.
+    </p>
+    <p>
+        <strong>Next:</strong> Fitting a polynomial to a set of points.
+    </p>
+</div>
