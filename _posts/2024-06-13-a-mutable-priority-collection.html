@@ -1,0 +1,473 @@
+---
+layout: post
+title: "A mutable priority collection"
+description: "An encapsulated, albeit overly complicated, implementation."
+date: 2024-06-13 6:22 UTC
+tags: [Software Design]
+---
+{% include JB/setup %}
+
+<div id="post">
+    <p>
+        <em>{{ page.description }}</em>
+    </p>
+    <p>
+        This is the second in a <a href="/2024/06/12/simpler-encapsulation-with-immutability">series of articles about encapsulation and immutability</a>. In the next article, you'll see how immutability makes encapsulation easier, but in order to appreciate that, you should see the alternative. This article, then, shows a working, albeit overly complicated, implementation that does maintain its invariants.
+    </p>
+    <p>
+        In the introductory article, I described the example problem in more details, but in short, the exercise is to develop a class that holds a collection of prioritized items, with the invariant that the priorities must always sum to 100. It should be impossible to leave the object in a state where that's not true. It's quite an illuminating exercise, so if you have the time, you should try it for yourself before reading on.
+    </p>
+    <h3 id="9f40c96077664ab7acbc2705d9e0d2ea">
+        Initialization <a href="#9f40c96077664ab7acbc2705d9e0d2ea">#</a>
+    </h3>
+    <p>
+        As the <a href="">previous article</a> demonstrated, inheriting directly from a base class seems like a dead end. Once you see the direction that I go in this article, you may argue that it'd be possible to also make that design work with an inherited collection. It may be, but I'm not convinced that it would improve anything. Thus, for this iteration, I decided to eschew inheritance.
+    </p>
+    <p>
+        On the other hand, we need an API to <a href="https://en.wikipedia.org/wiki/Command%E2%80%93query_separation">query</a> the object about its state, and I found that it made sense to implement the <a href="https://learn.microsoft.com/dotnet/api/system.collections.generic.ireadonlydictionary-2">IReadOnlyDictionary</a> interface.
+    </p>
+    <p>
+        As before, invariants are statements about an object which are always true, which includes a newly initialized object. Thus, the <code><span style="color:#2b91af;">PriorityCollection</span>&lt;<span style="color:#2b91af;">T</span>&gt;</code> class should require enough information to safely initialize.
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">sealed</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">PriorityCollection</span>&lt;<span style="color:#2b91af;">T</span>&gt;&nbsp;:&nbsp;<span style="color:#2b91af;">IReadOnlyDictionary</span>&lt;<span style="color:#2b91af;">T</span>,&nbsp;<span style="color:blue;">byte</span>&gt;&nbsp;<span style="color:blue;">where</span>&nbsp;<span style="color:#2b91af;">T</span>&nbsp;:&nbsp;<span style="color:blue;">notnull</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;<span style="color:#2b91af;">Dictionary</span>&lt;<span style="color:#2b91af;">T</span>,&nbsp;<span style="color:blue;">byte</span>&gt;&nbsp;dict;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">PriorityCollection</span>(<span style="color:#2b91af;">T</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">initial</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;dict&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Dictionary</span>&lt;<span style="color:#2b91af;">T</span>,&nbsp;<span style="color:blue;">byte</span>&gt;&nbsp;{&nbsp;{&nbsp;<span style="font-weight:bold;color:#1f377f;">initial</span>,&nbsp;100&nbsp;}&nbsp;};
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;IReadOnlyDictionary&nbsp;implemented&nbsp;by&nbsp;delegating&nbsp;to&nbsp;dict&nbsp;field...</span>
+}</pre>
+    </p>
+    <p>
+        Several design decisions are different from the previous article. This design has no <code><span style="color:#2b91af;">Prioritized</span>&lt;<span style="color:#2b91af;">T</span>&gt;</code> class. Instead it treats the item (of type <code>T</code>) as a dictionary key, and the priority as the value. The most important motivation for this design decision was that this enables me to avoid the 'leaf node mutation' problem that I demonstrated in the previous article. Notice how, while the general design in this iteration will be object-oriented and mutable, I already take advantage of a bit of immutability to make the design simpler and safer.
+    </p>
+    <p>
+        Another difference is that you can't initialize a <code><span style="color:#2b91af;">PriorityCollection</span>&lt;<span style="color:#2b91af;">T</span>&gt;</code> object with a list. Instead, you only need to tell the constructor what the <code>initial</code> item is. The object will then infer that, since this is the only item so far, its priority must be 100. It can't be anything else, because that would violate the invariant. Thus, no assertion is required in the constructor.
+    </p>
+    <h3 id="f3c5abe45ba949e69c349dc8e21e959a">
+        Mutation API <a href="#f3c5abe45ba949e69c349dc8e21e959a">#</a>
+    </h3>
+    <p>
+        So far, the code only implements the <code>IReadOnlyDictionary</code> API, while we need to add some methods that will enable us to add new items and so on. As a start, we can add methods to add, remove, or update items:
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;<span style="font-weight:bold;color:#74531f;">Add</span>(<span style="color:#2b91af;">T</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">key</span>,&nbsp;<span style="color:blue;">byte</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">value</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#74531f;">AssertInvariants</span>(dict.<span style="font-weight:bold;color:#74531f;">Append</span>(<span style="color:#2b91af;">KeyValuePair</span>.<span style="color:#74531f;">Create</span>(<span style="font-weight:bold;color:#1f377f;">key</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">value</span>)));
+&nbsp;&nbsp;&nbsp;&nbsp;dict.<span style="font-weight:bold;color:#74531f;">Add</span>(<span style="font-weight:bold;color:#1f377f;">key</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">value</span>);
+}
+ 
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;<span style="font-weight:bold;color:#74531f;">Remove</span>(<span style="color:#2b91af;">T</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">key</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#74531f;">AssertInvariants</span>(dict.<span style="font-weight:bold;color:#74531f;">Where</span>(<span style="font-weight:bold;color:#1f377f;">kvp</span>&nbsp;=&gt;&nbsp;!<span style="font-weight:bold;color:#1f377f;">kvp</span>.Key.<span style="font-weight:bold;color:#74531f;">Equals</span>(<span style="font-weight:bold;color:#1f377f;">key</span>)));
+&nbsp;&nbsp;&nbsp;&nbsp;dict.<span style="font-weight:bold;color:#74531f;">Remove</span>(<span style="font-weight:bold;color:#1f377f;">key</span>);
+}
+ 
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">byte</span>&nbsp;<span style="color:blue;">this</span>[<span style="color:#2b91af;">T</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">key</span>]
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">get</span>&nbsp;{&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;dict[<span style="font-weight:bold;color:#1f377f;">key</span>];&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">set</span>
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">l</span>&nbsp;=&nbsp;dict.<span style="font-weight:bold;color:#74531f;">ToDictionary</span>(<span style="font-weight:bold;color:#1f377f;">kvp</span>&nbsp;=&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">kvp</span>.Key,&nbsp;<span style="font-weight:bold;color:#1f377f;">kvp</span>&nbsp;=&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">kvp</span>.Value);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">l</span>[<span style="font-weight:bold;color:#1f377f;">key</span>]&nbsp;=&nbsp;<span style="color:blue;">value</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#74531f;">AssertInvariants</span>(<span style="font-weight:bold;color:#1f377f;">l</span>);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;dict[<span style="font-weight:bold;color:#1f377f;">key</span>]&nbsp;=&nbsp;<span style="color:blue;">value</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+    </p>
+    <p>
+        I'm not going to show the <code>AssertInvariants</code> helper method yet, since it's going to change anyway.
+    </p>
+    <p>
+        At this point, this implementation suffers from the same problem as the example in the previous article. While you can add new items, you can only add an item with priority 0. You can only remove items if they have priority 0. And you can only 'update' an item if you set the priority to the same value as it already had.
+    </p>
+    <p>
+        We need to be able to add new items, change their priorities, and so on. How do we get around the above problem, without breaking the invariant?
+    </p>
+    <h3 id="f9400ef096f94b15b4c32ae2f35ba000">
+        Edit mode <a href="#f9400ef096f94b15b4c32ae2f35ba000">#</a>
+    </h3>
+    <p>
+        One way out of this conundrum is introduce a kind of 'edit mode'. The idea is to temporarily turn off the maintenance of the invariant for long enough to allow edits.
+    </p>
+    <p>
+        Af first glance, such an idea seems to go against the very definition of an invariant. After all, an invariant is a statement about the object that is <em>always</em> true. If you allow a client developer to turn off that guarantee, then, clearly, the guarantee is gone. Guarantees only work if you can trust them, and you can't trust them if they can be cancelled.
+    </p>
+    <p>
+        That idea in itself doesn't work, but if we can somehow encapsulate such an 'edit action' in an isolated scope that either succeeds or fails in its entirety, we may be getting somewhere. It's an idea similar to <a href="https://en.wikipedia.org/wiki/Unit_of_work">Unit of Work</a>, although here we're not involving an actual database. Still, an 'edit action' is a kind of in-memory transaction.
+    </p>
+    <p>
+        For didactic reasons, I'll move toward that design in a series of step, where the intermediate steps fail to maintain the invariant. We'll get there eventually. The first step is to introduce 'edit mode'.
+    </p>
+    <p>
+        <pre><span style="color:blue;">private</span>&nbsp;<span style="color:blue;">bool</span>&nbsp;isEditing;</pre>
+    </p>
+    <p>
+        While I could have made that flag <code>public</code>, I found it more natural to wrap access to it in two methods:
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;<span style="font-weight:bold;color:#74531f;">BeginEdit</span>()
+{
+&nbsp;&nbsp;&nbsp;&nbsp;isEditing&nbsp;=&nbsp;<span style="color:blue;">true</span>;
+}
+ 
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;<span style="font-weight:bold;color:#74531f;">EndEdit</span>()
+{
+&nbsp;&nbsp;&nbsp;&nbsp;isEditing&nbsp;=&nbsp;<span style="color:blue;">false</span>;
+}</pre>
+    </p>
+    <p>
+        This still doesn't accomplishes anything in itself, but the final change in this step is to change the assertion so that it respects the flag:
+    </p>
+    <p>
+        <pre><span style="color:blue;">private</span>&nbsp;<span style="color:blue;">void</span>&nbsp;<span style="font-weight:bold;color:#74531f;">AssertInvariants</span>(<span style="color:#2b91af;">IEnumerable</span>&lt;<span style="color:#2b91af;">KeyValuePair</span>&lt;<span style="color:#2b91af;">T</span>,&nbsp;<span style="color:blue;">byte</span>&gt;&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">candidate</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">if</span>&nbsp;(!isEditing&nbsp;&amp;&amp;&nbsp;<span style="font-weight:bold;color:#1f377f;">candidate</span>.<span style="font-weight:bold;color:#74531f;">Sum</span>(<span style="font-weight:bold;color:#1f377f;">kvp</span>&nbsp;=&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">kvp</span>.Value)&nbsp;!=&nbsp;100)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">throw</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">InvalidOperationException</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#a31515;">&quot;The&nbsp;sum&nbsp;of&nbsp;all&nbsp;values&nbsp;must&nbsp;be&nbsp;100.&quot;</span>);
+}</pre>
+    </p>
+    <p>
+        Finally, you can add or change priorities, as this little <a href="https://fsharp.org/">F#</a> example shows:
+    </p>
+    <p>
+        <pre>sut.BeginEdit&nbsp;()
+sut[<span style="color:#a31515;">&quot;foo&quot;</span>]&nbsp;<span style="color:blue;">&lt;-</span>&nbsp;50uy
+sut[<span style="color:#a31515;">&quot;bar&quot;</span>]&nbsp;<span style="color:blue;">&lt;-</span>&nbsp;50uy
+sut.EndEdit&nbsp;()</pre>
+    </p>
+    <p>
+        Even if you nominally 'don't read F#', this little example is almost like C# without semicolons. The <code><span style="color:blue;">&lt;-</span></code> arrow is F#'s mutation or assignment operator, which in C# would be <code>=</code>, and the <code>uy</code> suffix is <a href="https://learn.microsoft.com/dotnet/fsharp/language-reference/literals">the F# way of stating that the literal is a <code>byte</code></a>.
+    </p>
+    <p>
+        The above example is well-behaved because the final state of the object is valid. The priorities sum to 100. Even so, no code in <code><span style="color:#2b91af;">PriorityCollection</span>&lt;<span style="color:#2b91af;">T</span>&gt;</code> actually checks that, so we could trivially leave the object in an invalid state.
+    </p>
+    <h3 id="bcd53701e2214e99adcb1090acf3536a">
+        Assert invariant at end of edit <a href="#bcd53701e2214e99adcb1090acf3536a">#</a>
+    </h3>
+    <p>
+        The first step toward remedying that problem is to add a check to the <code>EndEdit</code> method:
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;<span style="font-weight:bold;color:#74531f;">EndEdit</span>()
+{
+&nbsp;&nbsp;&nbsp;&nbsp;isEditing&nbsp;=&nbsp;<span style="color:blue;">false</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#74531f;">AssertInvariants</span>(dict);
+}</pre>
+    </p>
+    <p>
+        The class is still not effectively protecting its invariants, because a client developer could forget to call <code>EndEdit</code>, or client code might pass around a collection in edit mode. Other code, receiving such an object as an argument, may not know whether or not it's in edit mode, so again, doesn't know if it can trust it.
+    </p>
+    <p>
+        We'll return to that problem shortly, but first, there's another, perhaps more pressing issue that we should attend to.
+    </p>
+    <h3 id="45cbf95701e14f08974cb5f1a585ad79">
+        Edit dictionary <a href="#45cbf95701e14f08974cb5f1a585ad79">#</a>
+    </h3>
+    <p>
+        The current implementation directly edits the collection, and even if a client developer remembers to call <code>EndEdit</code>, other code, higher up in the call stack could circumvent the check and leave the object in an invalid state. Not that I expect client developers to be deliberately malicious, but the notion that someone might wrap a method call in a <code>try-catch</code> block seems realistic.
+    </p>
+    <p>
+        The following F# unit test demonstrates the issue:
+    </p>
+    <p>
+        <pre>[&lt;<span style="color:#2b91af;">Fact</span>&gt;]
+<span style="color:blue;">let</span>&nbsp;<span style="color:#74531f;">``Attempt&nbsp;to&nbsp;circumvent``</span>&nbsp;()&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">sut</span>&nbsp;=&nbsp;<span style="color:#2b91af;">PriorityCollection</span>&lt;<span style="color:#2b91af;">string</span>&gt;&nbsp;<span style="color:#a31515;">&quot;foo&quot;</span>
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">try</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">sut</span>.<span style="font-weight:bold;color:#74531f;">BeginEdit</span>&nbsp;()
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">sut</span>[<span style="color:#a31515;">&quot;foo&quot;</span>]&nbsp;<span style="color:blue;">&lt;-</span>&nbsp;50uy
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">sut</span>[<span style="color:#a31515;">&quot;bar&quot;</span>]&nbsp;<span style="color:blue;">&lt;-</span>&nbsp;48uy
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">sut</span>.<span style="font-weight:bold;color:#74531f;">EndEdit</span>&nbsp;()
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">with</span>&nbsp;_&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;()
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;100uy&nbsp;=!&nbsp;<span style="font-weight:bold;color:#1f377f;">sut</span>[<span style="color:#a31515;">&quot;foo&quot;</span>]
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#74531f;">test</span>&nbsp;&lt;@&nbsp;<span style="font-weight:bold;color:#1f377f;">sut</span>.<span style="font-weight:bold;color:#74531f;">ContainsKey</span>&nbsp;<span style="color:#a31515;">&quot;bar&quot;</span>&nbsp;|&gt;&nbsp;<span style="color:#74531f;">not</span>&nbsp;@&gt;</pre>
+    </p>
+    <p>
+        Again, let me walk you through it in case you're unfamiliar with F#.
+    </p>
+    <p>
+        The <a href="https://learn.microsoft.com/dotnet/fsharp/language-reference/exception-handling/the-try-with-expression">try-with</a> block works just like C# <code>try-catch</code> blocks. Inside of that <code>try-with</code> block, the test enters edit mode, changes the values in such a way that the sum of them is 98, and then calls <code>EndEdit</code>. While <code>EndEdit</code> throws an exception, those four lines of code are wrapped in a <code>try-with</code> block that suppresses all exceptions.
+    </p>
+    <p>
+        The test attempts to verify that, since the edit failed, the <code>"foo"</code> value should be 100, and there should be no <code>"bar"</code> value. This turns out not to be the case. The test fails. The edits persist, even though <code>EndEdit</code> throws an exception, because there's no roll-back.
+    </p>
+    <p>
+        You could probably resolve that defect in various ways, but I chose to address it by introducing two, instead of one, backing dictionaries. One holds the data that always maintains the invariant, and the other is a temporary dictionary for editing.
+    </p>
+    <p>
+        <pre><span style="color:blue;">private</span>&nbsp;<span style="color:#2b91af;">Dictionary</span>&lt;<span style="color:#2b91af;">T</span>,&nbsp;<span style="color:blue;">byte</span>&gt;&nbsp;current;
+<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;<span style="color:#2b91af;">Dictionary</span>&lt;<span style="color:#2b91af;">T</span>,&nbsp;<span style="color:blue;">byte</span>&gt;&nbsp;encapsulated;
+<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;<span style="color:#2b91af;">Dictionary</span>&lt;<span style="color:#2b91af;">T</span>,&nbsp;<span style="color:blue;">byte</span>&gt;&nbsp;editable;
+<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">bool</span>&nbsp;isEditing;
+ 
+<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">PriorityCollection</span>(<span style="color:#2b91af;">T</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">initial</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;encapsulated&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Dictionary</span>&lt;<span style="color:#2b91af;">T</span>,&nbsp;<span style="color:blue;">byte</span>&gt;&nbsp;{&nbsp;{&nbsp;<span style="font-weight:bold;color:#1f377f;">initial</span>,&nbsp;100&nbsp;}&nbsp;};
+&nbsp;&nbsp;&nbsp;&nbsp;editable&nbsp;=&nbsp;[];
+&nbsp;&nbsp;&nbsp;&nbsp;current&nbsp;=&nbsp;encapsulated;
+}</pre>
+    </p>
+    <p>
+        There are two dictionaries: <code>encapsulated</code> holds the always-valid list of priorities, while <code>editable</code> is the dictionary that client code will be editing when in edit mode. Finally, <code>current</code> is either of these: <code>editable</code> when the object is in edit mode, and <code>encapsulated</code> when it's not. Most of the existing code shown so far now uses <code>current</code>, which before was called <code>dict</code>. The important changes are in <code>BeginEdit</code> and <code>EndEdit</code>.
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;<span style="font-weight:bold;color:#74531f;">BeginEdit</span>()
+{
+&nbsp;&nbsp;&nbsp;&nbsp;isEditing&nbsp;=&nbsp;<span style="color:blue;">true</span>;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;editable.<span style="font-weight:bold;color:#74531f;">Clear</span>();
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">foreach</span>&nbsp;(<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">kvp</span>&nbsp;<span style="font-weight:bold;color:#8f08c4;">in</span>&nbsp;current)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;editable.<span style="font-weight:bold;color:#74531f;">Add</span>(<span style="font-weight:bold;color:#1f377f;">kvp</span>.Key,&nbsp;<span style="font-weight:bold;color:#1f377f;">kvp</span>.Value);
+&nbsp;&nbsp;&nbsp;&nbsp;current&nbsp;=&nbsp;editable;
+}</pre>
+    </p>
+    <p>
+        Besides setting the <code>isEditing</code> flag, <code>BeginEdit</code> now copies all data from <code>current</code> to <code>editable</code>, and then sets <code>current</code> to <code>editable</code>. Keep in mind that <code>encapsulated</code> still holds the original, valid values.
+    </p>
+    <p>
+        Now that I'm writing this, I'm not even sure if this method is re-entrant, in the following sense: What happens if client code calls <code>BeginEdit</code>, makes some changes, and then calls <code>BeginEdit</code> again? It's questions like these that I don't feel intelligent enough to feel safe that I always answer correctly. That's why I like functional programming better. I don't have to think so hard.
+    </p>
+    <p>
+        Anyway, this will eventually become irrelevant, since <code>BeginEdit</code> and <code>EndEdit</code> will eventually become <code>private</code> methods.
+    </p>
+    <p>
+        The <code>EndEdit</code> method performs the inverse manoeuvre:
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;<span style="font-weight:bold;color:#74531f;">EndEdit</span>()
+{
+&nbsp;&nbsp;&nbsp;&nbsp;isEditing&nbsp;=&nbsp;<span style="color:blue;">false</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">try</span>
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#74531f;">AssertInvariants</span>(current);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;encapsulated.<span style="font-weight:bold;color:#74531f;">Clear</span>();
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">foreach</span>&nbsp;(<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">kvp</span>&nbsp;<span style="font-weight:bold;color:#8f08c4;">in</span>&nbsp;current)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;encapsulated.<span style="font-weight:bold;color:#74531f;">Add</span>(<span style="font-weight:bold;color:#1f377f;">kvp</span>.Key,&nbsp;<span style="font-weight:bold;color:#1f377f;">kvp</span>.Value);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;current&nbsp;=&nbsp;encapsulated;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">catch</span>
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;current&nbsp;=&nbsp;encapsulated;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">throw</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+    </p>
+    <p>
+        If first checks the invariant, and only copies the edited values to the <code>encapsulated</code> dictionary if the invariant still holds. Otherwise, it restores the original <code>encapsulated</code> values and rethrows the exception.
+    </p>
+    <p>
+        This helps to make the nature of editing 'transactional' in nature, but it doesn't address the issue that the collection is in an invalid state during editing, or that a client developer may forget to call <code>EndEdit</code>.
+    </p>
+    <h3 id="d53f9fe83e944d1bbd58d478f9fc27bc">
+        Edit action <a href="#d53f9fe83e944d1bbd58d478f9fc27bc">#</a>
+    </h3>
+    <p>
+        As the next step towards addressing that problem, we may now introduce a 'wrapper method' for that little object protocol:
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;<span style="font-weight:bold;color:#74531f;">Edit</span>(<span style="color:#2b91af;">Action</span>&lt;<span style="color:#2b91af;">PriorityCollection</span>&lt;<span style="color:#2b91af;">T</span>&gt;&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">editAction</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#74531f;">BeginEdit</span>();
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">editAction</span>(<span style="color:blue;">this</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#74531f;">EndEdit</span>();
+}</pre>
+    </p>
+    <p>
+        As you can see, it just wraps that little call sequence so that you don't have to remember to call <code>BeginEdit</code> and <code>EndEdit</code>. My F# test code comes with this example:
+    </p>
+    <p>
+        <pre>sut.Edit&nbsp;(<span style="color:blue;">fun</span>&nbsp;col&nbsp;<span style="color:blue;">-&gt;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;col[<span style="color:#a31515;">&quot;bar&quot;</span>]&nbsp;<span style="color:blue;">&lt;-</span>&nbsp;55uy
+&nbsp;&nbsp;&nbsp;&nbsp;col[<span style="color:#a31515;">&quot;baz&quot;</span>]&nbsp;<span style="color:blue;">&lt;-</span>&nbsp;45uy
+&nbsp;&nbsp;&nbsp;&nbsp;col.Remove&nbsp;<span style="color:#a31515;">&quot;foo&quot;</span>
+)</pre>
+    </p>
+    <p>
+        The <code><span style="color:blue;">fun</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">col</span>&nbsp;<span style="color:blue;">-&gt;</span></code> part is just F# syntax for a lambda expression. In C#, you'd write it as <code>col =&gt;</code>.
+    </p>
+    <p>
+        We're close to a solution. What remains is to make <code>BeginEdit</code> and <code>EndEdit</code> <code>private</code>. This means that client code can only edit a <code><span style="color:#2b91af;">PriorityCollection</span>&lt;<span style="color:#2b91af;">T</span>&gt;</code> object through the <code>Edit</code> method.
+    </p>
+    <h3 id="b04cc69a08c749f39d8e9276e444046a">
+        Replace action with interface <a href="#b04cc69a08c749f39d8e9276e444046a">#</a>
+    </h3>
+    <p>
+        You may complain that this solution isn't properly object-oriented, since it makes use of <a href="https://learn.microsoft.com/dotnet/api/system.action-1">Action&lt;T&gt;</a> and requires that client code uses lambda expressions.
+    </p>
+    <p>
+        We can easily fix that.
+    </p>
+    <p>
+        Instead of the action, you can introduce an interface with the same signature:
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">interface</span>&nbsp;<span style="color:#2b91af;">IPriorityEditor</span>&lt;<span style="color:#2b91af;">T</span>&gt;&nbsp;<span style="color:blue;">where</span>&nbsp;<span style="color:#2b91af;">T</span>&nbsp;:&nbsp;<span style="color:blue;">notnull</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">void</span>&nbsp;<span style="font-weight:bold;color:#74531f;">EditPriorities</span>(<span style="color:#2b91af;">PriorityCollection</span>&lt;<span style="color:#2b91af;">T</span>&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">priorities</span>);
+}</pre>
+    </p>
+    <p>
+        Next, change the <code>Edit</code> method:
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;<span style="font-weight:bold;color:#74531f;">Edit</span>(<span style="color:#2b91af;">IPriorityEditor</span>&lt;<span style="color:#2b91af;">T</span>&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">editor</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#74531f;">BeginEdit</span>();
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">editor</span>.<span style="font-weight:bold;color:#74531f;">EditPriorities</span>(<span style="color:blue;">this</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#74531f;">EndEdit</span>();
+}</pre>
+    </p>
+    <p>
+        Now you have a nice, object-oriented design, with no lambda expressions in sight.
+    </p>
+    <h3 id="e15b63b0a3ef4f229caedc15a2b64f39">
+        Full code dump <a href="#e15b63b0a3ef4f229caedc15a2b64f39">#</a>
+    </h3>
+    <p>
+        The final code is complex enough that it's easy to lose track of what it looks like, as I walk through my process. To make it easer, here's the full code for the collection class:
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">sealed</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">PriorityCollection</span>&lt;<span style="color:#2b91af;">T</span>&gt;&nbsp;:&nbsp;<span style="color:#2b91af;">IReadOnlyDictionary</span>&lt;<span style="color:#2b91af;">T</span>,&nbsp;<span style="color:blue;">byte</span>&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">where</span>&nbsp;<span style="color:#2b91af;">T</span>&nbsp;:&nbsp;<span style="color:blue;">notnull</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:#2b91af;">Dictionary</span>&lt;<span style="color:#2b91af;">T</span>,&nbsp;<span style="color:blue;">byte</span>&gt;&nbsp;current;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;<span style="color:#2b91af;">Dictionary</span>&lt;<span style="color:#2b91af;">T</span>,&nbsp;<span style="color:blue;">byte</span>&gt;&nbsp;encapsulated;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;<span style="color:#2b91af;">Dictionary</span>&lt;<span style="color:#2b91af;">T</span>,&nbsp;<span style="color:blue;">byte</span>&gt;&nbsp;editable;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">bool</span>&nbsp;isEditing;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">PriorityCollection</span>(<span style="color:#2b91af;">T</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">initial</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;encapsulated&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Dictionary</span>&lt;<span style="color:#2b91af;">T</span>,&nbsp;<span style="color:blue;">byte</span>&gt;&nbsp;{&nbsp;{&nbsp;<span style="font-weight:bold;color:#1f377f;">initial</span>,&nbsp;100&nbsp;}&nbsp;};
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;editable&nbsp;=&nbsp;[];
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;current&nbsp;=&nbsp;encapsulated;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;<span style="font-weight:bold;color:#74531f;">Add</span>(<span style="color:#2b91af;">T</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">key</span>,&nbsp;<span style="color:blue;">byte</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">value</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#74531f;">AssertInvariants</span>(current.<span style="font-weight:bold;color:#74531f;">Append</span>(<span style="color:#2b91af;">KeyValuePair</span>.<span style="color:#74531f;">Create</span>(<span style="font-weight:bold;color:#1f377f;">key</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">value</span>)));
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;current.<span style="font-weight:bold;color:#74531f;">Add</span>(<span style="font-weight:bold;color:#1f377f;">key</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">value</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;<span style="font-weight:bold;color:#74531f;">Remove</span>(<span style="color:#2b91af;">T</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">key</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#74531f;">AssertInvariants</span>(current.<span style="font-weight:bold;color:#74531f;">Where</span>(<span style="font-weight:bold;color:#1f377f;">kvp</span>&nbsp;=&gt;&nbsp;!<span style="font-weight:bold;color:#1f377f;">kvp</span>.Key.<span style="font-weight:bold;color:#74531f;">Equals</span>(<span style="font-weight:bold;color:#1f377f;">key</span>)));
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;current.<span style="font-weight:bold;color:#74531f;">Remove</span>(<span style="font-weight:bold;color:#1f377f;">key</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">byte</span>&nbsp;<span style="color:blue;">this</span>[<span style="color:#2b91af;">T</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">key</span>]
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">get</span>&nbsp;{&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;current[<span style="font-weight:bold;color:#1f377f;">key</span>];&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">set</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">l</span>&nbsp;=&nbsp;current.<span style="font-weight:bold;color:#74531f;">ToDictionary</span>(<span style="font-weight:bold;color:#1f377f;">kvp</span>&nbsp;=&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">kvp</span>.Key,&nbsp;<span style="font-weight:bold;color:#1f377f;">kvp</span>&nbsp;=&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">kvp</span>.Value);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">l</span>[<span style="font-weight:bold;color:#1f377f;">key</span>]&nbsp;=&nbsp;<span style="color:blue;">value</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#74531f;">AssertInvariants</span>(<span style="font-weight:bold;color:#1f377f;">l</span>);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;current[<span style="font-weight:bold;color:#1f377f;">key</span>]&nbsp;=&nbsp;<span style="color:blue;">value</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;<span style="font-weight:bold;color:#74531f;">Edit</span>(<span style="color:#2b91af;">IPriorityEditor</span>&lt;<span style="color:#2b91af;">T</span>&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">editor</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#74531f;">BeginEdit</span>();
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">editor</span>.<span style="font-weight:bold;color:#74531f;">EditPriorities</span>(<span style="color:blue;">this</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#74531f;">EndEdit</span>();
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">void</span>&nbsp;<span style="font-weight:bold;color:#74531f;">BeginEdit</span>()
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;isEditing&nbsp;=&nbsp;<span style="color:blue;">true</span>;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;editable.<span style="font-weight:bold;color:#74531f;">Clear</span>();
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">foreach</span>&nbsp;(<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">kvp</span>&nbsp;<span style="font-weight:bold;color:#8f08c4;">in</span>&nbsp;current)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;editable.<span style="font-weight:bold;color:#74531f;">Add</span>(<span style="font-weight:bold;color:#1f377f;">kvp</span>.Key,&nbsp;<span style="font-weight:bold;color:#1f377f;">kvp</span>.Value);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;current&nbsp;=&nbsp;editable;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">void</span>&nbsp;<span style="font-weight:bold;color:#74531f;">EndEdit</span>()
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;isEditing&nbsp;=&nbsp;<span style="color:blue;">false</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">try</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#74531f;">AssertInvariants</span>(current);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;encapsulated.<span style="font-weight:bold;color:#74531f;">Clear</span>();
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">foreach</span>&nbsp;(<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">kvp</span>&nbsp;<span style="font-weight:bold;color:#8f08c4;">in</span>&nbsp;current)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;encapsulated.<span style="font-weight:bold;color:#74531f;">Add</span>(<span style="font-weight:bold;color:#1f377f;">kvp</span>.Key,&nbsp;<span style="font-weight:bold;color:#1f377f;">kvp</span>.Value);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;current&nbsp;=&nbsp;encapsulated;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">catch</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;current&nbsp;=&nbsp;encapsulated;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">throw</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">void</span>&nbsp;<span style="font-weight:bold;color:#74531f;">AssertInvariants</span>(<span style="color:#2b91af;">IEnumerable</span>&lt;<span style="color:#2b91af;">KeyValuePair</span>&lt;<span style="color:#2b91af;">T</span>,&nbsp;<span style="color:blue;">byte</span>&gt;&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">candidate</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">if</span>&nbsp;(!isEditing&nbsp;&amp;&amp;&nbsp;<span style="font-weight:bold;color:#1f377f;">candidate</span>.<span style="font-weight:bold;color:#74531f;">Sum</span>(<span style="font-weight:bold;color:#1f377f;">kvp</span>&nbsp;=&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">kvp</span>.Value)&nbsp;!=&nbsp;100)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">throw</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">InvalidOperationException</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#a31515;">&quot;The&nbsp;sum&nbsp;of&nbsp;all&nbsp;values&nbsp;must&nbsp;be&nbsp;100.&quot;</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">IEnumerable</span>&lt;<span style="color:#2b91af;">T</span>&gt;&nbsp;Keys
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">get</span>&nbsp;{&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;current.Keys;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">IEnumerable</span>&lt;<span style="color:blue;">byte</span>&gt;&nbsp;Values
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">get</span>&nbsp;{&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;current.Values;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">int</span>&nbsp;Count
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">get</span>&nbsp;{&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;current.Count;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">bool</span>&nbsp;<span style="font-weight:bold;color:#74531f;">ContainsKey</span>(<span style="color:#2b91af;">T</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">key</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;current.<span style="font-weight:bold;color:#74531f;">ContainsKey</span>(<span style="font-weight:bold;color:#1f377f;">key</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">IEnumerator</span>&lt;<span style="color:#2b91af;">KeyValuePair</span>&lt;<span style="color:#2b91af;">T</span>,&nbsp;<span style="color:blue;">byte</span>&gt;&gt;&nbsp;<span style="font-weight:bold;color:#74531f;">GetEnumerator</span>()
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;current.<span style="font-weight:bold;color:#74531f;">GetEnumerator</span>();
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">bool</span>&nbsp;<span style="font-weight:bold;color:#74531f;">TryGetValue</span>(<span style="color:#2b91af;">T</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">key</span>,&nbsp;[<span style="color:#2b91af;">MaybeNullWhen</span>(<span style="color:blue;">false</span>)]&nbsp;<span style="color:blue;">out</span>&nbsp;<span style="color:blue;">byte</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">value</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;current.<span style="font-weight:bold;color:#74531f;">TryGetValue</span>(<span style="font-weight:bold;color:#1f377f;">key</span>,&nbsp;<span style="color:blue;">out</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">value</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">IEnumerator</span>&nbsp;<span style="color:#2b91af;">IEnumerable</span>.<span style="font-weight:bold;color:#74531f;">GetEnumerator</span>()
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="font-weight:bold;color:#74531f;">GetEnumerator</span>();
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+    </p>
+    <p>
+        The <code><span style="color:#2b91af;">IPriorityEditor</span>&lt;<span style="color:#2b91af;">T</span>&gt;</code> interface remains as shown above.
+    </p>
+    <h3 id="7994e307ceaf4857901378fe711f3ceb">
+        Conclusion <a href="#7994e307ceaf4857901378fe711f3ceb">#</a>
+    </h3>
+    <p>
+        Given how simple this problem is, this solution is surprisingly complicated, and I'm fairly sure that it's not even thread-safe.
+    </p>
+    <p>
+        At least it does, as far as I can tell, protect the invariant that the sum of priorities must always be exactly 100. Even so, it's just complicated enough that I wouldn't be surprised if a bug is lurking somewhere. It'd be nice if a simpler design existed.
+    </p>
+    <p>
+        <strong>Next:</strong> An immutable priority collection.
+    </p>
+</div>
