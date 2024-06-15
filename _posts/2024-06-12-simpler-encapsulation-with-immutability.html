@@ -195,4 +195,95 @@ image_alt: "The three sets of preconditions, postconditions, and invariants, emb
         </div>
         <div class="comment-date">2024-06-14 14:22 UTC</div>
     </div>
+
+    <div class="comment-author">Marken Foo <a href="#7c5c157868fe46f3aae343e5e145a5eb">#</a></div>
+        <div class="comment-content">
+            <p>
+                Thank you for the response. Here's my thoughts - it's a bit of a wall of text, I might be wrong in any of the following, and the conclusion may be disappointing. When you ask how I'd design the API, I'd say it depends on how the priority list is going to be used. The implementation trick with stars and bars might just be a one-off trick that happens to work here, but it doesn't (shouldn't) affect the contract with the outside world.
+            </p>
+            <p>
+                If we're considering survey questions or budgets, the interest is in the priority values. So I think the problem then <em>is</em> about a list of priorities with an aggregate constraint. So I would define... an array-like API that performs the appropriate boundary checks (wow), but for the item priorities. My approach would be to go for "private data, public functions", and rely on a legal starting state and preserving the legality through the public API. In pseudocode:
+            </p>
+            <pre>
+                type PriorityList = { budget: int; dividers: int list }
+                create :: numItems: int -> budget: int -> PriorityList
+        
+                // Returns priorities.
+                getAll :: plist: PriorityList -> int list
+                get :: itemIdx: int -> plist: PriorityList -> int
+        
+                // *Sets the priority for an item (taking the priority from other items, starting from the back).
+                set :: itemIdx: int -> priority: int -> plist: PriorityList -> PriorityList
+        
+                // *Adds a new item to (the end of) the PriorityList (with priority zero).
+                addItem :: plist: PriorityList -> PriorityList
+        
+                // *Removes an item from the PriorityList (and assigns its priority to the last item). 
+                removeItem :: itemIdx: int -> plist PriorityList -> PriorityList
+        
+                // Utility functions: see text
+                _toPriorities :: dividers: int list -> int list
+                _toDividers :: priorities: int list -> int list
+            </pre>
+            <p>
+                Crucially: since <code>set</code>, <code>addItem</code>, and <code>removeItem</code> must maintain the invariants, they must have "side effects" of altering other priorities. I think this is unavoidable here because we have aggregate/global constraints, rather than just elementwise/local constraints. (Is this why resizing rows and columns in WinForms tableLayoutPanels and MS Word tables is so tedious?) This will manifest in the API - the client needs to know what "side effects" there are (suggested behaviour in parentheses in the pseudocode comments above). See <a href="https://gist.github.com/Marken-Foo/d1e1a32afa91790f84f151c429c042cd">my crude attempt at implementation</a>.
+            </p>
+            <p>
+                You may already see where this is going. If I accept that boundary checks are needed, then my secondary goal in encapsulation is to express the constraints as clearly as possible, and hopefully not spread the checking logic all over the code.
+            </p>
+            <p>
+                Whence the utility functions: it turned out to be useful to convert from a list of dividers to priorities, and vice versa. This is because the elementwise operations/invariants like the individual priority values are easier to express in terms of raw priorities, while the aggregate ones like the total budget are easier in terms of "dividers" (the <em>cumulative</em> priorities). There is a runtime cost to the conversion, but the code becomes clearer. This smells similar to feature envy...
+            </p>
+            <p>
+                So why not just have the underlying implementation hold a list of priorities in the first place?! Almost everything in the implementation needs translation back to that anyway. D'oh! I refactored myself back to the naïve approach. The original representation seemed elegant, but I couldn't find a way to manipulate it that clients would find intuitive and useful in the given problem.
+            </p>
+            <p>
+                But... if I approach the design from the angle "what advantages does the cumulative priority model offer?", I might come up with the following candidate API functions, which could be implemented cleanly in the "divider" space:
+            </p>
+            <pre>
+                // (same type, create, get, getAll, addItem as above)
+                // Removes the item and merges its priority with the item before it.
+                merge :: ItemIdx: int -> PriorityList
+                // Sets the priority of an item to zero and gives it to the item after it.
+                collapse :: itemIdx: int -> PriorityList
+                // Swaps the priority of an item and the one after it (e.g. to "bubble" a priority value forwards or backwards, although this is easier in the "priority" space)
+                swap :: itemIdx: int -> PriorityList
+                // Sets (alternative: adds to) the priority of an item, taking the priority from the items after it in sequence ("consuming" them in the forward direction)
+                consume :: itemIdx: int -> priority: int -> PriorityList
+                // Splits the item into 2 smaller items each with half the priority (could be generalised to n items)
+                split :: ItemIdx: int -> PriorityList
+                // etc.
+            </pre>
+            <p>
+                And this seems like a more fitting API for that table column width example I keep bringing up. What's interesting to me is that despite the data structures of the budget/survey question and the table column widths being isomorphic, we can come up with rather different APIs depending on which view we consider. I think this is my main takeaway from this exploration, actually.
+            </p>
+            <p>
+                As for the additional requirements, individually each constraint is easy to handle, but their composition is tricky. If it's easy to transform an illegal PriorityList to make it respect the invariants, we can just apply the transformation after every create/set/add/remove. Something like:
+            </p>
+            <pre>
+                type PriorityList =
+                    { budget: int
+                      dividers: int list
+                      budgetCondition: int -> bool
+                      maxPriority: int
+                      minChoices: int }
+                
+                let _enforceBudget (predicate: int -> bool) (defaultBudget: int) (dividers: int list) : int list =
+                    if (List.last dividers |> predicate) then
+                        dividers
+                    else
+                        List.take (dividers.Length - 1) dividers @ [ defaultBudget ]
+        
+                let _enforceMaxPriority (maxPriority: int) (dividers: int list) : int list =
+                    _toPriorities dividers |> List.map (fun p -> min p maxPriority) |> _toDividers
+            </pre>
+            <p>
+                The problem is those transforms may not preserve each others' invariant. Life would be easy if we could write a single transform to preserve everything (I haven't found one - notice that the two above are operating on different int lists so it's tricky). Otherwise, we could write validations instead of transformations, then let create/set/add/remove fail by returning Option.None (explicitly fail) or the original list (silently fail). This comes at the cost of making the API less friendly.
+            </p>
+            <p>
+                Ultimately with this approach I can't see a way to make all illegal states unrepresentable without sprinkling ad-hoc checks everywhere in the code. The advantages of the "cumulative priorities" representation I can think of are (a) it makes the total budget invariant obvious, and (b) it maps nicely to a UI where you click and drag segments around. Since you might have gone down a different path in the series, I'm curious to see how that shapes up.
+            </p>
+        </div>
+        <div class="comment-date">2024-06-15 14:48 UTC</div>
+    </div>
 </div>
