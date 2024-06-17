@@ -1,0 +1,298 @@
+---
+layout: post
+title: "A failed attempt at priority collection with inheritance"
+description: "An instructive dead end."
+date: 2024-06-12 6:57 UTC
+tags: [Software Design]
+---
+{% include JB/setup %}
+
+<div id="post">
+    <p>
+        <em>{{ page.description }}</em>
+    </p>
+    <p>
+        This article is part of <a href="/2024/06/12/simpler-encapsulation-with-immutability">a short series on encapsulation and immutability</a>. As the introductory article claims, object mutation makes it difficult to maintain invariants. In order to demonstrate the problem, I deliberately set out to do it wrong, and report on the result.
+    </p>
+    <p>
+        In subsequent articles in this series I will then show one way you can maintain the invariants in the face of mutation, as well as how much easier everything becomes if you choose an immutable design.
+    </p>
+    <p>
+        For now, however, I'll pretend to be naive and see how far I can get with that.
+    </p>
+    <p>
+        In the first article, I described the example problem in more details, but in short, the exercise is to develop a class that holds a collection of prioritized items, with the invariant that the priorities must always sum to 100. It should be impossible to leave the object in a state where that's not true. It's quite an illuminating exercise, so if you have the time, you should try it for yourself before reading on.
+    </p>
+    <h3 id="e5060f80472a46a7b5aac3061558f993">
+        Initialization <a href="#e5060f80472a46a7b5aac3061558f993">#</a>
+    </h3>
+    <p>
+        In object-oriented design it's common to inherit from a base class. Since I'll try to implement a collection of prioritized items, it seems natural to inherit from <a href="https://learn.microsoft.com/dotnet/api/system.collections.objectmodel.collection-1">Collection&lt;T&gt;</a>:
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">sealed</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">PriorityCollection</span>&lt;<span style="color:#2b91af;">T</span>&gt;&nbsp;:&nbsp;<span style="color:#2b91af;">Collection</span>&lt;<span style="color:#2b91af;">Prioritized</span>&lt;<span style="color:#2b91af;">T</span>&gt;&gt;</pre>
+    </p>
+    <p>
+        Of course, I also had to define <code><span style="color:#2b91af;">Prioritized</span>&lt;<span style="color:#2b91af;">T</span>&gt;</code>:
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">sealed</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">Prioritized</span>&lt;<span style="color:#2b91af;">T</span>&gt;
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">Prioritized</span>(<span style="color:#2b91af;">T</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">item</span>,&nbsp;<span style="color:blue;">byte</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">priority</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Item&nbsp;=&nbsp;<span style="font-weight:bold;color:#1f377f;">item</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Priority&nbsp;=&nbsp;<span style="font-weight:bold;color:#1f377f;">priority</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">T</span>&nbsp;Item&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;<span style="color:blue;">set</span>;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">byte</span>&nbsp;Priority&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;<span style="color:blue;">set</span>;&nbsp;}
+}</pre>
+    </p>
+    <p>
+        Since <code><span style="color:#2b91af;">Prioritized</span>&lt;<span style="color:#2b91af;">T</span>&gt;</code> is generic, it can be used to prioritize any kind of object. In the tests I wrote, however, I exclusively used strings.
+    </p>
+    <p>
+        A priority is a number between 0 and 100, so I chose to represent that with a <code>byte</code>. Not that this strongly protects invariants, because values can still exceed 100, but on the other hand, there's no reason to use a 32-bit integer to model a number between 0 and 100.
+    </p>
+    <p>
+        Now that I write this text, I realize that I could have added a Guard Clause to the <code><span style="color:#2b91af;">Prioritized</span>&lt;<span style="color:#2b91af;">T</span>&gt;</code> constructor to enforce that precondition, but as you can tell, I didn't think of doing that. This omission, however, doesn't change the conclusion, because the problems that we'll run into stems from another source.
+    </p>
+    <p>
+        In any case, just inheriting from <code><span style="color:#2b91af;">Collection</span>&lt;<span style="color:#2b91af;">Prioritized</span>&lt;<span style="color:#2b91af;">T</span>&gt;&gt;</code> isn't enough to guarantee the invariant that the sum of priorities must be 100. An invariant must always hold, even for a newly initialized object. Thus, we need something like this ensure that this is the case:
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">sealed</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">PriorityCollection</span>&lt;<span style="color:#2b91af;">T</span>&gt;&nbsp;:&nbsp;<span style="color:#2b91af;">Collection</span>&lt;<span style="color:#2b91af;">Prioritized</span>&lt;<span style="color:#2b91af;">T</span>&gt;&gt;
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">PriorityCollection</span>(<span style="color:blue;">params</span>&nbsp;<span style="color:#2b91af;">Prioritized</span>&lt;<span style="color:#2b91af;">T</span>&gt;[]&nbsp;<span style="font-weight:bold;color:#1f377f;">priorities</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;:&nbsp;<span style="color:blue;">base</span>(<span style="font-weight:bold;color:#1f377f;">priorities</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#74531f;">AssertSumIsOneHundred</span>();
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">void</span>&nbsp;<span style="font-weight:bold;color:#74531f;">AssertSumIsOneHundred</span>()
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">if</span>&nbsp;(<span style="color:blue;">this</span>.<span style="font-weight:bold;color:#74531f;">Sum</span>(<span style="font-weight:bold;color:#1f377f;">p</span>&nbsp;=&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">p</span>.Priority)&nbsp;!=&nbsp;100)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">throw</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">InvalidOperationException</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#a31515;">&quot;The&nbsp;sum&nbsp;of&nbsp;all&nbsp;priorities&nbsp;must&nbsp;be&nbsp;100.&quot;</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+    </p>
+    <p>
+        So far, there's no real need to have a separate <code>AssertSumIsOneHundred</code> helper method; I could have kept that check in the constructor, and that would have been simpler. I did, however, anticipate that I'd need the helper method in other parts of the code base. As it turned out, I did, but not without having to change it.
+    </p>
+    <h3 id="1326a8ef64124d138a084c4511f3899a">
+        Protecting overrides <a href="#1326a8ef64124d138a084c4511f3899a">#</a>
+    </h3>
+    <p>
+        The <code>Collection&lt;T&gt;</code> base class offers normal collection methods like <a href="https://learn.microsoft.com/dotnet/api/system.collections.objectmodel.collection-1.add">Add</a>, <a href="https://learn.microsoft.com/dotnet/api/system.collections.objectmodel.collection-1.insert">Insert</a>, <a href="https://learn.microsoft.com/dotnet/api/system.collections.objectmodel.collection-1.remove">Remove</a> and so on. The default implementation allows client code to make arbitrary changes to the collection, including <a href="https://learn.microsoft.com/dotnet/api/system.collections.objectmodel.collection-1.clear">clearing it</a>. The <code><span style="color:#2b91af;">PriorityCollection</span>&lt;<span style="color:#2b91af;">T</span>&gt;</code> class can't allow that, because such edits could easily violate the invariants.
+    </p>
+    <p>
+        <code>Collection&lt;T&gt;</code> is explicitly designed to be a base class, so it offers various <code>virtual</code> methods that inheritors can override to change the behaviour. In this case, this is necessary.
+    </p>
+    <p>
+        As it turned out, I quickly realized that I had to change my assertion helper method to check the invariant in various cases:
+    </p>
+    <p>
+        <pre><span style="color:blue;">private</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:blue;">void</span>&nbsp;<span style="color:#74531f;">AssertSumIsOneHundred</span>(<span style="color:#2b91af;">IEnumerable</span>&lt;<span style="color:#2b91af;">Prioritized</span>&lt;<span style="color:#2b91af;">T</span>&gt;&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">priorities</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">if</span>&nbsp;(<span style="font-weight:bold;color:#1f377f;">priorities</span>.<span style="font-weight:bold;color:#74531f;">Sum</span>(<span style="font-weight:bold;color:#1f377f;">p</span>&nbsp;=&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">p</span>.Priority)&nbsp;!=&nbsp;100)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">throw</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">InvalidOperationException</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#a31515;">&quot;The&nbsp;sum&nbsp;of&nbsp;all&nbsp;priorities&nbsp;must&nbsp;be&nbsp;100.&quot;</span>);
+}</pre>
+    </p>
+    <p>
+        By taking the sequence of <code>priorities</code> as an input argument, this enables me to simulate what would happen if I make a change to the actual collection, for example when adding an item to the collection:
+    </p>
+    <p>
+        <pre><span style="color:blue;">protected</span>&nbsp;<span style="color:blue;">override</span>&nbsp;<span style="color:blue;">void</span>&nbsp;<span style="font-weight:bold;color:#74531f;">InsertItem</span>(<span style="color:blue;">int</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">index</span>,&nbsp;<span style="color:#2b91af;">Prioritized</span>&lt;<span style="color:#2b91af;">T</span>&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">item</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#74531f;">AssertSumIsOneHundred</span>(<span style="color:blue;">this</span>.<span style="font-weight:bold;color:#74531f;">Append</span>(<span style="font-weight:bold;color:#1f377f;">item</span>));
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">base</span>.<span style="font-weight:bold;color:#74531f;">InsertItem</span>(<span style="font-weight:bold;color:#1f377f;">index</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">item</span>);
+}</pre>
+    </p>
+    <p>
+        By using <a href="https://learn.microsoft.com/dotnet/api/system.linq.enumerable.append">Append</a>, the <code>InsertItem</code> method creates a sequence of values that simulates what the collection would look like if we add the candidate <code>item</code>. The <code>Append</code> function returns a new collection, so this operation doesn't change the actual <code><span style="color:#2b91af;">PriorityCollection</span>&lt;<span style="color:#2b91af;">T</span>&gt;</code>. This only happens if we get past the assertion and call <code>InsertItem</code>.
+    </p>
+    <p>
+        Likewise, I can protect the invariant in the other overrides:
+    </p>
+    <p>
+        <pre><span style="color:blue;">protected</span>&nbsp;<span style="color:blue;">override</span>&nbsp;<span style="color:blue;">void</span>&nbsp;<span style="font-weight:bold;color:#74531f;">RemoveItem</span>(<span style="color:blue;">int</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">index</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">l</span>&nbsp;=&nbsp;<span style="color:blue;">this</span>.ToList();
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">l</span>.RemoveAt(<span style="font-weight:bold;color:#1f377f;">index</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#74531f;">AssertSumIsOneHundred</span>(<span style="font-weight:bold;color:#1f377f;">l</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">base</span>.<span style="font-weight:bold;color:#74531f;">RemoveItem</span>(<span style="font-weight:bold;color:#1f377f;">index</span>);
+}
+ 
+<span style="color:blue;">protected</span>&nbsp;<span style="color:blue;">override</span>&nbsp;<span style="color:blue;">void</span>&nbsp;<span style="font-weight:bold;color:#74531f;">SetItem</span>(<span style="color:blue;">int</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">index</span>,&nbsp;Prioritized&lt;<span style="color:#2b91af;">T</span>&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">item</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">l</span>&nbsp;=&nbsp;<span style="color:blue;">this</span>.ToList();
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">l</span>[<span style="font-weight:bold;color:#1f377f;">index</span>]&nbsp;=&nbsp;<span style="font-weight:bold;color:#1f377f;">item</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#74531f;">AssertSumIsOneHundred</span>(<span style="font-weight:bold;color:#1f377f;">l</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">base</span>.<span style="font-weight:bold;color:#74531f;">SetItem</span>(<span style="font-weight:bold;color:#1f377f;">index</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">item</span>);
+}</pre>
+    </p>
+    <p>
+        I can even use it in the implementation of <code>ClearItems</code>, although that may seem a tad redundant:
+    </p>
+    <p>
+        <pre><span style="color:blue;">protected</span>&nbsp;<span style="color:blue;">override</span>&nbsp;<span style="color:blue;">void</span>&nbsp;<span style="font-weight:bold;color:#74531f;">ClearItems</span>()
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#74531f;">AssertSumIsOneHundred</span>([]);
+}</pre>
+    </p>
+    <p>
+        I could also just have thrown an exception directly from this method, since it's never okay to clear the collection. This would violate the invariant, because the sum of an empty collection of priorities is zero.
+    </p>
+    <p>
+        As far as I recall, the entire API of <code>Collection&lt;T&gt;</code> is (transitively) based on those four <code>virtual</code> methods, so now that I've protected the invariant in all four, the <code><span style="color:#2b91af;">PriorityCollection</span>&lt;<span style="color:#2b91af;">T</span>&gt;</code> class maintains the invariant, right?
+    </p>
+    <p>
+        Not yet. See if you can spot the problem.
+    </p>
+    <p>
+        There are, in fact, at least two remaining problems. One that we can recover from, and one that is insurmountable with this design. I'll get back to the serious problem later, but see if you can spot it already.
+    </p>
+    <h3 id="0179acb780534b558c947b35c7f9c137">
+        Leaf mutation <a href="#0179acb780534b558c947b35c7f9c137">#</a>
+    </h3>
+    <p>
+        In the <a href="/2024/06/12/simpler-encapsulation-with-immutability">introductory article</a> I wrote:
+    </p>
+    <blockquote>
+        <p>
+            "If the mutation happens on a leaf node in an object graph, the leaf may have to notify its parent, so that the parent can recheck the invariants."
+        </p>
+    </blockquote>
+    <p>
+        I realize that this may sound abstract, but the current code presents a simple example. What happens if you change the <code>Priority</code> of an item after you've initialized the collection?
+    </p>
+    <p>
+        Consider the following example. For various reasons, I wrote the examples (that is, the unit tests) for this exercise in <a href="https://fsharp.org/">F#</a>, but even if you're not an F# developer, you can probably understand what's going on. First, we create a <code><span style="color:#2b91af;">Prioritized</span>&lt;<span style="color:#2b91af;">string</span>&gt;</code> object and use it to initialize a <code><span style="color:#2b91af;">PriorityCollection</span>&lt;<span style="color:#2b91af;">string</span>&gt;</code> object <a href="/2020/11/30/name-by-role">named sut</a>:
+    </p>
+    <p>
+        <pre><span style="color:blue;">let</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">item</span>&nbsp;=&nbsp;<span style="color:#2b91af;">Prioritized</span>&lt;<span style="color:#2b91af;">string</span>&gt;&nbsp;(<span style="color:#a31515;">&quot;foo&quot;</span>,&nbsp;40uy)
+<span style="color:blue;">let</span>&nbsp;<span style="color:#1f377f;">sut</span>&nbsp;=&nbsp;<span style="color:#2b91af;">PriorityCollection</span>&lt;<span style="color:#2b91af;">string</span>&gt;&nbsp;(<span style="font-weight:bold;color:#1f377f;">item</span>,&nbsp;<span style="color:#2b91af;">Prioritized</span>&lt;<span style="color:#2b91af;">string</span>&gt;&nbsp;(<span style="color:#a31515;">&quot;bar&quot;</span>,&nbsp;60uy))</pre>
+    </p>
+    <p>
+        The <code>item</code> has a priority of <code>40</code> (the <code>uy</code> suffix is <a href="https://learn.microsoft.com/dotnet/fsharp/language-reference/literals">the F# way of stating that the literal is a <code>byte</code></a>), and the other unnamed value has a priority of <code>60</code>, so all is good so far; the sum is 100.
+    </p>
+    <p>
+        Since, however, <code>item</code> is a mutable object, we can now change its <code>Priority</code>:
+    </p>
+    <p>
+        <pre><span style="font-weight:bold;color:#1f377f;">item</span>.Priority&nbsp;<span style="color:blue;">&lt;-</span>&nbsp;50uy</pre>
+    </p>
+    <p>
+        This changes <code>item.Priority</code> to 50, but since none of the four <code>virtual</code> base class methods of <code>Collection&lt;T&gt;</code> are involved, the <code>sut</code> never notices, the assertion never runs, and the object is now in an invalid state.
+    </p>
+    <p>
+        That's what I meant when I discussed mutations in leaf nodes. You can think of a collection as a rather flat and boring <a href="https://en.wikipedia.org/wiki/Tree_(data_structure)">tree</a>. The collection object itself is the root, and each of the items are leaves, and no further nesting is allowed.
+    </p>
+    <p>
+        When you edit a leaf, the root isn't automatically aware of such an event. You explicitly have to wire the object graph up so that this happens.
+    </p>
+    <h3 id="2edbce9f883448e89d118233bfceefef">
+        Event propagation <a href="#2edbce9f883448e89d118233bfceefef">#</a>
+    </h3>
+    <p>
+        One possible way to address this issue is to take advantage of .NET's event system. If you're reading along, but you normally write in another language, you can also use the <a href="https://en.wikipedia.org/wiki/Observer_pattern">Observer pattern</a>, or even <a href="https://reactivex.io/">ReactiveX</a>.
+    </p>
+    <p>
+        We need to have <code><span style="color:#2b91af;">Prioritized</span>&lt;<span style="color:#2b91af;">T</span>&gt;</code> raise events, and one option is to let it implement <a href="https://learn.microsoft.com/dotnet/api/system.componentmodel.inotifypropertychanging">INotifyPropertyChanging</a>:
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">sealed</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">Prioritized</span>&lt;<span style="color:#2b91af;">T</span>&gt;&nbsp;:&nbsp;<span style="color:#2b91af;">INotifyPropertyChanging</span></pre>
+    </p>
+    <p>
+        A <code><span style="color:#2b91af;">Prioritized</span>&lt;<span style="color:#2b91af;">T</span>&gt;</code> object can now raise its <code>PropertyChanging</code> event before accepting an edit:
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">byte</span>&nbsp;Priority
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">get</span>&nbsp;=&gt;&nbsp;priority;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">set</span>
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">if</span>&nbsp;(PropertyChanging&nbsp;<span style="color:blue;">is</span>&nbsp;{&nbsp;})
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;PropertyChanging(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">PriorityChangingEventArgs</span>(<span style="color:blue;">value</span>));
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;priority&nbsp;=&nbsp;<span style="color:blue;">value</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+    </p>
+    <p>
+        where <code>PriorityChangingEventArgs</code> is a little helper class that carries the proposed <code>value</code> around:
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">PriorityChangingEventArgs</span>(<span style="color:blue;">byte</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">proposal</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;:&nbsp;<span style="color:#2b91af;">PropertyChangingEventArgs</span>(<span style="color:blue;">nameof</span>(Priority))
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">byte</span>&nbsp;Proposal&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;}&nbsp;=&nbsp;<span style="font-weight:bold;color:#1f377f;">proposal</span>;
+}</pre>
+    </p>
+    <p>
+        A <code><span style="color:#2b91af;">PriorityCollection</span>&lt;<span style="color:#2b91af;">T</span>&gt;</code> object can now subscribe to that even on each of the values it keeps track of, so that it can protect the invariant against leaf node mutations.
+    </p>
+    <p>
+        <pre><span style="color:blue;">private</span>&nbsp;<span style="color:blue;">void</span>&nbsp;<span style="font-weight:bold;color:#74531f;">Priority_PropertyChanging</span>(<span style="color:blue;">object</span>?&nbsp;<span style="font-weight:bold;color:#1f377f;">sender</span>,&nbsp;<span style="color:#2b91af;">PropertyChangingEventArgs</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">e</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">if</span>&nbsp;(<span style="font-weight:bold;color:#1f377f;">sender</span>&nbsp;<span style="color:blue;">is</span>&nbsp;<span style="color:#2b91af;">Prioritized</span>&lt;<span style="color:#2b91af;">T</span>&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">p</span>&nbsp;&amp;&amp;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">e</span>&nbsp;<span style="color:blue;">is</span>&nbsp;<span style="color:#2b91af;">Prioritized</span>&lt;<span style="color:#2b91af;">T</span>&gt;.<span style="color:#2b91af;">PriorityChangingEventArgs</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">pcea</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">l</span>&nbsp;=&nbsp;<span style="color:blue;">this</span>.<span style="font-weight:bold;color:#74531f;">ToList</span>();
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">l</span>[<span style="font-weight:bold;color:#1f377f;">l</span>.<span style="font-weight:bold;color:#74531f;">IndexOf</span>(<span style="font-weight:bold;color:#1f377f;">p</span>)]&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Prioritized</span>&lt;<span style="color:#2b91af;">T</span>&gt;(<span style="font-weight:bold;color:#1f377f;">p</span>.Item,&nbsp;<span style="font-weight:bold;color:#1f377f;">pcea</span>.Proposal);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#74531f;">AssertSumIsOneHundred</span>(<span style="font-weight:bold;color:#1f377f;">l</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+    </p>
+    <p>
+        Such a solution comes with its own built-in complexity, because the <code><span style="color:#2b91af;">PriorityCollection</span>&lt;<span style="color:#2b91af;">T</span>&gt;</code> class must be careful to subscribe to the <code>PropertyChanging</code> event in various different places. A new <code><span style="color:#2b91af;">Prioritized</span>&lt;<span style="color:#2b91af;">T</span>&gt;</code> object may be added to the collection during initialization, or via the <code>InsertItem</code> or <code>SetItem</code> methods. Furthermore, the collection should make sure to unsubscribe from the event if an item is removed from the collection.
+    </p>
+    <p>
+        To be honest, I didn't bother to implement these extra checks, because the point is moot anyway.
+    </p>
+    <h3 id="bebd0dc43a03466e9709a551bbd563ba">
+        Fatal flaw <a href="#bebd0dc43a03466e9709a551bbd563ba">#</a>
+    </h3>
+    <p>
+        The design shown here comes with a fatal flaw. Can you tell what it is?
+    </p>
+    <p>
+        Since the invariant is that the priorities must always sum to exactly 100, it's impossible to add, remove, or change any items after initialization.
+    </p>
+    <p>
+        Or, rather, you can add new <code><span style="color:#2b91af;">Prioritized</span>&lt;<span style="color:#2b91af;">T</span>&gt;</code> objects as long as their <code>Priority</code> is 0. Any other value breaks the invariant.
+    </p>
+    <p>
+        Likewise, the only item you can remove is one with a <code>Priority</code> of 0. Again, if you remove an item with any other <code>Priority</code>, you'd be violating the invariant.
+    </p>
+    <p>
+        A similar situation arises with editing an existing item. While you can change the <code>Priority</code> of an item, you can only 'change' it to the same value. So you can change 0 to 0, 42 to 42, or 100 to 100, but that's it.
+    </p>
+    <p>
+        <em>But</em>, I can hear you say, <em>I'll only change 60 to 40 because I intend to add a new item with a 20 priority! In the end, the sum will be 100!</em>
+    </p>
+    <p>
+        Yes, but this design doesn't know that, and you have no way of telling it.
+    </p>
+    <p>
+        While we may be able to rectify the situation, I consider this design so compromised that I think it better to start afresh with this realization. Thus, I'll abandon this version of <code><span style="color:#2b91af;">PriorityCollection</span>&lt;<span style="color:#2b91af;">T</span>&gt;</code> in favour of a fresh start in the next article.
+    </p>
+    <h3 id="6f81f5d6efb5476b9072f9d8e5b01031">
+        Conclusion <a href="#6f81f5d6efb5476b9072f9d8e5b01031">#</a>
+    </h3>
+    <p>
+        While I've titled this article "A failed attempt", the actual purpose was to demonstrate how 'aggregate' requirements make it difficult to maintain class invariants.
+    </p>
+    <p>
+        I've seen many code bases with poor encapsulation. As far as I can tell, a major reason for that is that the usual 'small-scale' object-oriented design techniques like Guard Clauses fall short when an invariant involves the interplay of multiple objects. And in real business logic, this is the rule rather than the exception.
+    </p>
+    <p>
+        Not all is lost, however. In the next article, I'll develop an alternative object-oriented solution to the priority collection problem.
+    </p>
+    <p>
+        <strong>Next:</strong> A mutable priority collection.
+    </p>
+</div>
