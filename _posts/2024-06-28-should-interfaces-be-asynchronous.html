@@ -1,0 +1,382 @@
+---
+layout: post
+title: "Should interfaces be asynchronous?"
+description: "Async and await are notorious for being contagious. Must all interfaces be Task-based, just in case?"
+date: 2024-06-28 7:27 UTC
+tags: [Architecture]
+image: "/content/binary/ports-and-adapters-dependency-graph-2.png"
+image_alt: "Ports and Adapters diagram, with arrows pointing inward."
+---
+{% include JB/setup %}
+
+<div id="post">
+    <p>
+        <em>{{ page.description }}</em>
+    </p>
+    <p>
+        I recently came across this question on Mastodon:
+    </p>
+    <blockquote>
+        <p>
+            "To async or not to async?
+        </p>
+        <p>
+            "How would you define a library interface for a service that probably will be implemented with an in memory procedure - let's say returning a mapped value to a key you registered programmatically - and a user of your API might want to implement a decorator that needs a 'long running task' - for example you want to log a msg into your db or load additional mapping from a file?
+        </p>
+        <p>
+            "Would you define the interface to return a Task&lt;string&gt; or just a string?"
+        </p>
+        <footer><cite><a href="https://fosstodon.org/@Fandermill/112613967801632197">Fandermill</a></cite></footer>
+    </blockquote>
+    <p>
+        While seemingly a simple question, it's both fundamental and turns out to have deeper implications than you may at first realize.
+    </p>
+    <h3 id="e4c03ad0436340b4b510d51e14acd794">
+        Interpretation <a href="#e4c03ad0436340b4b510d51e14acd794">#</a>
+    </h3>
+    <p>
+        Before I proceed, I'll make my interpretation of the question more concrete. This is just how I <em>interpret</em> the question, so doesn't necessarily reflect the original poster's views.
+    </p>
+    <p>
+        The post itself doesn't explicitly mention a particular language, and since several languages now have <code>async</code> and <code>await</code> features, the question may be of more general interest that a question constrained to a single language. On the other hand, in order to have something concrete to discuss, it'll be useful with some real code examples. From perusing the discussion surrounding the original post, I get the impression that the language in question may be C#. That suits me well, since it's one of the languages with which I'm most familiar, and is also a language where programmers of other C-based languages should still be able to follow along.
+    </p>
+    <p>
+        My interpretation of the implementation, then, is this:
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">sealed</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">NameMap</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;<span style="color:#2b91af;">Dictionary</span>&lt;<span style="color:#2b91af;">Guid</span>,&nbsp;<span style="color:blue;">string</span>&gt;&nbsp;knownIds&nbsp;=&nbsp;<span style="color:blue;">new</span>()
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Guid</span>(<span style="color:#a31515;">&quot;4778CA3D-FB1B-4665-AAC1-6649CEFA4F05&quot;</span>),&nbsp;<span style="color:#a31515;">&quot;Bob&quot;</span>&nbsp;},
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Guid</span>(<span style="color:#a31515;">&quot;8D3B9093-7D43-4DD2-B317-DCEE4C72D845&quot;</span>),&nbsp;<span style="color:#a31515;">&quot;Alice&quot;</span>&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;};
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">string</span>&nbsp;<span style="font-weight:bold;color:#74531f;">GetName</span>(<span style="color:#2b91af;">Guid</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">guid</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;knownIds.<span style="font-weight:bold;color:#74531f;">TryGetValue</span>(<span style="font-weight:bold;color:#1f377f;">guid</span>,&nbsp;<span style="color:blue;">out</span>&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">name</span>)&nbsp;?&nbsp;<span style="font-weight:bold;color:#1f377f;">name</span>&nbsp;:&nbsp;<span style="color:#a31515;">&quot;Trudy&quot;</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+    </p>
+    <p>
+        Nothing fancy, but, as <a href="https://fosstodon.org/@Fandermill">Fandermill</a> writes in a follow-up post:
+    </p>
+    <blockquote>
+        <p>
+            "Used examples that first came into mind, but it could be anything really."
+        </p>
+        <footer><cite><a href="https://fosstodon.org/@Fandermill/112613968890232099">Fandermill</a></cite></footer>
+    </blockquote>
+    <p>
+        The point, as I understand it, is that the intended implementation doesn't require asynchrony. A <a href="https://en.wikipedia.org/wiki/Decorator_pattern">Decorator</a>, on the other hand, may.
+    </p>
+    <p>
+        Should we, then, decide an interface like the following?
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">interface</span>&nbsp;<span style="color:#2b91af;">INameMap</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Task</span>&lt;<span style="color:blue;">string</span>&gt;&nbsp;<span style="font-weight:bold;color:#74531f;">GetName</span>(<span style="color:#2b91af;">Guid</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">guid</span>);
+}</pre>
+    </p>
+    <p>
+        If we do, the <code>NameMap</code> class can't automatically implement that interface because the return types of the two <code>GetName</code> methods don't match. What are the options?
+    </p>
+    <h3 id="9da822948cd049c0a625bb9a2c013d7b">
+        Conform <a href="#9da822948cd049c0a625bb9a2c013d7b">#</a>
+    </h3>
+    <p>
+        While the following may not be the 'best' answer, let's get the obvious solution out of the way first. Let the implementation conform to the interface:
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">sealed</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">NameMap</span>&nbsp;:&nbsp;<span style="color:#2b91af;">INameMap</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;<span style="color:#2b91af;">Dictionary</span>&lt;<span style="color:#2b91af;">Guid</span>,&nbsp;<span style="color:blue;">string</span>&gt;&nbsp;knownIds&nbsp;=&nbsp;<span style="color:blue;">new</span>()
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Guid</span>(<span style="color:#a31515;">&quot;4778CA3D-FB1B-4665-AAC1-6649CEFA4F05&quot;</span>),&nbsp;<span style="color:#a31515;">&quot;Bob&quot;</span>&nbsp;},
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Guid</span>(<span style="color:#a31515;">&quot;8D3B9093-7D43-4DD2-B317-DCEE4C72D845&quot;</span>),&nbsp;<span style="color:#a31515;">&quot;Alice&quot;</span>&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;};
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">Task</span>&lt;<span style="color:blue;">string</span>&gt;&nbsp;<span style="font-weight:bold;color:#74531f;">GetName</span>(<span style="color:#2b91af;">Guid</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">guid</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="color:#2b91af;">Task</span>.<span style="color:#74531f;">FromResult</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;knownIds.<span style="font-weight:bold;color:#74531f;">TryGetValue</span>(<span style="font-weight:bold;color:#1f377f;">guid</span>,&nbsp;<span style="color:blue;">out</span>&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">name</span>)&nbsp;?&nbsp;<span style="font-weight:bold;color:#1f377f;">name</span>&nbsp;:&nbsp;<span style="color:#a31515;">&quot;Trudy&quot;</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+    </p>
+    <p>
+        This variation of the <code>NameMap</code> class conforms to the interface by making the <code>GetName</code> method look asynchronous.
+    </p>
+    <p>
+        We may even keep the synchronous implementation around as a public method if some client code might need it:
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">sealed</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">NameMap</span>&nbsp;:&nbsp;<span style="color:#2b91af;">INameMap</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;<span style="color:#2b91af;">Dictionary</span>&lt;<span style="color:#2b91af;">Guid</span>,&nbsp;<span style="color:blue;">string</span>&gt;&nbsp;knownIds&nbsp;=&nbsp;<span style="color:blue;">new</span>()
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Guid</span>(<span style="color:#a31515;">&quot;4778CA3D-FB1B-4665-AAC1-6649CEFA4F05&quot;</span>),&nbsp;<span style="color:#a31515;">&quot;Bob&quot;</span>&nbsp;},
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Guid</span>(<span style="color:#a31515;">&quot;8D3B9093-7D43-4DD2-B317-DCEE4C72D845&quot;</span>),&nbsp;<span style="color:#a31515;">&quot;Alice&quot;</span>&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;};
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">Task</span>&lt;<span style="color:blue;">string</span>&gt;&nbsp;<span style="font-weight:bold;color:#74531f;">GetName</span>(<span style="color:#2b91af;">Guid</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">guid</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="color:#2b91af;">Task</span>.<span style="color:#74531f;">FromResult</span>(<span style="font-weight:bold;color:#74531f;">GetNameSync</span>(<span style="font-weight:bold;color:#1f377f;">guid</span>));
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">string</span>&nbsp;<span style="font-weight:bold;color:#74531f;">GetNameSync</span>(<span style="color:#2b91af;">Guid</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">guid</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;knownIds.<span style="font-weight:bold;color:#74531f;">TryGetValue</span>(<span style="font-weight:bold;color:#1f377f;">guid</span>,&nbsp;<span style="color:blue;">out</span>&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">name</span>)&nbsp;?&nbsp;<span style="font-weight:bold;color:#1f377f;">name</span>&nbsp;:&nbsp;<span style="color:#a31515;">&quot;Trudy&quot;</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+    </p>
+    <p>
+        Since C# doesn't support return-type-based overloading, we need to distinguish these two methods by giving them different names. In C# it might be more <a href="/2015/08/03/idiomatic-or-idiosyncratic">idiomatic</a> to name the asynchronous method <code>GetNameAsync</code> and the synchronous method just <code>GetName</code>, but for reasons that would be too much of a digression now, I've never much liked that naming convention. In any case, I'm not going to go in this direction for much longer, so it hardly matters how we name these two methods.
+    </p>
+    <h3 id="821f1bb35dac41eeade7c5d7b28a3b18">
+        Kinds of interfaces <a href="#821f1bb35dac41eeade7c5d7b28a3b18">#</a>
+    </h3>
+    <p>
+        Another digression is, however, quite important. Before we can look at some more code, I'm afraid that we have to perform a bit of practical ontology, as it were. It starts with the question: <em>Why do we even need interfaces?</em>
+    </p>
+    <p>
+        I should also make clear, as a digression within a digression, that by 'interface' in this context, I'm really interested in any kind of mechanism that enables you to achieve polymorphism. In languages like C# or <a href="https://www.java.com/">Java</a>, we may in fact avail ourselves of the <code>interface</code> keyword, as in the above <code>INameMap</code> example, but we may equally well use a base class or perhaps just what C# calls a <a href="https://learn.microsoft.com/dotnet/csharp/programming-guide/delegates/">delegate</a>. In other languages, we may use function or action types, or even <a href="https://en.wikipedia.org/wiki/Function_pointer">function pointers</a>.
+    </p>
+    <p>
+        Regardless of specific language constructs, there are, as far as I can tell, two kinds of interfaces:
+    </p>
+    <ul>
+        <li>Interfaces that enable variability or extensibility in behaviour.</li>
+        <li>Interfaces that mostly or exclusively exist to support automated testing.</li>
+    </ul>
+    <p>
+        While there may be some overlap between these two kinds, in my experience, the intersection between the two tends to be surprisingly small. Interfaces tend to mostly belong to one of those two categories.
+    </p>
+    <h3 id="d990222c075942ab851c1455c8efcb95">
+        Strategies and higher-order functions <a href="#d990222c075942ab851c1455c8efcb95">#</a>
+    </h3>
+    <p>
+        In design-patterns parlance, examples of the first kind are <a href="https://en.wikipedia.org/wiki/Builder_pattern">Builder</a>, <a href="https://en.wikipedia.org/wiki/State_pattern">State</a>, <a href="https://en.wikipedia.org/wiki/Chain-of-responsibility_pattern">Chain of Responsibility</a>, <a href="https://en.wikipedia.org/wiki/Template_method_pattern">Template Method</a>, and perhaps most starkly represented by the <a href="https://en.wikipedia.org/wiki/Strategy_pattern">Strategy</a> pattern. A Strategy is an encapsulated piece of behaviour that you pass around as a single 'thing' (an <em>object</em>).
+    </p>
+    <p>
+        And granted, you could also use a Strategy to access a database or make a web-service call, but that's not how the pattern was <a href="/ref/dp">originally described</a>. We'll return to that use case in the next section.
+    </p>
+    <p>
+        Rather, this kind of interface exist to enable extensibility or variability in algorithms. Typical examples (from Design Patterns) include page layout, user interface component rendering, building a maze, finding the most appropriate help topic for a given application context, and so on. If we wish to relate this kind of interface to the <a href="https://en.wikipedia.org/wiki/SOLID">SOLID</a> principles, it mostly exists to support the <a href="https://en.wikipedia.org/wiki/Open%E2%80%93closed_principle">Open-closed principle</a>.
+    </p>
+    <p>
+        A good heuristics for identifying such interfaces is to consider the Reused Abstractions Principle (Jason Gorman, 2010, I'd link to it, but the page has fallen off the internet. Use your favourite web archive to read it.) If your code base contains <em>multiple</em> production-ready implementations of the same interface, you're reusing the interface, most likely to vary the behaviour of a general-purpose data structure.
+    </p>
+    <p>
+        And before the functional-programming (FP) crowd becomes too smug: FP uses this kind of interface <em>all the time</em>. In the FP jargon, however, we rather talk about <a href="https://en.wikipedia.org/wiki/Higher-order_function">higher-order functions</a> and the interfaces we use to modify behaviour are typically modelled as functions and passed as <a href="https://en.wikipedia.org/wiki/Anonymous_function">lambda expressions</a>. So when you write <code>Cata((_,&nbsp;xs)&nbsp;=&gt;&nbsp;xs.Sum(),&nbsp;_&nbsp;=&gt;&nbsp;1)</code> (<a href="/2019/08/05/rose-tree-catamorphism">as one does</a>), you might as well just have passed a <a href="https://en.wikipedia.org/wiki/Visitor_pattern">Visitor</a> implementation to an <code>Accept</code> method.
+    </p>
+    <p>
+        This hints at a more quantifiable distinction: If the interface models something that's intended to be a <a href="https://en.wikipedia.org/wiki/Pure_function">pure function</a>, it'd typically be part of a higher-order API in FP, while we in object-oriented design (once again) lack the terminology to distinguish these interfaces from the other kind.
+    </p>
+    <p>
+        These days, in C# <a href="/2023/09/04/decomposing-ctfiyhs-sample-code-base">I mostly use these kinds of interfaces for the Visitor pattern</a>.
+    </p>
+    <h3 id="36e2464953344fa2a0b173f98bb260c9">
+        Seams <a href="#36e2464953344fa2a0b173f98bb260c9">#</a>
+    </h3>
+    <p>
+        The other kind of interface exists to afford automated testing. In <a href="/ref/wewlc">Working Effectively with Legacy Code</a>, Michael Feathers call such interfaces <em>Seams</em>. Modern object-oriented code bases often use <a href="/dippp">Dependency Injection</a> (DI) to control which Strategies are in use in a given context. The production system may use an object that communicates with a relational database, while an automated test environment might replace that with a <a href="https://martinfowler.com/bliki/TestDouble.html">Test Double</a>.
+    </p>
+    <p>
+        Yes, I wrote <em>Strategy</em>. As I suggested above, a Strategy is really a replaceable object in its purest form. When you use DI you may call all those interfaces <code>IUserRepository</code>, <code>ICommandHandler</code>, <code>IEmailGateway</code>, and so on, but they're really all Strategies.
+    </p>
+    <p>
+        Contrary to the first kind of interface, you typically only find a single production implementation of each of these interfaces. If you find more that one, the rest are usually <a href="https://en.wikipedia.org/wiki/Decorator_pattern">Decorators</a> (one that logs, one that caches, one that works as a <a href="https://martinfowler.com/bliki/CircuitBreaker.html">Circuit Breaker</a>, etc.). All other implementations will be defined in the test code as dynamic mocks or <a href="http://xunitpatterns.com/Fake%20Object.html">Fakes</a>.
+    </p>
+    <p>
+        Code bases that rely heavily on DI in order to support testing rub many people the wrong way. In 2014 <a href="https://en.wikipedia.org/wiki/David_Heinemeier_Hansson">David Heinemeier Hansson</a> published a serious criticism of such <a href="https://dhh.dk/2014/test-induced-design-damage.html">test-induced damage</a>. For the record, I agree with the criticism, but <a href="/2020/08/17/unit-testing-is-fine">not with the conclusion</a>. While I still practice test-driven development, I <a href="https://stackoverflow.blog/2022/01/03/favor-real-dependencies-for-unit-testing/">only define interfaces for true architectural dependencies</a>. So, yes, my code bases may have an <code>IReservationsRepository</code> or <code>IEmailGateway</code>, but no <code>ICommandHandler</code> or <code>IUserManager</code>.
+    </p>
+    <p>
+        The bottom line, though, is that some interfaces exist to support testing. If there's a better way to make inherently non-deterministic systems behave deterministically in a test context, I've yet to discover it.
+    </p>
+    <p>
+        (As an aside, it's worth looking into tests that adopt non-deterministic behaviour as a driving principle, or at least an unavoidable state of affairs. Property-based testing is one such approach, but I also found the article <a href="https://arialdomartini.github.io/when-im-done-i-dont-clean-up">When I'm done, I don't clean up</a> by <a href="https://arialdomartini.github.io/">Arialdo Martini</a> interesting.)
+    </p>
+    <h3 id="f8bd1ea29b2a4ddbaf6538c238ec6979">
+        Where to define interfaces <a href="#f8bd1ea29b2a4ddbaf6538c238ec6979">#</a>
+    </h3>
+    <p>
+        The reason the above distinction is important is that it fundamentally determines where interfaces should be defined. In short, the first kind of interface is part of an object model's API, and should be defined together with the API. The second kind, on the other hand, is part of a particular application's architecture, and should be defined by the client code that talks to the the interface.
+    </p>
+    <p>
+        As an example of the first kind, consider <a href="/2024/06/24/a-mutable-priority-collection">this recent example</a>, where the <code><span style="color:#2b91af;">IPriorityEditor</span>&lt;<span style="color:#2b91af;">T</span>&gt;</code> interface is part of the <code><span style="color:#2b91af;">PriorityCollection</span>&lt;<span style="color:#2b91af;">T</span>&gt;</code> API. You <em>must</em> ship the interface together with the class, because the <code>Edit</code> method takes an interface implementation as an argument. It's how client code interacts with the API.
+    </p>
+    <p>
+        Another example is <a href="/2023/12/25/serializing-restaurant-tables-in-c">this Table class</a> that comes with an <code>ITableVisitor&lt;T&gt;</code> interface. In both cases, we'd expect interface implementations to be deterministic. These interfaces don't exist to support automated testing, but rather to afford a flexible programming model.
+    </p>
+    <p>
+        For the sake of argument, imagine that you package such APIs in reusable libraries that you publish via a package manager. In that case, it's obvious that the interface is as much part of the package as the class.
+    </p>
+    <p>
+        Contrast this with the other kind of interface, as described in the article <a href="/2023/09/04/decomposing-ctfiyhs-sample-code-base">Decomposing CTFiYH's sample code base</a> or showcased in the article <a href="/2019/04/01/an-example-of-state-based-testing-in-c">An example of state-based testing in C#</a>. In the latter example, the interfaces <code>IUserReader</code> and <code>IUserRepository</code> are <em>not</em> part of any pre-packaged library. Rather, they are defined by the application code to support application-specific needs.
+    </p>
+    <p>
+        This may be even more evident if you contemplate the diagram in <a href="/2019/04/01/an-example-of-state-based-testing-in-c">An example of state-based testing in C#</a>. Interfaces like <code>IPostOffice</code> and <code>IReservationsRepository</code> only exist to support the application. Following the <a href="https://en.wikipedia.org/wiki/Dependency_inversion_principle">Dependency Inversion Principle</a>
+    </p>
+    <blockquote>
+        <p>
+            "clients [...] own the abstract interfaces"
+        </p>
+        <footer><cite>Robert C. Martin, <a href="/ref/appp">APPP</a>, chapter 11</cite></footer>
+    </blockquote>
+    <p>
+        In these code bases, only the Controllers (or rather the tests that exercise them) need these interfaces, so the Controllers get to define them.
+    </p>
+    <h3 id="8674154df1bf4c22b59f1fd3baf5996e">
+        Should it be asynchronous, then? <a href="#8674154df1bf4c22b59f1fd3baf5996e">#</a>
+    </h3>
+    <p>
+        Okay, so should <code>INameMap.GetName</code> return <code><span style="color:blue;">string</span></code> or <code><span style="color:#2b91af;">Task</span>&lt;<span style="color:blue;">string</span>&gt;</code>, then?
+    </p>
+    <p>
+        Hopefully, at this point, it should be clear that the answer depends on what kind of interface it is.
+    </p>
+    <p>
+        If it's the first kind, the return type should support the requirements of the API. If the object model doesn't need the return type to be asynchronous, it shouldn't be.
+    </p>
+    <p>
+        If it's the second kind of interface, the application code decides what <em>it</em> needs, and defines the interface accordingly.
+    </p>
+    <p>
+        In neither case, however, is it the concrete class' responsibility to second-guess what client code might need.
+    </p>
+    <p>
+        <em>But client code may need the method to be asynchronous. What's the harm of returning <code><span style="color:#2b91af;">Task</span>&lt;<span style="color:blue;">string</span>&gt;</code>, just in case?</em>
+    </p>
+    <p>
+        The problem, as you may well be aware, is that the asynchronous programming model is contagious. Once you've made an API asynchronous, you can't easily make it synchronous, whereas if you have a synchronous API, you can easily make it asynchronous. This follows from <a href="http://en.wikipedia.org/wiki/Postel%27s_law">Postel's law</a>, in this case, be conservative with what you send.
+    </p>
+    <h3 id="17aebf480ad4468cac7eb1045dfa6041">
+        Library API <a href="#17aebf480ad4468cac7eb1045dfa6041">#</a>
+    </h3>
+    <p>
+        Imagine, for the sake of argument that the <code>NameMap</code> class is defined in a reusable library, wrapped in a package and imported into your code base via a package manager (NuGet, Maven, pip, NPM, Hackage, RubyGems, etc.).
+    </p>
+    <p>
+        Clearly it shouldn't implement any interface in order to 'support unit testing', since such interfaces should be defined by application code.
+    </p>
+    <p>
+        It <em>could</em> implement one or more 'extensibility' interfaces, if such interfaces are part of the wider API offered by the library. In the case of the <code>NameMap</code> class, we don't really know if that's the case. To complete this part of the argument, then, I'd just leave it as shown in the first code example, shown above. It doesn't need to implement any interface, and <code>GetName</code> can just return <code>string</code>.
+    </p>
+    <h3 id="66d0c20621ef43e5808f589a30314d6f">
+        Domain Model <a href="#66d0c20621ef43e5808f589a30314d6f">#</a>
+    </h3>
+    <p>
+        What if, instead of an external library, the <code>NameMap</code> class is part of an application's Domain Model?
+    </p>
+    <p>
+        In that case, you <em>could</em> define application-level interfaces as part of the Domain Model. In fact, most people do. Even so, I'd recommend that you don't, at least if you're aiming for a <a href="https://www.destroyallsoftware.com/screencasts/catalog/functional-core-imperative-shell">Functional Core, Imperative Shell</a> architecture, a <a href="/2018/11/19/functional-architecture-a-definition">functional architecture</a>, or even a <a href="/2013/12/03layers-onions-ports-adapters-its-all-the-same">Ports and Adapters</a> or, if you will, <a href="/ref/clean-architecture">Clean Architecture</a>. The interfaces that exist only to support testing are application concerns, so keep them out of the Domain Model and instead define them in the Application Model.
+    </p>
+    <p>
+        <img src="/content/binary/ports-and-adapters-dependency-graph-2.png" alt="Ports and Adapters diagram, with arrows pointing inward.">
+    </p>
+    <p>
+        You don't have to follow my advice. If you want to define interfaces in the Domain Model, I can't stop you. But what if, as I recommend, you define application-specific interfaces in the Application Model? If you do that, your <code>NameMap</code> Domain Model can't implement your <code>INameMap</code> interface, because the dependencies point the other way, and most languages will not allow circular dependencies.
+    </p>
+    <p>
+        In that case, what do you do if, as the original toot suggested, you need to Decorate the <code>GetName</code> method with some asynchronous behaviour?
+    </p>
+    <p>
+        You can always introduce an <a href="https://en.wikipedia.org/wiki/Adapter_pattern">Adapter</a>:
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">sealed</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">NameMapAdapter</span>&nbsp;:&nbsp;<span style="color:#2b91af;">INameMap</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;<span style="color:#2b91af;">NameMap</span>&nbsp;imp;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">NameMapAdapter</span>(<span style="color:#2b91af;">NameMap</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">imp</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.imp&nbsp;=&nbsp;<span style="font-weight:bold;color:#1f377f;">imp</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">Task</span>&lt;<span style="color:blue;">string</span>&gt;&nbsp;<span style="font-weight:bold;color:#74531f;">GetName</span>(<span style="color:#2b91af;">Guid</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">guid</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="color:#2b91af;">Task</span>.<span style="color:#74531f;">FromResult</span>(imp.<span style="font-weight:bold;color:#74531f;">GetName</span>(<span style="font-weight:bold;color:#1f377f;">guid</span>));
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+    </p>
+    <p>
+        Now any <code>NameMap</code> object can look like an <code>INameMap</code>. This is exactly the kind of problem that the Adapter pattern addresses.
+    </p>
+    <p>
+        <em>But,</em> you say, <em>that's too much trouble! I don't want to have to maintain two classes that are almost identical.</em>
+    </p>
+    <p>
+        I understand the concern, and it may even be appropriate. Maybe you're right. As usual, I don't really intend this article to be prescriptive. Rather, I'm offering ideas for your consideration, and you can choose to adopt them or ignore them as it best fits your context.
+    </p>
+    <p>
+        When it comes to whether or not an Adapter is an unwarranted extra complication, I'll return to that topic later in this article.
+    </p>
+    <h3 id="f51b8986514046e989556923bc19a063">
+        Application Model <a href="#f51b8986514046e989556923bc19a063">#</a>
+    </h3>
+    <p>
+        The final architectural option is when the concrete <code>NameMap</code> class is part of the Application Model, where you'd also define the application-specific <code>INameMap</code> interface. In that case, we must assume that the <code>NameMap</code> class implements some application-specific concern. If you want it to implement an interface so that you can wrap it in a Decorator, then do that. This means that the <code>GetName</code> method must conform to the interface, and if that means that it must be asynchronous, then so be it.
+    </p>
+    <p>
+        As <a href="https://en.wikipedia.org/wiki/Kent_Beck">Kent Beck</a> wrote in a Facebook article that used to be accessible without a Facebook account (but isn't any longer):
+    </p>
+    <blockquote>
+        <p>
+            "Things that change at the same rate belong together. Things that change at different rates belong apart."
+        </p>
+        <footer><cite><a href="https://www.facebook.com/notes/kent-beck/naming-from-the-outside-in/464270190272517">Naming From the Outside In</a>, Kent Beck, Facebook, 2012</cite></footer>
+    </blockquote>
+    <p>
+        If the concrete <code>NameMap</code> class and the <code>INameMap</code> interface are both part of the application model, it's not unreasonable to guess that they may change together. (Do be mindful of <a href="https://en.wikipedia.org/wiki/Shotgun_surgery">Shotgun Surgery</a>, though. If you expect the interface and the concrete class to frequently change, then perhaps another design might be more appropriate.)
+    </p>
+    <h3 id="9cf2a82474ea4af49b7f5b556a1e7fce">
+        Easier Adapters <a href="#9cf2a82474ea4af49b7f5b556a1e7fce">#</a>
+    </h3>
+    <p>
+        Before concluding this article, let's revisit the topic of introducing an Adapter for the sole purpose of 'architectural purity'. Should you really go to such lengths only to 'do it right'? You decide, but
+    </p>
+    <blockquote>
+        <p>
+            You can only be pragmatic if you know how to be dogmatic.
+        </p>
+        <footer><cite><a href="/2018/11/12/what-to-test-and-not-to-test">What to test and not to test</a></cite>, me</footer>
+    </blockquote>
+    <p>
+        I'm presenting a dogmatic solution for your consideration, so that you know what it might look like. Would I follow my own 'dogmatic' advice? Yes, I usually do, but then, <a href="/2020/03/23/repeatable-execution">I wouldn't log the return value of a pure function</a>, so I wouldn't introduce an interface for <em>that</em> purpose, at least. To be fair to Fandermill, he or she also wrote: "or load additional mapping from a file", which could be an appropriate motivation for introducing an interface. I'd probably go with an Adapter in that case.
+    </p>
+    <p>
+        Whether or not an Adapter is an unwarranted complication depends, however, on language specifics. In high-<a href="/2019/12/16/zone-of-ceremony">ceremony</a> languages like C#, Java, or <a href="https://en.wikipedia.org/wiki/C%2B%2B">C++</a>, adding an Adapter involves at least one new file, and dozens of lines of code.
+    </p>
+    <p>
+        Consider, on the other hand, a low-ceremony language like <a href="https://www.haskell.org/">Haskell</a>. The corresponding <code>getName</code> function might close over a statically defined map and have the type <code><span style="color:#2b91af;">getName</span>&nbsp;<span style="color:blue;">::</span>&nbsp;<span style="color:blue;">UUID</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:#2b91af;">String</span></code>.
+    </p>
+    <p>
+        How do you adapt such a pure function to an API that returns <a href="/2020/06/08/the-io-container">IO</a> (which is <a href="/2020/07/27/task-asynchronous-programming-as-an-io-surrogate"><em>roughly</em> comparable to task-based programming</a>)? Trivially:
+    </p>
+    <p>
+        <pre><span style="color:#2b91af;">getNameM</span>&nbsp;<span style="color:blue;">::</span>&nbsp;<span style="color:blue;">Monad</span>&nbsp;m&nbsp;<span style="color:blue;">=&gt;</span>&nbsp;<span style="color:blue;">UUID</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;m&nbsp;<span style="color:#2b91af;">String</span>
+getNameM&nbsp;=&nbsp;<span style="color:blue;">return</span>&nbsp;.&nbsp;getName</pre>
+    </p>
+    <p>
+        For didactic purposes I have here shown the 'Adapter' as an explicit function, but in idiomatic Haskell I'd consider this below the <a href="https://wiki.haskell.org/Fairbairn_threshold">Fairbairn threshold</a>; I'd usually just inline the composition <code><span style="color:blue;">return</span>&nbsp;.&nbsp;getName</code> if I needed to adapt the <code>getName</code> function to the <a href="/2022/04/04/kleisli-composition">Kleisli</a> category.
+    </p>
+    <p>
+        You can do the same in <a href="https://fsharp.org/">F#</a>, where the composition would be <code><span style="color:#74531f;">getName</span> &gt;&gt; <span style="color:#2b91af;">Task</span>.<span style="color:#74531f;">FromResult</span></code>. F# compositions usually go in the (for Westerners) intuitive left-to-right directions, whereas Haskell compositions follow the mathematical right-to-left convention.
+    </p>
+    <p>
+        The point, however, is that there's nothing conceptually complicated about an Adapter. Unfortunately, however, some languages require substantial ceremony to implement them.
+    </p>
+    <h3 id="39dae93245f141a09754ff56305fe805">
+        Conclusion <a href="#39dae93245f141a09754ff56305fe805">#</a>
+    </h3>
+    <p>
+        Should an API return a Task-based (asynchronous) value 'just in case'? In general: No.
+    </p>
+    <p>
+        You can't predict all possible use cases, so don't make an API more complicated than it has to be. If you need to implement an application-specific interface, use the Adapter design pattern.
+    </p>
+    <p>
+        A possible exception to this rule is if the entire API (the concrete implementation <em>and</em> the interface) only exists to support a specific application. If the interface and its concrete implementation are both part of the Application Model, you may as well skip the Adapter step and consider the concrete implementation as its own Adapter.
+    </p>
+</div>
