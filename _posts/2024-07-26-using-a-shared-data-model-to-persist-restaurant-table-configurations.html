@@ -1,0 +1,326 @@
+---
+layout: post
+title: "Using a Shared Data Model to persist restaurant table configurations"
+description: "A data architecture example in C# and ASP.NET."
+date: 2024-07-26 14:02 UTC
+tags: [Architecture, ASP.NET Web API, Services]
+image: "/content/binary/shared-data-model-architecture.png"
+image_alt: "Architecture diagram showing three vertically stacked layers named UI/data, business logic, and data access, with a vertical box labelled data model overlapping all three."
+---
+{% include JB/setup %}
+
+<div id="post">
+    <p>
+        <em>{{ page.description }}</em>
+    </p>
+    <p>
+        This is part of a <a href="/2024/07/25/three-data-architectures-for-the-server">small article series on data architectures</a>. In this, the second instalment, you'll see a common attempt at addressing the mapping issue that I mentioned in the <a href="">previous article</a>. As the introductory article explains, the example code shows how to create a new restaurant table configuration, or how to display an existing resource. The sample code base is an ASP.NET 8.0 <a href="https://en.wikipedia.org/wiki/REST">REST</a> API.
+    </p>
+    <p>
+        Keep in mind that while the sample code does store data in a relational database, the term <em>table</em> in this article mainly refers to physical tables, rather than database tables.
+    </p>
+    <p>
+        The idea in this data architecture is to use a single, shared data model for each business object in the service. This is in contrast to the Ports and Adapters architecture, where you typically have a <a href="https://en.wikipedia.org/wiki/Data_transfer_object">Data Transfer Object</a> (DTO) for (<a href="https://json.org/">JSON</a> or <a href="https://en.wikipedia.org/wiki/XML">XML</a>) serialization, another class for the Domain Model, and a third to support an <a href="https://en.wikipedia.org/wiki/Object%E2%80%93relational_mapping">object-relational mapper</a>.
+    </p>
+    <p>
+        An architecture diagram may attempt to illustrate the idea like this:
+    </p>
+    <p>
+        <img src="/content/binary/shared-data-model-architecture.png" alt="Architecture diagram showing three vertically stacked layers named UI/data, business logic, and data access, with a vertical box labelled data model overlapping all three.">
+    </p>
+    <p>
+        While ostensibly keeping alive the idea of application <em>layers</em>, data models are allowed to cross layers to be used both for database persistence, business logic, and in the presentation layer.
+    </p>
+    <h3 id="880c5cdea9104efe99f0b816c6b2d632">
+        Data model <a href="#880c5cdea9104efe99f0b816c6b2d632">#</a>
+    </h3>
+    <p>
+        Since the goal is to use a single class to model all application concerns, it means that we also need to use it for database persistence. The most commonly used ORM in .NET is <a href="https://en.wikipedia.org/wiki/Entity_Framework">Entity Framework</a>, so I'll use that for the example. It's <a href="/2023/09/18/do-orms-reduce-the-need-for-mapping">not something that I normally do</a>, so it's possible that I could have done it better than what follows.
+    </p>
+    <p>
+        Still, assume that the database schema defines the <code>Tables</code> table like this:
+    </p>
+    <p>
+        <pre><span style="color:blue;">CREATE</span>&nbsp;<span style="color:blue;">TABLE</span>&nbsp;[dbo]<span style="color:gray;">.</span>[Tables]<span style="color:blue;">&nbsp;</span><span style="color:gray;">(</span>
+&nbsp;&nbsp;&nbsp;&nbsp;[Id]&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">INT</span>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:gray;">NOT</span>&nbsp;<span style="color:gray;">NULL</span>&nbsp;<span style="color:blue;">IDENTITY</span>&nbsp;<span style="color:blue;">PRIMARY</span>&nbsp;<span style="color:blue;">KEY</span><span style="color:gray;">,</span>
+&nbsp;&nbsp;&nbsp;&nbsp;[PublicId]&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">UNIQUEIDENTIFIER</span>&nbsp;&nbsp;&nbsp;<span style="color:gray;">NOT</span>&nbsp;<span style="color:gray;">NULL</span>&nbsp;<span style="color:blue;">UNIQUE</span><span style="color:gray;">,</span>
+&nbsp;&nbsp;&nbsp;&nbsp;[Capacity]&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">INT</span>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:gray;">NOT</span>&nbsp;<span style="color:gray;">NULL,</span>
+&nbsp;&nbsp;&nbsp;&nbsp;[MinimalReservation]&nbsp;<span style="color:blue;">INT</span>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:gray;">NULL</span>
+<span style="color:gray;">)</span></pre>
+    </p>
+    <p>
+        I used a scaffolding tool to generate Entity Framework code from the database schema and then modified what it had created. This is the result:
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">partial</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">Table</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;[<span style="color:#2b91af;">JsonIgnore</span>]
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">int</span>&nbsp;Id&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;<span style="color:blue;">set</span>;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;[<span style="color:#2b91af;">JsonIgnore</span>]
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">Guid</span>&nbsp;PublicId&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;<span style="color:blue;">set</span>;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">string</span>&nbsp;Type&nbsp;=&gt;&nbsp;MinimalReservation.HasValue&nbsp;?&nbsp;<span style="color:#a31515;">&quot;single&quot;</span>&nbsp;:&nbsp;<span style="color:#a31515;">&quot;communal&quot;</span>;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">int</span>&nbsp;Capacity&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;<span style="color:blue;">set</span>;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">int</span>?&nbsp;MinimalReservation&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;<span style="color:blue;">set</span>;&nbsp;}
+}</pre>
+    </p>
+    <p>
+        Notice that I added <code>[JsonIgnore]</code> attributes to two of the properties, since I didn't want to serialize them to JSON. I also added the calculated property <code>Type</code> to include a discriminator in the JSON documents.
+    </p>
+    <h3 id="852e790115024988b43e57b369fe67e7">
+        HTTP interaction <a href="#852e790115024988b43e57b369fe67e7">#</a>
+    </h3>
+    <p>
+        A client can create a new table with a <code>POST</code> HTTP request:
+    </p>
+    <p>
+        <pre>POST /tables HTTP/1.1
+content-type: application/json
+
+{<span style="color:#2e75b6;">&quot;type&quot;</span>:<span style="color:#a31515;">&quot;communal&quot;</span>,<span style="color:#2e75b6;">&quot;capacity&quot;</span>:12}</pre>
+    </p>
+    <p>
+        Notice that the JSON document doesn't follow the desired schema described in the <a href="/2024/07/25/three-data-architectures-for-the-server">introduction article</a>. It can't, because the data architecture is bound to the shared <code>Table</code> class. Or at least, if it's possible to attain the desired format with a single class and only some strategically placed attributes, I'm not aware of it. As the article <em>Using only a Domain Model to persist restaurant table configurations</em> will show, it <em>is</em> possible to attain that goal with the appropriate middleware, but I consider that the third architecture, so not something I will cover in this article.
+    </p>
+    <p>
+        The service will respond to the above request like this:
+    </p>
+    <p>
+        <pre>HTTP/1.1 201 Created
+Location: https://example.com/Tables/777779466d2549d69f7e30b6c35bde3c</pre>
+    </p>
+    <p>
+        Clients can later use the address indicated by the <code>Location</code> header to retrieve a representation of the resource:
+    </p>
+    <p>
+        <pre>GET /Tables/777779466d2549d69f7e30b6c35bde3c HTTP/1.1
+accept: application/json</pre>
+    </p>
+    <p>
+        Which elicits this response:
+    </p>
+    <p>
+        <pre>HTTP/1.1 200 OK
+Content-Type: application/json; charset=utf-8
+
+{<span style="color:#2e75b6;">&quot;type&quot;</span>:<span style="color:#a31515;">&quot;communal&quot;</span>,<span style="color:#2e75b6;">&quot;capacity&quot;</span>:12}</pre>
+    </p>
+    <p>
+        The JSON format still doesn't conform to the desired format because the Controller in question deals exclusively with the shared <code>Table</code> data model.
+    </p>
+    <h3 id="7dd82d2b3f4348a98d1125547dc35684">
+        Boundary <a href="#7dd82d2b3f4348a98d1125547dc35684">#</a>
+    </h3>
+    <p>
+        At the boundary of the application, Controllers handle HTTP requests with <em>action methods</em> (an ASP.NET term). The framework matches requests by a combination of naming conventions and attributes. The <code>Post</code> action method handles incoming <code>POST</code> requests.
+    </p>
+    <p>
+        <pre>[<span style="color:#2b91af;">HttpPost</span>]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">async</span>&nbsp;<span style="color:#2b91af;">Task</span>&lt;<span style="color:#2b91af;">IActionResult</span>&gt;&nbsp;<span style="font-weight:bold;color:#74531f;">Post</span>(<span style="color:#2b91af;">Table</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">table</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">id</span>&nbsp;=&nbsp;<span style="color:#2b91af;">Guid</span>.<span style="color:#74531f;">NewGuid</span>();
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">await</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">repository</span>.<span style="font-weight:bold;color:#74531f;">Create</span>(<span style="font-weight:bold;color:#1f377f;">id</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">table</span>).<span style="font-weight:bold;color:#74531f;">ConfigureAwait</span>(<span style="color:blue;">false</span>);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">CreatedAtActionResult</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">nameof</span>(<span style="font-weight:bold;color:#74531f;">Get</span>),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">null</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;{&nbsp;id&nbsp;=&nbsp;<span style="font-weight:bold;color:#1f377f;">id</span>.<span style="font-weight:bold;color:#74531f;">ToString</span>(<span style="color:#a31515;">&quot;N&quot;</span>)&nbsp;},
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">null</span>);
+}</pre>
+    </p>
+    <p>
+        Notice that the input parameter isn't a separate DTO, but rather the shared <code>Table</code> object. Since it's shared, the Controller can pass it directly to the <code>repository</code> without any mapping.
+    </p>
+    <p>
+        The same simplicity is on display in the <code>Get</code> method:
+    </p>
+    <p>
+        <pre>[<span style="color:#2b91af;">HttpGet</span>(<span style="color:#a31515;">&quot;</span><span style="color:#0073ff;">{</span>id<span style="color:#0073ff;">}</span><span style="color:#a31515;">&quot;</span>)]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">async</span>&nbsp;<span style="color:#2b91af;">Task</span>&lt;<span style="color:#2b91af;">IActionResult</span>&gt;&nbsp;<span style="font-weight:bold;color:#74531f;">Get</span>(<span style="color:blue;">string</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">id</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">if</span>&nbsp;(!<span style="color:#2b91af;">Guid</span>.<span style="color:#74531f;">TryParseExact</span>(<span style="font-weight:bold;color:#1f377f;">id</span>,&nbsp;<span style="color:#a31515;">&quot;N&quot;</span>,&nbsp;<span style="color:blue;">out</span>&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">guid</span>))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">BadRequestResult</span>();
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Table</span>?&nbsp;<span style="font-weight:bold;color:#1f377f;">table</span>&nbsp;=&nbsp;<span style="color:blue;">await</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">repository</span>.<span style="font-weight:bold;color:#74531f;">Read</span>(<span style="font-weight:bold;color:#1f377f;">guid</span>).<span style="font-weight:bold;color:#74531f;">ConfigureAwait</span>(<span style="color:blue;">false</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">if</span>&nbsp;(<span style="font-weight:bold;color:#1f377f;">table</span>&nbsp;<span style="color:blue;">is</span>&nbsp;<span style="color:blue;">null</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">NotFoundResult</span>();
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">OkObjectResult</span>(<span style="font-weight:bold;color:#1f377f;">table</span>);
+}</pre>
+    </p>
+    <p>
+        Once the <code>Get</code> method has parsed the <code>id</code> it goes straight to the <code>repository</code>, retrieves the <code>table</code> and returns it if it's there. No mapping is required by the Controller. What about the <code>repository</code>?
+    </p>
+    <h3 id="a3154e68acfa4976b9cf91e4e1036834">
+        Data access <a href="#a3154e68acfa4976b9cf91e4e1036834">#</a>
+    </h3>
+    <p>
+        The <code>SqlTablesRepository</code> class reads and writes data from <a href="https://en.wikipedia.org/wiki/Microsoft_SQL_Server">SQL Server</a> using Entity Framework. The <code>Create</code> method is as simple as this:
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">async</span>&nbsp;<span style="color:#2b91af;">Task</span>&nbsp;<span style="font-weight:bold;color:#74531f;">Create</span>(<span style="color:#2b91af;">Guid</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">id</span>,&nbsp;<span style="color:#2b91af;">Table</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">table</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">ArgumentNullException</span>.<span style="color:#74531f;">ThrowIfNull</span>(<span style="font-weight:bold;color:#1f377f;">table</span>);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">table</span>.PublicId&nbsp;=&nbsp;<span style="font-weight:bold;color:#1f377f;">id</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">await</span>&nbsp;context.Tables.<span style="font-weight:bold;color:#74531f;">AddAsync</span>(<span style="font-weight:bold;color:#1f377f;">table</span>).<span style="font-weight:bold;color:#74531f;">ConfigureAwait</span>(<span style="color:blue;">false</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">await</span>&nbsp;context.<span style="font-weight:bold;color:#74531f;">SaveChangesAsync</span>().<span style="font-weight:bold;color:#74531f;">ConfigureAwait</span>(<span style="color:blue;">false</span>);
+}</pre>
+    </p>
+    <p>
+        The <code>Read</code> method is even simpler - a one-liner:
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">async</span>&nbsp;<span style="color:#2b91af;">Task</span>&lt;<span style="color:#2b91af;">Table</span>?&gt;&nbsp;<span style="font-weight:bold;color:#74531f;">Read</span>(<span style="color:#2b91af;">Guid</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">id</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">await</span>&nbsp;context.Tables
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.<span style="font-weight:bold;color:#74531f;">SingleOrDefaultAsync</span>(<span style="font-weight:bold;color:#1f377f;">t</span>&nbsp;=&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">t</span>.PublicId&nbsp;<span style="font-weight:bold;color:#74531f;">==</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">id</span>).<span style="font-weight:bold;color:#74531f;">ConfigureAwait</span>(<span style="color:blue;">false</span>);
+}</pre>
+    </p>
+    <p>
+        Again, no mapping. Just return the database Entity.
+    </p>
+    <h3 id="4f14688d058a469f858792ce8d129af9">
+        XML serialization <a href="#4f14688d058a469f858792ce8d129af9">#</a>
+    </h3>
+    <p>
+        Simple, so far, but how does this data architecture handle changing requirements?
+    </p>
+    <p>
+        One axis of variation is when a service needs to support multiple representations. In this example, I'll imagine that the service also needs to support XML.
+    </p>
+    <p>
+        Granted, you may not run into that particular requirement that often, but it's typical of a kind of change that you're likely to run into. In REST APIs, for example, <a href="/2015/06/22/rest-implies-content-negotiation">you should use content negotiation for versioning</a>, and that's the same kind of problem.
+    </p>
+    <p>
+        To be fair, application code also changes for a variety of other reasons, including new features, changes to business logic, etc. I can't possibly cover all, though, and many of these are much better described than changes in wire formats.
+    </p>
+    <p>
+        As was also the case in <a href="">the previous article</a>, it quickly turns out that it's not possible to support any of the desired XML formats described in the <a href="/2024/07/25/three-data-architectures-for-the-server">introduction article</a>. Instead, for the sake of exploring what <em>is</em> possible, I'll compromise and support XML documents like these examples:
+    </p>
+    <p>
+        <pre><span style="color:blue;">&lt;</span><span style="color:#a31515;">table</span><span style="color:blue;">&gt;</span>
+<span style="color:blue;">&nbsp;&nbsp;&lt;</span><span style="color:#a31515;">type</span><span style="color:blue;">&gt;</span>communal<span style="color:blue;">&lt;/</span><span style="color:#a31515;">type</span><span style="color:blue;">&gt;</span>
+<span style="color:blue;">&nbsp;&nbsp;&lt;</span><span style="color:#a31515;">capacity</span><span style="color:blue;">&gt;</span>12<span style="color:blue;">&lt;/</span><span style="color:#a31515;">capacity</span><span style="color:blue;">&gt;</span>
+<span style="color:blue;">&lt;/</span><span style="color:#a31515;">table</span><span style="color:blue;">&gt;</span>
+
+<span style="color:blue;">&lt;</span><span style="color:#a31515;">table</span><span style="color:blue;">&gt;</span>
+<span style="color:blue;">&nbsp;&nbsp;&lt;</span><span style="color:#a31515;">type</span><span style="color:blue;">&gt;</span>single<span style="color:blue;">&lt;/</span><span style="color:#a31515;">type</span><span style="color:blue;">&gt;</span>
+<span style="color:blue;">&nbsp;&nbsp;&lt;</span><span style="color:#a31515;">capacity</span><span style="color:blue;">&gt;</span>4<span style="color:blue;">&lt;/</span><span style="color:#a31515;">capacity</span><span style="color:blue;">&gt;</span>
+<span style="color:blue;">&nbsp;&nbsp;&lt;</span><span style="color:#a31515;">minimal-reservation</span><span style="color:blue;">&gt;</span>3<span style="color:blue;">&lt;/</span><span style="color:#a31515;">minimal-reservation</span><span style="color:blue;">&gt;</span>
+<span style="color:blue;">&lt;/</span><span style="color:#a31515;">table</span><span style="color:blue;">&gt;</span></pre>
+    </p>
+    <p>
+        This schema, it turns out, is the same as the element-biased format from <a href="">the previous article</a>. I could, instead, have chosen to support the attribute-biased format, but, because of the shared data model, not both.
+    </p>
+    <p>
+        Notice how using statically typed classes, attributes, and Reflection to guide serialization leads toward certain kinds of formats. You can't easily support any arbitrary JSON or XML schema, but are rather nudged into a more constrained subset of possible formats. There's nothing too bad about this. As usual, there are trade-offs involved. You concede flexibility, but gain convenience: Just slab some attributes on your DTO, and it works well enough for most purposes. I mostly point it out because this entire article series is about awareness of choice. There's always some cost to be paid.
+    </p>
+    <p>
+        That said, supporting that XML format is surprisingly easy:
+    </p>
+    <p>
+        <pre>[<span style="color:#2b91af;">XmlRoot</span>(<span style="color:#a31515;">&quot;table&quot;</span>)]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">partial</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">Table</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;[<span style="color:#2b91af;">JsonIgnore</span>,&nbsp;<span style="color:#2b91af;">XmlIgnore</span>]
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">int</span>&nbsp;Id&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;<span style="color:blue;">set</span>;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;[<span style="color:#2b91af;">JsonIgnore</span>,&nbsp;<span style="color:#2b91af;">XmlIgnore</span>]
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">Guid</span>&nbsp;PublicId&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;<span style="color:blue;">set</span>;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;[<span style="color:#2b91af;">XmlElement</span>(<span style="color:#a31515;">&quot;type&quot;</span>),&nbsp;<span style="color:#2b91af;">NotMapped</span>]
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">string</span>?&nbsp;Type&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;<span style="color:blue;">set</span>;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;[<span style="color:#2b91af;">XmlElement</span>(<span style="color:#a31515;">&quot;capacity&quot;</span>)]
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">int</span>&nbsp;Capacity&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;<span style="color:blue;">set</span>;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;[<span style="color:#2b91af;">XmlElement</span>(<span style="color:#a31515;">&quot;minimal-reservation&quot;</span>)]
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">int</span>?&nbsp;MinimalReservation&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;<span style="color:blue;">set</span>;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">bool</span>&nbsp;<span style="font-weight:bold;color:#74531f;">ShouldSerializeMinimalReservation</span>()&nbsp;=&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;MinimalReservation.HasValue;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">internal</span>&nbsp;<span style="color:blue;">void</span>&nbsp;<span style="font-weight:bold;color:#74531f;">InferType</span>()
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Type&nbsp;=&nbsp;MinimalReservation.HasValue&nbsp;?&nbsp;<span style="color:#a31515;">&quot;single&quot;</span>&nbsp;:&nbsp;<span style="color:#a31515;">&quot;communal&quot;</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+    </p>
+    <p>
+        Most of the changes are simple additions of the <code>XmlRoot</code>, <code>XmlElement</code>, and <code>XmlIgnore</code> attributes. In order to serialize the <code><span style="color:blue;">&lt;</span><span style="color:#a31515;">type</span><span style="color:blue;">&gt;</span></code> element, however, I also had to convert the <code>Type</code> property to a read/write property, which had some ripple effects.
+    </p>
+    <p>
+        For one, I had to add the <code>NotMapped</code> attribute to tell Entity Framework that it shouldn't try to save the value of that property in the database. As you can see in the above SQL schema, the <code>Tables</code> table has no <code>Type</code> column.
+    </p>
+    <p>
+        This also meant that I had to change the <code>Read</code> method in <code>SqlTablesRepository</code> to call the new <code>InferType</code> method:
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">async</span>&nbsp;<span style="color:#2b91af;">Task</span>&lt;<span style="color:#2b91af;">Table</span>?&gt;&nbsp;<span style="font-weight:bold;color:#74531f;">Read</span>(<span style="color:#2b91af;">Guid</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">id</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">table</span>&nbsp;=&nbsp;<span style="color:blue;">await</span>&nbsp;context.Tables
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.<span style="font-weight:bold;color:#74531f;">SingleOrDefaultAsync</span>(<span style="font-weight:bold;color:#1f377f;">t</span>&nbsp;=&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">t</span>.PublicId&nbsp;<span style="font-weight:bold;color:#74531f;">==</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">id</span>).<span style="font-weight:bold;color:#74531f;">ConfigureAwait</span>(<span style="color:blue;">false</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">table</span>?.<span style="font-weight:bold;color:#74531f;">InferType</span>();
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">table</span>;
+}</pre>
+    </p>
+    <p>
+        I'm not happy with this kind of <a href="https://en.wikipedia.org/wiki/Sequential_coupling">sequential coupling</a>, but to be honest, this data architecture inherently has an appalling lack of <a href="/encapsulation-and-solid">encapsulation</a>. Having to call <code>InferType</code> is just par for the course.
+    </p>
+    <p>
+        That said, despite a few stumbling blocks, adding XML support turned out to be surprisingly easy in this data architecture. Granted, I had to compromise on the schema, and could only support one XML schema, so we shouldn't really take this as an endorsement. To <a href="/ref/psychology-of-computer-programming">paraphrase Gerald Weinberg</a>, if it doesn't have to work, it's easy to implement.
+    </p>
+    <h3 id="cd22920ca9564df0b88bd67d6fe2eef6">
+        Evaluation <a href="#cd22920ca9564df0b88bd67d6fe2eef6">#</a>
+    </h3>
+    <p>
+        There's no denying that the Shared Data Model architecture is <em>simple</em>. There's no mapping between different layers, and it's easy to get started. Like the <a href="">DTO-based Ports and Adapters architecture</a>, you'll find many documentation examples and <em>getting-started</em> guides that work like this. In a sense, you can say that it's what the ASP.NET framework, or, perhaps particularly the Entity Framework (EF), 'wants you to do'. To be fair, I find ASP.NET to be reasonably unopinionated, so what inveigling you may run into may be mostly attributable to EF.
+    </p>
+    <p>
+        While it may feel nice that it's easy to get started, <a href="/2024/05/13/gratification">instant gratification often comes at a cost</a>. Consider the <code>Table</code> class shown here. Because of various constraints imposed by EF and the JSON and XML serializers, it has no encapsulation. One thing is that the sophisticated <a href="/2018/06/25/visitor-as-a-sum-type">Visitor-encoded</a> <code>Table</code> class introduced in the article <a href="/2023/12/25/serializing-restaurant-tables-in-c">Serializing restaurant tables in C#</a> is completely out of the question, but you can't even add a required constructor like this one:
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">Table</span>(<span style="color:blue;">int</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">capacity</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;Capacity&nbsp;=&nbsp;<span style="font-weight:bold;color:#1f377f;">capacity</span>;
+}</pre>
+    </p>
+    <p>
+        Granted, it seems to work with both EF and the JSON serializer, which I suppose is a recent development, but it doesn't work with the XML serializer, which requires that
+    </p>
+    <blockquote>
+        <p>
+            "A class must have a parameterless constructor to be serialized by <strong>XmlSerializer</strong>."
+        </p>
+        <footer><cite><a href="https://learn.microsoft.com/dotnet/standard/serialization/introducing-xml-serialization">XML serialization</a></cite>, Microsoft documentation, 2023-04-05, retrieved 2024-07-27, their emphasis</footer>
+    </blockquote>
+    <p>
+        Even if this, too, changes in the future, DTO-based designs are at odds with encapsulation. If you doubt the veracity of that statement, I challenge you to complete <a href="/2024/06/12/simpler-encapsulation-with-immutability">the Priority Collection kata</a> with serializable DTOs.
+    </p>
+    <p>
+        Another problem with the Shared Data Model architecture is that it so easily decays to a <a href="https://wiki.c2.com/?BigBallOfMud">Big Ball of Mud</a>. Even though the above architecture diagram hollowly insists that layering is still possible, a Shared Data Model is an attractor of behaviour. You'll soon find that a class like <code>Table</code> has methods that serve presentation concerns, others that implement business logic, and others again that address persistence issues. It has become a <a href="https://en.wikipedia.org/wiki/God_object">God Class</a>.
+    </p>
+    <p>
+        From these problems it doesn't follow that the architecture doesn't have merit. If you're developing a <a href="https://en.wikipedia.org/wiki/Create,_read,_update_and_delete">CRUD</a>-heavy application with a user interface (UI) that's merely a glorified table view, this could be a good choice. You <em>would</em> be coupling the UI to the database, so that if you need to change how the UI works, you might also have to modify the database schema, or vice versa.
+    </p>
+    <p>
+        This is still not an indictment, but merely an observation of consequences. If you can live with them, then choose the Shared Data Model architecture. I can easily imagine application types where that would be the case.
+    </p>
+    <h3 id="194d1086b32b49958ad88e5325b4e1f1">
+        Conclusion <a href="#194d1086b32b49958ad88e5325b4e1f1">#</a>
+    </h3>
+    <p>
+        In the Shared Data Model architecture you use a single model (here, a class) to handle all application concerns: UI, business logic, data access. While this shows a blatant disregard for the notion of separation of concerns, no law states that you must, always, separate concerns.
+    </p>
+    <p>
+        Sometimes it's okay to mix concerns, and then the Shared Data Model architecture is dead simple. Just make sure that you know when it's okay.
+    </p>
+    <p>
+        While this architecture is the ultimate in simplicity, it's also quite constrained. The third and final data architecture I'll cover, on the other hand, offers the ultimate in flexibility, at the expense (not surprisingly) of some complexity.
+    </p>
+    <p>
+        <strong>Next:</strong> Using only a Domain Model to persist restaurant table configurations.
+    </p>
+</div>
