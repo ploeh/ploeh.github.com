@@ -1,0 +1,579 @@
+---
+layout: post
+title: "Using Ports and Adapters to persist restaurant table configurations"
+description: "A data architecture example in C# and ASP.NET."
+date: 2024-07-24 16:00 UTC
+tags: [Architecture, ASP.NET Web API, Services]
+image: "/content/binary/three-layer-table-architecture.png"
+image_alt: "Three-layer architecture diagram showing TableDto, Table, and TableEntity as three vertically stacked boxes, with arrows between them."
+---
+{% include JB/setup %}
+
+<div id="post">
+    <p>
+        <em>{{ page.description }}</em>
+    </p>
+    <p>
+        This is part of a <a href="">small article series on data architectures</a>. In the first instalment, you'll see the outline of a Ports and Adapters implementation. As the introductory article explains, the example code shows how to create a new restaurant table configuration, or how to display an existing resource. The sample code base is an ASP.NET 8.0 <a href="https://en.wikipedia.org/wiki/REST">REST</a> API.
+    </p>
+    <p>
+        Keep in mind that while the sample code does store data in a relational database, the term <em>table</em> in this article mainly refers to physical tables, rather than database tables.
+    </p>
+    <p>
+        While Ports and Adapters architecture diagrams are usually drawn as concentric circles, you can also draw (subsets of) it as more traditional layered diagrams:
+    </p>
+    <p>
+        <img src="/content/binary/three-layer-table-architecture.png" alt="Three-layer architecture diagram showing TableDto, Table, and TableEntity as three vertically stacked boxes, with arrows between them.">
+    </p>
+    <p>
+        Here, the arrows indicate mappings, not dependencies.
+    </p>
+    <h3 id="5e95ae96906c43f9aee53cfbd680a378">
+        HTTP interaction <a href="#5e95ae96906c43f9aee53cfbd680a378">#</a>
+    </h3>
+    <p>
+        A client can create a new table with a <code>POST</code> HTTP request:
+    </p>
+    <p>
+        <pre>POST /tables HTTP/1.1
+content-type: application/json
+
+{&nbsp;<span style="color:#2e75b6;">&quot;communalTable&quot;</span>:&nbsp;{&nbsp;<span style="color:#2e75b6;">&quot;capacity&quot;</span>:&nbsp;16&nbsp;}&nbsp;}</pre>
+    </p>
+    <p>
+        Which might elicit a response like this:
+    </p>
+    <p>
+        <pre>HTTP/1.1 201 Created
+Location: https://example.com/Tables/844581613e164813aa17243ff8b847af</pre>
+    </p>
+    <p>
+        Clients can later use the address indicated by the <code>Location</code> header to retrieve a representation of the resource:
+    </p>
+    <p>
+        <pre>GET /Tables/844581613e164813aa17243ff8b847af HTTP/1.1
+accept: application/json</pre>
+    </p>
+    <p>
+        Which would result in this response:
+    </p>
+    <p>
+        <pre>HTTP/1.1 200 OK
+Content-Type: application/json; charset=utf-8
+
+{<span style="color:#2e75b6;">&quot;communalTable&quot;</span>:{<span style="color:#2e75b6;">&quot;capacity&quot;</span>:16}}</pre>
+    </p>
+    <p>
+        By default, ASP.NET handles and returns JSON. Later in this article you'll see how well it deals with other data formats.
+    </p>
+    <h3 id="95914d7bd8c845d2b30d8ddc029c1711">
+        Boundary <a href="#95914d7bd8c845d2b30d8ddc029c1711">#</a>
+    </h3>
+    <p>
+        ASP.NET supports some variation of the <a href="https://en.wikipedia.org/wiki/Model%E2%80%93view%E2%80%93controller">model-view-controller</a> (MVC) pattern, and Controllers handle HTTP requests. At the outset, the <em>action method</em> that handles the <code>POST</code> request looks like this:
+    </p>
+    <p>
+        <pre>[<span style="color:#2b91af;">HttpPost</span>]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">async</span>&nbsp;<span style="color:#2b91af;">Task</span>&lt;<span style="color:#2b91af;">IActionResult</span>&gt;&nbsp;<span style="font-weight:bold;color:#74531f;">Post</span>(<span style="color:#2b91af;">TableDto</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">dto</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">ArgumentNullException</span>.<span style="color:#74531f;">ThrowIfNull</span>(<span style="font-weight:bold;color:#1f377f;">dto</span>);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">id</span>&nbsp;=&nbsp;<span style="color:#2b91af;">Guid</span>.<span style="color:#74531f;">NewGuid</span>();
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">await</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">repository</span>.<span style="font-weight:bold;color:#74531f;">Create</span>(<span style="font-weight:bold;color:#1f377f;">id</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">dto</span>.<span style="font-weight:bold;color:#74531f;">ToTable</span>()).<span style="font-weight:bold;color:#74531f;">ConfigureAwait</span>(<span style="color:blue;">false</span>);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">CreatedAtActionResult</span>(<span style="color:blue;">nameof</span>(<span style="font-weight:bold;color:#74531f;">Get</span>),&nbsp;<span style="color:blue;">null</span>,&nbsp;<span style="color:blue;">new</span>&nbsp;{&nbsp;id&nbsp;=&nbsp;<span style="font-weight:bold;color:#1f377f;">id</span>.<span style="font-weight:bold;color:#74531f;">ToString</span>(<span style="color:#a31515;">&quot;N&quot;</span>)&nbsp;},&nbsp;<span style="color:blue;">null</span>);
+}</pre>
+    </p>
+    <p>
+        As is <a href="/2015/08/03/idiomatic-or-idiosyncratic">idiomatic</a> in ASP.NET, input and output are modelled by <a href="https://en.wikipedia.org/wiki/Data_transfer_object">data transfer objects</a> (DTOs), in this case called <code>TableDto</code>. I've already covered this little object model in the article <a href="/2023/12/25/serializing-restaurant-tables-in-c">Serializing restaurant tables in C#</a>, so I'm not going to repeat it here.
+    </p>
+    <p>
+        The <code>ToTable</code> method, on the other hand, is a good example of how trying to cut corners lead to more complicated code:
+    </p>
+    <p>
+        <pre><span style="color:blue;">internal</span>&nbsp;<span style="color:#2b91af;">Table</span>&nbsp;<span style="font-weight:bold;color:#74531f;">ToTable</span>()
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">candidate</span>&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Table</span>.<span style="color:#74531f;">TryCreateSingle</span>(SingleTable?.Capacity&nbsp;??&nbsp;-1,&nbsp;SingleTable?.MinimalReservation&nbsp;??&nbsp;-1);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">if</span>&nbsp;(<span style="font-weight:bold;color:#1f377f;">candidate</span>&nbsp;<span style="color:blue;">is</span>&nbsp;{&nbsp;})
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">candidate</span>.Value;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">candidate</span>&nbsp;=&nbsp;<span style="color:#2b91af;">Table</span>.<span style="color:#74531f;">TryCreateCommunal</span>(CommunalTable?.Capacity&nbsp;??&nbsp;-1);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">if</span>&nbsp;(<span style="font-weight:bold;color:#1f377f;">candidate</span>&nbsp;<span style="color:blue;">is</span>&nbsp;{&nbsp;})
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">candidate</span>.Value;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">throw</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">InvalidOperationException</span>(<span style="color:#a31515;">&quot;Invalid&nbsp;TableDto.&quot;</span>);
+}</pre>
+    </p>
+    <p>
+        Compare it to the <code>TryParse</code> method in the <a href="/2023/12/25/serializing-restaurant-tables-in-c">Serializing restaurant tables in C#</a> article. That one is simpler, and less error-prone.
+    </p>
+    <p>
+        I think that I wrote <code>ToTable</code> that way because I didn't want to deal with error handling in the Controller, and while I test-drove the code, I never wrote a test that supply malformed input. I should have, and so should you, but this is demo code, so I never got around to it.
+    </p>
+    <p>
+        Enough about that. The other action method handles <code>GET</code> requests:
+    </p>
+    <p>
+        <pre>[<span style="color:#2b91af;">HttpGet</span>(<span style="color:#a31515;">&quot;</span><span style="color:#0073ff;">{</span>id<span style="color:#0073ff;">}</span><span style="color:#a31515;">&quot;</span>)]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">async</span>&nbsp;<span style="color:#2b91af;">Task</span>&lt;<span style="color:#2b91af;">IActionResult</span>&gt;&nbsp;<span style="font-weight:bold;color:#74531f;">Get</span>(<span style="color:blue;">string</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">id</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">if</span>&nbsp;(!<span style="color:#2b91af;">Guid</span>.<span style="color:#74531f;">TryParseExact</span>(<span style="font-weight:bold;color:#1f377f;">id</span>,&nbsp;<span style="color:#a31515;">&quot;N&quot;</span>,&nbsp;<span style="color:blue;">out</span>&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">guid</span>))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">BadRequestResult</span>();
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">table</span>&nbsp;=&nbsp;<span style="color:blue;">await</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">repository</span>.<span style="font-weight:bold;color:#74531f;">Read</span>(<span style="font-weight:bold;color:#1f377f;">guid</span>).<span style="font-weight:bold;color:#74531f;">ConfigureAwait</span>(<span style="color:blue;">false</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">if</span>&nbsp;(<span style="font-weight:bold;color:#1f377f;">table</span>&nbsp;<span style="color:blue;">is</span>&nbsp;<span style="color:blue;">null</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">NotFoundResult</span>();
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">OkObjectResult</span>(<span style="color:#2b91af;">TableDto</span>.<span style="color:#74531f;">From</span>(<span style="font-weight:bold;color:#1f377f;">table</span>.Value));
+}</pre>
+    </p>
+    <p>
+        The static <code>TableDto.From</code> method is identical to the <code>ToDto</code> method from the <a href="/2023/12/25/serializing-restaurant-tables-in-c">Serializing restaurant tables in C#</a> article, just with a different name.
+    </p>
+    <p>
+        To summarize so far: At the boundary of the application, Controller methods receive or return <code>TableDto</code> objects, which are mapped to and from the Domain Model named <code>Table</code>.
+    </p>
+    <h3 id="b5cbc5042c01488da08a856d84d3f17e">
+        Domain Model <a href="#b5cbc5042c01488da08a856d84d3f17e">#</a>
+    </h3>
+    <p>
+        The Domain Model <code>Table</code> is also identical to the code shown in <a href="/2023/12/25/serializing-restaurant-tables-in-c">Serializing restaurant tables in C#</a>. In order to comply with the <a href="https://en.wikipedia.org/wiki/Dependency_inversion_principle">Dependency Inversion Principle</a> (DIP), mapping to and from <code>TableDto</code> is defined on the latter. The DTO, being an implementation detail, may depend on the abstraction (the Domain Model), but not the other way around.
+    </p>
+    <p>
+        In the same spirit, conversions to and from the database are defined entirely within the <code>repository</code> implementation.
+    </p>
+    <h3 id="84b01fa88e8541f5afbb9aa04f454645">
+        Data access layer <a href="#84b01fa88e8541f5afbb9aa04f454645">#</a>
+    </h3>
+    <p>
+        Keeping the example consistent, the code base also models data access with C# classes. It uses <a href="https://learn.microsoft.com/ef">Entity Framework</a> to read from and write to <a href="https://en.wikipedia.org/wiki/Microsoft_SQL_Server">SQL Server</a>. The class that models a row in the database is also a kind of DTO, even though here it's idiomatically called an <em>entity:</em>
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">partial</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">TableEntity</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">int</span>&nbsp;Id&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;<span style="color:blue;">set</span>;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">Guid</span>&nbsp;PublicId&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;<span style="color:blue;">set</span>;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">int</span>&nbsp;Capacity&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;<span style="color:blue;">set</span>;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">int</span>?&nbsp;MinimalReservation&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;<span style="color:blue;">set</span>;&nbsp;}
+}</pre>
+    </p>
+    <p>
+        I had a command-line tool scaffold the code for me, and since <a href="/2023/09/18/do-orms-reduce-the-need-for-mapping">I don't usually live in that world</a>, I don't know why it's a <code>partial class</code>. It seems to be working, though.
+    </p>
+    <p>
+        The <code>SqlTablesRepository</code> class implements the mapping between <code>Table</code> and <code>TableEntity</code>. For instance, the <code>Create</code> method looks like this:
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">async</span>&nbsp;<span style="color:#2b91af;">Task</span>&nbsp;<span style="font-weight:bold;color:#74531f;">Create</span>(<span style="color:#2b91af;">Guid</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">id</span>,&nbsp;<span style="color:#2b91af;">Table</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">table</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">entity</span>&nbsp;=&nbsp;<span style="font-weight:bold;color:#1f377f;">table</span>.<span style="font-weight:bold;color:#74531f;">Accept</span>(<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">TableToEntityConverter</span>(<span style="font-weight:bold;color:#1f377f;">id</span>));
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">await</span>&nbsp;context.Tables.<span style="font-weight:bold;color:#74531f;">AddAsync</span>(<span style="font-weight:bold;color:#1f377f;">entity</span>).<span style="font-weight:bold;color:#74531f;">ConfigureAwait</span>(<span style="color:blue;">false</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">await</span>&nbsp;context.<span style="font-weight:bold;color:#74531f;">SaveChangesAsync</span>().<span style="font-weight:bold;color:#74531f;">ConfigureAwait</span>(<span style="color:blue;">false</span>);
+}</pre>
+    </p>
+    <p>
+        That looks simple, but is only because all the work is done by the <code>TableToEntityConverter</code>, which is a nested class:
+    </p>
+    <p>
+        <pre><span style="color:blue;">private</span>&nbsp;<span style="color:blue;">sealed</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">TableToEntityConverter</span>&nbsp;:&nbsp;<span style="color:#2b91af;">ITableVisitor</span>&lt;<span style="color:#2b91af;">TableEntity</span>&gt;
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;<span style="color:#2b91af;">Guid</span>&nbsp;id;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">TableToEntityConverter</span>(<span style="color:#2b91af;">Guid</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">id</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.id&nbsp;=&nbsp;<span style="font-weight:bold;color:#1f377f;">id</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">TableEntity</span>&nbsp;<span style="font-weight:bold;color:#74531f;">VisitCommunal</span>(<span style="color:#2b91af;">NaturalNumber</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">capacity</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">TableEntity</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;PublicId&nbsp;=&nbsp;id,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Capacity&nbsp;=&nbsp;(<span style="color:blue;">int</span>)<span style="font-weight:bold;color:#1f377f;">capacity</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;};
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">TableEntity</span>&nbsp;<span style="font-weight:bold;color:#74531f;">VisitSingle</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">NaturalNumber</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">capacity</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">NaturalNumber</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">minimalReservation</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">TableEntity</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;PublicId&nbsp;=&nbsp;id,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Capacity&nbsp;=&nbsp;(<span style="color:blue;">int</span>)<span style="font-weight:bold;color:#1f377f;">capacity</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;MinimalReservation&nbsp;=&nbsp;(<span style="color:blue;">int</span>)<span style="font-weight:bold;color:#1f377f;">minimalReservation</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;};
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+    </p>
+    <p>
+        Mapping the other way is easier, so the <code>SqlTablesRepository</code> does it inline in the <code>Read</code> method:
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">async</span>&nbsp;<span style="color:#2b91af;">Task</span>&lt;<span style="color:#2b91af;">Table</span>?&gt;&nbsp;<span style="font-weight:bold;color:#74531f;">Read</span>(<span style="color:#2b91af;">Guid</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">id</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">entity</span>&nbsp;=&nbsp;<span style="color:blue;">await</span>&nbsp;context.Tables
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.<span style="font-weight:bold;color:#74531f;">SingleOrDefaultAsync</span>(<span style="font-weight:bold;color:#1f377f;">t</span>&nbsp;=&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">t</span>.PublicId&nbsp;<span style="font-weight:bold;color:#74531f;">==</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">id</span>).<span style="font-weight:bold;color:#74531f;">ConfigureAwait</span>(<span style="color:blue;">false</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">if</span>&nbsp;(<span style="font-weight:bold;color:#1f377f;">entity</span>&nbsp;<span style="color:blue;">is</span>&nbsp;<span style="color:blue;">null</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">null</span>;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">if</span>&nbsp;(<span style="font-weight:bold;color:#1f377f;">entity</span>.MinimalReservation&nbsp;<span style="color:blue;">is</span>&nbsp;<span style="color:blue;">null</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="color:#2b91af;">Table</span>.<span style="color:#74531f;">TryCreateCommunal</span>(<span style="font-weight:bold;color:#1f377f;">entity</span>.Capacity);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">else</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="color:#2b91af;">Table</span>.<span style="color:#74531f;">TryCreateSingle</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">entity</span>.Capacity,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">entity</span>.MinimalReservation.Value);
+}</pre>
+    </p>
+    <p>
+        Similar to the case of the DTO, mapping between <code>Table</code> and <code>TableEntity</code> is the responsibility of the <code>SqlTablesRepository</code> class, since data persistence is an implementation detail. According to the DIP it shouldn't be part of the Domain Model, and it isn't.
+    </p>
+    <h3 id="77dda87b99ac49bf91d08079e252fc50">
+        XML formats <a href="#77dda87b99ac49bf91d08079e252fc50">#</a>
+    </h3>
+    <p>
+        That covers the basics, but how well does this kind of architecture stand up to changing requirements?
+    </p>
+    <p>
+        One axis of variation is when a service needs to support multiple representations. In this example, I'll imagine that the service also needs to support not just one, but two, XML formats.
+    </p>
+    <p>
+        Granted, you may not run into that particular requirement that often, but it's typical of a kind of change that you're likely to run into. In REST APIs, for example, <a href="/2015/06/22/rest-implies-content-negotiation">you should use content negotiation for versioning</a>, and that's the same kind of problem.
+    </p>
+    <p>
+        To be fair, application code also changes for a variety of other reasons, including new features, changes to business logic, etc. I can't possibly cover all, though, and many of these are much better described than changes in wire formats.
+    </p>
+    <p>
+        As described in the <a href="">introduction article</a>, ideally the XML should support a format implied by these examples:
+    </p>
+    <p>
+        <pre><span style="color:blue;">&lt;</span><span style="color:#a31515;">communal-table</span><span style="color:blue;">&gt;</span>
+<span style="color:blue;">&nbsp;&nbsp;&lt;</span><span style="color:#a31515;">capacity</span><span style="color:blue;">&gt;</span>12<span style="color:blue;">&lt;/</span><span style="color:#a31515;">capacity</span><span style="color:blue;">&gt;</span>
+<span style="color:blue;">&lt;/</span><span style="color:#a31515;">communal-table</span><span style="color:blue;">&gt;</span>
+
+<span style="color:blue;">&lt;</span><span style="color:#a31515;">single-table</span><span style="color:blue;">&gt;</span>
+<span style="color:blue;">&nbsp;&nbsp;&lt;</span><span style="color:#a31515;">capacity</span><span style="color:blue;">&gt;</span>4<span style="color:blue;">&lt;/</span><span style="color:#a31515;">capacity</span><span style="color:blue;">&gt;</span>
+<span style="color:blue;">&nbsp;&nbsp;&lt;</span><span style="color:#a31515;">minimal-reservation</span><span style="color:blue;">&gt;</span>3<span style="color:blue;">&lt;/</span><span style="color:#a31515;">minimal-reservation</span><span style="color:blue;">&gt;</span>
+<span style="color:blue;">&lt;/</span><span style="color:#a31515;">single-table</span><span style="color:blue;">&gt;</span></pre>
+    </p>
+    <p>
+        Notice that while these two examples have different root elements, they're still considered to both represent <em>a table</em>. Although <a href="/2023/10/16/at-the-boundaries-static-types-are-illusory">at the boundaries, static types are illusory</a> we may still, loosely speaking, consider both of those XML documents as belonging to the same 'type'.
+    </p>
+    <p>
+        To be honest, if there's a way to support this kind of <a href="/2024/04/15/services-share-schema-and-contract-not-class">schema</a> by defining DTOs to be serialized and deserialized, I don't know what it looks like. That's not meant to imply that it's impossible. There's often an epistemological problem associated with proving things impossible, so I'll just leave it there.
+    </p>
+    <p>
+        To be clear, it's not that I don't know how to support that kind of schema at all. I do, as the article <em>Using only a Domain Model to persist restaurant table configurations</em> will show. I just don't know how to do it with DTO-based serialisation.
+    </p>
+    <h3 id="6b0409d4-67fd-4e86-9a83-538fa5b690d4">
+        Element-biased XML <a href="#6b0409d4-67fd-4e86-9a83-538fa5b690d4">#</a>
+    </h3>
+    <p>
+        Instead of the above XML schema, I will, instead explore how hard it is to support a variant schema, implied by these two examples:
+    </p>
+    <p>
+        <pre><span style="color:blue;">&lt;</span><span style="color:#a31515;">table</span><span style="color:blue;">&gt;</span>
+<span style="color:blue;">&nbsp;&nbsp;&lt;</span><span style="color:#a31515;">type</span><span style="color:blue;">&gt;</span>communal<span style="color:blue;">&lt;/</span><span style="color:#a31515;">type</span><span style="color:blue;">&gt;</span>
+<span style="color:blue;">&nbsp;&nbsp;&lt;</span><span style="color:#a31515;">capacity</span><span style="color:blue;">&gt;</span>12<span style="color:blue;">&lt;/</span><span style="color:#a31515;">capacity</span><span style="color:blue;">&gt;</span>
+<span style="color:blue;">&lt;/</span><span style="color:#a31515;">table</span><span style="color:blue;">&gt;</span>
+
+<span style="color:blue;">&lt;</span><span style="color:#a31515;">table</span><span style="color:blue;">&gt;</span>
+<span style="color:blue;">&nbsp;&nbsp;&lt;</span><span style="color:#a31515;">type</span><span style="color:blue;">&gt;</span>single<span style="color:blue;">&lt;/</span><span style="color:#a31515;">type</span><span style="color:blue;">&gt;</span>
+<span style="color:blue;">&nbsp;&nbsp;&lt;</span><span style="color:#a31515;">capacity</span><span style="color:blue;">&gt;</span>4<span style="color:blue;">&lt;/</span><span style="color:#a31515;">capacity</span><span style="color:blue;">&gt;</span>
+<span style="color:blue;">&nbsp;&nbsp;&lt;</span><span style="color:#a31515;">minimal-reservation</span><span style="color:blue;">&gt;</span>3<span style="color:blue;">&lt;/</span><span style="color:#a31515;">minimal-reservation</span><span style="color:blue;">&gt;</span>
+<span style="color:blue;">&lt;/</span><span style="color:#a31515;">table</span><span style="color:blue;">&gt;</span></pre>
+    </p>
+    <p>
+        This variation shares the same <code><span style="color:blue;">&lt;</span><span style="color:#a31515;">table</span><span style="color:blue;">&gt;</span></code> root element and instead distinguishes between the two kinds of table with a <code><span style="color:blue;">&lt;</span><span style="color:#a31515;">type</span><span style="color:blue;">&gt;</span></code> discriminator.
+    </p>
+    <p>
+        This kind of schema we can define with a DTO:
+    </p>
+    <p>
+        <pre>[<span style="color:#2b91af;">XmlRoot</span>(<span style="color:#a31515;">&quot;table&quot;</span>)]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">ElementBiasedTableXmlDto</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;[<span style="color:#2b91af;">XmlElement</span>(<span style="color:#a31515;">&quot;type&quot;</span>)]
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">string</span>?&nbsp;Type&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;<span style="color:blue;">set</span>;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;[<span style="color:#2b91af;">XmlElement</span>(<span style="color:#a31515;">&quot;capacity&quot;</span>)]
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">int</span>&nbsp;Capacity&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;<span style="color:blue;">set</span>;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;[<span style="color:#2b91af;">XmlElement</span>(<span style="color:#a31515;">&quot;minimal-reservation&quot;</span>)]
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">int</span>?&nbsp;MinimalReservation&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;<span style="color:blue;">set</span>;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">bool</span>&nbsp;<span style="font-weight:bold;color:#74531f;">ShouldSerializeMinimalReservation</span>()&nbsp;=&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;MinimalReservation.HasValue;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;Mapping&nbsp;methods&nbsp;not&nbsp;shown&nbsp;here...</span>
+}</pre>
+    </p>
+    <p>
+        As you may have already noticed, however, this isn't the same type as <code>TableJsonDto</code>, so how are we going to implement the Controller methods that receive and send objects of this type?
+    </p>
+    <h3 id="28e522bca7b04f94a68c00f15f0d7243">
+        Posting XML <a href="#28e522bca7b04f94a68c00f15f0d7243">#</a>
+    </h3>
+    <p>
+        The service should still accept JSON as shown above, but now, additionally, it should also support HTTP requests like this one:
+    </p>
+    <p>
+        <pre>POST /tables HTTP/1.1
+content-type: application/xml
+
+<span style="color:blue;">&lt;</span><span style="color:#a31515;">table</span><span style="color:blue;">&gt;&lt;</span><span style="color:#a31515;">type</span><span style="color:blue;">&gt;</span>communal<span style="color:blue;">&lt;/</span><span style="color:#a31515;">type</span><span style="color:blue;">&gt;&lt;</span><span style="color:#a31515;">capacity</span><span style="color:blue;">&gt;</span>12<span style="color:blue;">&lt;/</span><span style="color:#a31515;">capacity</span><span style="color:blue;">&gt;&lt;/</span><span style="color:#a31515;">table</span><span style="color:blue;">&gt;</span></pre>
+    </p>
+    <p>
+        How do you implement this new feature?
+    </p>
+    <p>
+        My first thought was to add a <code>Post</code> overload to the Controller:
+    </p>
+    <p>
+        <pre>[<span style="color:#2b91af;">HttpPost</span>]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">async</span>&nbsp;<span style="color:#2b91af;">Task</span>&lt;<span style="color:#2b91af;">IActionResult</span>&gt;&nbsp;<span style="font-weight:bold;color:#74531f;">Post</span>(<span style="color:#2b91af;">ElementBiasedTableXmlDto</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">dto</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">ArgumentNullException</span>.<span style="color:#74531f;">ThrowIfNull</span>(<span style="font-weight:bold;color:#1f377f;">dto</span>);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">id</span>&nbsp;=&nbsp;<span style="color:#2b91af;">Guid</span>.<span style="color:#74531f;">NewGuid</span>();
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">await</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">repository</span>.<span style="font-weight:bold;color:#74531f;">Create</span>(<span style="font-weight:bold;color:#1f377f;">id</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">dto</span>.<span style="font-weight:bold;color:#74531f;">ToTable</span>()).<span style="font-weight:bold;color:#74531f;">ConfigureAwait</span>(<span style="color:blue;">false</span>);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">CreatedAtActionResult</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">nameof</span>(<span style="font-weight:bold;color:#74531f;">Get</span>),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">null</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;{&nbsp;id&nbsp;=&nbsp;<span style="font-weight:bold;color:#1f377f;">id</span>.<span style="font-weight:bold;color:#74531f;">ToString</span>(<span style="color:#a31515;">&quot;N&quot;</span>)&nbsp;},
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">null</span>);
+}</pre>
+    </p>
+    <p>
+        I just copied and pasted the original <code>Post</code> method and changed the type of the <code>dto</code> parameter. I also had to add a <code>ToTable</code> conversion to <code>ElementBiasedTableXmlDto</code>:
+    </p>
+    <p>
+        <pre><span style="color:blue;">internal</span>&nbsp;<span style="color:#2b91af;">Table</span>&nbsp;<span style="font-weight:bold;color:#74531f;">ToTable</span>()
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">if</span>&nbsp;(Type&nbsp;==&nbsp;<span style="color:#a31515;">&quot;single&quot;</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">t</span>&nbsp;=&nbsp;<span style="color:#2b91af;">Table</span>.<span style="color:#74531f;">TryCreateSingle</span>(Capacity,&nbsp;MinimalReservation&nbsp;??&nbsp;0);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">if</span>&nbsp;(<span style="font-weight:bold;color:#1f377f;">t</span>&nbsp;<span style="color:blue;">is</span>&nbsp;{&nbsp;})
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">t</span>.Value;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">if</span>&nbsp;(Type&nbsp;==&nbsp;<span style="color:#a31515;">&quot;communal&quot;</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">t</span>&nbsp;=&nbsp;<span style="color:#2b91af;">Table</span>.<span style="color:#74531f;">TryCreateCommunal</span>(Capacity);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">if</span>&nbsp;(<span style="font-weight:bold;color:#1f377f;">t</span>&nbsp;<span style="color:blue;">is</span>&nbsp;{&nbsp;})
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">t</span>.Value;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">throw</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">InvalidOperationException</span>(<span style="color:#a31515;">&quot;Invalid&nbsp;Table&nbsp;DTO.&quot;</span>);
+}</pre>
+    </p>
+    <p>
+        While all of that compiles, it doesn't work.
+    </p>
+    <p>
+        When you attempt to <code>POST</code> a request against the service, the ASP.NET framework now throws an <code>AmbiguousMatchException</code> indicating that "The request matched multiple endpoints". Which is understandable.
+    </p>
+    <p>
+        This lead me to the first round of <a href="/2023/10/02/dependency-whac-a-mole">Framework Whac-A-Mole</a>. What I'd like to do is to select the appropriate action method based on <code>content-type</code> or <code>accept</code> headers. How does one do that?
+    </p>
+    <p>
+        After some web searching, I came across <a href="https://stackoverflow.com/a/1045616/126014">a Stack Overflow answer</a> that seemed to indicate a way forward.
+    </p>
+    <h3 id="5f262b2b42c542148b62223f0fb3d9a9">
+        Selecting the right action method <a href="#5f262b2b42c542148b62223f0fb3d9a9">#</a>
+    </h3>
+    <p>
+        One way to address the issue is to implement a custom <a href="https://learn.microsoft.com/dotnet/api/microsoft.aspnetcore.mvc.actionconstraints.actionmethodselectorattribute">ActionMethodSelectorAttribute</a>:
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">sealed</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">SelectTableActionMethodAttribute</span>&nbsp;:&nbsp;<span style="color:#2b91af;">ActionMethodSelectorAttribute</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">override</span>&nbsp;<span style="color:blue;">bool</span>&nbsp;<span style="font-weight:bold;color:#74531f;">IsValidForRequest</span>(<span style="color:#2b91af;">RouteContext</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">routeContext</span>,&nbsp;<span style="color:#2b91af;">ActionDescriptor</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">action</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">if</span>&nbsp;(<span style="font-weight:bold;color:#1f377f;">action</span>&nbsp;<span style="color:blue;">is</span>&nbsp;<span style="color:blue;">not</span>&nbsp;<span style="color:#2b91af;">ControllerActionDescriptor</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">cad</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">false</span>;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">if</span>&nbsp;(<span style="font-weight:bold;color:#1f377f;">cad</span>.Parameters.Count&nbsp;!=&nbsp;1)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">false</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">dtoType</span>&nbsp;=&nbsp;<span style="font-weight:bold;color:#1f377f;">cad</span>.Parameters[0].ParameterType;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;Demo&nbsp;code&nbsp;only.&nbsp;This&nbsp;doesn&#39;t&nbsp;take&nbsp;into&nbsp;account&nbsp;a&nbsp;possible&nbsp;charset</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;parameter.&nbsp;See&nbsp;RFC&nbsp;9110,&nbsp;section&nbsp;8.3</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;(https://www.rfc-editor.org/rfc/rfc9110#field.content-type)&nbsp;for&nbsp;more</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;information.</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">if</span>&nbsp;(<span style="font-weight:bold;color:#1f377f;">routeContext</span>?.HttpContext.Request.ContentType&nbsp;==&nbsp;<span style="color:#a31515;">&quot;application/json&quot;</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">dtoType</span>&nbsp;<span style="font-weight:bold;color:#74531f;">==</span>&nbsp;<span style="color:blue;">typeof</span>(<span style="color:#2b91af;">TableJsonDto</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">if</span>&nbsp;(<span style="font-weight:bold;color:#1f377f;">routeContext</span>?.HttpContext.Request.ContentType&nbsp;==&nbsp;<span style="color:#a31515;">&quot;application/xml&quot;</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">dtoType</span>&nbsp;<span style="font-weight:bold;color:#74531f;">==</span>&nbsp;<span style="color:blue;">typeof</span>(<span style="color:#2b91af;">ElementBiasedTableXmlDto</span>);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">false</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+    </p>
+    <p>
+        As the code comment suggests, this isn't as robust as it should be. A <code>content-type</code> header may also look like this:
+    </p>
+    <p>
+        <pre>Content-Type: application/json; charset=utf-8</pre>
+    </p>
+    <p>
+        The exact string equality check shown above would fail in such a scenario, suggesting that a more sophisticated implementation is warranted. I'll skip that for now, since this demo code already compromises on the overall XML schema. For an example of more robust <a href="https://en.wikipedia.org/wiki/Content_negotiation">content negotiation</a> implementations, see <em>Using only a Domain Model to persist restaurant table configurations</em>.
+    </p>
+    <p>
+        Adorn both <code>Post</code> action methods with this custom attribute, and the service now handles both formats:
+    </p>
+    <p>
+        <pre>[<span style="color:#2b91af;">HttpPost</span>,&nbsp;<span style="color:#2b91af;">SelectTableActionMethod</span>]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">async</span>&nbsp;<span style="color:#2b91af;">Task</span>&lt;<span style="color:#2b91af;">IActionResult</span>&gt;&nbsp;<span style="font-weight:bold;color:#74531f;">Post</span>(<span style="color:#2b91af;">TableJsonDto</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">dto</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;...</span>
+ 
+[<span style="color:#2b91af;">HttpPost</span>,&nbsp;<span style="color:#2b91af;">SelectTableActionMethod</span>]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">async</span>&nbsp;<span style="color:#2b91af;">Task</span>&lt;<span style="color:#2b91af;">IActionResult</span>&gt;&nbsp;<span style="font-weight:bold;color:#74531f;">Post</span>(<span style="color:#2b91af;">ElementBiasedTableXmlDto</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">dto</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;...</span></pre>
+    </p>
+    <p>
+        While that handles <code>POST</code> requests, it doesn't implement content negotiation for <code>GET</code> requests.
+    </p>
+    <h3 id="4cc040875e3349d996b3711a6fea20c0">
+        Getting XML <a href="#4cc040875e3349d996b3711a6fea20c0">#</a>
+    </h3>
+    <p>
+        In order to <code>GET</code> an XML representation, clients can supply an <code>accept</code> header value:
+    </p>
+    <p>
+        <pre>GET /Tables/153f224c91fb4403988934118cc14024 HTTP/1.1
+accept: application/xml</pre>
+    </p>
+    <p>
+        which will reply with
+    </p>
+    <p>
+        <pre>HTTP/1.1 200 OK
+Content-Length: 59
+Content-Type: application/xml; charset=utf-8
+
+<span style="color:blue;">&lt;</span><span style="color:#a31515;">table</span><span style="color:blue;">&gt;&lt;</span><span style="color:#a31515;">type</span><span style="color:blue;">&gt;</span>communal<span style="color:blue;">&lt;/</span><span style="color:#a31515;">type</span><span style="color:blue;">&gt;&lt;</span><span style="color:#a31515;">capacity</span><span style="color:blue;">&gt;</span>12<span style="color:blue;">&lt;/</span><span style="color:#a31515;">capacity</span><span style="color:blue;">&gt;&lt;/</span><span style="color:#a31515;">table</span><span style="color:blue;">&gt;</span></pre>
+    </p>
+    <p>
+        How do we implement that?
+    </p>
+    <p>
+        Keep in mind that since this data-architecture variation uses two different DTOs to model JSON and XML, respectively, an action method can't just return an object of a single type and hope that the ASP.NET framework takes care of the rest. Again, I'm aware of middleware that'll deal nicely with this kind of problem, but not in this architecture; see <em>Using only a Domain Model to persist restaurant table configurations</em> for such a solution.
+    </p>
+    <p>
+        The best I could come up with, given the constraints I'd imposed on myself, then, was this:
+    </p>
+    <p>
+        <pre>[<span style="color:#2b91af;">HttpGet</span>(<span style="color:#a31515;">&quot;</span><span style="color:#0073ff;">{</span>id<span style="color:#0073ff;">}</span><span style="color:#a31515;">&quot;</span>)]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">async</span>&nbsp;<span style="color:#2b91af;">Task</span>&lt;<span style="color:#2b91af;">IActionResult</span>&gt;&nbsp;<span style="font-weight:bold;color:#74531f;">Get</span>(<span style="color:blue;">string</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">id</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">if</span>&nbsp;(!<span style="color:#2b91af;">Guid</span>.<span style="color:#74531f;">TryParseExact</span>(<span style="font-weight:bold;color:#1f377f;">id</span>,&nbsp;<span style="color:#a31515;">&quot;N&quot;</span>,&nbsp;<span style="color:blue;">out</span>&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">guid</span>))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">BadRequestResult</span>();
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">table</span>&nbsp;=&nbsp;<span style="color:blue;">await</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">repository</span>.<span style="font-weight:bold;color:#74531f;">Read</span>(<span style="font-weight:bold;color:#1f377f;">guid</span>).<span style="font-weight:bold;color:#74531f;">ConfigureAwait</span>(<span style="color:blue;">false</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">if</span>&nbsp;(<span style="font-weight:bold;color:#1f377f;">table</span>&nbsp;<span style="color:blue;">is</span>&nbsp;<span style="color:blue;">null</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">NotFoundResult</span>();
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;Demo&nbsp;code&nbsp;only.&nbsp;This&nbsp;doesn&#39;t&nbsp;take&nbsp;into&nbsp;account&nbsp;quality&nbsp;values.</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">accept</span>&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">httpContextAccessor</span>?.HttpContext?.Request.Headers.Accept.<span style="font-weight:bold;color:#74531f;">ToString</span>();
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">if</span>&nbsp;(<span style="font-weight:bold;color:#1f377f;">accept</span>&nbsp;==&nbsp;<span style="color:#a31515;">&quot;application/json&quot;</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">OkObjectResult</span>(<span style="color:#2b91af;">TableJsonDto</span>.<span style="color:#74531f;">From</span>(<span style="font-weight:bold;color:#1f377f;">table</span>.Value));
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">if</span>&nbsp;(<span style="font-weight:bold;color:#1f377f;">accept</span>&nbsp;==&nbsp;<span style="color:#a31515;">&quot;application/xml&quot;</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">OkObjectResult</span>(<span style="color:#2b91af;">ElementBiasedTableXmlDto</span>.<span style="color:#74531f;">From</span>(<span style="font-weight:bold;color:#1f377f;">table</span>.Value));
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">StatusCodeResult</span>((<span style="color:blue;">int</span>)<span style="color:#2b91af;">HttpStatusCode</span>.NotAcceptable);
+}</pre>
+    </p>
+    <p>
+        As the comment suggests, this is once again code that barely passes the few tests that I have, but really isn't production-ready. An <code>accept</code> header may look like this:
+    </p>
+    <p>
+        <pre>accept: application/xml; q=1.0,application/json; q=0.5</pre>
+    </p>
+    <p>
+        Given such an <code>accept</code> header, the service ought to return an XML representation with the <code>application/xml</code> content type, but instead, this <code>Get</code> method returns <code>406 Not Acceptable</code>.
+    </p>
+    <p>
+        As I've already outlined, I'm not going to fix this problem, as this is only an exploration. It seems that we can already conclude that this style of architecture is ill-suited to deal with this kind of problem. If that's the conclusion, then why spend time fixing outstanding problems?
+    </p>
+    <h3 id="6db23995819543c3920bc2e7c5d16bb0">
+        Attribute-biased XML <a href="#6db23995819543c3920bc2e7c5d16bb0">#</a>
+    </h3>
+    <p>
+        Even so, just to punish myself, apparently, I also tried to add support for an alternative XML format that use attributes to record primitive values. Again, I couldn't make the schema described in the <a href="">introductory article</a> work, but I did manage to add support for XML documents like these:
+    </p>
+    <p>
+        <pre><span style="color:blue;">&lt;</span><span style="color:#a31515;">table</span><span style="color:blue;">&nbsp;</span><span style="color:red;">type</span><span style="color:blue;">=</span>&quot;<span style="color:blue;">communal</span>&quot;<span style="color:blue;">&nbsp;</span><span style="color:red;">capacity</span><span style="color:blue;">=</span>&quot;<span style="color:blue;">12</span>&quot;<span style="color:blue;">&nbsp;/&gt;</span>
+
+<span style="color:blue;">&lt;</span><span style="color:#a31515;">table</span><span style="color:blue;">&nbsp;</span><span style="color:red;">type</span><span style="color:blue;">=</span>&quot;<span style="color:blue;">single</span>&quot;<span style="color:blue;">&nbsp;</span><span style="color:red;">capacity</span><span style="color:blue;">=</span>&quot;<span style="color:blue;">4</span>&quot;<span style="color:blue;">&nbsp;</span><span style="color:red;">minimal-reservation</span><span style="color:blue;">=</span>&quot;<span style="color:blue;">3</span>&quot;<span style="color:blue;">&nbsp;/&gt;</span></pre>
+    </p>
+    <p>
+        The code is similar to what I've already shown, so I'll only list the DTO:
+    </p>
+    <p>
+        <pre>[<span style="color:#2b91af;">XmlRoot</span>(<span style="color:#a31515;">&quot;table&quot;</span>)]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">AttributeBiasedTableXmlDto</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;[<span style="color:#2b91af;">XmlAttribute</span>(<span style="color:#a31515;">&quot;type&quot;</span>)]
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">string</span>?&nbsp;Type&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;<span style="color:blue;">set</span>;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;[<span style="color:#2b91af;">XmlAttribute</span>(<span style="color:#a31515;">&quot;capacity&quot;</span>)]
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">int</span>&nbsp;Capacity&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;<span style="color:blue;">set</span>;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;[<span style="color:#2b91af;">XmlAttribute</span>(<span style="color:#a31515;">&quot;minimal-reservation&quot;</span>)]
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">int</span>&nbsp;MinimalReservation&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;<span style="color:blue;">set</span>;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">bool</span>&nbsp;<span style="font-weight:bold;color:#74531f;">ShouldSerializeMinimalReservation</span>()&nbsp;=&gt;&nbsp;0&nbsp;&lt;&nbsp;MinimalReservation;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;Mapping&nbsp;methods&nbsp;not&nbsp;shown&nbsp;here...</span>
+}</pre>
+    </p>
+    <p>
+        This DTO looks a lot like the <code>ElementBiasedTableXmlDto</code> class, only it adorns properties with <code>XmlAttribute</code> rather than <code>XmlElement</code>.
+    </p>
+    <h3 id="b3b79b4075b1457dbe92a1a4aae944c6">
+        Evaluation <a href="#b3b79b4075b1457dbe92a1a4aae944c6">#</a>
+    </h3>
+    <p>
+        Even though I had to compromise on essential goals, I wasted an appalling amount of time and energy on <a href="https://projects.csail.mit.edu/gsb/old-archive/gsb-archive/gsb2000-02-11.html">yak shaving</a> and <a href="/2023/10/02/dependency-whac-a-mole">Framework Whac-A-Mole</a>. The DTO-based approach to modelling external resources really doesn't work when you need to do substantial content negotiation.
+    </p>
+    <p>
+        Even so, a DTO-based Ports and Adapters architecture may be useful when that's not a concern. If, instead of a REST API, you're developing a web site, you'll typically not need to vary representation independently of resource. In other words, a web page is likely to have at most one underlying model.
+    </p>
+    <p>
+        Compared to other large frameworks I've run into, ASP.NET is fairly unopinionated. Even so, the idiomatic way to use it is based on DTOs. DTOs to represent external data. DTOs to represent UI components. DTOs to represent database rows (although they're often called <em>entities</em> in that context). You'll find a ton of examples using this data architecture, so it's incredibly well-described. If you run into problems, odds are that someone has blazed a trail before you.
+    </p>
+    <p>
+        Even outside of .NET, <a href="https://alistair.cockburn.us/hexagonal-architecture/">this kind of architecture is well-known</a>. While I've learned a thing or two from experience, I've picked up a lot of my knowledge about software architecture from people like <a href="https://martinfowler.com/">Martin Fowler</a> and <a href="https://en.wikipedia.org/wiki/Robert_C._Martin">Robert C. Martin</a>.
+    </p>
+    <p>
+        When you also apply the Dependency Inversion Principle, you'll get good separations of concerns. This aspect of Ports and Adapters is most explicitly described in <a href="/ref/clean-architecture">Clean Architecture</a>. For example, a change to the UI generally doesn't affect the database. You may find that example ridiculous, because why should it, but consult the article <em>Using a Shared Data Model to persist restaurant table configurations</em> to see how easily this can happen.
+    </p>
+    <p>
+        The major drawbacks of the DTO-based data architecture is that much mapping is required. With three different DTOs (e.g. JSON DTO, Domain Model, and <a href="https://en.wikipedia.org/wiki/Object%E2%80%93relational_mapping">ORM</a> Entity), you need four-way translation as indicated in the above figure. People often complain about all that mapping, and no: <a href="/2023/09/18/do-orms-reduce-the-need-for-mapping">ORMs don't reduce the need for mapping</a>.
+    </p>
+    <p>
+        Another problem is that this style of architecture is <em>complicated</em>. As I've <a href="/2016/03/18/functional-architecture-is-ports-and-adapters">argued elsewhere</a>, Ports and Adapters often constitute an unstable equilibrium. While you can make it work, it requires a level of sophistication and maturity among team members that is not always present. And when it goes wrong, it may quickly devolve into a <a href="https://wiki.c2.com/?BigBallOfMud">Big Ball of Mud</a>.
+    </p>
+    <h3 id="162f6985f9674d6397869620b904de1f">
+        Conclusion <a href="#162f6985f9674d6397869620b904de1f">#</a>
+    </h3>
+    <p>
+        A DTO-based Ports and Adapters architecture is well-described and has good separation of concerns. In this article, however, we've seen that it doesn't deal successfully with realistic content negotiation. While that may seem like a shortcoming, it's a drawback that you may be able to live with. Particularly if you don't need to do content negotiation at all.
+    </p>
+    <p>
+        This way to organize code around data is quite common. It's often the default data architecture, and I sometimes get the impression that a development team has 'chosen' to use it without considering alternatives.
+    </p>
+    <p>
+        It's not a bad architecture despite evidence to the contrary in this article. The scenario examined here may not be relevant. The main drawback of having all these objects playing different roles is all the mapping that's required.
+    </p>
+    <p>
+        The next data architecture attempts to address that concern.
+    </p>
+    <p>
+        <strong>Next:</strong> Using a Shared Data Model to persist restaurant table configurations.
+    </p>
+</div>
