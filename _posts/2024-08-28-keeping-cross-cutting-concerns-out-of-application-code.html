@@ -1,0 +1,232 @@
+---
+layout: post
+title: "Keeping cross-cutting concerns out of application code"
+description: "Don't inject third-party dependencies. Use Decorators."
+date: 2024-08-28 11:30 UTC
+tags: [Software Design, Object-oriented Programming, Design Patterns]
+image: "/content/binary/polly-in-outer-shell.png"
+image_alt: "Three circles arranged in layers. In the outer layer, there's a box labelled 'ResilientOrganizationService' and another box labelled 'Polly'. An arrow points from 'ResilientOrganizationService' to 'Polly'. In the second layer in there's a box labelled 'MyApi'. The inner circle is empty." 
+---
+{% include JB/setup %}
+
+<div id="post">
+    <p>
+        <em>{{ page.description }}</em>
+    </p>
+    <p>
+        I recently came across <a href="https://stackoverflow.com/q/78887199/126014">a Stack Overflow question</a> that reminded me of a topic I've been meaning to write about for a long time: <a href="https://en.wikipedia.org/wiki/Cross-cutting_concern">Cross-cutting concerns</a>.
+    </p>
+    <p>
+        When it comes to <a href="https://en.wikipedia.org/wiki/Casablanca_(film)">the usual suspects</a>, logging, fault tolerance, caching, the best solution is usually to apply the <a href="https://en.wikipedia.org/wiki/Decorator_pattern">Decorator pattern</a>.
+    </p>
+    <p>
+        I often see code that uses Dependency Injection (DI) to inject, say, a logging interface into application code. You can see an example of that in <a href="/2020/03/23/repeatable-execution">Repeatable execution</a>, as well as a suggestion for a better design. Not surprisingly, the better design involves logging Decorators.
+    </p>
+    <p>
+        The Stack Overflow question isn't about logging, but rather about fault tolerance; <a href="https://martinfowler.com/bliki/CircuitBreaker.html?ref=wellarchitected">Circuit Breaker</a>, retry policies, timeouts, etc.
+    </p>
+    <h3 id="02d07297ea6341c6aef55c0fcb76678c">
+        Injected concern <a href="#02d07297ea6341c6aef55c0fcb76678c">#</a>
+    </h3>
+    <p>
+        The question does a good job of presenting a minimal, reproducible example. At the outset, the code looks like this:
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">MyApi</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;<span style="color:#2b91af;">ResiliencePipeline</span>&nbsp;pipeline;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;<span style="color:#2b91af;">IOrganizationService</span>&nbsp;service;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">MyApi</span>(<span style="color:#2b91af;">ResiliencePipelineProvider</span>&lt;<span style="color:blue;">string</span>&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">provider</span>,&nbsp;<span style="color:#2b91af;">IOrganizationService</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">service</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.pipeline&nbsp;=&nbsp;<span style="font-weight:bold;color:#1f377f;">provider</span>.<span style="font-weight:bold;color:#74531f;">GetPipeline</span>(<span style="color:#a31515;">&quot;retry-pipeline&quot;</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.service&nbsp;=&nbsp;<span style="font-weight:bold;color:#1f377f;">service</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">List</span>&lt;<span style="color:blue;">string</span>&gt;&nbsp;<span style="font-weight:bold;color:#74531f;">GetSomething</span>(<span style="color:#2b91af;">QueryByAttribute</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">query</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">result</span>&nbsp;=&nbsp;<span style="color:blue;">this</span>.pipeline.<span style="font-weight:bold;color:#74531f;">Execute</span>(()&nbsp;=&gt;&nbsp;service.<span style="font-weight:bold;color:#74531f;">RetrieveMultiple</span>(<span style="font-weight:bold;color:#1f377f;">query</span>));
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">result</span>.Entities.<span style="font-weight:bold;color:#74531f;">Cast</span>&lt;<span style="color:blue;">string</span>&gt;().<span style="font-weight:bold;color:#74531f;">ToList</span>();
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+    </p>
+    <p>
+        The Stack Overflow question asks how to test this implementation, but I'd rather take the example as an opportunity to discuss design alternatives. Not surprisingly, it turns out that with a more decoupled design, testing becomes easier, too.
+    </p>
+    <p>
+        Before we proceed, a few words about this example code. I assume that this isn't <a href="https://stackoverflow.com/users/3805597">Andy Cooke</a>'s actual production code. Rather, I interpret it as a reduced example that highlights the actual question. This is important because you might ask: <em>Why bother testing two lines of code?</em>
+    </p>
+    <p>
+        Indeed, as presented, the <code>GetSomething</code> method is <a href="/2018/11/12/what-to-test-and-not-to-test">so simple that you may consider not testing it</a>. Thus, I interpret the second line of code as a stand-in for more complicated production code. Hold on to that thought, because once I'm done, that's all that's going to be left, and you may then think that it's so simple that it really doesn't warrant all this hoo-ha.
+    </p>
+    <h3 id="32211a755e0a4b9bbd04a049ddbba0c8">
+        Coupling <a href="#32211a755e0a4b9bbd04a049ddbba0c8">#</a>
+    </h3>
+    <p>
+        As shown, the <code>MyApi</code> class is coupled to <a href="https://www.thepollyproject.org/">Polly</a>, because <code>ResiliencePipeline</code> is defined by that library. To be clear, I hear that Polly is a fine library. I've used it for a few projects myself, but I also admit that I haven't that much experience with it. I'd probably use it again the next time I need a Circuit Breaker or similar, so the following discussion isn't a denouncement of Polly. Rather, it applies to all third-party dependencies, or perhaps even dependencies that are part of your language's base library.
+    </p>
+    <p>
+        Coupling is a major cause of <a href="https://en.wikipedia.org/wiki/Spaghetti_code">spaghetti code</a> and code rot in general. To write sustainable code, you should be cognizant of coupling. The most decoupled code is <a href="/2022/11/21/decouple-to-delete">code that you can easily delete</a>.
+    </p>
+    <p>
+        This doesn't mean that you shouldn't use high-quality third-party libraries like Polly. Among myriads of software engineering heuristics, we know that we should be aware of the <a href="https://en.wikipedia.org/wiki/Not_invented_here">not-invented-here syndrome</a>.
+    </p>
+    <p>
+        When it comes to classic cross-cutting concerns, the Decorator pattern is usually a better design than injecting the concern into application code. The above example clearly looks innocuous, but imagine injecting both a <code>ResiliencePipeline</code>, a logger, and perhaps a caching service, and your real application code eventually disappears in 'infrastructure code'.
+    </p>
+    <p>
+        It's not that we don't want to have these third-party dependencies, but we want to move them somewhere else.
+    </p>
+    <h3 id="67a215289ba944b984b4d113b10e419c">
+        Resilient Decorator <a href="#67a215289ba944b984b4d113b10e419c">#</a>
+    </h3>
+    <p>
+        The concern in the above example is the desire to make the <code>IOrganizationService</code> dependency more resilient. The <code>MyApi</code> class only becomes more resilient as a transitive effect. The first refactoring step, then, is to introduce a resilient Decorator.
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">sealed</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">ResilientOrganizationService</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">ResiliencePipeline</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">pipeline</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">IOrganizationService</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">inner</span>)&nbsp;:&nbsp;<span style="color:#2b91af;">IOrganizationService</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">QueryResult</span>&nbsp;<span style="font-weight:bold;color:#74531f;">RetrieveMultiple</span>(<span style="color:#2b91af;">QueryByAttribute</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">query</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">pipeline</span>.<span style="font-weight:bold;color:#74531f;">Execute</span>(()&nbsp;=&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">inner</span>.<span style="font-weight:bold;color:#74531f;">RetrieveMultiple</span>(<span style="font-weight:bold;color:#1f377f;">query</span>));
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+    </p>
+    <p>
+        As Decorators must, this class composes another <code>IOrganizationService</code> while also implementing that interface itself. It does so by being an <a href="https://en.wikipedia.org/wiki/Adapter_pattern">Adapter</a> over the Polly API.
+    </p>
+    <p>
+        I've applied <a href="https://vuscode.wordpress.com/2009/10/16/inversion-of-control-single-responsibility-principle-and-nikola-s-laws-of-dependency-injection/">Nikola Malovic's 4th law of DI</a>:
+    </p>
+    <blockquote>
+        <p>
+            "Every constructor of a class being resolved should not have any implementation other then accepting a set of its own dependencies."
+        </p>
+        <footer><cite><a href="https://vuscode.wordpress.com/2009/10/16/inversion-of-control-single-responsibility-principle-and-nikola-s-laws-of-dependency-injection/">Inversion Of Control, Single Responsibility Principle and Nikola’s laws of dependency injection</a></cite>, Nikola Malovic, 2009</footer>
+    </blockquote>
+    <p>
+        Instead of injecting a <code><span style="color:#2b91af;">ResiliencePipelineProvider</span>&lt;<span style="color:blue;">string</span>&gt;</code> only to call <code>GetPipeline</code> on it, it just receives a <code>ResiliencePipeline</code> and saves the object for use in the <code>RetrieveMultiple</code> method. It does that via a <a href="https://learn.microsoft.com/dotnet/csharp/programming-guide/classes-and-structs/instance-constructors#primary-constructors">primary constructor</a>, which is a recent C# language addition. It's just syntactic sugar for Constructor Injection, and as usual <a href="https://fsharp.org/">F#</a> developers should feel right at home.
+    </p>
+    <h3 id="8e967ac0c4ea4323b280e7a665825903">
+        Simplifying MyApi <a href="#8e967ac0c4ea4323b280e7a665825903">#</a>
+    </h3>
+    <p>
+        Now that you have a resilient version of <code>IOrganizationService</code> you don't need to have any Polly code in <code>MyApi</code>. Remove it and simplify:
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">MyApi</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;<span style="color:#2b91af;">IOrganizationService</span>&nbsp;service;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">MyApi</span>(<span style="color:#2b91af;">IOrganizationService</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">service</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.service&nbsp;=&nbsp;<span style="font-weight:bold;color:#1f377f;">service</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">List</span>&lt;<span style="color:blue;">string</span>&gt;&nbsp;<span style="font-weight:bold;color:#74531f;">GetSomething</span>(<span style="color:#2b91af;">QueryByAttribute</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">query</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">result</span>&nbsp;=&nbsp;service.<span style="font-weight:bold;color:#74531f;">RetrieveMultiple</span>(<span style="font-weight:bold;color:#1f377f;">query</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">result</span>.Entities.<span style="font-weight:bold;color:#74531f;">Cast</span>&lt;<span style="color:blue;">string</span>&gt;().<span style="font-weight:bold;color:#74531f;">ToList</span>();
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+    </p>
+    <p>
+        As promised, there's almost nothing left of it now, but I'll remind you that I consider the second line of <code>GetSomething</code> as a stand-in for something more complicated that you might need to test. As it is now, though, testing it is trivial:
+    </p>
+    <p>
+        <pre>[<span style="color:#2b91af;">Theory</span>]
+[<span style="color:#2b91af;">InlineData</span>(<span style="color:#a31515;">&quot;foo&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;bar&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;baz&quot;</span>)]
+[<span style="color:#2b91af;">InlineData</span>(<span style="color:#a31515;">&quot;qux&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;quux&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;corge&quot;</span>)]
+[<span style="color:#2b91af;">InlineData</span>(<span style="color:#a31515;">&quot;grault&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;garply&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;waldo&quot;</span>)]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;<span style="font-weight:bold;color:#74531f;">GetSomething</span>(<span style="color:blue;">params</span>&nbsp;<span style="color:blue;">string</span>[]&nbsp;<span style="font-weight:bold;color:#1f377f;">expected</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">service</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Mock</span>&lt;<span style="color:#2b91af;">IOrganizationService</span>&gt;();
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">service</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.<span style="font-weight:bold;color:#74531f;">Setup</span>(<span style="font-weight:bold;color:#1f377f;">s</span>&nbsp;=&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">s</span>.<span style="font-weight:bold;color:#74531f;">RetrieveMultiple</span>(<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">QueryByAttribute</span>()))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.<span style="font-weight:bold;color:#74531f;">Returns</span>(<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">QueryResult</span>(<span style="font-weight:bold;color:#1f377f;">expected</span>));
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">sut</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">MyApi</span>(<span style="font-weight:bold;color:#1f377f;">service</span>.Object);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">actual</span>&nbsp;=&nbsp;<span style="font-weight:bold;color:#1f377f;">sut</span>.<span style="font-weight:bold;color:#74531f;">GetSomething</span>(<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">QueryByAttribute</span>());
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Assert</span>.<span style="color:#74531f;">Equal</span>(<span style="font-weight:bold;color:#1f377f;">expected</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">actual</span>);
+}</pre>
+    </p>
+    <p>
+        The larger point, however, is that not only have you now managed to keep third-party dependencies out of your application code, you've also simplified it and made it easier to test.
+    </p>
+    <h3 id="c9dd80b39e234c6595ef31de1fea30c2">
+        Composition <a href="#c9dd80b39e234c6595ef31de1fea30c2">#</a>
+    </h3>
+    <p>
+        You can still create a resilient <code>MyApi</code> object in your <a href="/2011/07/28/CompositionRoot">Composition Root</a>:
+    </p>
+    <p>
+        <pre><span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">service</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">ResilientOrganizationService</span>(<span style="font-weight:bold;color:#1f377f;">pipeline</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">inner</span>);
+<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">myApi</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">MyApi</span>(<span style="font-weight:bold;color:#1f377f;">service</span>);</pre>
+    </p>
+    <p>
+        Decomposing the problem in this way, you decouple your application code from third-party dependencies. You can define <code>ResilientOrganizationService</code> in the application's Composition Root, which also keeps the Polly dependency there. Even so, you can implement <code>MyApi</code> as part of your application layer.
+    </p>
+    <p>
+        <img src="/content/binary/polly-in-outer-shell.png" alt="Three circles arranged in layers. In the outer layer, there's a box labelled 'ResilientOrganizationService' and another box labelled 'Polly'. An arrow points from 'ResilientOrganizationService' to 'Polly'. In the second layer in there's a box labelled 'MyApi'. The inner circle is empty." >
+    </p>
+    <p>
+        I usually illustrate <a href="/2013/12/03/layers-onions-ports-adapters-its-all-the-same">Ports and Adapters</a>, or, if you will, <a href="/ref/clean-architecture">Clean Architecture</a> as concentric circles, but in this diagram I've skewed the circles to make space for the boxes. In other words, the diagram is 'not to scale'. Ideally, the outermost layer is much smaller and thinner than any of the the other layers. I've also included an inner green layer which indicates the architecture's Domain Model, but since I assume that <code>MyApi</code> is part of some application layer, I've left the Domain Model empty.
+    </p>
+    <h3 id="ba7304112c214dd6be84011aea811dbf">
+        Reasons to decouple <a href="#ba7304112c214dd6be84011aea811dbf">#</a>
+    </h3>
+    <p>
+        Why is it important to decouple application code from Polly? First, keep in mind that Polly is just a stand-in for any third-party dependency. It's up to you as a software architect to decide how you'll structure your code, but third-party dependencies are one of the first things I look for. A third-party component changes with time, and often independently of your base platform. You may have to deal with breaking changes or security patches at inopportune times. The organization that maintains the component may cease to operate. This happens to commercial entities and open-source contributors alike, although for different reasons.
+    </p>
+    <p>
+        Second, even a top-tier library like Polly will undergo changes. If your time horizon is five to ten years, you'll be surprised how much things change. You may protest that no-one designs software systems with such a long view, but I think that if you ask the business people involved with your software, they most certainly expect your system to last a long time.
+    </p>
+    <p>
+        I believe that I heard on a podcast that some Microsoft teams had taken a dependency on Polly. Assuming, for the sake of argument, that this is true, while we may not wish to depend on some random open-source component, depending on Polly is safe, right? In the long run, it isn't. Five years ago, you had the same situation with <a href="https://www.newtonsoft.com/json">Json.NET</a>, but then Microsoft hired James Newton-King and had him make a JSON API as part of the .NET base library. While Json.NET isn't dead by any means, now you have two competing JSON libraries, and Microsoft uses their own in the frameworks and libraries that they release.
+    </p>
+    <p>
+        Deciding to decouple your application code from a third-party component is ultimately a question of risk management. It's up to you to make the bet. Do you pay the up-front cost of decoupling, or do you postpone it, hoping it'll never be necessary?
+    </p>
+    <p>
+        I usually do the former, because the cost is low, and there are other benefits as well. As I've already touched on, unit testing becomes easier.
+    </p>
+    <h3 id="f126ff285a014a6d85cff276436321c8">
+        Configuration <a href="#f126ff285a014a6d85cff276436321c8">#</a>
+    </h3>
+    <p>
+        Since Polly only lives in the Composition Root, you'll also need to define the <code>ResiliencePipeline</code> there. You can write the code that creates that pieline wherever you like, but it might be natural to make it a creation function on the <code>ResilientOrganizationService</code> class:
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:#2b91af;">ResiliencePipeline</span>&nbsp;<span style="color:#74531f;">CreatePipeline</span>()
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">ResiliencePipelineBuilder</span>()
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.<span style="font-weight:bold;color:#74531f;">AddRetry</span>(<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">RetryStrategyOptions</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;MaxRetryAttempts&nbsp;=&nbsp;4
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;})
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.<span style="font-weight:bold;color:#74531f;">AddTimeout</span>(<span style="color:#2b91af;">TimeSpan</span>.<span style="color:#74531f;">FromSeconds</span>(1))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.<span style="font-weight:bold;color:#74531f;">Build</span>();
+}</pre>
+    </p>
+    <p>
+        That's just an example, and perhaps not what you'd like to do. Perhaps you rather want some of these values to be defined in a configuration file. Thus, this isn't what you <em>have</em> to do, but rather what you <em>could</em> do.
+    </p>
+    <p>
+        If you use this option, however, you could take the return value of this method and inject it into the <code>ResilientOrganizationService</code> constructor.
+    </p>
+    <h3 id="11bbc9df98474c33a6ce0902b13178d4">
+        Conclusion <a href="#11bbc9df98474c33a6ce0902b13178d4">#</a>
+    </h3>
+    <p>
+        Cross-cutting concerns, like caching, logging, security, or, in this case, fault tolerance, are usually best addressed with the Decorator pattern. In this article, you saw an example of using the Decorator pattern to decouple the concern of fault tolerance from the consumer of the service that you need to handle in a fault-tolerant manner.
+    </p>
+    <p>
+        The specific example dealt with the Polly library, but the point isn't that Polly is a particularly nasty third-party component that you need to protect yourself against. Rather, it just so happened that I came across a Stack Overflow question that used Polly, and I though it was a a nice example.
+    </p>
+    <p>
+        As far as I can tell, Polly is actually one of the top .NET open-source packages, so this article is not a denouncement of Polly. It's just a sketch of how to move useful dependencies around in your code base to make sure that they impact your application code as little as possible.
+    </p>
+</div>
