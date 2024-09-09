@@ -1,0 +1,459 @@
+---
+layout: post
+title: "A Binary Tree Zipper in C#"
+description: "A port of another Haskell example, still just because."
+date: 2024-08-14 6:14 UTC
+tags: [Functional Programming]
+---
+{% include JB/setup %}
+
+<div id="post">
+    <p>
+        <em>{{ page.description }}</em>
+    </p>
+    <p>
+        This article is part of <a href="">a series about Zippers</a>. In this one, I port the <code>Zipper</code> data structure from the <a href="https://learnyouahaskell.com/">Learn You a Haskell for Great Good!</a> article also called <a href="https://learnyouahaskell.com/zippers">Zippers</a>.
+    </p>
+    <p>
+        A word of warning: I'm assuming that you're familiar with the contents of that article, so I'll skip the pedagogical explanations; I can hardly do it better that it's done there. Additionally, I'll make heavy use of certain standard constructs to port <a href="https://www.haskell.org/">Haskell</a> code, most notably <a href="/2018/05/22/church-encoding">Church encoding</a> to model <a href="https://en.wikipedia.org/wiki/Tagged_union">sum types</a> in languages that don't natively have them. Such as C#. In some cases, I'll implement the Church encoding using the data structure's <a href="/2019/04/29/catamorphisms">catamorphism</a>. Since the <a href="https://en.wikipedia.org/wiki/Cyclomatic_complexity">cyclomatic complexity</a> of the resulting code is quite low, you may be able to follow what's going on even if you don't know what Church encoding or catamorphisms are, but if you want to understand the background and motivation for that style of programming, you can consult the cited resources.
+    </p>
+    <p>
+        The code shown in this article is <a href="">available on GitHub</a>.
+    </p>
+    <h3 id="e612adde6ff2487ebd026c858f36233f">
+        Binary tree initialization and structure <a href="#e612adde6ff2487ebd026c858f36233f">#</a>
+    </h3>
+    <p>
+        In the Haskell code, the binary <code>Tree</code> type is a recursive <a href="https://en.wikipedia.org/wiki/Tagged_union">sum type</a>, defined on a single line of code. C#, on the other hand, has no built-in language construct that supports sum types, so a more elaborate solution is required. At least two options are available to us. One is to <a href="/2018/06/25/visitor-as-a-sum-type">model a sum type as a Visitor</a>. Another is to use <a href="/2018/05/22/church-encoding">Church encoding</a>. In this article, I'll do the latter.
+    </p>
+    <p>
+        I find the type name (<code>Tree</code>) used in the Zippers article a bit too vague, and since I consider <a href="https://peps.python.org/pep-0020/">explicit better than implicit</a>, I'll use a more precise class name:
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">sealed</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">BinaryTree</span>&lt;<span style="color:#2b91af;">T</span>&gt;</pre>
+    </p>
+    <p>
+        Even so, there are different kinds of binary trees. In <a href="/2019/06/24/full-binary-tree-catamorphism">a previous article</a> I've shown a catamorphism for a <em>full <a href="https://en.wikipedia.org/wiki/Binary_tree">binary tree</a></em>. This variation is not as strict, since it allows a node to have zero, one, or two children. Or, strictly speaking, a node always has exactly two children, but both, or one of them, may be empty. <code><span style="color:#2b91af;">BinaryTree</span>&lt;<span style="color:#2b91af;">T</span>&gt;</code> uses Church encoding to distinguish between the two, but we'll return to that in a moment.
+    </p>
+    <p>
+        First, we'll examine how the class allows initialization:
+    </p>
+    <p>
+        <pre><span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;<span style="color:#2b91af;">IBinaryTree</span>&nbsp;root;
+ 
+<span style="color:blue;">private</span>&nbsp;<span style="color:#2b91af;">BinaryTree</span>(<span style="color:#2b91af;">IBinaryTree</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">root</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.root&nbsp;=&nbsp;<span style="font-weight:bold;color:#1f377f;">root</span>;
+}
+ 
+<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">BinaryTree</span>()&nbsp;:&nbsp;<span style="color:blue;">this</span>(<span style="color:#2b91af;">Empty</span>.Instance)
+{
+}
+ 
+<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">BinaryTree</span>(<span style="color:#2b91af;">T</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">value</span>,&nbsp;<span style="color:#2b91af;">BinaryTree</span>&lt;<span style="color:#2b91af;">T</span>&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">left</span>,&nbsp;<span style="color:#2b91af;">BinaryTree</span>&lt;<span style="color:#2b91af;">T</span>&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">right</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;:&nbsp;<span style="color:blue;">this</span>(<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Node</span>(<span style="font-weight:bold;color:#1f377f;">value</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">left</span>.root,&nbsp;<span style="font-weight:bold;color:#1f377f;">right</span>.root))
+{
+}</pre>
+    </p>
+    <p>
+        The class uses a <code>private</code> <code>root</code> object to implement behaviour, and constructor chaining for initialization. The master constructor is <code>private</code>, since the <code>IBinaryTree</code> interface is <code>private</code>. The parameterless constructor implicitly indicates an empty node, whereas the other <code>public</code> constructor indicates a node with a value and two children. Yes, I know that I just wrote that explicit is better than implicit, but it turns out that with the <a href="https://learn.microsoft.com/dotnet/csharp/language-reference/operators/new-operator">target-typed <code>new</code></a> operator feature in C#, constructing trees in code becomes easier with this design choice:
+    </p>
+    <p>
+        <pre><span style="color:#2b91af;">BinaryTree</span>&lt;<span style="color:blue;">int</span>&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">sut</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;42,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>(),
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>(2,&nbsp;<span style="color:blue;">new</span>(),&nbsp;<span style="color:blue;">new</span>()));</pre>
+    </p>
+    <p>
+        As <a href="/2020/11/30/name-by-role">the variable name suggests</a>, I've taken this code example from a unit test.
+    </p>
+    <h3 id="57fddbbeebc44489b3ebc0c4fd7c0d9f">
+        Private interface <a href="#57fddbbeebc44489b3ebc0c4fd7c0d9f">#</a>
+    </h3>
+    <p>
+        The class delegates method calls to the <code>root</code> field, which is an instance of the <code>private</code>, nested <code>IBinaryTree</code> interface:
+    </p>
+    <p>
+        <pre><span style="color:blue;">private</span>&nbsp;<span style="color:blue;">interface</span>&nbsp;<span style="color:#2b91af;">IBinaryTree</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">TResult</span>&nbsp;<span style="font-weight:bold;color:#74531f;">Aggregate</span>&lt;<span style="color:#2b91af;">TResult</span>&gt;(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:#2b91af;">TResult</span>&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">whenEmpty</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:#2b91af;">T</span>,&nbsp;<span style="color:#2b91af;">TResult</span>,&nbsp;<span style="color:#2b91af;">TResult</span>,&nbsp;<span style="color:#2b91af;">TResult</span>&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">whenNode</span>);
+}</pre>
+    </p>
+    <p>
+        Why is <code>IBinaryTree</code> a <code>private</code> interface? Why does that interface even exist?
+    </p>
+    <p>
+        To be frank, I could have chosen another implementation strategy. Since there's only two mutually exclusive alternatives (<em>node</em> or <em>empty</em>), I could also have indicated which is which with a Boolean flag. You can see an example of that implementation tactic in the <code>Table</code> class in the sample code that accompanies <a href="/2021/06/14/new-book-code-that-fits-in-your-head">Code That Fits in Your Head</a>.
+    </p>
+    <p>
+        Using a Boolean flag, however, only works when there are exactly two choices. If you have three or more, things because more complicated. You could try to use an <a href="https://en.wikipedia.org/wiki/Enumerated_type">enum</a>, but in most languages, these tend to be nothing but glorified integers, and are typically not type-safe. If you define a three-way enum, there's no guarantee that a value of that type takes only one of these three values, and a good compiler will typically insist that you check for any other value as well. The C# compiler certainly does.
+    </p>
+    <p>
+        Church encoding offers a better alternative, but since it makes use of polymorphism, the most <a href="/2015/08/03/idiomatic-or-idiosyncratic">idiomatic</a> choice in C# is either an interface or a base class. Since I favour interfaces over base classes, that's what I've chosen here, but for the purposes of this little digression, it makes no difference: The following argument applies to base classes as well.
+    </p>
+    <p>
+        An interface (or base class) suggests to users of an API that they can implement it in order to extend behaviour. That's an impression I don't wish to give client developers. The purpose of the interface is exclusively to enable <a href="https://en.wikipedia.org/wiki/Double_dispatch">double dispatch</a> to work. There's only two implementations of the <code>IBinaryTree</code>, and under no circumstances should there be more.
+    </p>
+    <p>
+        The interface is an implementation detail, which is why both it, and its implementations, are <code>private</code>.
+    </p>
+    <h3 id="72ecf86f028f482ebcdb02e914e4cd06">
+        Binary tree catamorphism <a href="#72ecf86f028f482ebcdb02e914e4cd06">#</a>
+    </h3>
+    <p>
+        The <code>IBinaryTree</code> interface defines a catamorphism for the <code><span style="color:#2b91af;">BinaryTree</span>&lt;<span style="color:#2b91af;">T</span>&gt;</code> class. Since we may often view a catamorphism as a sort of 'generalized fold', and since these kinds of operations in C# are typically called <code>Aggregate</code>, that's what I've called the method.
+    </p>
+    <p>
+        An aggregate function affords a way to traverse a data structure and collect information into a single value, here of type <code>TResult</code>. The return type may, however, be a complex type, including another <code><span style="color:#2b91af;">BinaryTree</span>&lt;<span style="color:#2b91af;">T</span>&gt;</code>. You'll see examples of complex return values later in this article.
+    </p>
+    <p>
+        As already discussed, there are exactly two implementations of <code>IBinaryTree</code>. The one representing an empty node is the simplest:
+    </p>
+    <p>
+        <pre><span style="color:blue;">private</span>&nbsp;<span style="color:blue;">sealed</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">Empty</span>&nbsp;:&nbsp;<span style="color:#2b91af;">IBinaryTree</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:#2b91af;">Empty</span>&nbsp;Instance&nbsp;=&nbsp;<span style="color:blue;">new</span>();
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:#2b91af;">Empty</span>()
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">TResult</span>&nbsp;<span style="font-weight:bold;color:#74531f;">Aggregate</span>&lt;<span style="color:#2b91af;">TResult</span>&gt;(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:#2b91af;">TResult</span>&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">whenEmpty</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:#2b91af;">T</span>,&nbsp;<span style="color:#2b91af;">TResult</span>,&nbsp;<span style="color:#2b91af;">TResult</span>,&nbsp;<span style="color:#2b91af;">TResult</span>&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">whenNode</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">whenEmpty</span>();
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+    </p>
+    <p>
+        The <code>Aggregate</code> implementation unconditionally calls the supplied <code>whenEmpty</code> function, which returns some <code>TResult</code> value unknown to the <code>Empty</code> class.
+    </p>
+    <p>
+        Although not strictly necessary, I've made the class a <a href="https://en.wikipedia.org/wiki/Singleton_pattern">Singleton</a>. Since I like to <a href="/2021/05/03/structural-equality-for-better-tests">take advantage of structural equality to write better tests</a>, it was either that, or overriding <code>Equals</code> and <code>GetHashCode</code>.
+    </p>
+    <p>
+        The other implementation gets around that problem by being a <a href="https://learn.microsoft.com/dotnet/csharp/language-reference/builtin-types/record">record</a>:
+    </p>
+    <p>
+        <pre><span style="color:blue;">private</span>&nbsp;<span style="color:blue;">sealed</span>&nbsp;<span style="color:blue;">record</span>&nbsp;<span style="color:#2b91af;">Node</span>(<span style="color:#2b91af;">T</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">Value</span>,&nbsp;<span style="color:#2b91af;">IBinaryTree</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">Left</span>,&nbsp;<span style="color:#2b91af;">IBinaryTree</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">Right</span>)&nbsp;:&nbsp;<span style="color:#2b91af;">IBinaryTree</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">TResult</span>&nbsp;<span style="font-weight:bold;color:#74531f;">Aggregate</span>&lt;<span style="color:#2b91af;">TResult</span>&gt;(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:#2b91af;">TResult</span>&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">whenEmpty</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:#2b91af;">T</span>,&nbsp;<span style="color:#2b91af;">TResult</span>,&nbsp;<span style="color:#2b91af;">TResult</span>,&nbsp;<span style="color:#2b91af;">TResult</span>&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">whenNode</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">whenNode</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Value,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Left.<span style="font-weight:bold;color:#74531f;">Aggregate</span>(<span style="font-weight:bold;color:#1f377f;">whenEmpty</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">whenNode</span>),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Right.<span style="font-weight:bold;color:#74531f;">Aggregate</span>(<span style="font-weight:bold;color:#1f377f;">whenEmpty</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">whenNode</span>));
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+    </p>
+    <p>
+        It, too, unconditionally calls one of the two functions passed to its <code>Aggregate</code> method, but this time <code>whenNode</code>. It does that, however, by first <em>recursively</em> calling <code>Aggregate</code> on both <code>Left</code> and <code>Right</code>. It needs to do that because the <code>whenNode</code> function expects the subtrees to have been already converted to values of the <code>TResult</code> return type. This is a common pattern with catamorphisms, and takes a bit of time getting used to. You can see similar examples in the articles <a href="/2019/06/10/tree-catamorphism">Tree catamorphism</a>, <a href="/2019/08/05/rose-tree-catamorphism">Rose tree catamorphism</a>, and <a href="/2019/06/24/full-binary-tree-catamorphism">Full binary tree catamorphism</a>.
+    </p>
+    <p>
+        The <code><span style="color:#2b91af;">BinaryTree</span>&lt;<span style="color:#2b91af;">T</span>&gt;</code> class defines a <code>public</code> <code>Aggregate</code> method that delegates to its <code>root</code> field:
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">TResult</span>&nbsp;<span style="font-weight:bold;color:#74531f;">Aggregate</span>&lt;<span style="color:#2b91af;">TResult</span>&gt;(
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:#2b91af;">TResult</span>&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">whenEmpty</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:#2b91af;">T</span>,&nbsp;<span style="color:#2b91af;">TResult</span>,&nbsp;<span style="color:#2b91af;">TResult</span>,&nbsp;<span style="color:#2b91af;">TResult</span>&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">whenNode</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;root.<span style="font-weight:bold;color:#74531f;">Aggregate</span>(<span style="font-weight:bold;color:#1f377f;">whenEmpty</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">whenNode</span>);
+}</pre>
+    </p>
+    <p>
+        The astute reader may now remark that the <code>Aggregate</code> method doesn't look like a Church encoding.
+    </p>
+    <h3 id="e99e9074e04e416c82a7345574d4944b">
+        Binary tree Church encoding <a href="#e99e9074e04e416c82a7345574d4944b">#</a>
+    </h3>
+    <p>
+        A Church encoding will typically have a <code>Match</code> method that enables client code to match on all the alternative cases in the sum type, without those confusing already-converted <code>TResult</code> values. It turns out that you can implement the desired <code>Match</code> method with the <code>Aggregate</code> method.
+    </p>
+    <p>
+        One of the advantages of doing meaningless coding exercises like this one is that you can pursue various ideas that interest you. One idea that interests me is the potential universality of catamorphisms. I conjecture that a catamorphism is an <a href="https://en.wikipedia.org/wiki/Algebraic_data_type">algebraic data type</a>'s universal API, and that you can implement all other methods or functions with it. I admit that I haven't done much research in the form of perusing existing literature, but at least it seems to be the case conspicuously often.
+    </p>
+    <p>
+        As it is here.
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">TResult</span>&nbsp;<span style="font-weight:bold;color:#74531f;">Match</span>&lt;<span style="color:#2b91af;">TResult</span>&gt;(
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:#2b91af;">TResult</span>&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">whenEmpty</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:#2b91af;">T</span>,&nbsp;<span style="color:#2b91af;">BinaryTree</span>&lt;<span style="color:#2b91af;">T</span>&gt;,&nbsp;<span style="color:#2b91af;">BinaryTree</span>&lt;<span style="color:#2b91af;">T</span>&gt;,&nbsp;<span style="color:#2b91af;">TResult</span>&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">whenNode</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;root
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.<span style="font-weight:bold;color:#74531f;">Aggregate</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;()&nbsp;=&gt;&nbsp;(tree:&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">BinaryTree</span>&lt;<span style="color:#2b91af;">T</span>&gt;(),&nbsp;result:&nbsp;<span style="font-weight:bold;color:#1f377f;">whenEmpty</span>()),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(<span style="font-weight:bold;color:#1f377f;">x</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">l</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">r</span>)&nbsp;=&gt;&nbsp;(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">BinaryTree</span>&lt;<span style="color:#2b91af;">T</span>&gt;(<span style="font-weight:bold;color:#1f377f;">x</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">l</span>.tree,&nbsp;<span style="font-weight:bold;color:#1f377f;">r</span>.tree),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">whenNode</span>(<span style="font-weight:bold;color:#1f377f;">x</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">l</span>.tree,&nbsp;<span style="font-weight:bold;color:#1f377f;">r</span>.tree)))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.result;
+}</pre>
+    </p>
+    <p>
+        Now, I readily admit that it took me a couple of hours tossing and turning in my bed before this solution came to me. I don't find it intuitive at all, but it works.
+    </p>
+    <p>
+        The <code>Aggregate</code> method requires that the <code>whenNode</code> function's <em>left</em> and <em>right</em> values are of <em>the same</em> <code>TResult</code> type as the return type. How do we consolidate that requirement with the <code>Match</code> method's variation, where <em>its</em> <code>whenNode</code> function requires the <em>left</em> and <em>right</em> values to be <code><span style="color:#2b91af;">BinaryTree</span>&lt;<span style="color:#2b91af;">T</span>&gt;</code> values, but the return type still <code>TResult</code>?
+    </p>
+    <p>
+        The way out of this conundrum, it turns out, is to combine both in a tuple. Thus, when <code>Match</code> calls <code>Aggregate</code>, the implied <code>TResult</code> type is <em>not</em> the <code>TResult</code> visible in the <code>Match</code> method declaration. Rather, it's inferred to be of the type <code>(<span style="color:#2b91af;">BinaryTree</span>&lt;<span style="color:#2b91af;">T</span>&gt;,&nbsp;<span style="color:#2b91af;">TResult</span>)</code>. That is, a tuple where the first element is a <code><span style="color:#2b91af;">BinaryTree</span>&lt;<span style="color:#2b91af;">T</span>&gt;</code> value, and the second element is a <code><span style="color:#2b91af;">TResult</span></code> value. The C# compiler's type inference engine then figures out that <code>(<span style="color:#2b91af;">BinaryTree</span>&lt;<span style="color:#2b91af;">T</span>&gt;,&nbsp;<span style="color:#2b91af;">TResult</span>)</code> must also be the return type of the <code>Aggregate</code> method call.
+    </p>
+    <p>
+        That's not what <code>Match</code> should return, but the second tuple element contains a value of the correct type, so it returns that. Since I've given the tuple elements names, the <code>Match</code> implementation accomplishes that by returning the <code>result</code> tuple field.
+    </p>
+    <h3 id="816773c095624bfcb5cced827ba76455">
+        Breadcrumbs <a href="#816773c095624bfcb5cced827ba76455">#</a>
+    </h3>
+    <p>
+        That's just the tree that we want to zip. So far, we can only move from root to branches, but not the other way. Before we can define a Zipper for the tree, we need a data structure to store breadcrumbs (the navigation log, if you will).
+    </p>
+    <p>
+        In Haskell it's just another one-liner, but in C# this requires another full-fledged class:
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">sealed</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">Crumb</span>&lt;<span style="color:#2b91af;">T</span>&gt;</pre>
+    </p>
+    <p>
+        It's another sum type, so once more, I make the constructor private and use a <code>private</code> class field for the implementation:
+    </p>
+    <p>
+        <pre><span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;<span style="color:#2b91af;">ICrumb</span>&nbsp;imp;
+ 
+<span style="color:blue;">private</span>&nbsp;<span style="color:#2b91af;">Crumb</span>(<span style="color:#2b91af;">ICrumb</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">imp</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.imp&nbsp;=&nbsp;<span style="font-weight:bold;color:#1f377f;">imp</span>;
+}
+ 
+<span style="color:blue;">internal</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:#2b91af;">Crumb</span>&lt;<span style="color:#2b91af;">T</span>&gt;&nbsp;<span style="color:#74531f;">Left</span>(<span style="color:#2b91af;">T</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">value</span>,&nbsp;<span style="color:#2b91af;">BinaryTree</span>&lt;<span style="color:#2b91af;">T</span>&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">right</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">new</span>(<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">LeftCrumb</span>(<span style="font-weight:bold;color:#1f377f;">value</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">right</span>));
+}
+ 
+<span style="color:blue;">internal</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:#2b91af;">Crumb</span>&lt;<span style="color:#2b91af;">T</span>&gt;&nbsp;<span style="color:#74531f;">Right</span>(<span style="color:#2b91af;">T</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">value</span>,&nbsp;<span style="color:#2b91af;">BinaryTree</span>&lt;<span style="color:#2b91af;">T</span>&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">left</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">new</span>(<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">RightCrumb</span>(<span style="font-weight:bold;color:#1f377f;">value</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">left</span>));
+}</pre>
+    </p>
+    <p>
+        To stay consistent throughout the code base, I also use Church encoding to distinguish between a <code>Left</code> and <code>Right</code> breadcrumb, and the technique is similar. First, define a <code>private</code> interface:
+    </p>
+    <p>
+        <pre><span style="color:blue;">private</span>&nbsp;<span style="color:blue;">interface</span>&nbsp;<span style="color:#2b91af;">ICrumb</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">TResult</span>&nbsp;<span style="font-weight:bold;color:#74531f;">Match</span>&lt;<span style="color:#2b91af;">TResult</span>&gt;(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:#2b91af;">T</span>,&nbsp;<span style="color:#2b91af;">BinaryTree</span>&lt;<span style="color:#2b91af;">T</span>&gt;,&nbsp;<span style="color:#2b91af;">TResult</span>&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">whenLeft</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:#2b91af;">T</span>,&nbsp;<span style="color:#2b91af;">BinaryTree</span>&lt;<span style="color:#2b91af;">T</span>&gt;,&nbsp;<span style="color:#2b91af;">TResult</span>&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">whenRight</span>);
+}</pre>
+    </p>
+    <p>
+        Then, use <code>private</code> nested types to implement the interface.
+    </p>
+    <p>
+        <pre><span style="color:blue;">private</span>&nbsp;<span style="color:blue;">sealed</span>&nbsp;<span style="color:blue;">record</span>&nbsp;<span style="color:#2b91af;">LeftCrumb</span>(<span style="color:#2b91af;">T</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">Value</span>,&nbsp;<span style="color:#2b91af;">BinaryTree</span>&lt;<span style="color:#2b91af;">T</span>&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">Right</span>)&nbsp;:&nbsp;<span style="color:#2b91af;">ICrumb</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">TResult</span>&nbsp;<span style="font-weight:bold;color:#74531f;">Match</span>&lt;<span style="color:#2b91af;">TResult</span>&gt;(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:#2b91af;">T</span>,&nbsp;<span style="color:#2b91af;">BinaryTree</span>&lt;<span style="color:#2b91af;">T</span>&gt;,&nbsp;<span style="color:#2b91af;">TResult</span>&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">whenLeft</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:#2b91af;">T</span>,&nbsp;<span style="color:#2b91af;">BinaryTree</span>&lt;<span style="color:#2b91af;">T</span>&gt;,&nbsp;<span style="color:#2b91af;">TResult</span>&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">whenRight</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">whenLeft</span>(Value,&nbsp;Right);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+    </p>
+    <p>
+        The <code>RightCrumb</code> record is essentially just the 'mirror image' of the <code>LeftCrumb</code> record, and just as was the case with <code><span style="color:#2b91af;">BinaryTree</span>&lt;<span style="color:#2b91af;">T</span>&gt;</code>, the <code><span style="color:#2b91af;">Crumb</span>&lt;<span style="color:#2b91af;">T</span>&gt;</code> class exposes an externally accessible <code>Match</code> method that just delegates to the <code>private</code> class field:
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">TResult</span>&nbsp;<span style="font-weight:bold;color:#74531f;">Match</span>&lt;<span style="color:#2b91af;">TResult</span>&gt;(
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:#2b91af;">T</span>,&nbsp;<span style="color:#2b91af;">BinaryTree</span>&lt;<span style="color:#2b91af;">T</span>&gt;,&nbsp;<span style="color:#2b91af;">TResult</span>&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">whenLeft</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:#2b91af;">T</span>,&nbsp;<span style="color:#2b91af;">BinaryTree</span>&lt;<span style="color:#2b91af;">T</span>&gt;,&nbsp;<span style="color:#2b91af;">TResult</span>&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">whenRight</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;imp.<span style="font-weight:bold;color:#74531f;">Match</span>(<span style="font-weight:bold;color:#1f377f;">whenLeft</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">whenRight</span>);
+}</pre>
+    </p>
+    <p>
+        Finally, all the building blocks are ready for the actual Zipper.
+    </p>
+    <h3 id="f345665355144ccfbbc5767d75f48ece">
+        Zipper data structure and initialization <a href="#f345665355144ccfbbc5767d75f48ece">#</a>
+    </h3>
+    <p>
+        In the Haskell code, the Zipper is another one-liner, and really just a type alias. In C#, once more, we're going to need a full class.
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">sealed</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">BinaryTreeZipper</span>&lt;<span style="color:#2b91af;">T</span>&gt;</pre>
+    </p>
+    <p>
+        The Haskell article simply calls this type alias <code>Zipper</code>, but I find that name too general, since there's more than one kind of Zipper. I think I understand that the article chooses that name for didactic reasons, but here I've chosen a more consistent disambiguation scheme, so I've named the class <code><span style="color:#2b91af;">BinaryTreeZipper</span>&lt;<span style="color:#2b91af;">T</span>&gt;</code>.
+    </p>
+    <p>
+        The Haskell example is just a type alias for a tuple, and the C# class is similar, although with significantly more <a href="/2019/12/16/zone-of-ceremony">ceremony</a>:
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">BinaryTree</span>&lt;<span style="color:#2b91af;">T</span>&gt;&nbsp;Tree&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;}
+<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">IEnumerable</span>&lt;<span style="color:#2b91af;">Crumb</span>&lt;<span style="color:#2b91af;">T</span>&gt;&gt;&nbsp;Breadcrumbs&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;}
+ 
+<span style="color:blue;">private</span>&nbsp;<span style="color:#2b91af;">BinaryTreeZipper</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">BinaryTree</span>&lt;<span style="color:#2b91af;">T</span>&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">tree</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">IEnumerable</span>&lt;<span style="color:#2b91af;">Crumb</span>&lt;<span style="color:#2b91af;">T</span>&gt;&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">breadcrumbs</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;Tree&nbsp;=&nbsp;<span style="font-weight:bold;color:#1f377f;">tree</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;Breadcrumbs&nbsp;=&nbsp;<span style="font-weight:bold;color:#1f377f;">breadcrumbs</span>;
+}
+ 
+<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">BinaryTreeZipper</span>(<span style="color:#2b91af;">BinaryTree</span>&lt;<span style="color:#2b91af;">T</span>&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">tree</span>)&nbsp;:&nbsp;<span style="color:blue;">this</span>(<span style="font-weight:bold;color:#1f377f;">tree</span>,&nbsp;[])
+{
+}</pre>
+    </p>
+    <p>
+        I've here chosen to add an extra bit of <a href="/2022/10/24/encapsulation-in-functional-programming">encapsulation</a> by making the master constructor <code>private</code>. This prevents client code from creating an arbitrary object with breadcrumbs without having navigated through the tree. To be honest, I don't think it violates any contract even if we allow this, but it at least highlights that the <code>Breadcrumbs</code> role is to keep a log of what previously happened to the object.
+    </p>
+    <h3 id="9cafe5fe05cd4d619b8d50cd3a86f549">
+        Navigation <a href="#9cafe5fe05cd4d619b8d50cd3a86f549">#</a>
+    </h3>
+    <p>
+        We can now reproduce the navigation functions from the Haskell article.
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">BinaryTreeZipper</span>&lt;<span style="color:#2b91af;">T</span>&gt;?&nbsp;<span style="font-weight:bold;color:#74531f;">GoLeft</span>()
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;Tree.<span style="font-weight:bold;color:#74531f;">Match</span>&lt;<span style="color:#2b91af;">BinaryTreeZipper</span>&lt;<span style="color:#2b91af;">T</span>&gt;?&gt;(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">whenEmpty</span>:&nbsp;()&nbsp;=&gt;&nbsp;<span style="color:blue;">null</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">whenNode</span>:&nbsp;(<span style="font-weight:bold;color:#1f377f;">x</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">l</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">r</span>)&nbsp;=&gt;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">BinaryTreeZipper</span>&lt;<span style="color:#2b91af;">T</span>&gt;(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">l</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Breadcrumbs.<span style="font-weight:bold;color:#74531f;">Prepend</span>(<span style="color:#2b91af;">Crumb</span>.<span style="color:#74531f;">Left</span>(<span style="font-weight:bold;color:#1f377f;">x</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">r</span>))));
+}</pre>
+    </p>
+    <p>
+        Navigating left 'pattern-matches' on the <code>Tree</code> and, if not empty, constructs a new <code>BinaryTreeZipper</code> object with the left tree, and a <code>Left</code> breadcrumb that stores the 'current' node value and the right subtree. If the 'current' node is empty, on the other hand, the method returns <code>null</code>. This possibility is explicitly indicated by the <code><span style="color:#2b91af;">BinaryTreeZipper</span>&lt;<span style="color:#2b91af;">T</span>&gt;?</code> return type; notice the question mark, <a href="https://learn.microsoft.com/dotnet/csharp/nullable-references">which indicates that the value may be null</a>. If you're working in a context or language where that feature isn't available, you may instead consider taking advantage of the <a href="/2022/04/25/the-maybe-monad">Maybe monad</a> (which is also what you'd <a href="/2015/08/03/idiomatic-or-idiosyncratic">idiomatically</a> do in Haskell).
+    </p>
+    <p>
+        The <code>GoRight</code> method is similar to <code>GoLeft</code>.
+    </p>
+    <p>
+        We may also attempt to navigate up in the tree, undoing our last downward move:
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">BinaryTreeZipper</span>&lt;<span style="color:#2b91af;">T</span>&gt;?&nbsp;<span style="font-weight:bold;color:#74531f;">GoUp</span>()
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">if</span>&nbsp;(!Breadcrumbs.<span style="font-weight:bold;color:#74531f;">Any</span>())
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">null</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">head</span>&nbsp;=&nbsp;Breadcrumbs.<span style="font-weight:bold;color:#74531f;">First</span>();
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">tail</span>&nbsp;=&nbsp;Breadcrumbs.<span style="font-weight:bold;color:#74531f;">Skip</span>(1);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">head</span>.<span style="font-weight:bold;color:#74531f;">Match</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">whenLeft</span>:&nbsp;(<span style="font-weight:bold;color:#1f377f;">x</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">r</span>)&nbsp;=&gt;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">BinaryTreeZipper</span>&lt;<span style="color:#2b91af;">T</span>&gt;(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">BinaryTree</span>&lt;<span style="color:#2b91af;">T</span>&gt;(<span style="font-weight:bold;color:#1f377f;">x</span>,&nbsp;Tree,&nbsp;<span style="font-weight:bold;color:#1f377f;">r</span>),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">tail</span>),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">whenRight</span>:&nbsp;(<span style="font-weight:bold;color:#1f377f;">x</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">l</span>)&nbsp;=&gt;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">BinaryTreeZipper</span>&lt;<span style="color:#2b91af;">T</span>&gt;(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">BinaryTree</span>&lt;<span style="color:#2b91af;">T</span>&gt;(<span style="font-weight:bold;color:#1f377f;">x</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">l</span>,&nbsp;Tree),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">tail</span>));
+}</pre>
+    </p>
+    <p>
+        This is another operation that may fail. If we're already at the root of the tree, there are no <code>Breadcrumbs</code>, in which case the only option is to return a value indicating that the operation failed; here, <code>null</code>, but in other languages perhaps <code>None</code> or <code>Nothing</code>.
+    </p>
+    <p>
+        If, on the other hand, there's at least one breadcrumb, the <code>GoUp</code> method uses the most recent one (<code>head</code>) to construct a new <code><span style="color:#2b91af;">BinaryTreeZipper</span>&lt;<span style="color:#2b91af;">T</span>&gt;</code> object that reconstitutes the opposite (sibling) subtree and the parent node. It does that by 'pattern-matching' on the <code>head</code> breadcrumb, which enables it to distinguish a left breadcrumb from a right breadcrumb.
+    </p>
+    <p>
+        Finally, we may keep trying to <code>GoUp</code> until we reach the root:
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">BinaryTreeZipper</span>&lt;<span style="color:#2b91af;">T</span>&gt;&nbsp;<span style="font-weight:bold;color:#74531f;">TopMost</span>()
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="font-weight:bold;color:#74531f;">GoUp</span>()?.<span style="font-weight:bold;color:#74531f;">TopMost</span>()&nbsp;??&nbsp;<span style="color:blue;">this</span>;
+}</pre>
+    </p>
+    <p>
+        You'll see an example of that a little later.
+    </p>
+    <h3 id="56a16be50dc4405d8931e9210895b5a0">
+        Modifications <a href="#56a16be50dc4405d8931e9210895b5a0">#</a>
+    </h3>
+    <p>
+        Continuing the port of the Haskell code, we can <code>Modify</code> the current node with a function:
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">BinaryTreeZipper</span>&lt;<span style="color:#2b91af;">T</span>&gt;&nbsp;<span style="font-weight:bold;color:#74531f;">Modify</span>(<span style="color:#2b91af;">Func</span>&lt;<span style="color:#2b91af;">T</span>,&nbsp;<span style="color:#2b91af;">T</span>&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">f</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">BinaryTreeZipper</span>&lt;<span style="color:#2b91af;">T</span>&gt;(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Tree.<span style="font-weight:bold;color:#74531f;">Match</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">whenEmpty</span>:&nbsp;()&nbsp;=&gt;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">BinaryTree</span>&lt;<span style="color:#2b91af;">T</span>&gt;(),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">whenNode</span>:&nbsp;(<span style="font-weight:bold;color:#1f377f;">x</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">l</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">r</span>)&nbsp;=&gt;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">BinaryTree</span>&lt;<span style="color:#2b91af;">T</span>&gt;(<span style="font-weight:bold;color:#1f377f;">f</span>(<span style="font-weight:bold;color:#1f377f;">x</span>),&nbsp;<span style="font-weight:bold;color:#1f377f;">l</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">r</span>)),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Breadcrumbs);
+}</pre>
+    </p>
+    <p>
+        This operation always succeeds, since it chooses to ignore the change if the tree is empty. Thus, there's no question mark on the return type, indicating that the method never returns <code>null</code>.
+    </p>
+    <p>
+        Finally, we may replace a node with a new subtree:
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">BinaryTreeZipper</span>&lt;<span style="color:#2b91af;">T</span>&gt;&nbsp;<span style="font-weight:bold;color:#74531f;">Attach</span>(<span style="color:#2b91af;">BinaryTree</span>&lt;<span style="color:#2b91af;">T</span>&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">tree</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">BinaryTreeZipper</span>&lt;<span style="color:#2b91af;">T</span>&gt;(<span style="font-weight:bold;color:#1f377f;">tree</span>,&nbsp;Breadcrumbs);
+}</pre>
+    </p>
+    <p>
+        The following unit test demonstrates a combination of several of the methods shown above:
+    </p>
+    <p>
+        <pre>[<span style="color:#2b91af;">Fact</span>]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;<span style="font-weight:bold;color:#74531f;">AttachAndGoTopMost</span>()
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">sut</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">BinaryTreeZipper</span>&lt;<span style="color:blue;">char</span>&gt;(freeTree);
+
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">farLeft</span>&nbsp;=&nbsp;<span style="font-weight:bold;color:#1f377f;">sut</span>.<span style="font-weight:bold;color:#74531f;">GoLeft</span>()?.<span style="font-weight:bold;color:#74531f;">GoLeft</span>()?.<span style="font-weight:bold;color:#74531f;">GoLeft</span>()?.<span style="font-weight:bold;color:#74531f;">GoLeft</span>();
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">actual</span>&nbsp;=&nbsp;<span style="font-weight:bold;color:#1f377f;">farLeft</span>?.<span style="font-weight:bold;color:#74531f;">Attach</span>(<span style="color:blue;">new</span>(<span style="color:#a31515;">&#39;Z&#39;</span>,&nbsp;<span style="color:blue;">new</span>(),&nbsp;<span style="color:blue;">new</span>())).<span style="font-weight:bold;color:#74531f;">TopMost</span>();
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Assert</span>.<span style="color:#74531f;">NotNull</span>(<span style="font-weight:bold;color:#1f377f;">actual</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Assert</span>.<span style="color:#74531f;">Equal</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>(<span style="color:#a31515;">&#39;P&#39;</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>(<span style="color:#a31515;">&#39;O&#39;</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>(<span style="color:#a31515;">&#39;L&#39;</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>(<span style="color:#a31515;">&#39;N&#39;</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>(<span style="color:#a31515;">&#39;Z&#39;</span>,&nbsp;<span style="color:blue;">new</span>(),&nbsp;<span style="color:blue;">new</span>()),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>()),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>(<span style="color:#a31515;">&#39;T&#39;</span>,&nbsp;<span style="color:blue;">new</span>(),&nbsp;<span style="color:blue;">new</span>())),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>(<span style="color:#a31515;">&#39;Y&#39;</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>(<span style="color:#a31515;">&#39;S&#39;</span>,&nbsp;<span style="color:blue;">new</span>(),&nbsp;<span style="color:blue;">new</span>()),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>(<span style="color:#a31515;">&#39;A&#39;</span>,&nbsp;<span style="color:blue;">new</span>(),&nbsp;<span style="color:blue;">new</span>()))),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>(<span style="color:#a31515;">&#39;L&#39;</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>(<span style="color:#a31515;">&#39;W&#39;</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>(<span style="color:#a31515;">&#39;C&#39;</span>,&nbsp;<span style="color:blue;">new</span>(),&nbsp;<span style="color:blue;">new</span>()),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>(<span style="color:#a31515;">&#39;R&#39;</span>,&nbsp;<span style="color:blue;">new</span>(),&nbsp;<span style="color:blue;">new</span>())),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>(<span style="color:#a31515;">&#39;A&#39;</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>(<span style="color:#a31515;">&#39;A&#39;</span>,&nbsp;<span style="color:blue;">new</span>(),&nbsp;<span style="color:blue;">new</span>()),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>(<span style="color:#a31515;">&#39;C&#39;</span>,&nbsp;<span style="color:blue;">new</span>(),&nbsp;<span style="color:blue;">new</span>())))),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">actual</span>.Tree);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Assert</span>.<span style="color:#74531f;">Empty</span>(<span style="font-weight:bold;color:#1f377f;">actual</span>.Breadcrumbs);
+}</pre>
+    </p>
+    <p>
+        The test starts with <code>freeTree</code> (not shown) and first navigates to the leftmost empty node. Here it uses <code>Attach</code> to add a new 'singleton' subtree with the value <code>'Z'</code>. Finally, it uses <code>TopMost</code> to return to the root node.
+    </p>
+    <p>
+        In <a href="/2013/06/24/a-heuristic-for-formatting-code-according-to-the-aaa-pattern">the Assert phase</a>, the test verifies that the <code>actual</code> object contains the expected values.
+    </p>
+    <h3 id="8eaa9438655f4bcbb9447796a7ed7154">
+        Conclusion <a href="#8eaa9438655f4bcbb9447796a7ed7154">#</a>
+    </h3>
+    <p>
+        The Tree Zipper shown here is a port of the example given in the Haskell <a href="https://learnyouahaskell.com/zippers">Zippers article</a>. As I've already discussed in the <a href="">introduction article</a>, this data structure doesn't make much sense in C#, where you can easily implement a navigable tree with two-way links. Even if this requires state mutation, you can package such a data structure in a proper object with good <a href="/encapsulation-and-solid">encapsulation</a>, so that operations don't leave any dangling pointers or the like.
+    </p>
+    <p>
+        As far as I can tell, the code shown in this article isn't useful in production code, but I hope that, at least, you still learned something from it. I always learn a new thing or two from <a href="/2020/01/13/on-doing-katas">doing programming exercises</a> and writing about them, and this was no exception.
+    </p>
+    <p>
+        In the next article, I continue with the final of the Haskell article's three examples.
+    </p>
+    <p>
+        <strong>Next:</strong> FSZipper in C#.
+    </p>
+</div>
