@@ -1,0 +1,537 @@
+---
+layout: post
+title: "FSZipper in C#"
+description: "Another functional model of a file system."
+date: 2024-08-15 11:19 UTC
+tags: [Functional Programming]
+---
+{% include JB/setup %}
+
+<div id="post">
+    <p>
+        <em>{{ page.description }}</em>
+    </p>
+    <p>
+        This article is part of <a href="">a series about Zippers</a>. In this one, I port the <code>FSZipper</code> data structure from the <a href="https://learnyouahaskell.com/">Learn You a Haskell for Great Good!</a> article <a href="https://learnyouahaskell.com/zippers">Zippers</a>.
+    </p>
+    <p>
+        A word of warning: I'm assuming that you're familiar with the contents of that article, so I'll skip the pedagogical explanations; I can hardly do it better that it's done there. Additionally, I'll make heavy use of certain standard constructs to port <a href="https://www.haskell.org/">Haskell</a> code, most notably <a href="/2018/05/22/church-encoding">Church encoding</a> to model <a href="https://en.wikipedia.org/wiki/Tagged_union">sum types</a> in languages that don't natively have them. Such as C#. In some cases, I'll implement the Church encoding using the data structure's <a href="/2019/04/29/catamorphisms">catamorphism</a>. Since the <a href="https://en.wikipedia.org/wiki/Cyclomatic_complexity">cyclomatic complexity</a> of the resulting code is quite low, you may be able to follow what's going on even if you don't know what Church encoding or catamorphisms are, but if you want to understand the background and motivation for that style of programming, you can consult the cited resources.
+    </p>
+    <p>
+        The code shown in this article is <a href="">available on GitHub</a>.
+    </p>
+    <h3 id="dd4cbc996cfa4347afa4b9279c95f6e1">
+        File system item initialization and structure <a href="#dd4cbc996cfa4347afa4b9279c95f6e1">#</a>
+    </h3>
+    <p>
+        If you haven't already noticed, Haskell (and other statically typed functional programming languages like <a href="https://fsharp.org/">F#</a>) makes heavy use of <a href="https://en.wikipedia.org/wiki/Tagged_union">sum types</a>, and the <code>FSZipper</code> example is no exception. It starts with a one-liner to define a file system item, which may be either a file or a folder. In C# we must instead use a class:
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">sealed</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">FSItem</span></pre>
+    </p>
+    <p>
+        Contrary to the two previous examples, the <code>FSItem</code> class has no generic type parameter. This is because I'm following the Haskell example code as closely as possible, but as I've previously shown, you can <a href="/2019/08/26/functional-file-system">model a file hierarchy with a general-purpose rose tree</a>.
+    </p>
+    <p>
+        Staying consistent with the two previous articles, I'll use Church encoding to model a sum type, and as discussed in <a href="">the previous article</a><!-- A Binary Tree Zipper in C# --> I use a <code>private</code> implementation for that.
+    </p>
+    <p>
+        <pre><span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;<span style="color:#2b91af;">IFSItem</span>&nbsp;imp;
+ 
+<span style="color:blue;">private</span>&nbsp;<span style="color:#2b91af;">FSItem</span>(<span style="color:#2b91af;">IFSItem</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">imp</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.imp&nbsp;=&nbsp;<span style="font-weight:bold;color:#1f377f;">imp</span>;
+}
+ 
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:#2b91af;">FSItem</span>&nbsp;<span style="color:#74531f;">CreateFile</span>(<span style="color:blue;">string</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">name</span>,&nbsp;<span style="color:blue;">string</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">data</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">new</span>(<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">File</span>(<span style="font-weight:bold;color:#1f377f;">name</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">data</span>));
+}
+ 
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:#2b91af;">FSItem</span>&nbsp;<span style="color:#74531f;">CreateFolder</span>(<span style="color:blue;">string</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">name</span>,&nbsp;<span style="color:#2b91af;">IReadOnlyCollection</span>&lt;<span style="color:#2b91af;">FSItem</span>&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">items</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">new</span>(<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Folder</span>(<span style="font-weight:bold;color:#1f377f;">name</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">items</span>));
+}</pre>
+    </p>
+    <p>
+        Two <code>static</code> creation methods enable client developers to create a single <code>FSItem</code> object, or an entire tree, like the example from the Haskell code, here ported to C#:
+    </p>
+    <p>
+        <pre><span style="color:blue;">private</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;<span style="color:#2b91af;">FSItem</span>&nbsp;myDisk&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">FSItem</span>.<span style="color:#74531f;">CreateFolder</span>(<span style="color:#a31515;">&quot;root&quot;</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;[
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">FSItem</span>.<span style="color:#74531f;">CreateFile</span>(<span style="color:#a31515;">&quot;goat_yelling_like_man.wmv&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;baaaaaa&quot;</span>),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">FSItem</span>.<span style="color:#74531f;">CreateFile</span>(<span style="color:#a31515;">&quot;pope_time.avi&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;god&nbsp;bless&quot;</span>),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">FSItem</span>.<span style="color:#74531f;">CreateFolder</span>(<span style="color:#a31515;">&quot;pics&quot;</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;[
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">FSItem</span>.<span style="color:#74531f;">CreateFile</span>(<span style="color:#a31515;">&quot;ape_throwing_up.jpg&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;bleargh&quot;</span>),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">FSItem</span>.<span style="color:#74531f;">CreateFile</span>(<span style="color:#a31515;">&quot;watermelon_smash.gif&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;smash!!&quot;</span>),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">FSItem</span>.<span style="color:#74531f;">CreateFile</span>(<span style="color:#a31515;">&quot;skull_man(scary).bmp&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;Yikes!&quot;</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;]),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">FSItem</span>.<span style="color:#74531f;">CreateFile</span>(<span style="color:#a31515;">&quot;dijon_poupon.doc&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;best&nbsp;mustard&quot;</span>),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">FSItem</span>.<span style="color:#74531f;">CreateFolder</span>(<span style="color:#a31515;">&quot;programs&quot;</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;[
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">FSItem</span>.<span style="color:#74531f;">CreateFile</span>(<span style="color:#a31515;">&quot;fartwizard.exe&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;10gotofart&quot;</span>),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">FSItem</span>.<span style="color:#74531f;">CreateFile</span>(<span style="color:#a31515;">&quot;owl_bandit.dmg&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;mov&nbsp;eax,&nbsp;h00t&quot;</span>),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">FSItem</span>.<span style="color:#74531f;">CreateFile</span>(<span style="color:#a31515;">&quot;not_a_virus.exe&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;really&nbsp;not&nbsp;a&nbsp;virus&quot;</span>),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">FSItem</span>.<span style="color:#74531f;">CreateFolder</span>(<span style="color:#a31515;">&quot;source&nbsp;code&quot;</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;[
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">FSItem</span>.<span style="color:#74531f;">CreateFile</span>(<span style="color:#a31515;">&quot;best_hs_prog.hs&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;main&nbsp;=&nbsp;print&nbsp;(fix&nbsp;error)&quot;</span>),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">FSItem</span>.<span style="color:#74531f;">CreateFile</span>(<span style="color:#a31515;">&quot;random.hs&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;main&nbsp;=&nbsp;print&nbsp;4&quot;</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;])
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;])
+&nbsp;&nbsp;&nbsp;&nbsp;]);</pre>
+    </p>
+    <p>
+        Since the <code>imp</code> class field is just a <code>private</code> implementation detail, a client developer needs a way to query an <code>FSItem</code> object about its contents.
+    </p>
+    <h3 id="246063d761a94eb880a079f1d31b817d">
+        File system item catamorphism <a href="#246063d761a94eb880a079f1d31b817d">#</a>
+    </h3>
+    <p>
+        Just like the previous article, I'll start with the catamorphism. This is essentially the <a href="/2019/08/05/rose-tree-catamorphism">rose tree catamorphism</a>, just less generic, since <code>FSItem</code> doesn't have a generic type parameter.
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">TResult</span>&nbsp;<span style="font-weight:bold;color:#74531f;">Aggregate</span>&lt;<span style="color:#2b91af;">TResult</span>&gt;(
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:blue;">string</span>,&nbsp;<span style="color:blue;">string</span>,&nbsp;<span style="color:#2b91af;">TResult</span>&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">whenFile</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:blue;">string</span>,&nbsp;<span style="color:#2b91af;">IReadOnlyCollection</span>&lt;<span style="color:#2b91af;">TResult</span>&gt;,&nbsp;<span style="color:#2b91af;">TResult</span>&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">whenFolder</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;imp.<span style="font-weight:bold;color:#74531f;">Aggregate</span>(<span style="font-weight:bold;color:#1f377f;">whenFile</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">whenFolder</span>);
+}</pre>
+    </p>
+    <p>
+        The <code>Aggregate</code> method delegates to its internal implementation class field, which is defined as the <code>private</code> nested interface <code>IFSItem</code>:
+    </p>
+    <p>
+        <pre><span style="color:blue;">private</span>&nbsp;<span style="color:blue;">interface</span>&nbsp;<span style="color:#2b91af;">IFSItem</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">TResult</span>&nbsp;<span style="font-weight:bold;color:#74531f;">Aggregate</span>&lt;<span style="color:#2b91af;">TResult</span>&gt;(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:blue;">string</span>,&nbsp;<span style="color:blue;">string</span>,&nbsp;<span style="color:#2b91af;">TResult</span>&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">whenFile</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:blue;">string</span>,&nbsp;<span style="color:#2b91af;">IReadOnlyCollection</span>&lt;<span style="color:#2b91af;">TResult</span>&gt;,&nbsp;<span style="color:#2b91af;">TResult</span>&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">whenFolder</span>);
+}</pre>
+    </p>
+    <p>
+        As discussed in the previous article, the interface is hidden away because it's only a vehicle for polymorphism. It's not intended for client developers to be used (although that would be benign) or implemented (which could break <a href="/encapsulation-and-solid">encapsulation</a>). There are only, and should ever only be, two implementations. The one that represents a file is the simplest:
+    </p>
+    <p>
+        <pre><span style="color:blue;">private</span>&nbsp;<span style="color:blue;">sealed</span>&nbsp;<span style="color:blue;">record</span>&nbsp;<span style="color:#2b91af;">File</span>(<span style="color:blue;">string</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">Name</span>,&nbsp;<span style="color:blue;">string</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">Data</span>)&nbsp;:&nbsp;<span style="color:#2b91af;">IFSItem</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">TResult</span>&nbsp;<span style="font-weight:bold;color:#74531f;">Aggregate</span>&lt;<span style="color:#2b91af;">TResult</span>&gt;(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:blue;">string</span>,&nbsp;<span style="color:blue;">string</span>,&nbsp;<span style="color:#2b91af;">TResult</span>&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">whenFile</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:blue;">string</span>,&nbsp;<span style="color:#2b91af;">IReadOnlyCollection</span>&lt;<span style="color:#2b91af;">TResult</span>&gt;,&nbsp;<span style="color:#2b91af;">TResult</span>&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">whenFolder</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">whenFile</span>(Name,&nbsp;Data);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+    </p>
+    <p>
+        The <code>File</code> record's <code>Aggregate</code> method unconditionally calls the supplied <code>whenFile</code> function argument with the <code>Name</code> and <code>Data</code> that was originally supplied via its constructor.
+    </p>
+    <p>
+        The <code>Folder</code> implementation is a bit trickier, mostly due to its recursive nature, but also because I wanted it to have structural equality.
+    </p>
+    <p>
+        <pre><span style="color:blue;">private</span>&nbsp;<span style="color:blue;">sealed</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">Folder</span>&nbsp;:&nbsp;<span style="color:#2b91af;">IFSItem</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;<span style="color:blue;">string</span>&nbsp;name;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;<span style="color:#2b91af;">IReadOnlyCollection</span>&lt;<span style="color:#2b91af;">FSItem</span>&gt;&nbsp;items;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">Folder</span>(<span style="color:blue;">string</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">Name</span>,&nbsp;<span style="color:#2b91af;">IReadOnlyCollection</span>&lt;<span style="color:#2b91af;">FSItem</span>&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">Items</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;name&nbsp;=&nbsp;<span style="font-weight:bold;color:#1f377f;">Name</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;items&nbsp;=&nbsp;<span style="font-weight:bold;color:#1f377f;">Items</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">TResult</span>&nbsp;<span style="font-weight:bold;color:#74531f;">Aggregate</span>&lt;<span style="color:#2b91af;">TResult</span>&gt;(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:blue;">string</span>,&nbsp;<span style="color:blue;">string</span>,&nbsp;<span style="color:#2b91af;">TResult</span>&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">whenFile</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:blue;">string</span>,&nbsp;<span style="color:#2b91af;">IReadOnlyCollection</span>&lt;<span style="color:#2b91af;">TResult</span>&gt;,&nbsp;<span style="color:#2b91af;">TResult</span>&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">whenFolder</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">whenFolder</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;name,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;items.<span style="font-weight:bold;color:#74531f;">Select</span>(<span style="font-weight:bold;color:#1f377f;">i</span>&nbsp;=&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">i</span>.<span style="font-weight:bold;color:#74531f;">Aggregate</span>(<span style="font-weight:bold;color:#1f377f;">whenFile</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">whenFolder</span>)).<span style="font-weight:bold;color:#74531f;">ToList</span>());
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">override</span>&nbsp;<span style="color:blue;">bool</span>&nbsp;<span style="font-weight:bold;color:#74531f;">Equals</span>(<span style="color:blue;">object</span>?&nbsp;<span style="font-weight:bold;color:#1f377f;">obj</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">obj</span>&nbsp;<span style="color:blue;">is</span>&nbsp;<span style="color:#2b91af;">Folder</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">folder</span>&nbsp;&amp;&amp;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;name&nbsp;==&nbsp;<span style="font-weight:bold;color:#1f377f;">folder</span>.name&nbsp;&amp;&amp;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;items.<span style="font-weight:bold;color:#74531f;">SequenceEqual</span>(<span style="font-weight:bold;color:#1f377f;">folder</span>.items);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">override</span>&nbsp;<span style="color:blue;">int</span>&nbsp;<span style="font-weight:bold;color:#74531f;">GetHashCode</span>()
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="color:#2b91af;">HashCode</span>.<span style="color:#74531f;">Combine</span>(name,&nbsp;items);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+    </p>
+    <p>
+        It, too, unconditionally calls one of the two functions passed to its <code>Aggregate</code> method, but this time <code>whenFolder</code>. It does that, however, by first <em>recursively</em> calling <code>Aggregate</code> within a <code>Select</code> expression. It needs to do that because the <code>whenFolder</code> function expects the subtree to have been already converted to values of the <code>TResult</code> return type. This is a common pattern with catamorphisms, and takes a bit of time getting used to. You can see similar examples in the articles <a href="/2019/06/10/tree-catamorphism">Tree catamorphism</a>, <a href="/2019/08/05/rose-tree-catamorphism">Rose tree catamorphism</a>, <a href="/2019/06/24/full-binary-tree-catamorphism">Full binary tree catamorphism</a>, as well as the previous one in this series.
+    </p>
+    <p>
+        I also had to make <code>Folder</code> a <code>class</code> rather than a <a href="https://learn.microsoft.com/dotnet/csharp/language-reference/builtin-types/record">record</a>, because I wanted the type to have structural equality, and you can't override <a href="https://learn.microsoft.com/dotnet/api/system.object.equals">Equals</a> on records (and if the base class library has any collection type with structural equality, I'm not aware of it).
+    </p>
+    <h3 id="761c6a5ede2b4df68985e61f6664822f">
+        File system item Church encoding <a href="#761c6a5ede2b4df68985e61f6664822f">#</a>
+    </h3>
+    <p>
+        True to the structure of the previous article, the catamorphism doesn't look quite like a Church encoding, but it's possible to define the latter from the former.
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">TResult</span>&nbsp;<span style="font-weight:bold;color:#74531f;">Match</span>&lt;<span style="color:#2b91af;">TResult</span>&gt;(
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:blue;">string</span>,&nbsp;<span style="color:blue;">string</span>,&nbsp;<span style="color:#2b91af;">TResult</span>&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">whenFile</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:blue;">string</span>,&nbsp;<span style="color:#2b91af;">IReadOnlyCollection</span>&lt;<span style="color:#2b91af;">FSItem</span>&gt;,&nbsp;<span style="color:#2b91af;">TResult</span>&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">whenFolder</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="font-weight:bold;color:#74531f;">Aggregate</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">whenFile</span>:&nbsp;(<span style="font-weight:bold;color:#1f377f;">name</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">data</span>)&nbsp;=&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(item:&nbsp;<span style="color:#74531f;">CreateFile</span>(<span style="font-weight:bold;color:#1f377f;">name</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">data</span>),&nbsp;result:&nbsp;<span style="font-weight:bold;color:#1f377f;">whenFile</span>(<span style="font-weight:bold;color:#1f377f;">name</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">data</span>)),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">whenFolder</span>:&nbsp;(<span style="font-weight:bold;color:#1f377f;">name</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">pairs</span>)&nbsp;=&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">items</span>&nbsp;=&nbsp;<span style="font-weight:bold;color:#1f377f;">pairs</span>.<span style="font-weight:bold;color:#74531f;">Select</span>(<span style="font-weight:bold;color:#1f377f;">i</span>&nbsp;=&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">i</span>.item).<span style="font-weight:bold;color:#74531f;">ToList</span>();
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;(<span style="color:#74531f;">CreateFolder</span>(<span style="font-weight:bold;color:#1f377f;">name</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">items</span>),&nbsp;<span style="font-weight:bold;color:#1f377f;">whenFolder</span>(<span style="font-weight:bold;color:#1f377f;">name</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">items</span>));
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;}).result;
+}</pre>
+    </p>
+    <p>
+        The trick is the same as in the previous article: Build up an intermediate tuple that contains both the current <code>item</code> as well as the <code>result</code> being accumulated. Once the <code>Aggregate</code> method returns, the <code>Match</code> method returns only the <code>result</code> part of the resulting tuple.
+    </p>
+    <p>
+        I implemented the <code>whenFolder</code> expression as a code block, because both tuple elements needed the <code>items</code> collection. You can inline the <code>Select</code> expression, but that would cause it to run twice. That's probably a premature optimization, but it also made the code a bit shorter, and, one may hope, a bit more readable.
+    </p>
+    <h3 id="c2ffdb1994bc400d99f359ecf4edb312">
+        Fily system breadcrumb <a href="#c2ffdb1994bc400d99f359ecf4edb312">#</a>
+    </h3>
+    <p>
+        Finally, things seem to be becoming a little easier. The port of <code>FSCrumb</code> is straightforward.
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">sealed</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">FSCrumb</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">FSCrumb</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">string</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">name</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">IReadOnlyCollection</span>&lt;<span style="color:#2b91af;">FSItem</span>&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">left</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">IReadOnlyCollection</span>&lt;<span style="color:#2b91af;">FSItem</span>&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">right</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Name&nbsp;=&nbsp;<span style="font-weight:bold;color:#1f377f;">name</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Left&nbsp;=&nbsp;<span style="font-weight:bold;color:#1f377f;">left</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Right&nbsp;=&nbsp;<span style="font-weight:bold;color:#1f377f;">right</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">string</span>&nbsp;Name&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">IReadOnlyCollection</span>&lt;<span style="color:#2b91af;">FSItem</span>&gt;&nbsp;Left&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">IReadOnlyCollection</span>&lt;<span style="color:#2b91af;">FSItem</span>&gt;&nbsp;Right&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">override</span>&nbsp;<span style="color:blue;">bool</span>&nbsp;<span style="font-weight:bold;color:#74531f;">Equals</span>(<span style="color:blue;">object</span>?&nbsp;<span style="font-weight:bold;color:#1f377f;">obj</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">obj</span>&nbsp;<span style="color:blue;">is</span>&nbsp;<span style="color:#2b91af;">FSCrumb</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">crumb</span>&nbsp;&amp;&amp;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Name&nbsp;==&nbsp;<span style="font-weight:bold;color:#1f377f;">crumb</span>.Name&nbsp;&amp;&amp;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Left.<span style="font-weight:bold;color:#74531f;">SequenceEqual</span>(<span style="font-weight:bold;color:#1f377f;">crumb</span>.Left)&nbsp;&amp;&amp;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Right.<span style="font-weight:bold;color:#74531f;">SequenceEqual</span>(<span style="font-weight:bold;color:#1f377f;">crumb</span>.Right);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">override</span>&nbsp;<span style="color:blue;">int</span>&nbsp;<span style="font-weight:bold;color:#74531f;">GetHashCode</span>()
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="color:#2b91af;">HashCode</span>.<span style="color:#74531f;">Combine</span>(Name,&nbsp;Left,&nbsp;Right);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+    </p>
+    <p>
+        The only reason this isn't a <code>record</code> is, once again, that I want to override <code>Equals</code> so that the type can have structural equality. <a href="https://visualstudio.microsoft.com/">Visual Studio</a> wants me to convert to a <a href="https://learn.microsoft.com/dotnet/csharp/programming-guide/classes-and-structs/instance-constructors">primary constructor</a>. That would simplify the code a bit, but actually not that much.
+    </p>
+    <p>
+        (I'm still somewhat conservative in my choice of new C# language features. Not that I have anything against primary constructor which, after all, F# has had forever. The reason I'm holding back is for didactic reasons. Not every reader is on the latest language version, and some readers may be using another programming language entirely. On the other hand, primary constructors seem natural and intuitive, so I may start using them here on the blog as well. I don't think that they're going to be much of a barrier to understanding.)
+    </p>
+    <p>
+        Now that we have both the data type we want to zip, as well as the breadcrumb type we need, we can proceed to add the Zipper.
+    </p>
+    <h3 id="bb452627a3c3420a95a412dd33ad0efa">
+        File system Zipper <a href="#bb452627a3c3420a95a412dd33ad0efa">#</a>
+    </h3>
+    <p>
+        The <code>FSZipper</code> C# class fills the position of the eponymous Haskell type alias. Data structure and initialization is straightforward.
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">sealed</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">FSZipper</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:#2b91af;">FSZipper</span>(<span style="color:#2b91af;">FSItem</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">fSItem</span>,&nbsp;<span style="color:#2b91af;">IReadOnlyCollection</span>&lt;<span style="color:#2b91af;">FSCrumb</span>&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">breadcrumbs</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;FSItem&nbsp;=&nbsp;<span style="font-weight:bold;color:#1f377f;">fSItem</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Breadcrumbs&nbsp;=&nbsp;<span style="font-weight:bold;color:#1f377f;">breadcrumbs</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">FSZipper</span>(<span style="color:#2b91af;">FSItem</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">fSItem</span>)&nbsp;:&nbsp;<span style="color:blue;">this</span>(<span style="font-weight:bold;color:#1f377f;">fSItem</span>,&nbsp;[])
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">FSItem</span>&nbsp;FSItem&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">IReadOnlyCollection</span>&lt;<span style="color:#2b91af;">FSCrumb</span>&gt;&nbsp;Breadcrumbs&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;Methods&nbsp;follow&nbsp;here...</span></pre>
+    </p>
+    <p>
+        True to the style I've already established, I've made the master constructor <code>private</code> in order to highlight that the <code>Breadcrumbs</code> are the responsibility of the <code>FSZipper</code> class itself. It's not something client code need worry about.
+    </p>
+    <h3 id="5dd35bee62764a3fb455c406f1a63754">
+        Going down <a href="#5dd35bee62764a3fb455c406f1a63754">#</a>
+    </h3>
+    <p>
+        The Haskell Zippers article introduces <code>fsUp</code> before <code>fsTo</code>, but if we want to see some example code, we need to navigate <em>to</em> somewhere before we can navigate up. Thus, I'll instead start with the function that navigates to a child node.
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">FSZipper</span>?&nbsp;<span style="font-weight:bold;color:#74531f;">GoTo</span>(<span style="color:blue;">string</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">name</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;FSItem.<span style="font-weight:bold;color:#74531f;">Match</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(<span style="font-weight:bold;color:#1f377f;">_</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">_</span>)&nbsp;=&gt;&nbsp;<span style="color:blue;">null</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(<span style="font-weight:bold;color:#1f377f;">folderName</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">items</span>)&nbsp;=&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">FSItem</span>?&nbsp;<span style="font-weight:bold;color:#1f377f;">item</span>&nbsp;=&nbsp;<span style="color:blue;">null</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">ls</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">List</span>&lt;<span style="color:#2b91af;">FSItem</span>&gt;();
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">rs</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">List</span>&lt;<span style="color:#2b91af;">FSItem</span>&gt;();
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">foreach</span>&nbsp;(<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">i</span>&nbsp;<span style="font-weight:bold;color:#8f08c4;">in</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">items</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">if</span>&nbsp;(<span style="font-weight:bold;color:#1f377f;">item</span>&nbsp;<span style="color:blue;">is</span>&nbsp;<span style="color:blue;">null</span>&nbsp;&amp;&amp;&nbsp;<span style="font-weight:bold;color:#1f377f;">i</span>.<span style="font-weight:bold;color:#74531f;">IsNamed</span>(<span style="font-weight:bold;color:#1f377f;">name</span>))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">item</span>&nbsp;=&nbsp;<span style="font-weight:bold;color:#1f377f;">i</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">else</span>&nbsp;<span style="font-weight:bold;color:#8f08c4;">if</span>&nbsp;(<span style="font-weight:bold;color:#1f377f;">item</span>&nbsp;<span style="color:blue;">is</span>&nbsp;<span style="color:blue;">null</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">ls</span>.<span style="font-weight:bold;color:#74531f;">Add</span>(<span style="font-weight:bold;color:#1f377f;">i</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">else</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">rs</span>.<span style="font-weight:bold;color:#74531f;">Add</span>(<span style="font-weight:bold;color:#1f377f;">i</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">if</span>&nbsp;(<span style="font-weight:bold;color:#1f377f;">item</span>&nbsp;<span style="color:blue;">is</span>&nbsp;<span style="color:blue;">null</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">null</span>;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">FSZipper</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">item</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Breadcrumbs.<span style="font-weight:bold;color:#74531f;">Prepend</span>(<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">FSCrumb</span>(<span style="font-weight:bold;color:#1f377f;">folderName</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">ls</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">rs</span>)).<span style="font-weight:bold;color:#74531f;">ToList</span>());
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;});
+}</pre>
+    </p>
+    <p>
+        This is by far the most complicated navigation we've seen so far, and I've even taken the liberty of writing an imperative implementation. It's not that I don't know how I could implement it in a purely functional fashion, but I've chosen this implementation for a couple of reasons. The first of which is that, frankly, it was easier this way.
+    </p>
+    <p>
+        This stems from the second reason: That the .NET base class library, as far as I know, offers no functionality like Haskell's <a href="https://hackage.haskell.org/package/base/docs/Data-List.html#v:break">break</a> function. I could have written such a function myself, but felt that it was too much of a digression, even for me. Maybe I'll do that another day. It might make for <a href="/2020/01/13/on-doing-katas">a nice little exercise</a>.
+    </p>
+    <p>
+        The third reason is that C# doesn't afford pattern matching on sequences, in the shape of destructuring the head and the tail of a list. (Not that I know of, anyway, but that language changes rapidly at the moment, and it does have <em>some</em> pattern-matching features now.) This means that I have to check <code>item</code> for <code>null</code> anyway.
+    </p>
+    <p>
+        In any case, while the implementation is imperative, an external caller can't tell. The <code>GoTo</code> method is still <a href="https://en.wikipedia.org/wiki/Referential_transparency">referentially transparent</a>. Which means that <a href="/2021/07/28/referential-transparency-fits-in-your-head">it fits in your head</a>.
+    </p>
+    <p>
+        You may have noticed that the implementation calls <code>IsNamed</code>, which is also new.
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">bool</span>&nbsp;<span style="font-weight:bold;color:#74531f;">IsNamed</span>(<span style="color:blue;">string</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">name</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="font-weight:bold;color:#74531f;">Match</span>((<span style="font-weight:bold;color:#1f377f;">n</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">_</span>)&nbsp;=&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">n</span>&nbsp;==&nbsp;<span style="font-weight:bold;color:#1f377f;">name</span>,&nbsp;(<span style="font-weight:bold;color:#1f377f;">n</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">_</span>)&nbsp;=&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">n</span>&nbsp;==&nbsp;<span style="font-weight:bold;color:#1f377f;">name</span>);
+}</pre>
+    </p>
+    <p>
+        This is an instance method I added to <code>FSItem</code>.
+    </p>
+    <p>
+        In summary, the <code>GoTo</code> method enables client code to navigate down in the file hierarchy, as this unit test demonstrates:
+    </p>
+    <p>
+        <pre>[<span style="color:#2b91af;">Fact</span>]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;<span style="font-weight:bold;color:#74531f;">GoToSkullMan</span>()
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">sut</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">FSZipper</span>(myDisk);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">actual</span>&nbsp;=&nbsp;<span style="font-weight:bold;color:#1f377f;">sut</span>.<span style="font-weight:bold;color:#74531f;">GoTo</span>(<span style="color:#a31515;">&quot;pics&quot;</span>)?.<span style="font-weight:bold;color:#74531f;">GoTo</span>(<span style="color:#a31515;">&quot;skull_man(scary).bmp&quot;</span>);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Assert</span>.<span style="color:#74531f;">NotNull</span>(<span style="font-weight:bold;color:#1f377f;">actual</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Assert</span>.<span style="color:#74531f;">Equal</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">FSItem</span>.<span style="color:#74531f;">CreateFile</span>(<span style="color:#a31515;">&quot;skull_man(scary).bmp&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;Yikes!&quot;</span>),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">actual</span>.FSItem);
+}</pre>
+    </p>
+    <p>
+        The example is elementary. First go to the <code>pics</code> folder, and from there to the <code>skull_man(scary).bmp</code>.
+    </p>
+    <h3 id="be9c842baa2c4cbb8afc50fdb9ea13c7">
+        Going up <a href="#be9c842baa2c4cbb8afc50fdb9ea13c7">#</a>
+    </h3>
+    <p>
+        Going back up the hierarchy isn't as complicated.
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">FSZipper</span>?&nbsp;<span style="font-weight:bold;color:#74531f;">GoUp</span>()
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">if</span>&nbsp;(Breadcrumbs.Count&nbsp;==&nbsp;0)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">null</span>;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">head</span>&nbsp;=&nbsp;Breadcrumbs.<span style="font-weight:bold;color:#74531f;">First</span>();
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">tail</span>&nbsp;=&nbsp;Breadcrumbs.<span style="font-weight:bold;color:#74531f;">Skip</span>(1);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">FSZipper</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">FSItem</span>.<span style="color:#74531f;">CreateFolder</span>(<span style="font-weight:bold;color:#1f377f;">head</span>.Name,&nbsp;[..&nbsp;<span style="font-weight:bold;color:#1f377f;">head</span>.Left,&nbsp;FSItem,&nbsp;..&nbsp;<span style="font-weight:bold;color:#1f377f;">head</span>.Right]),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">tail</span>.<span style="font-weight:bold;color:#74531f;">ToList</span>());
+}</pre>
+    </p>
+    <p>
+        If the <code>Breadcrumbs</code> collection is empty, we're already at the root, in which case we can't go further up. In that case, the <code>GoUp</code> method returns <code>null</code>, as does the <code>GoTo</code> method if it can't find an item with the desired name. This possibility is explicitly indicated by the <code><span style="color:#2b91af;">FSZipper</span>?</code> return type; notice the question mark, <a href="https://learn.microsoft.com/dotnet/csharp/nullable-references">which indicates that the value may be null</a>. If you're working in a context or language where that feature isn't available, you may instead consider taking advantage of the <a href="/2022/04/25/the-maybe-monad">Maybe monad</a> (which is also what you'd <a href="/2015/08/03/idiomatic-or-idiosyncratic">idiomatically</a> do in Haskell).
+    </p>
+    <p>
+        If <code>Breadcrumbs</code> is <em>not</em> empty, it means that there's a place to go up to. It also implies that the previous operation navigated down, and the only way that's possible is if the previous node was a folder. Thus, the <code>GoUp</code> method knows that it needs to reconstitute a folder, and from the <code>head</code> breadcrumb, it knows that folder's name, and what was originally to the <code>Left</code> and <code>Right</code> of the Zipper's <code>FSItem</code> property.
+    </p>
+    <p>
+        This unit test demonstrates how client code may use the <code>GoUp</code> method:
+    </p>
+    <p>
+        <pre>[<span style="color:#2b91af;">Fact</span>]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;<span style="font-weight:bold;color:#74531f;">GoUpFromSkullMan</span>()
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">sut</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">FSZipper</span>(myDisk);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;This&nbsp;is&nbsp;the&nbsp;same&nbsp;as&nbsp;the&nbsp;GoToSkullMan&nbsp;test</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">newFocus</span>&nbsp;=&nbsp;<span style="font-weight:bold;color:#1f377f;">sut</span>.<span style="font-weight:bold;color:#74531f;">GoTo</span>(<span style="color:#a31515;">&quot;pics&quot;</span>)?.<span style="font-weight:bold;color:#74531f;">GoTo</span>(<span style="color:#a31515;">&quot;skull_man(scary).bmp&quot;</span>);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">actual</span>&nbsp;=&nbsp;<span style="font-weight:bold;color:#1f377f;">newFocus</span>?.<span style="font-weight:bold;color:#74531f;">GoUp</span>()?.<span style="font-weight:bold;color:#74531f;">GoTo</span>(<span style="color:#a31515;">&quot;watermelon_smash.gif&quot;</span>);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Assert</span>.<span style="color:#74531f;">NotNull</span>(<span style="font-weight:bold;color:#1f377f;">actual</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Assert</span>.<span style="color:#74531f;">Equal</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">FSItem</span>.<span style="color:#74531f;">CreateFile</span>(<span style="color:#a31515;">&quot;watermelon_smash.gif&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;smash!!&quot;</span>),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">actual</span>.FSItem);
+}</pre>
+    </p>
+    <p>
+        This test first repeats the navigation also performed by the other test, then uses <code>GoUp</code> to go one level up, which finally enables it to navigate to the <code>watermelon_smash.gif</code> file.
+    </p>
+    <h3 id="7c96d9a847f04adfb660973e66246d13">
+        Renaming a file or folder <a href="#7c96d9a847f04adfb660973e66246d13">#</a>
+    </h3>
+    <p>
+        A Zipper enables you to navigate a data structure, but you can also use it to modify the element in focus. One option is to rename a file or folder.
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">FSZipper</span>&nbsp;<span style="font-weight:bold;color:#74531f;">Rename</span>(<span style="color:blue;">string</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">newName</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">FSZipper</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;FSItem.<span style="font-weight:bold;color:#74531f;">Match</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(<span style="font-weight:bold;color:#1f377f;">_</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">dat</span>)&nbsp;=&gt;&nbsp;<span style="color:#2b91af;">FSItem</span>.<span style="color:#74531f;">CreateFile</span>(<span style="font-weight:bold;color:#1f377f;">newName</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">dat</span>),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(<span style="font-weight:bold;color:#1f377f;">_</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">items</span>)&nbsp;=&gt;&nbsp;<span style="color:#2b91af;">FSItem</span>.<span style="color:#74531f;">CreateFolder</span>(<span style="font-weight:bold;color:#1f377f;">newName</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">items</span>)),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Breadcrumbs);
+}</pre>
+    </p>
+    <p>
+        The <code>Rename</code> method 'pattern-matches' on the 'current' <code>FSItem</code> and in both cases creates a new file or folder with the new name. Since it doesn't need the old name for anything, it uses the wildcard pattern to ignore that value. This operation is always possible, so the return type is <code>FSZipper</code>, without a question mark, indicating that the method never returns <code>null</code>.
+    </p>
+    <p>
+        The following unit test replicates the Haskell article's example by renaming the <code>pics</code> folder to <code>cspi</code>.
+    </p>
+    <p>
+        <pre>[<span style="color:#2b91af;">Fact</span>]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;<span style="font-weight:bold;color:#74531f;">RenamePics</span>()
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">sut</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">FSZipper</span>(myDisk);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">actual</span>&nbsp;=&nbsp;<span style="font-weight:bold;color:#1f377f;">sut</span>.<span style="font-weight:bold;color:#74531f;">GoTo</span>(<span style="color:#a31515;">&quot;pics&quot;</span>)?.<span style="font-weight:bold;color:#74531f;">Rename</span>(<span style="color:#a31515;">&quot;cspi&quot;</span>).<span style="font-weight:bold;color:#74531f;">GoUp</span>();
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Assert</span>.<span style="color:#74531f;">NotNull</span>(<span style="font-weight:bold;color:#1f377f;">actual</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Assert</span>.<span style="color:#74531f;">Empty</span>(<span style="font-weight:bold;color:#1f377f;">actual</span>.Breadcrumbs);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Assert</span>.<span style="color:#74531f;">Equal</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">FSItem</span>.<span style="color:#74531f;">CreateFolder</span>(<span style="color:#a31515;">&quot;root&quot;</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;[
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">FSItem</span>.<span style="color:#74531f;">CreateFile</span>(<span style="color:#a31515;">&quot;goat_yelling_like_man.wmv&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;baaaaaa&quot;</span>),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">FSItem</span>.<span style="color:#74531f;">CreateFile</span>(<span style="color:#a31515;">&quot;pope_time.avi&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;god&nbsp;bless&quot;</span>),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">FSItem</span>.<span style="color:#74531f;">CreateFolder</span>(<span style="color:#a31515;">&quot;cspi&quot;</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;[
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">FSItem</span>.<span style="color:#74531f;">CreateFile</span>(<span style="color:#a31515;">&quot;ape_throwing_up.jpg&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;bleargh&quot;</span>),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">FSItem</span>.<span style="color:#74531f;">CreateFile</span>(<span style="color:#a31515;">&quot;watermelon_smash.gif&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;smash!!&quot;</span>),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">FSItem</span>.<span style="color:#74531f;">CreateFile</span>(<span style="color:#a31515;">&quot;skull_man(scary).bmp&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;Yikes!&quot;</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;]),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">FSItem</span>.<span style="color:#74531f;">CreateFile</span>(<span style="color:#a31515;">&quot;dijon_poupon.doc&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;best&nbsp;mustard&quot;</span>),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">FSItem</span>.<span style="color:#74531f;">CreateFolder</span>(<span style="color:#a31515;">&quot;programs&quot;</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;[
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">FSItem</span>.<span style="color:#74531f;">CreateFile</span>(<span style="color:#a31515;">&quot;fartwizard.exe&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;10gotofart&quot;</span>),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">FSItem</span>.<span style="color:#74531f;">CreateFile</span>(<span style="color:#a31515;">&quot;owl_bandit.dmg&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;mov&nbsp;eax,&nbsp;h00t&quot;</span>),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">FSItem</span>.<span style="color:#74531f;">CreateFile</span>(<span style="color:#a31515;">&quot;not_a_virus.exe&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;really&nbsp;not&nbsp;a&nbsp;virus&quot;</span>),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">FSItem</span>.<span style="color:#74531f;">CreateFolder</span>(<span style="color:#a31515;">&quot;source&nbsp;code&quot;</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;[
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">FSItem</span>.<span style="color:#74531f;">CreateFile</span>(<span style="color:#a31515;">&quot;best_hs_prog.hs&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;main&nbsp;=&nbsp;print&nbsp;(fix&nbsp;error)&quot;</span>),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">FSItem</span>.<span style="color:#74531f;">CreateFile</span>(<span style="color:#a31515;">&quot;random.hs&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;main&nbsp;=&nbsp;print&nbsp;4&quot;</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;])
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;])
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;]),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">actual</span>.FSItem);
+}</pre>
+    </p>
+    <p>
+        Since the test uses <code>GoUp</code> after <code>Rename</code>, the <code>actual</code> value contains the entire tree, while the <code>Breadcrumbs</code> collection is empty.
+    </p>
+    <h3 id="827bcbd5632844fa97b2a92e8beb17cf">
+        Adding a new file <a href="#827bcbd5632844fa97b2a92e8beb17cf">#</a>
+    </h3>
+    <p>
+        Finally, we can add a new file to a folder.
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">FSZipper</span>?&nbsp;<span style="font-weight:bold;color:#74531f;">Add</span>(<span style="color:#2b91af;">FSItem</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">item</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;FSItem.<span style="font-weight:bold;color:#74531f;">Match</span>&lt;<span style="color:#2b91af;">FSZipper</span>?&gt;(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">whenFile</span>:&nbsp;(<span style="font-weight:bold;color:#1f377f;">_</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">_</span>)&nbsp;=&gt;&nbsp;<span style="color:blue;">null</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">whenFolder</span>:&nbsp;(<span style="font-weight:bold;color:#1f377f;">name</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">items</span>)&nbsp;=&gt;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">FSZipper</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">FSItem</span>.<span style="color:#74531f;">CreateFolder</span>(<span style="font-weight:bold;color:#1f377f;">name</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">items</span>.<span style="font-weight:bold;color:#74531f;">Prepend</span>(<span style="font-weight:bold;color:#1f377f;">item</span>).<span style="font-weight:bold;color:#74531f;">ToList</span>()),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Breadcrumbs));
+}</pre>
+    </p>
+    <p>
+        This operation may fail, since we can't add a file to a file. This is, again, clearly indicated by the return type, which allows <code>null</code>.
+    </p>
+    <p>
+        This implementation adds the file to the start of the folder, but it would also be possible to add it at the end. I would consider that slightly more idiomatic in C#, but here I've followed the Haskell example code, which conses the new <code>item</code> to the beginning of the list. As is idiomatic in Haskell.
+    </p>
+    <p>
+        The following unit test reproduces the Haskell article's example.
+    </p>
+    <p>
+        <pre>[<span style="color:#2b91af;">Fact</span>]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;<span style="font-weight:bold;color:#74531f;">AddPic</span>()
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">sut</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">FSZipper</span>(myDisk);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">actual</span>&nbsp;=&nbsp;<span style="font-weight:bold;color:#1f377f;">sut</span>.<span style="font-weight:bold;color:#74531f;">GoTo</span>(<span style="color:#a31515;">&quot;pics&quot;</span>)?.<span style="font-weight:bold;color:#74531f;">Add</span>(<span style="color:#2b91af;">FSItem</span>.<span style="color:#74531f;">CreateFile</span>(<span style="color:#a31515;">&quot;heh.jpg&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;lol&quot;</span>))?.<span style="font-weight:bold;color:#74531f;">GoUp</span>();
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Assert</span>.<span style="color:#74531f;">NotNull</span>(<span style="font-weight:bold;color:#1f377f;">actual</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Assert</span>.<span style="color:#74531f;">Equal</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">FSItem</span>.<span style="color:#74531f;">CreateFolder</span>(<span style="color:#a31515;">&quot;root&quot;</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;[
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">FSItem</span>.<span style="color:#74531f;">CreateFile</span>(<span style="color:#a31515;">&quot;goat_yelling_like_man.wmv&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;baaaaaa&quot;</span>),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">FSItem</span>.<span style="color:#74531f;">CreateFile</span>(<span style="color:#a31515;">&quot;pope_time.avi&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;god&nbsp;bless&quot;</span>),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">FSItem</span>.<span style="color:#74531f;">CreateFolder</span>(<span style="color:#a31515;">&quot;pics&quot;</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;[
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">FSItem</span>.<span style="color:#74531f;">CreateFile</span>(<span style="color:#a31515;">&quot;heh.jpg&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;lol&quot;</span>),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">FSItem</span>.<span style="color:#74531f;">CreateFile</span>(<span style="color:#a31515;">&quot;ape_throwing_up.jpg&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;bleargh&quot;</span>),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">FSItem</span>.<span style="color:#74531f;">CreateFile</span>(<span style="color:#a31515;">&quot;watermelon_smash.gif&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;smash!!&quot;</span>),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">FSItem</span>.<span style="color:#74531f;">CreateFile</span>(<span style="color:#a31515;">&quot;skull_man(scary).bmp&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;Yikes!&quot;</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;]),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">FSItem</span>.<span style="color:#74531f;">CreateFile</span>(<span style="color:#a31515;">&quot;dijon_poupon.doc&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;best&nbsp;mustard&quot;</span>),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">FSItem</span>.<span style="color:#74531f;">CreateFolder</span>(<span style="color:#a31515;">&quot;programs&quot;</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;[
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">FSItem</span>.<span style="color:#74531f;">CreateFile</span>(<span style="color:#a31515;">&quot;fartwizard.exe&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;10gotofart&quot;</span>),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">FSItem</span>.<span style="color:#74531f;">CreateFile</span>(<span style="color:#a31515;">&quot;owl_bandit.dmg&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;mov&nbsp;eax,&nbsp;h00t&quot;</span>),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">FSItem</span>.<span style="color:#74531f;">CreateFile</span>(<span style="color:#a31515;">&quot;not_a_virus.exe&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;really&nbsp;not&nbsp;a&nbsp;virus&quot;</span>),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">FSItem</span>.<span style="color:#74531f;">CreateFolder</span>(<span style="color:#a31515;">&quot;source&nbsp;code&quot;</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;[
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">FSItem</span>.<span style="color:#74531f;">CreateFile</span>(<span style="color:#a31515;">&quot;best_hs_prog.hs&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;main&nbsp;=&nbsp;print&nbsp;(fix&nbsp;error)&quot;</span>),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">FSItem</span>.<span style="color:#74531f;">CreateFile</span>(<span style="color:#a31515;">&quot;random.hs&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;main&nbsp;=&nbsp;print&nbsp;4&quot;</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;])
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;])
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;]),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">actual</span>.FSItem);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Assert</span>.<span style="color:#74531f;">Empty</span>(<span style="font-weight:bold;color:#1f377f;">actual</span>.Breadcrumbs);
+}</pre>
+    </p>
+    <p>
+        This example also follows the edit with a <code>GoUp</code> call, with the effect that the Zipper is once more focused on the entire tree. The assertion verifies that the new <code>heh.jpg</code> file is the first file in the <code>pics</code> folder.
+    </p>
+    <h3 id="18720e9e88d94384921a2b664b4e0a7a">
+        Conclusion <a href="#18720e9e88d94384921a2b664b4e0a7a">#</a>
+    </h3>
+    <p>
+        The code for <code>FSZipper</code> is actually a bit simpler than for the binary tree. This, I think, is mostly attributable to the <code>FSZipper</code> having fewer constituent sum types. While sum types are trivial, and extraordinarily useful in languages that natively support them, they require a lot of boilerplate in a language like C#.
+    </p>
+    <p>
+        Do you need something like <code>FSZipper</code> in C#? Probably not. As I've already discussed, this article series mostly exists as a programming exercise.
+    </p>
+</div>
