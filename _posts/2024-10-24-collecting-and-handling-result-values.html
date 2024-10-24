@@ -1,0 +1,223 @@
+---
+layout: post
+title: "Collecting and handling result values"
+description: "The answer is traverse. It's always traverse."
+date: 2024-10-24 9:25 UTC
+tags: [Functional Programming]
+---
+{% include JB/setup %}
+
+<div id="post">
+    <p>
+        <em>{{ page.description }}</em>
+    </p>
+    <p>
+        I recently came across <a href="https://stackoverflow.com/q/79112836/126014">a Stack Overflow question</a> about collecting and handling <a href="https://en.wikipedia.org/wiki/Tagged_union">sum types</a> (AKA discriminated unions or, in this case, result types). While the question was tagged <em>functional-programming</em>, the overall structure of the code was so imperative with so much interleaved <a href="https://en.wikipedia.org/wiki/Input/output">I/O</a> that it hardly <a href="/2018/11/19/functional-architecture-a-definition">qualified as functional architecture</a>.
+    </p>
+    <p>
+        Instead, I gave <a href="https://stackoverflow.com/a/79112992/126014">an answer which involved a minimal change to the code</a>. Subsequently, the original poster asked to see a more functional version of the code. That's a bit too large a task for a Stack Overflow answer, I think, so I'll do it here on the blog instead.
+    </p>
+    <p>
+        Further comments and discussion on the original post reveal that the poster is interested in two alternatives. I'll start with the alternative that's only discussed, but not shown in the question. The motivation for that is that this variation is easier to implement than the other one, and I consider it pedagogical to start with the simplest case.
+    </p>
+    <p>
+        I'll do that in this article, and then follow up with another article that covers the short-circuiting case.
+    </p>
+    <h3 id="9b3987ad5daf4df48c8155a54fb39318">
+        Imperative outset <a href="#9b3987ad5daf4df48c8155a54fb39318">#</a>
+    </h3>
+    <p>
+        To begin, consider this mostly imperative code snippet:
+    </p>
+    <p>
+        <pre><span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">storedItems</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">List</span>&lt;<span style="color:#2b91af;">ShoppingListItem</span>&gt;();
+<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">failedItems</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">List</span>&lt;<span style="color:#2b91af;">ShoppingListItem</span>&gt;();
+<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">errors</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">List</span>&lt;<span style="color:#2b91af;">Error</span>&gt;();
+<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">state</span>&nbsp;=&nbsp;(<span style="font-weight:bold;color:#1f377f;">storedItems</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">failedItems</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">errors</span>);
+<span style="font-weight:bold;color:#8f08c4;">foreach</span>&nbsp;(<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">item</span>&nbsp;<span style="font-weight:bold;color:#8f08c4;">in</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">itemsToUpdate</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">OneOf</span>&lt;<span style="color:#2b91af;">ShoppingListItem</span>,&nbsp;<span style="color:#2b91af;">NotFound</span>,&nbsp;<span style="color:#2b91af;">Error</span>&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">updateResult</span>&nbsp;=&nbsp;<span style="color:blue;">await</span>&nbsp;<span style="color:#74531f;">UpdateItem</span>(<span style="font-weight:bold;color:#1f377f;">item</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">dbContext</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">state</span>&nbsp;=&nbsp;<span style="font-weight:bold;color:#1f377f;">updateResult</span>.<span style="font-weight:bold;color:#74531f;">Match</span>&lt;(<span style="color:#2b91af;">List</span>&lt;<span style="color:#2b91af;">ShoppingListItem</span>&gt;,&nbsp;<span style="color:#2b91af;">List</span>&lt;<span style="color:#2b91af;">ShoppingListItem</span>&gt;,&nbsp;<span style="color:#2b91af;">List</span>&lt;<span style="color:#2b91af;">Error</span>&gt;)&gt;(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">storedItem</span>&nbsp;=&gt;&nbsp;{&nbsp;<span style="font-weight:bold;color:#1f377f;">storedItems</span>.<span style="font-weight:bold;color:#74531f;">Add</span>(<span style="font-weight:bold;color:#1f377f;">storedItem</span>);&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">state</span>;&nbsp;&nbsp;},
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">notFound</span>&nbsp;=&gt;&nbsp;{&nbsp;<span style="font-weight:bold;color:#1f377f;">failedItems</span>.<span style="font-weight:bold;color:#74531f;">Add</span>(<span style="font-weight:bold;color:#1f377f;">item</span>);&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">state</span>;&nbsp;},
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">error</span>&nbsp;=&gt;&nbsp;{&nbsp;<span style="font-weight:bold;color:#1f377f;">errors</span>.<span style="font-weight:bold;color:#74531f;">Add</span>(<span style="font-weight:bold;color:#1f377f;">error</span>);&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">state</span>;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;);
+}
+ 
+<span style="color:blue;">await</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">dbContext</span>.<span style="font-weight:bold;color:#74531f;">SaveChangesAsync</span>();
+ 
+<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="color:#2b91af;">Results</span>.<span style="color:#74531f;">Ok</span>(<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">BulkUpdateResult</span>([..&nbsp;<span style="font-weight:bold;color:#1f377f;">storedItems</span>],&nbsp;[..&nbsp;<span style="font-weight:bold;color:#1f377f;">failedItems</span>],&nbsp;[..&nbsp;<span style="font-weight:bold;color:#1f377f;">errors</span>]));</pre>
+    </p>
+    <p>
+        There's quite a few things to take in, and one has to infer most of the types and APIs, since the original post didn't show more code than that. If you're used to engaging with Stack Overflow questions, however, it's not too hard to figure out what most of the moving parts do.
+    </p>
+    <p>
+        The most non-obvious detail is that the code uses a library called <a href="https://github.com/mcintyre321/OneOf/">OneOf</a>, which supplies general-purpose, but rather abstract, sum types. Both the container type <code>OneOf</code>, as well as the two indicator types <code>NotFound</code> and <code>Error</code> are defined in that library.
+    </p>
+    <p>
+        The <code>Match</code> method implements standard <a href="/2018/05/22/church-encoding">Church encoding</a>, which enables the code to pattern-match on the three alternative values that <code>UpdateItem</code> returns.
+    </p>
+    <p>
+        One more detail also warrants an explicit description: The <code>itemsToUpdate</code> object is an input argument of the type <code><span style="color:#2b91af;">IEnumerable</span>&lt;<span style="color:#2b91af;">ShoppingListItem</span>&gt;</code>.
+    </p>
+    <p>
+        The implementation makes use of mutable state and undisciplined I/O. How do you refactor it to a more functional design?
+    </p>
+    <h3 id="c4e1b030e919464aa22ade11a511414f">
+        Standard traversal <a href="#c4e1b030e919464aa22ade11a511414f">#</a>
+    </h3>
+    <p>
+        I'll pretend that we only need to turn the above code snippet into a functional design. Thus, I'm ignoring that the code is most likely part of a larger code base. Because of the implied database interaction, the method isn't a <a href="https://en.wikipedia.org/wiki/Pure_function">pure function</a>. Unless it's a top-level method (that is, at the boundary of the application), it doesn't exemplify larger-scale <a href="/2018/11/19/functional-architecture-a-definition">functional architecture</a>.
+    </p>
+    <p>
+        That said, my goal is to refactor the code to an <a href="/2020/03/02/impureim-sandwich">Impureim Sandwich</a>: Impure actions first, then the meat of the functionality as a pure function, and then some more impure actions to complete the functionality. This strongly suggests that the first step should be to map over <code>itemsToUpdate</code> and call <code>UpdateItem</code> for each.
+    </p>
+    <p>
+        If, however, you do that, you get this:
+    </p>
+    <p>
+        <pre><span style="color:#2b91af;">IEnumerable</span>&lt;<span style="color:#2b91af;">Task</span>&lt;<span style="color:#2b91af;">OneOf</span>&lt;<span style="color:#2b91af;">ShoppingListItem</span>,&nbsp;<span style="color:#2b91af;">NotFound</span>,&nbsp;<span style="color:#2b91af;">Error</span>&gt;&gt;&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">results</span>&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">itemsToUpdate</span>.<span style="font-weight:bold;color:#74531f;">Select</span>(<span style="font-weight:bold;color:#1f377f;">item</span>&nbsp;=&gt;&nbsp;<span style="color:#74531f;">UpdateItem</span>(<span style="font-weight:bold;color:#1f377f;">item</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">dbContext</span>));</pre>
+    </p>
+    <p>
+        The <code>results</code> object is a sequence of tasks. If we consider <a href="/2020/07/27/task-asynchronous-programming-as-an-io-surrogate">Task as a surrogate for IO</a>, each task should be considered impure, as it's either non-deterministic, has side effects, or both. This means that we can't pass <code>results</code> to a pure function, and that frustrates the ambition to structure the code as an Impureim Sandwich.
+    </p>
+    <p>
+        This is one of the most common problems in functional programming, and the answer is usually: Use a <a href="">traversal</a>.
+    </p>
+    <p>
+        <pre><span style="color:#2b91af;">IEnumerable</span>&lt;<span style="color:#2b91af;">OneOf</span>&lt;<span style="color:#2b91af;">ShoppingListItem</span>,&nbsp;<span style="color:#2b91af;">NotFound</span>&lt;<span style="color:#2b91af;">ShoppingListItem</span>&gt;,&nbsp;<span style="color:#2b91af;">Error</span>&gt;&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">results</span>&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">await</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">itemsToUpdate</span>.<span style="font-weight:bold;color:#74531f;">Traverse</span>(<span style="font-weight:bold;color:#1f377f;">item</span>&nbsp;=&gt;&nbsp;<span style="color:#74531f;">UpdateItem</span>(<span style="font-weight:bold;color:#1f377f;">item</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">dbContext</span>));</pre>
+    </p>
+    <p>
+        Because this first, impure layer of the sandwich awaits the task, <code>results</code> is now an immutable value that can be passed to the pure step. This, by the way, assumes that <code>ShoppingListItem</code> is immutable, too.
+    </p>
+    <p>
+        Notice that I adjusted one of the cases of the discriminated union to <code><span style="color:#2b91af;">NotFound</span>&lt;<span style="color:#2b91af;">ShoppingListItem</span>&gt;</code> rather than just <code>NotFound</code>. While the OneOf library ships with a <code>NotFound</code> type, it doesn't have a generic container of that name, so I defined it myself:
+    </p>
+    <p>
+        <pre><span style="color:blue;">internal</span>&nbsp;<span style="color:blue;">sealed</span>&nbsp;<span style="color:blue;">record</span>&nbsp;<span style="color:#2b91af;">NotFound</span>&lt;<span style="color:#2b91af;">T</span>&gt;(<span style="color:#2b91af;">T</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">Item</span>);</pre>
+    </p>
+    <p>
+        I added it to make the next step simpler.
+    </p>
+    <h3 id="8f0e6fb0f34047ed99c59f6140a2b08f">
+        Aggregating the results <a href="#8f0e6fb0f34047ed99c59f6140a2b08f">#</a>
+    </h3>
+    <p>
+        The next step is to sort the <code>results</code> into three 'buckets', as it were.
+    </p>
+    <p>
+        <pre><span style="color:green;">//&nbsp;Pure</span>
+<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">seed</span>&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Enumerable</span>.<span style="color:#74531f;">Empty</span>&lt;<span style="color:#2b91af;">ShoppingListItem</span>&gt;(),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Enumerable</span>.<span style="color:#74531f;">Empty</span>&lt;<span style="color:#2b91af;">ShoppingListItem</span>&gt;(),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Enumerable</span>.<span style="color:#74531f;">Empty</span>&lt;<span style="color:#2b91af;">Error</span>&gt;()
+&nbsp;&nbsp;&nbsp;&nbsp;);
+<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">result</span>&nbsp;=&nbsp;<span style="font-weight:bold;color:#1f377f;">results</span>.<span style="font-weight:bold;color:#74531f;">Aggregate</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">seed</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;(<span style="font-weight:bold;color:#1f377f;">state</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">result</span>)&nbsp;=&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">result</span>.<span style="font-weight:bold;color:#74531f;">Match</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">storedItem</span>&nbsp;=&gt;&nbsp;(<span style="font-weight:bold;color:#1f377f;">state</span>.Item1.<span style="font-weight:bold;color:#74531f;">Append</span>(<span style="font-weight:bold;color:#1f377f;">storedItem</span>),&nbsp;<span style="font-weight:bold;color:#1f377f;">state</span>.Item2,&nbsp;<span style="font-weight:bold;color:#1f377f;">state</span>.Item3),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">notFound</span>&nbsp;=&gt;&nbsp;(<span style="font-weight:bold;color:#1f377f;">state</span>.Item1,&nbsp;<span style="font-weight:bold;color:#1f377f;">state</span>.Item2.<span style="font-weight:bold;color:#74531f;">Append</span>(<span style="font-weight:bold;color:#1f377f;">notFound</span>.Item),&nbsp;<span style="font-weight:bold;color:#1f377f;">state</span>.Item3),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">error</span>&nbsp;=&gt;&nbsp;(<span style="font-weight:bold;color:#1f377f;">state</span>.Item1,&nbsp;<span style="font-weight:bold;color:#1f377f;">state</span>.Item2,&nbsp;<span style="font-weight:bold;color:#1f377f;">state</span>.Item3.<span style="font-weight:bold;color:#74531f;">Append</span>(<span style="font-weight:bold;color:#1f377f;">error</span>))));</pre>
+    </p>
+    <p>
+        It's also possible to inline the <code>seed</code> value, but here I defined it in a separate expression in an attempt at making the code a little more readable. I don't know if I succeeded, because regardless of where it goes, it's hardly <a href="/2015/08/03/idiomatic-or-idiosyncratic">idiomatic</a> to break tuple initialization over multiple lines. I had to, though, because otherwise the code would run <a href="/2019/11/04/the-80-24-rule">too far to the right</a>.
+    </p>
+    <p>
+        The lambda expression handles each result in <code>results</code> and uses <code>Match</code> to append the value to its proper 'bucket'. The <code>result</code> is a tuple with the three collections.
+    </p>
+    <h3 id="035012be047e431d8904686ec9915b8f">
+        Saving the changes and returning the results <a href="#035012be047e431d8904686ec9915b8f">#</a>
+    </h3>
+    <p>
+        The final, impure step in the sandwich is to save the changes and return the results:
+    </p>
+    <p>
+        <pre><span style="color:green;">//&nbsp;Impure</span>
+<span style="color:blue;">await</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">dbContext</span>.<span style="font-weight:bold;color:#74531f;">SaveChangesAsync</span>();
+<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">OkResult</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">BulkUpdateResult</span>([..&nbsp;<span style="font-weight:bold;color:#1f377f;">result</span>.Item1],&nbsp;[..&nbsp;<span style="font-weight:bold;color:#1f377f;">result</span>.Item2],&nbsp;[..&nbsp;<span style="font-weight:bold;color:#1f377f;">result</span>.Item3]));</pre>
+    </p>
+    <p>
+        To be honest, the last line of code is pure, but <a href="/2023/10/09/whats-a-sandwich">that's not unusual</a> when it comes to Impureim Sandwiches.
+    </p>
+    <h3 id="178ff7d455e44a619b67d911a6aecba7">
+        Accumulating the bulk-update result <a href="#178ff7d455e44a619b67d911a6aecba7">#</a>
+    </h3>
+    <p>
+        So far, I've assumed that the final <code>BulkUpdateResult</code> class is just a simple immutable container without much functionality. If, however, we add some copy-and-update functions to it, we can use that to aggregate the result, instead of an anonymous tuple.
+    </p>
+    <p>
+        <pre><span style="color:blue;">internal</span>&nbsp;<span style="color:#2b91af;">BulkUpdateResult</span>&nbsp;<span style="font-weight:bold;color:#74531f;">Store</span>(<span style="color:#2b91af;">ShoppingListItem</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">item</span>)&nbsp;=&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>([..&nbsp;StoredItems,&nbsp;<span style="font-weight:bold;color:#1f377f;">item</span>],&nbsp;FailedItems,&nbsp;Errors);
+ 
+<span style="color:blue;">internal</span>&nbsp;<span style="color:#2b91af;">BulkUpdateResult</span>&nbsp;<span style="font-weight:bold;color:#74531f;">Fail</span>(<span style="color:#2b91af;">ShoppingListItem</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">item</span>)&nbsp;=&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>(StoredItems,&nbsp;[..&nbsp;FailedItems,&nbsp;<span style="font-weight:bold;color:#1f377f;">item</span>],&nbsp;Errors);
+ 
+<span style="color:blue;">internal</span>&nbsp;<span style="color:#2b91af;">BulkUpdateResult</span>&nbsp;<span style="font-weight:bold;color:#74531f;">Error</span>(<span style="color:#2b91af;">Error</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">error</span>)&nbsp;=&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>(StoredItems,&nbsp;FailedItems,&nbsp;[..&nbsp;Errors,&nbsp;<span style="font-weight:bold;color:#1f377f;">error</span>]);</pre>
+    </p>
+    <p>
+        I would have personally preferred the name <code>NotFound</code> instead of <code>Fail</code>, but I was going with the original post's <code>failedItems</code> terminology, and I thought that it made more sense to call a method <code>Fail</code> when it adds to a collection called <code>FailedItems</code>.
+    </p>
+    <p>
+        Adding these three instance methods to <code>BulkUpdateResult</code> simplifies the composing code:
+    </p>
+    <p>
+        <pre><span style="color:green;">//&nbsp;Impure</span>
+<span style="color:#2b91af;">IEnumerable</span>&lt;<span style="color:#2b91af;">OneOf</span>&lt;<span style="color:#2b91af;">ShoppingListItem</span>,&nbsp;<span style="color:#2b91af;">NotFound</span>&lt;<span style="color:#2b91af;">ShoppingListItem</span>&gt;,&nbsp;<span style="color:#2b91af;">Error</span>&gt;&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">results</span>&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">await</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">itemsToUpdate</span>.<span style="font-weight:bold;color:#74531f;">Traverse</span>(<span style="font-weight:bold;color:#1f377f;">item</span>&nbsp;=&gt;&nbsp;<span style="color:#74531f;">UpdateItem</span>(<span style="font-weight:bold;color:#1f377f;">item</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">dbContext</span>));
+ 
+<span style="color:green;">//&nbsp;Pure</span>
+<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">result</span>&nbsp;=&nbsp;<span style="font-weight:bold;color:#1f377f;">results</span>.<span style="font-weight:bold;color:#74531f;">Aggregate</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">BulkUpdateResult</span>([],&nbsp;[],&nbsp;[]),
+&nbsp;&nbsp;&nbsp;&nbsp;(<span style="font-weight:bold;color:#1f377f;">state</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">result</span>)&nbsp;=&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">result</span>.<span style="font-weight:bold;color:#74531f;">Match</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">storedItem</span>&nbsp;=&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">state</span>.<span style="font-weight:bold;color:#74531f;">Store</span>(<span style="font-weight:bold;color:#1f377f;">storedItem</span>),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">notFound</span>&nbsp;=&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">state</span>.<span style="font-weight:bold;color:#74531f;">Fail</span>(<span style="font-weight:bold;color:#1f377f;">notFound</span>.Item),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">error</span>&nbsp;=&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">state</span>.<span style="font-weight:bold;color:#74531f;">Error</span>(<span style="font-weight:bold;color:#1f377f;">error</span>)));
+ 
+<span style="color:green;">//&nbsp;Impure</span>
+<span style="color:blue;">await</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">dbContext</span>.<span style="font-weight:bold;color:#74531f;">SaveChangesAsync</span>();
+<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">OkResult</span>(<span style="font-weight:bold;color:#1f377f;">result</span>);</pre>
+    </p>
+    <p>
+        This variation starts with an empty <code>BulkUpdateResult</code> and then uses <code>Store</code>, <code>Fail</code>, or <code>Error</code> as appropriate to update the state.
+    </p>
+    <h3 id="32e680ea1dbb4bc7bc097e8fcfcb90e9">
+        Parallel Sequence <a href="#32e680ea1dbb4bc7bc097e8fcfcb90e9">#</a>
+    </h3>
+    <p>
+        If the tasks you want to traverse are thread-safe, you might consider making it concurrent. You can use <a href="https://learn.microsoft.com/dotnet/api/system.threading.tasks.task.whenall">Task.WhenAll</a> for that. It has the same type as <code>Sequence</code>, so if you can live with the extra non-determinism that comes with parallel execution, you can use that instead:
+    </p>
+    <p>
+        <pre><span style="color:blue;">internal</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:blue;">async</span>&nbsp;<span style="color:#2b91af;">Task</span>&lt;<span style="color:#2b91af;">IEnumerable</span>&lt;<span style="color:#2b91af;">T</span>&gt;&gt;&nbsp;<span style="color:#74531f;">Sequence</span>&lt;<span style="color:#2b91af;">T</span>&gt;(<span style="color:blue;">this</span>&nbsp;<span style="color:#2b91af;">IEnumerable</span>&lt;<span style="color:#2b91af;">Task</span>&lt;<span style="color:#2b91af;">T</span>&gt;&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">tasks</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">await</span>&nbsp;<span style="color:#2b91af;">Task</span>.<span style="color:#74531f;">WhenAll</span>(<span style="font-weight:bold;color:#1f377f;">tasks</span>);
+}</pre>
+    </p>
+    <p>
+        Since the method signature doesn't change, the rest of the code remains unchanged.
+    </p>
+    <h3 id="a54fe20498bd4aca99d7d4184209a4df">
+        Conclusion <a href="#a54fe20498bd4aca99d7d4184209a4df">#</a>
+    </h3>
+    <p>
+        One of the most common stumbling blocks in functional programming is when you have a collection of values, and you need to perform an impure action (typically I/O) for each. This leaves you with a collection of impure values (<code>Task</code> in C#, <code>Task</code> or <code>Async</code> in <a href="https://fsharp.org/">F#</a>, <code>IO</code> in <a href="https://www.haskell.org/">Haskell</a>, etc.). What you actually need is a single impure value that contains the collection of results.
+    </p>
+    <p>
+        The solution to this kind of problem is to <em>traverse</em> the collection, rather than mapping over it (with <code>Select</code>, <code>map</code>, <code>fmap</code>, or similar). Note that computer scientists often talk about <em>traversing</em> a data structure like a <a href="https://en.wikipedia.org/wiki/Tree_(abstract_data_type)">tree</a>. This is a less well-defined use of the word, and not directly related. That said, you <em>can</em> also write <code>Traverse</code> and <code>Sequence</code> functions for trees.
+    </p>
+    <p>
+        This article used a Stack Overflow question as the starting point for an example showing how to refactor imperative code to an Impureim Sandwich.
+    </p>
+    <p>
+        This completes the first variation requested in the Stack Overflow question.
+    </p>
+    <p>
+        <strong>Next:</strong> Short-circuiting an asynchronous traversal.
+    </p>
+</div>
