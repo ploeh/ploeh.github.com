@@ -1,0 +1,398 @@
+---
+layout: post
+title: "Nested monads"
+description: "You can stack some monads in such a way that the composition is also a monad."
+date: 2024-08-23 13:00 UTC
+tags: [Software Design, Functional Programming]
+image: "/content/binary/nested-monads-transformed-to-single-monad.png"
+image_alt: "Nested monads depicted as concentric circles. To the left the circle F contains the circle G that again contains the circle a. To the right the wider circle FG contains the circle that contains a. An arrow points from the left circles to the right circles."
+---
+{% include JB/setup %}
+
+<div id="post">
+    <p>
+        <em>{{ page.description }}</em>
+    </p>
+	<p>
+		This article is part of <a href="/2022/07/11/functor-relationships">a series of articles about functor relationships</a>. In a previous article you learned that <a href="">nested functors form a functor</a>. You may have wondered if <a href="/2022/03/28/monads">monads</a> compose in the same way. Does a monad nested in a monad form a monad?
+	</p>
+    <p>
+        As far as I know, there's no universal rule like that, but some monads compose well. Fortunately, it's been my experience that the combinations that you need in practice are among those that exist and are well-known. In a <a href="https://www.haskell.org/">Haskell</a> context, it's often the case that you need to run some kind of 'effect' inside <code>IO</code>. Perhaps you want to use <code>Maybe</code> or <code>Either</code> nested within <code>IO</code>.
+    </p>
+    <p>
+        In .NET, you may run into a similar need to compose task-based programming with an effect. This happens more often in <a href="https://fsharp.org/">F#</a> than in C#, since F# comes with other native monads (<code>option</code> and <code>Result</code>, to name the most common).
+    </p>
+    <h3 id="d84f448d09124e31a8fbeb27abe3d826">
+        Abstract shape <a href="#d84f448d09124e31a8fbeb27abe3d826">#</a>
+    </h3>
+    <p>
+        You'll see some real examples in a moment, but as usual it helps to outline what it is that we're looking for. Imagine that you have a monad. We'll call it <code>F</code> in keeping with tradition. In this article series, you've seen how two or more <a href="/2018/03/22/functors">functors</a> compose. When discussing the abstract shapes of things, we've typically called our two abstract functors <code>F</code> and <code>G</code>. I'll stick to that naming scheme here, because monads are functors (<a href="/2022/03/28/monads">that you can flatten</a>).
+    </p>
+    <p>
+        Now imagine that you have a value that that stacks two monads: <code>F&lt;G&lt;T&gt;&gt;</code>. If the inner monad <code>G</code> is the 'right' kind of monad, that configuration itself forms a monad.
+    </p>
+    <p>
+        <img src="/content/binary/nested-monads-transformed-to-single-monad.png" alt="Nested monads depicted as concentric circles. To the left the circle F contains the circle G that again contains the circle a. To the right the wider circle FG contains the circle that contains a. An arrow points from the left circles to the right circles.">
+    </p>
+    <p>
+        In the diagram, I've simply named the combined monad <code>FG</code>, which is a naming strategy I've seen in the real world, too: <code>TaskResult</code>, etc.
+    </p>
+    <p>
+        As I've already mentioned, if there's a general theorem that says that this is always possible, I'm not aware of it. To the contrary, I seem to recall reading that this is distinctly not the case, but the source escapes me at the moment. One hint, though, is offered in the documentation of <a href="https://hackage.haskell.org/package/base/docs/Data-Functor-Compose.html">Data.Functor.Compose</a>:
+    </p>
+    <blockquote>
+        <p>
+            "The composition of applicative functors is always applicative, but the composition of monads is not always a monad."
+        </p>
+    </blockquote>
+    <p>
+        Thankfully, the monads that you mostly need to compose do, in fact, compose. They include <a href="/2022/04/25/the-maybe-monad">Maybe</a>, <a href="/2022/05/09/an-either-monad">Either</a>, <a href="/2022/06/20/the-state-monad">State</a>, <a href="/2022/11/14/the-reader-monad">Reader</a>, and <a href="/2022/05/16/the-identity-monad">Identity</a> (okay, that one maybe isn't that useful). In other words, any monad <code>F</code> that composes with e.g. <code>Maybe</code>, that is, <code>F&lt;Maybe&lt;T&gt;&gt;</code>, also forms a monad.
+    </p>
+    <p>
+        Notice that it's the 'inner' monad that determines whether composition is possible. Not the 'outer' monad.
+    </p>
+    <p>
+        For what it's worth, I'm basing much of this on my personal experience, which was again helpfully guided by <a href="https://hackage.haskell.org/package/transformers/docs/Control-Monad-Trans-Class.html">Control.Monad.Trans.Class</a>. I don't, however, wish to turn this article into an article about monad transformers, because if you already know Haskell, you can read the documentation and look at examples. And if you don't know Haskell, the specifics of monad transformers don't readily translate to languages like C# or F#.
+    </p>
+    <p>
+        The conclusions do translate, but the specific language mechanics don't.
+    </p>
+    <p>
+        Let's look at some common examples.
+    </p>
+    <h3 id="51dcb0d54afc46d7b26b7f4021e08dbc">
+        TaskMaybe monad <a href="#51dcb0d54afc46d7b26b7f4021e08dbc">#</a>
+    </h3>
+    <p>
+        We'll start with a simple, yet realistic example. The article <a href="/2019/02/11/asynchronous-injection">Asynchronous Injection</a> shows a simple operation that involves reading from a database, making a decision, and potentially writing to the database. The final composition, repeated here for your convenience, is an asynchronous (that is, <code>Task</code>-based) process.
+    </p>
+    <p>
+        <pre><span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">await</span>&nbsp;Repository.<span style="font-weight:bold;color:#74531f;">ReadReservations</span>(<span style="font-weight:bold;color:#1f377f;">reservation</span>.Date)
+&nbsp;&nbsp;&nbsp;&nbsp;.<span style="font-weight:bold;color:#74531f;">Select</span>(<span style="font-weight:bold;color:#1f377f;">rs</span>&nbsp;=&gt;&nbsp;maîtreD.<span style="font-weight:bold;color:#74531f;">TryAccept</span>(<span style="font-weight:bold;color:#1f377f;">rs</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">reservation</span>))
+&nbsp;&nbsp;&nbsp;&nbsp;.<span style="font-weight:bold;color:#74531f;">SelectMany</span>(<span style="font-weight:bold;color:#1f377f;">m</span>&nbsp;=&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">m</span>.<span style="font-weight:bold;color:#74531f;">Traverse</span>(Repository.<span style="font-weight:bold;color:#74531f;">Create</span>))
+&nbsp;&nbsp;&nbsp;&nbsp;.<span style="font-weight:bold;color:#74531f;">Match</span>(<span style="font-weight:bold;color:#74531f;">InternalServerError</span>(<span style="color:#a31515;">&quot;Table&nbsp;unavailable&quot;</span>),&nbsp;<span style="font-weight:bold;color:#74531f;">Ok</span>);</pre>
+    </p>
+    <p>
+        The problem here is that <code>TryAccept</code> returns <code><span style="color:#2b91af;">Maybe</span>&lt;<span style="color:#2b91af;">Reservation</span>&gt;</code>, but since the overall workflow already 'runs in' an <a href="/2022/06/06/asynchronous-monads">asynchronous monad</a> (<code>Task</code>), the monads are now nested as <code><span style="color:#2b91af;">Task</span>&lt;<span style="color:#2b91af;">Maybe</span>&lt;<span style="color:#2b91af;">T</span>&gt;&gt;</code>.
+    </p>
+    <p>
+        The way I dealt with that issue in the above code snippet was to rely on a <a href="">traversal</a>, but it's actually an inelegant solution. The way that the <code>SelectMany</code> invocation maps over the <code><span style="color:#2b91af;">Maybe</span>&lt;<span style="color:#2b91af;">Reservation</span>&gt;</code> <code>m</code> is awkward. Instead of <a href="/2018/07/02/terse-operators-make-business-code-more-readable">composing a business process</a> the scaffolding is on display, so to speak. Sometimes this is unavoidable, but at other times, there may be a better way.
+    </p>
+    <p>
+        In my defence, when I wrote that article in 2019 I had another pedagogical goal than teaching nested monads. It turns out, however, that you can rewrite the business process using the <code><span style="color:#2b91af;">Task</span>&lt;<span style="color:#2b91af;">Maybe</span>&lt;<span style="color:#2b91af;">T</span>&gt;&gt;</code> stack as a monad in its own right.
+    </p>
+    <p>
+        A monad needs two functions: <em>return</em> and either <em>bind</em> or <em>join</em>. In C# or F#, you can often treat <em>return</em> as 'implied', in the sense that you can always wrap <code><span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Maybe</span>&lt;<span style="color:#2b91af;">T</span>&gt;</code> in a call to <a href="https://learn.microsoft.com/dotnet/api/system.threading.tasks.task.fromresult">Task.FromResult</a>. You'll see that in a moment.
+    </p>
+    <p>
+        While you can be cavalier about monadic <em>return</em>, you'll need to explicitly implement either <em>bind</em> or <em>join</em>. In this case, it turns out that the sample code base already had a <code>SelectMany</code> implementation:
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:blue;">async</span>&nbsp;<span style="color:#2b91af;">Task</span>&lt;<span style="color:#2b91af;">Maybe</span>&lt;<span style="color:#2b91af;">TResult</span>&gt;&gt;&nbsp;<span style="color:#74531f;">SelectMany</span>&lt;<span style="color:#2b91af;">T</span>,&nbsp;<span style="color:#2b91af;">TResult</span>&gt;(
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>&nbsp;<span style="color:#2b91af;">Task</span>&lt;<span style="color:#2b91af;">Maybe</span>&lt;<span style="color:#2b91af;">T</span>&gt;&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">source</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:#2b91af;">T</span>,&nbsp;<span style="color:#2b91af;">Task</span>&lt;<span style="color:#2b91af;">Maybe</span>&lt;<span style="color:#2b91af;">TResult</span>&gt;&gt;&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">selector</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Maybe</span>&lt;<span style="color:#2b91af;">T</span>&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">m</span>&nbsp;=&nbsp;<span style="color:blue;">await</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">source</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">await</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">m</span>.<span style="font-weight:bold;color:#74531f;">Match</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">nothing</span>:&nbsp;<span style="color:#2b91af;">Task</span>.<span style="color:#74531f;">FromResult</span>(<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Maybe</span>&lt;<span style="color:#2b91af;">TResult</span>&gt;()),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">just</span>:&nbsp;<span style="font-weight:bold;color:#1f377f;">x</span>&nbsp;=&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">selector</span>(<span style="font-weight:bold;color:#1f377f;">x</span>));
+}</pre>
+    </p>
+    <p>
+        The method first awaits the <code>Maybe</code> value, and then proceeds to <code>Match</code> on it. In the <code>nothing</code> case, you see the implicit <em>return</em> being used. In the <code>just</code> case, the <code>SelectMany</code> method calls <code>selector</code> with whatever <code>x</code> value was contained in the <code>Maybe</code> object. The result of calling <code>selector</code> already has the desired type <code><span style="color:#2b91af;">Task</span>&lt;<span style="color:#2b91af;">Maybe</span>&lt;<span style="color:#2b91af;">TResult</span>&gt;&gt;</code>, so the implementation simply returns that value without further ado.
+    </p>
+    <p>
+        This enables you to rewrite the <code>SelectMany</code> call in the business process so that it instead looks like this:
+    </p>
+    <p>
+        <pre><span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">await</span>&nbsp;Repository.<span style="font-weight:bold;color:#74531f;">ReadReservations</span>(<span style="font-weight:bold;color:#1f377f;">reservation</span>.Date)
+&nbsp;&nbsp;&nbsp;&nbsp;.<span style="font-weight:bold;color:#74531f;">Select</span>(<span style="font-weight:bold;color:#1f377f;">rs</span>&nbsp;=&gt;&nbsp;maîtreD.<span style="font-weight:bold;color:#74531f;">TryAccept</span>(<span style="font-weight:bold;color:#1f377f;">rs</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">reservation</span>))
+&nbsp;&nbsp;&nbsp;&nbsp;.<span style="font-weight:bold;color:#74531f;">SelectMany</span>(<span style="font-weight:bold;color:#1f377f;">r</span>&nbsp;=&gt;&nbsp;Repository.<span style="font-weight:bold;color:#74531f;">Create</span>(<span style="font-weight:bold;color:#1f377f;">r</span>).<span style="font-weight:bold;color:#74531f;">Select</span>(<span style="font-weight:bold;color:#1f377f;">i</span>&nbsp;=&gt;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Maybe</span>&lt;<span style="color:blue;">int</span>&gt;(<span style="font-weight:bold;color:#1f377f;">i</span>)))
+&nbsp;&nbsp;&nbsp;&nbsp;.<span style="font-weight:bold;color:#74531f;">Match</span>(<span style="font-weight:bold;color:#74531f;">InternalServerError</span>(<span style="color:#a31515;">&quot;Table&nbsp;unavailable&quot;</span>),&nbsp;<span style="font-weight:bold;color:#74531f;">Ok</span>);</pre>
+    </p>
+    <p>
+        At first glance, it doesn't look like much of an improvement. To be sure, the lambda expression within the <code>SelectMany</code> method no longer operates on a <code>Maybe</code> value, but rather on the <code>Reservation</code> Domain Model <code>r</code>. On the other hand, we're now saddled with that graceless <code><span style="font-weight:bold;color:#74531f;">Select</span>(<span style="font-weight:bold;color:#1f377f;">i</span>&nbsp;=&gt;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Maybe</span>&lt;<span style="color:blue;">int</span>&gt;(<span style="font-weight:bold;color:#1f377f;">i</span>))</code>.
+    </p>
+    <p>
+        Had this been Haskell, we could have made this more succinct by eta reducing the <code>Maybe</code> case constructor and used the <code>&lt;$&gt;</code> infix operator instead of <code>fmap</code>; something like <code>Just &lt;$&gt; create r</code>. In C#, on the other hand, we can do something that Haskell doesn't allow. We can overload the <code>SelectMany</code> method:
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:#2b91af;">Task</span>&lt;<span style="color:#2b91af;">Maybe</span>&lt;<span style="color:#2b91af;">TResult</span>&gt;&gt;&nbsp;<span style="color:#74531f;">SelectMany</span>&lt;<span style="color:#2b91af;">T</span>,&nbsp;<span style="color:#2b91af;">TResult</span>&gt;(
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>&nbsp;<span style="color:#2b91af;">Task</span>&lt;<span style="color:#2b91af;">Maybe</span>&lt;<span style="color:#2b91af;">T</span>&gt;&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">source</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:#2b91af;">T</span>,&nbsp;<span style="color:#2b91af;">Task</span>&lt;<span style="color:#2b91af;">TResult</span>&gt;&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">selector</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">source</span>.<span style="font-weight:bold;color:#74531f;">SelectMany</span>(<span style="font-weight:bold;color:#1f377f;">x</span>&nbsp;=&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">selector</span>(<span style="font-weight:bold;color:#1f377f;">x</span>).<span style="font-weight:bold;color:#74531f;">Select</span>(<span style="font-weight:bold;color:#1f377f;">y</span>&nbsp;=&gt;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Maybe</span>&lt;<span style="color:#2b91af;">TResult</span>&gt;(<span style="font-weight:bold;color:#1f377f;">y</span>)));
+}</pre>
+    </p>
+    <p>
+        This overload generalizes the 'pattern' exemplified by the above business process composition. Instead of a specific method call, it now works with any <code>selector</code> function that returns <code><span style="color:#2b91af;">Task</span>&lt;<span style="color:#2b91af;">TResult</span>&gt;</code>. Since <code>selector</code> only returns a <code><span style="color:#2b91af;">Task</span>&lt;<span style="color:#2b91af;">TResult</span>&gt;</code> value, and not a <code><span style="color:#2b91af;">Task</span>&lt;<span style="color:#2b91af;">Maybe</span>&lt;<span style="color:#2b91af;">TResult</span>&gt;&gt;</code> value, as actually required in this nested monad, the overload has to map (that is, <code>Select</code>) the result by wrapping it in a <code><span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Maybe</span>&lt;<span style="color:#2b91af;">TResult</span>&gt;</code>.
+    </p>
+    <p>
+        This now enables you to improve the business process composition to something more readable.
+    </p>
+    <p>
+        <pre><span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">await</span>&nbsp;Repository.<span style="font-weight:bold;color:#74531f;">ReadReservations</span>(<span style="font-weight:bold;color:#1f377f;">reservation</span>.Date)
+&nbsp;&nbsp;&nbsp;&nbsp;.<span style="font-weight:bold;color:#74531f;">Select</span>(<span style="font-weight:bold;color:#1f377f;">rs</span>&nbsp;=&gt;&nbsp;maîtreD.<span style="font-weight:bold;color:#74531f;">TryAccept</span>(<span style="font-weight:bold;color:#1f377f;">rs</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">reservation</span>))
+&nbsp;&nbsp;&nbsp;&nbsp;.<span style="font-weight:bold;color:#74531f;">SelectMany</span>(Repository.<span style="font-weight:bold;color:#74531f;">Create</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;.<span style="font-weight:bold;color:#74531f;">Match</span>(<span style="font-weight:bold;color:#74531f;">InternalServerError</span>(<span style="color:#a31515;">&quot;Table&nbsp;unavailable&quot;</span>),&nbsp;<span style="font-weight:bold;color:#74531f;">Ok</span>);</pre>
+    </p>
+    <p>
+        It even turned out to be possible to eta reduce the lambda expression instead of the (also valid, but more verbose) <code><span style="font-weight:bold;color:#1f377f;">r</span>&nbsp;=&gt;&nbsp;Repository.<span style="font-weight:bold;color:#74531f;">Create</span>(<span style="font-weight:bold;color:#1f377f;">r</span>)</code>.
+    </p>
+    <p>
+        If you're interested in the sample code, I've pushed a branch named <code>use-monad-stack</code> to <a href="">the GitHub repository</a>.
+    </p>
+    <p>
+        Not surprisingly, the F# <code>bind</code> function is much terser:
+    </p>
+    <p>
+        <pre><span style="color:blue;">let</span>&nbsp;<span style="color:#74531f;">bind</span>&nbsp;<span style="color:#74531f;">f</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">x</span>&nbsp;=&nbsp;<span style="color:blue;">async</span>&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">match!</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">x</span>&nbsp;<span style="color:blue;">with</span>
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:#2b91af;">Some</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">x&#39;</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">return!</span>&nbsp;<span style="color:#74531f;">f</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">x&#39;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:#2b91af;">None</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:#2b91af;">None</span>&nbsp;}</pre>
+    </p>
+    <p>
+        You can find that particular snippet in the code base that accompanies the article <a href="/2019/12/02/refactoring-registration-flow-to-functional-architecture">Refactoring registration flow to functional architecture</a>, although as far as I can tell, it's not actually in use in that code base. I probably just added it because I could.
+    </p>
+    <p>
+        You can find Haskell examples of combining <a href="https://hackage.haskell.org/package/transformers/docs/Control-Monad-Trans-Maybe.html">MaybeT</a> with <code>IO</code> in various articles on this blog. One of them is <a href="/2017/02/02/dependency-rejection">Dependency rejection</a>.
+    </p>
+    <h3 id="74c0764ee623459596700a6462dd5452">
+        TaskResult monad <a href="#74c0764ee623459596700a6462dd5452">#</a>
+    </h3>
+    <p>
+        A similar, but slightly more complex, example involves nesting Either values in asynchronous workflows. In some languages, such as F#, Either is rather called <a href="https://learn.microsoft.com/dotnet/fsharp/language-reference/results">Result</a>, and asynchronous workflows are modelled by a <code>Task</code> <a href="https://bartoszmilewski.com/2014/01/14/functors-are-containers/">container</a>, as already demonstrated above. Thus, on .NET at least, this nested monad is often called <em>TaskResult</em>, but you may also see <em>AsyncResult</em>, <em>AsyncEither</em>, or other combinations. Depending on the programming language, such names may be used only for modules, and not for the container type itself. In C# or F# code, for example, you may look in vain after a class called <code>TaskResult&lt;T&gt;</code>, but rather find a <code>TaskResult</code> static class or module.
+    </p>
+    <p>
+        In C# you can define monadic <em>bind</em> like this:
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:blue;">async</span>&nbsp;<span style="color:#2b91af;">Task</span>&lt;<span style="color:#2b91af;">Either</span>&lt;<span style="color:#2b91af;">L</span>,&nbsp;<span style="color:#2b91af;">R1</span>&gt;&gt;&nbsp;<span style="color:#74531f;">SelectMany</span>&lt;<span style="color:#2b91af;">L</span>,&nbsp;<span style="color:#2b91af;">R</span>,&nbsp;<span style="color:#2b91af;">R1</span>&gt;(
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>&nbsp;<span style="color:#2b91af;">Task</span>&lt;<span style="color:#2b91af;">Either</span>&lt;<span style="color:#2b91af;">L</span>,&nbsp;<span style="color:#2b91af;">R</span>&gt;&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">source</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:#2b91af;">R</span>,&nbsp;<span style="color:#2b91af;">Task</span>&lt;<span style="color:#2b91af;">Either</span>&lt;<span style="color:#2b91af;">L</span>,&nbsp;<span style="color:#2b91af;">R1</span>&gt;&gt;&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">selector</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">if</span>&nbsp;(<span style="font-weight:bold;color:#1f377f;">source</span>&nbsp;<span style="color:blue;">is</span>&nbsp;<span style="color:blue;">null</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">throw</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">ArgumentNullException</span>(<span style="color:blue;">nameof</span>(<span style="font-weight:bold;color:#1f377f;">source</span>));
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Either</span>&lt;<span style="color:#2b91af;">L</span>,&nbsp;<span style="color:#2b91af;">R</span>&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">x</span>&nbsp;=&nbsp;<span style="color:blue;">await</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">source</span>.<span style="font-weight:bold;color:#74531f;">ConfigureAwait</span>(<span style="color:blue;">false</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">await</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">x</span>.<span style="font-weight:bold;color:#74531f;">Match</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">l</span>&nbsp;=&gt;&nbsp;<span style="color:#2b91af;">Task</span>.<span style="color:#74531f;">FromResult</span>(<span style="color:#2b91af;">Either</span>.<span style="color:#74531f;">Left</span>&lt;<span style="color:#2b91af;">L</span>,&nbsp;<span style="color:#2b91af;">R1</span>&gt;(<span style="font-weight:bold;color:#1f377f;">l</span>)),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">selector</span>).<span style="font-weight:bold;color:#74531f;">ConfigureAwait</span>(<span style="color:blue;">false</span>);
+}</pre>
+    </p>
+    <p>
+        Here I've again passed the eta-reduced <code>selector</code> straight to the <em>right</em> case of the <code>Either</code> value, but <code><span style="font-weight:bold;color:#1f377f;">r</span>&nbsp;=&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">selector</span>(<span style="font-weight:bold;color:#1f377f;">r</span>)</code> works, too.
+    </p>
+    <p>
+        The <em>left</em> case shows another example of 'implicit monadic <em>return</em>'. I didn't bother defining an explicit <code>Return</code> function, but rather use <code><span style="color:#2b91af;">Task</span>.<span style="color:#74531f;">FromResult</span>(<span style="color:#2b91af;">Either</span>.<span style="color:#74531f;">Left</span>&lt;<span style="color:#2b91af;">L</span>,&nbsp;<span style="color:#2b91af;">R1</span>&gt;(<span style="font-weight:bold;color:#1f377f;">l</span>))</code> to return a <code><span style="color:#2b91af;">Task</span>&lt;<span style="color:#2b91af;">Either</span>&lt;<span style="color:#2b91af;">L</span>,&nbsp;<span style="color:#2b91af;">R1</span>&gt;&gt;</code> value.
+    </p>
+    <p>
+        As is the case with C#, you'll also need to add a special overload to enable the syntactic sugar of <a href="https://learn.microsoft.com/dotnet/csharp/linq/get-started/query-expression-basics">query expressions</a>:
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:#2b91af;">Task</span>&lt;<span style="color:#2b91af;">Either</span>&lt;<span style="color:#2b91af;">L</span>,&nbsp;<span style="color:#2b91af;">R1</span>&gt;&gt;&nbsp;<span style="color:#74531f;">SelectMany</span>&lt;<span style="color:#2b91af;">L</span>,&nbsp;<span style="color:#2b91af;">U</span>,&nbsp;<span style="color:#2b91af;">R</span>,&nbsp;<span style="color:#2b91af;">R1</span>&gt;(
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>&nbsp;<span style="color:#2b91af;">Task</span>&lt;<span style="color:#2b91af;">Either</span>&lt;<span style="color:#2b91af;">L</span>,&nbsp;<span style="color:#2b91af;">R</span>&gt;&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">source</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:#2b91af;">R</span>,&nbsp;<span style="color:#2b91af;">Task</span>&lt;<span style="color:#2b91af;">Either</span>&lt;<span style="color:#2b91af;">L</span>,&nbsp;<span style="color:#2b91af;">U</span>&gt;&gt;&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">k</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:#2b91af;">R</span>,&nbsp;<span style="color:#2b91af;">U</span>,&nbsp;<span style="color:#2b91af;">R1</span>&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">s</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">source</span>.<span style="font-weight:bold;color:#74531f;">SelectMany</span>(<span style="font-weight:bold;color:#1f377f;">x</span>&nbsp;=&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">k</span>(<span style="font-weight:bold;color:#1f377f;">x</span>).<span style="font-weight:bold;color:#74531f;">Select</span>(<span style="font-weight:bold;color:#1f377f;">y</span>&nbsp;=&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">s</span>(<span style="font-weight:bold;color:#1f377f;">x</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">y</span>)));
+}</pre>
+    </p>
+    <p>
+        You'll see a comprehensive example using these functions in a future article.
+    </p>
+    <p>
+        In F# I'd often first define a module with a few functions including <code>bind</code>, and then use those implementations to define a <a href="https://learn.microsoft.com/dotnet/fsharp/language-reference/computation-expressions">computation expression</a>, but in <a href="/2016/04/11/async-as-surrogate-io">one article</a>, I jumped straight to the expression builder:
+    </p>
+    <p>
+		<pre><span style="color:blue;">type</span>&nbsp;<span style="color:#4ec9b0;">AsyncEitherBuilder</span>&nbsp;()&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;Async&lt;Result&lt;&#39;a,&#39;c&gt;&gt;&nbsp;*&nbsp;(&#39;a&nbsp;-&gt;&nbsp;Async&lt;Result&lt;&#39;b,&#39;c&gt;&gt;)</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;-&gt;&nbsp;Async&lt;Result&lt;&#39;b,&#39;c&gt;&gt;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">member</span>&nbsp;this.<span style="color:navy;">Bind</span>(x,&nbsp;<span style="color:navy;">f</span>)&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">async</span>&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;x&#39;&nbsp;=&nbsp;x
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">match</span>&nbsp;x&#39;&nbsp;<span style="color:blue;">with</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:navy;">Success</span>&nbsp;s&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">return!</span>&nbsp;<span style="color:navy;">f</span>&nbsp;s
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:navy;">Failure</span>&nbsp;f&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:navy;">Failure</span>&nbsp;f&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;&#39;a&nbsp;-&gt;&nbsp;&#39;a</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">member</span>&nbsp;this.<span style="color:navy;">ReturnFrom</span>&nbsp;x&nbsp;=&nbsp;x
+ 
+<span style="color:blue;">let</span>&nbsp;asyncEither&nbsp;=&nbsp;<span style="color:#4ec9b0;">AsyncEitherBuilder</span>&nbsp;()</pre>
+	</p>
+    <p>
+        That article also shows usage examples. Another article, <a href="/2022/02/14/a-conditional-sandwich-example">A conditional sandwich example</a>, shows more examples of using this nested monad, although there, the computation expression is named <code>taskResult</code>.
+    </p>
+    <h3 id="e6426619b2ae4f8d97d62edfe9cae0ca">
+        Stateful computations that may fail <a href="#e6426619b2ae4f8d97d62edfe9cae0ca">#</a>
+    </h3>
+    <p>
+        To be honest, you mostly run into a scenario where nested monads are useful when some kind of 'effect' (errors, mostly) is embedded in an <a href="https://en.wikipedia.org/wiki/Input/output">I/O</a>-bound computation. In Haskell, this means <code>IO</code>, in C# <code>Task</code>, and in F# either <code>Task</code> or <code>Async</code>.
+    </p>
+    <p>
+        Other combinations are possible, however, but I've rarely encountered a need for additional nested monads outside of Haskell. In multi-paradigmatic languages, you can usually find other good designs that address issues that you may occasionally run into in a purely functional language. The following example is a Haskell-only example. You can skip it if you don't know or care about Haskell.
+    </p>
+    <p>
+        Imagine that you want to keep track of some statistics related to a software service you offer. If the <a href="https://en.wikipedia.org/wiki/Variance">variance</a> of some number (say, response time) exceeds 10 then you want to issue an alert that the <a href="https://en.wikipedia.org/wiki/Service-level_agreement">SLA</a> was violated. Apparently, in your system, reliability means staying consistent.
+    </p>
+    <p>
+        You have millions of observations, and they keep arriving, so you need an <a href="https://en.wikipedia.org/wiki/Online_algorithm">online algorithm</a>. For average and variance we'll use <a href="https://en.wikipedia.org/wiki/Algorithms_for_calculating_variance">Welford's algorithm</a>.
+    </p>
+    <p>
+        The following code uses these imports:
+    </p>
+    <p>
+        <pre><span style="color:blue;">import</span>&nbsp;Control.Monad
+<span style="color:blue;">import</span>&nbsp;Control.Monad.Trans.State.Strict
+<span style="color:blue;">import</span>&nbsp;Control.Monad.Trans.Maybe</pre>
+    </p>
+    <p>
+        First, you can define a data structure to hold the aggregate values required for the algorithm, as well as an initial, empty value:
+    </p>
+    <p>
+        <pre><span style="color:blue;">data</span>&nbsp;Aggregate&nbsp;=&nbsp;Aggregate&nbsp;{&nbsp;count&nbsp;::&nbsp;Int,&nbsp;meanA&nbsp;::&nbsp;Double,&nbsp;m2&nbsp;::&nbsp;Double&nbsp;}&nbsp;<span style="color:blue;">deriving</span>&nbsp;(<span style="color:#2b91af;">Eq</span>,&nbsp;<span style="color:#2b91af;">Show</span>)
+ 
+<span style="color:#2b91af;">emptyA</span>&nbsp;<span style="color:blue;">::</span>&nbsp;<span style="color:blue;">Aggregate</span>
+emptyA&nbsp;=&nbsp;Aggregate&nbsp;0&nbsp;0&nbsp;0</pre>
+    </p>
+    <p>
+        You can also define a function to update the aggregate values with a new observation:
+    </p>
+    <p>
+        <pre><span style="color:#2b91af;">update</span>&nbsp;<span style="color:blue;">::</span>&nbsp;<span style="color:blue;">Aggregate</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:#2b91af;">Double</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">Aggregate</span>
+update&nbsp;(Aggregate&nbsp;count&nbsp;mean&nbsp;m2)&nbsp;x&nbsp;=
+&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;count&#39;&nbsp;=&nbsp;count&nbsp;+&nbsp;1
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;delta&nbsp;=&nbsp;x&nbsp;-&nbsp;mean
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;mean&#39;&nbsp;=&nbsp;mean&nbsp;+&nbsp;delta&nbsp;/&nbsp;<span style="color:blue;">fromIntegral</span>&nbsp;count&#39;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;delta2&nbsp;=&nbsp;x&nbsp;-&nbsp;mean&#39;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;m2&#39;&nbsp;=&nbsp;m2&nbsp;+&nbsp;delta&nbsp;*&nbsp;delta2
+&nbsp;&nbsp;<span style="color:blue;">in</span>&nbsp;Aggregate&nbsp;count&#39;&nbsp;mean&#39;&nbsp;m2&#39;</pre>
+    </p>
+    <p>
+        Given an existing <code>Aggregate</code> record and a new observation, this function implements the algorithm to calculate a new <code>Aggregate</code> record.
+    </p>
+    <p>
+        The values in an <code>Aggregate</code> record, however, are only intermediary values that you can use to calculate statistics such as mean, variance, and sample variance. You'll need a data type and function to do that, as well:
+    </p>
+    <p>
+        <pre><span style="color:blue;">data</span>&nbsp;Statistics&nbsp;=
+&nbsp;&nbsp;Statistics
+&nbsp;&nbsp;&nbsp;&nbsp;{&nbsp;mean&nbsp;::&nbsp;Double,&nbsp;variance&nbsp;::&nbsp;Double,&nbsp;sampleVariance&nbsp;::&nbsp;Maybe&nbsp;Double&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">deriving</span>&nbsp;(<span style="color:#2b91af;">Eq</span>,&nbsp;<span style="color:#2b91af;">Show</span>)
+ 
+<span style="color:#2b91af;">extractStatistics</span>&nbsp;<span style="color:blue;">::</span>&nbsp;<span style="color:blue;">Aggregate</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:#2b91af;">Maybe</span>&nbsp;<span style="color:blue;">Statistics</span>
+extractStatistics&nbsp;(Aggregate&nbsp;count&nbsp;mean&nbsp;m2)&nbsp;=
+&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;count&nbsp;&lt;&nbsp;1&nbsp;<span style="color:blue;">then</span>&nbsp;Nothing
+&nbsp;&nbsp;<span style="color:blue;">else</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;variance&nbsp;=&nbsp;m2&nbsp;/&nbsp;<span style="color:blue;">fromIntegral</span>&nbsp;count
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;sampleVariance&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;count&nbsp;&lt;&nbsp;2&nbsp;<span style="color:blue;">then</span>&nbsp;Nothing&nbsp;<span style="color:blue;">else</span>&nbsp;Just&nbsp;$&nbsp;m2&nbsp;/&nbsp;<span style="color:blue;">fromIntegral</span>&nbsp;(count&nbsp;-&nbsp;1)
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">in</span>&nbsp;Just&nbsp;$&nbsp;Statistics&nbsp;mean&nbsp;variance&nbsp;sampleVariance</pre>
+    </p>
+    <p>
+        This is where the computation becomes 'failure-prone'. Granted, we only have a real problem when we have zero observations, but this still means that we need to return a <code>Maybe Statistics</code> value in order to avoid division by zero.
+    </p>
+    <p>
+        (There might be other designs that avoid that problem, or you might simply decide to tolerate that edge case and code around it in other ways. I've decided to design the <code>extractStatistics</code> function in this particular way in order to furnish an example. Work with me here.)
+    </p>
+    <p>
+        Let's say that as the next step, you'd like to compose these two functions into a single function that both adds a new observation, computes the statistics, but also returns the updated <code>Aggregate</code>.
+    </p>
+    <p>
+        You <em>could</em> write it like this:
+    </p>
+    <p>
+        <pre><span style="color:#2b91af;">addAndCompute</span>&nbsp;<span style="color:blue;">::</span>&nbsp;<span style="color:#2b91af;">Double</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">Aggregate</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:#2b91af;">Maybe</span>&nbsp;(<span style="color:blue;">Statistics</span>,&nbsp;<span style="color:blue;">Aggregate</span>)
+addAndCompute&nbsp;x&nbsp;agg&nbsp;=&nbsp;<span style="color:blue;">do</span>
+&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;agg&#39;&nbsp;=&nbsp;update&nbsp;agg&nbsp;x
+&nbsp;&nbsp;stats&nbsp;&lt;-&nbsp;extractStatistics&nbsp;agg&#39;
+&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;(stats,&nbsp;agg&#39;)</pre>
+    </p>
+    <p>
+        This implementation uses <code>do</code> notation to automate handling of <code>Nothing</code> values. Still, it's a bit inelegant with its two <code>agg</code> values only distinguishable by the prime sign after one of them, and the need to explicitly return a tuple of the value and the new state.
+    </p>
+    <p>
+        This is the kind of problem that the State monad addresses. You could instead write the function like this:
+    </p>
+    <p>
+        <pre><span style="color:#2b91af;">addAndCompute</span>&nbsp;<span style="color:blue;">::</span>&nbsp;<span style="color:#2b91af;">Double</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">State</span>&nbsp;<span style="color:blue;">Aggregate</span>&nbsp;(<span style="color:#2b91af;">Maybe</span>&nbsp;<span style="color:blue;">Statistics</span>)
+addAndCompute&nbsp;x&nbsp;=&nbsp;<span style="color:blue;">do</span>
+&nbsp;&nbsp;modify&nbsp;$&nbsp;<span style="color:blue;">flip</span>&nbsp;update&nbsp;x
+&nbsp;&nbsp;gets&nbsp;extractStatistics</pre>
+    </p>
+    <p>
+        You could actually also write it as a one-line, but that's already a bit to terse to my liking:
+    </p>
+    <p>
+        <pre><span style="color:#2b91af;">addAndCompute</span>&nbsp;<span style="color:blue;">::</span>&nbsp;<span style="color:#2b91af;">Double</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">State</span>&nbsp;<span style="color:blue;">Aggregate</span>&nbsp;(<span style="color:#2b91af;">Maybe</span>&nbsp;<span style="color:blue;">Statistics</span>)
+addAndCompute&nbsp;x&nbsp;=&nbsp;modify&nbsp;(`update`&nbsp;x)&nbsp;&gt;&gt;&nbsp;gets&nbsp;extractStatistics</pre>
+    </p>
+    <p>
+        And if you really hate your co-workers, you can always visit <a href="https://pointfree.io">pointfree.io</a> to entirely obscure that expression, but I digress.
+    </p>
+    <p>
+        The point is that the State monad <a href="/ref/doocautbm">amplifies the essential and eliminates the irrelevant</a>.
+    </p>
+    <p>
+        Now you'd like to add a function that issues an alert if the variance is greater than 10. Again, you <em>could</em> write it like this:
+    </p>
+    <p>
+        <pre><span style="color:#2b91af;">monitor</span>&nbsp;<span style="color:blue;">::</span>&nbsp;<span style="color:#2b91af;">Double</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">State</span>&nbsp;<span style="color:blue;">Aggregate</span>&nbsp;(<span style="color:#2b91af;">Maybe</span>&nbsp;<span style="color:#2b91af;">String</span>)
+monitor&nbsp;x&nbsp;=&nbsp;<span style="color:blue;">do</span>
+&nbsp;&nbsp;stats&nbsp;&lt;-&nbsp;addAndCompute&nbsp;x
+&nbsp;&nbsp;<span style="color:blue;">case</span>&nbsp;stats&nbsp;<span style="color:blue;">of</span>
+&nbsp;&nbsp;&nbsp;&nbsp;Just&nbsp;Statistics&nbsp;{&nbsp;variance&nbsp;}&nbsp;-&gt;&nbsp;<span style="color:blue;">return</span>&nbsp;$
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;10&nbsp;&lt;&nbsp;variance
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">then</span>&nbsp;Just&nbsp;<span style="color:#a31515;">&quot;SLA&nbsp;violation&quot;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">else</span>&nbsp;Nothing
+&nbsp;&nbsp;&nbsp;&nbsp;Nothing&nbsp;-&gt;&nbsp;<span style="color:blue;">return</span>&nbsp;Nothing</pre>
+    </p>
+    <p>
+        But again, the code is graceless with its explicit handling of <code>Maybe</code> cases. Whenever you see code that matches <code>Maybe</code> cases and maps <code>Nothing</code> to <code>Nothing</code>, your spider sense should be tingling. Could you abstract that away with a functor or monad?
+    </p>
+    <p>
+        Yes you can! You can use the <code>MaybeT</code> monad transformer, which nests <code>Maybe</code> computations inside another monad. In this case <code>State</code>:
+    </p>
+    <p>
+        <pre><span style="color:#2b91af;">monitor</span>&nbsp;<span style="color:blue;">::</span>&nbsp;<span style="color:#2b91af;">Double</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">State</span>&nbsp;<span style="color:blue;">Aggregate</span>&nbsp;(<span style="color:#2b91af;">Maybe</span>&nbsp;<span style="color:#2b91af;">String</span>)
+monitor&nbsp;x&nbsp;=&nbsp;runMaybeT&nbsp;$&nbsp;<span style="color:blue;">do</span>
+&nbsp;&nbsp;Statistics&nbsp;{&nbsp;variance&nbsp;}&nbsp;&lt;-&nbsp;MaybeT&nbsp;$&nbsp;addAndCompute&nbsp;x
+&nbsp;&nbsp;guard&nbsp;(10&nbsp;&lt;&nbsp;variance)
+&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:#a31515;">&quot;SLA&nbsp;Violation&quot;</span></pre>
+    </p>
+    <p>
+        The function type is the same, but the implementation is much simpler. First, the code lifts the <code>Maybe</code>-valued <code>addAndCompute</code> result into <code>MaybeT</code> and pattern-matches on the <code>variance</code>. Since the code is now 'running in' a <code>Maybe</code>-like context, this line of code only executes if there's a <code>Statistics</code> value to extract. If, on the other hand, <code>addAndCompute</code> returns <code>Nothing</code>, the function already short-circuits there.
+    </p>
+    <p>
+        The <code>guard</code> works just like imperative <a href="https://en.wikipedia.org/wiki/Guard_(computer_science)">Guard Clauses</a>. The third line of code only runs if the <code>variance</code> is greater than 10. In that case, it returns an alert message.
+    </p>
+    <p>
+        The entire <code>do</code> workflow gets unwrapped with <code>runMaybeT</code> so that we return back to a normal stateful computation that may fail.
+    </p>
+    <p>
+        Let's try it out:
+    </p>
+    <p>
+        <pre>ghci&gt; (evalState $ monitor 1 &gt;&gt; monitor 7) emptyA
+Nothing
+ghci&gt; (evalState $ monitor 1 &gt;&gt; monitor 8) emptyA
+Just "SLA Violation"</pre>
+    </p>
+    <p>
+        Good, rigorous testing suggests that it's working.
+    </p>
+    <h3 id="e67fa8bc1b40459c91c1c8b45595c379">
+        Conclusion <a href="#e67fa8bc1b40459c91c1c8b45595c379">#</a>
+    </h3>
+    <p>
+        You sometimes run into situations where monads are nested. This mostly happens in I/O-bound computations, where you may have a Maybe or Either value embedded inside <code>Task</code> or <code>IO</code>. This can sometimes make working with the 'inner' monad awkward, but in many cases there's a good solution at hand.
+    </p>
+    <p>
+        Some monads, like Maybe, Either, State, Reader, and Identity, nest nicely inside other monads. Thus, if your 'inner' monad is one of those, you can turn the nested arrangement into a monad in its own right. This may help simplify your code base.
+    </p>
+    <p>
+        In addition to the common monads listed here, there are few more exotic ones that also play well in a nested configuration. Additionally, if your 'inner' monad is a custom data structure of your own creation, it's up to you to investigate if it nests nicely in another monad. As far as I can tell, though, if you can make it nest in one monad (e.g Task, Async, or IO) you can probably make it nest in any monad.
+    </p>
+	<p>
+		<strong>Next:</strong> <a href="/2018/01/08/software-design-isomorphisms">Software design isomorphisms</a>.
+	</p>
+</div>
