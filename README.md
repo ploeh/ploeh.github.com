@@ -30,7 +30,7 @@ While it would have been easier to ignore the existing comments, I felt an oblig
 
 The most popular comment system at the time was Disqus, and I did investigate whether I could import the existing comments into that system. It did strike me as a bit proprietary, though, which made me reflect further on the problem. Migrating the comments to Disqus would effectively trap them there. Would I be able to get them out again if I decided to migrate to yet another system?
 
-Thus, I decided (at first, as an experiment) to embed the comments directly in the article. It's not ideal, but the trade-off I've identified.
+Thus, I decided (at first, as an experiment) to embed the comments directly in the article. It's not ideal, but the best trade-off I've yet identified.
 
 ### Longevity
 
