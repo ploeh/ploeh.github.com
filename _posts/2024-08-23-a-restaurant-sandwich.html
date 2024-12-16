@@ -1,0 +1,559 @@
+---
+layout: post
+title: "A restaurant sandwich"
+description: "An Impureim Sandwich example in C#."
+date: 2024-08-23 5:51 UTC
+tags: [Functional Programming, Architecture, Languages]
+image: "/content/binary/impure-tiny-pure-impure-sandwich-box.png"
+image_alt: "A box with a big red section on top, a thin green sliver middle, and another big red part at the bottom."
+---
+{% include JB/setup %}
+
+<div id="post">
+    <p>
+        <em>{{ page.description }}</em>
+    </p>
+    <p>
+        When learning functional programming (FP) people often struggle with how to organize code. How do you <a href="/2020/02/24/discerning-and-maintaining-purity">discern and maintain purity</a>? <a href="/2017/02/02/dependency-rejection">How do you do Dependency Injection in FP?</a> What does <a href="/2018/11/19/functional-architecture-a-definition">a functional architecture</a> look like?
+    </p>
+    <p>
+        A common FP design pattern is the <a href="/2020/03/02/impureim-sandwich">Impureim Sandwich</a>. The entry point of an application is always impure, so you push all impure actions to the boundary of the system. This is also known as <a href="https://www.destroyallsoftware.com/screencasts/catalog/functional-core-imperative-shell">Functional Core, Imperative Shell</a>. If you have a <a href="/2017/07/10/pure-interactions">micro-operation-based architecture</a>, which includes all web-based systems, you can often get by with a 'sandwich'. Perform impure actions to collect all the data you need. Pass all data to a <a href="https://en.wikipedia.org/wiki/Pure_function">pure function</a>. Finally, use impure actions to handle the <a href="https://en.wikipedia.org/wiki/Referential_transparency">referentially transparent</a> return value from the pure function.
+    </p>
+    <p>
+        No design pattern applies universally, and neither does this one. In my experience, however, it's surprisingly often possible to apply this architecture. We're far past the <a href="https://en.wikipedia.org/wiki/Pareto_principle">Pareto principle</a>'s 80 percent.
+    </p>
+    <p>
+        Examples may help illustrate the pattern, as well as explore its boundaries. In this article you'll see how I refactored an entry point of a <a href="https://en.wikipedia.org/wiki/REST">REST</a> API, specifically the <code>PUT</code> handler in the sample code base that accompanies <a href="/2021/06/14/new-book-code-that-fits-in-your-head">Code That Fits in Your Head</a>.
+    </p>
+    <h3 id="67463d3ade684a2b9de807b261ebb03c">
+        Starting point <a href="#67463d3ade684a2b9de807b261ebb03c">#</a>
+    </h3>
+    <p>
+        As discussed in the book, the architecture of the sample code base is, in fact, Functional Core, Imperative Shell. This isn't, however, the main theme of the book, and the code doesn't explicitly apply the Impureim Sandwich. In spirit, that's actually what's going on, but it isn't clear from looking at the code. This was a deliberate choice I made, because I wanted to highlight other software engineering practices. This does have the effect, though, that the Impureim Sandwich is invisible.
+    </p>
+    <p>
+        For example, the book follows <a href="/2019/11/04/the-80-24-rule">the 80/24 rule</a> closely. This was a didactic choice on my part. Most code bases I've seen in the wild have far too big methods, so I wanted to hammer home the message that it's possible to develop and maintain a non-trivial code base with small code blocks. This meant, however, that I had to split up HTTP request handlers (in ASP.NET known as <em>action methods</em> on Controllers).
+    </p>
+    <p>
+        The most complex HTTP handler is the one that handles <code>PUT</code> requests for reservations. Clients use this action when they want to make changes to a restaurant reservation.
+    </p>
+    <p>
+        The action method actually invoked by an HTTP request is this <code>Put</code> method:
+    </p>
+    <p>
+        <pre>[<span style="color:#2b91af;">HttpPut</span>(<span style="color:#a31515;">&quot;restaurants/{restaurantId}/reservations/{id}&quot;</span>)]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">async</span>&nbsp;<span style="color:#2b91af;">Task</span>&lt;<span style="color:#2b91af;">ActionResult</span>&gt;&nbsp;<span style="font-weight:bold;color:#74531f;">Put</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">int</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">restaurantId</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">string</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">id</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">ReservationDto</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">dto</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">if</span>&nbsp;(<span style="font-weight:bold;color:#1f377f;">dto</span>&nbsp;<span style="color:blue;">is</span>&nbsp;<span style="color:blue;">null</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">throw</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">ArgumentNullException</span>(<span style="color:blue;">nameof</span>(<span style="font-weight:bold;color:#1f377f;">dto</span>));
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">if</span>&nbsp;(!<span style="color:#2b91af;">Guid</span>.<span style="color:#74531f;">TryParse</span>(<span style="font-weight:bold;color:#1f377f;">id</span>,&nbsp;<span style="color:blue;">out</span>&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">rid</span>))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">NotFoundResult</span>();
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Reservation</span>?&nbsp;<span style="font-weight:bold;color:#1f377f;">reservation</span>&nbsp;=&nbsp;<span style="font-weight:bold;color:#1f377f;">dto</span>.<span style="font-weight:bold;color:#74531f;">Validate</span>(<span style="font-weight:bold;color:#1f377f;">rid</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">if</span>&nbsp;(<span style="font-weight:bold;color:#1f377f;">reservation</span>&nbsp;<span style="color:blue;">is</span>&nbsp;<span style="color:blue;">null</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">BadRequestResult</span>();
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">restaurant</span>&nbsp;=&nbsp;<span style="color:blue;">await</span>&nbsp;RestaurantDatabase
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.<span style="font-weight:bold;color:#74531f;">GetRestaurant</span>(<span style="font-weight:bold;color:#1f377f;">restaurantId</span>).<span style="font-weight:bold;color:#74531f;">ConfigureAwait</span>(<span style="color:blue;">false</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">if</span>&nbsp;(<span style="font-weight:bold;color:#1f377f;">restaurant</span>&nbsp;<span style="color:blue;">is</span>&nbsp;<span style="color:blue;">null</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">NotFoundResult</span>();
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">await</span>&nbsp;<span style="font-weight:bold;color:#74531f;">TryUpdate</span>(<span style="font-weight:bold;color:#1f377f;">restaurant</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">reservation</span>).<span style="font-weight:bold;color:#74531f;">ConfigureAwait</span>(<span style="color:blue;">false</span>);
+}</pre>
+    </p>
+    <p>
+        Since I, for pedagogical reasons, wanted to fit each method inside an 80x24 box, I made a few somewhat unnatural design choices. The above code is one of them. While I don't consider it completely indefensible, this method does a bit of up-front input validation and verification, and then delegates execution to the <code>TryUpdate</code> method.
+    </p>
+    <p>
+        This may seem all fine and dandy until you realize that the only caller of <code>TryUpdate</code> is that <code>Put</code> method. A similar thing happens in <code>TryUpdate</code>: It calls a method that has only that one caller. We may try to inline those two methods to see if we can spot the Impureim Sandwich.
+    </p>
+    <h3 id="dab8cd4011a5493ea55b47cb2240839b">
+        Inlined Transaction Script <a href="#dab8cd4011a5493ea55b47cb2240839b">#</a>
+    </h3>
+    <p>
+        Inlining those two methods leave us with a larger, <a href="https://martinfowler.com/eaaCatalog/transactionScript.html">Transaction Script</a>-like entry point:
+    </p>
+    <p>
+        <pre>[<span style="color:#2b91af;">HttpPut</span>(<span style="color:#a31515;">&quot;restaurants/{restaurantId}/reservations/{id}&quot;</span>)]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">async</span>&nbsp;<span style="color:#2b91af;">Task</span>&lt;<span style="color:#2b91af;">ActionResult</span>&gt;&nbsp;<span style="font-weight:bold;color:#74531f;">Put</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">int</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">restaurantId</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">string</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">id</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">ReservationDto</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">dto</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">if</span>&nbsp;(<span style="font-weight:bold;color:#1f377f;">dto</span>&nbsp;<span style="color:blue;">is</span>&nbsp;<span style="color:blue;">null</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">throw</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">ArgumentNullException</span>(<span style="color:blue;">nameof</span>(<span style="font-weight:bold;color:#1f377f;">dto</span>));
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">if</span>&nbsp;(!<span style="color:#2b91af;">Guid</span>.<span style="color:#74531f;">TryParse</span>(<span style="font-weight:bold;color:#1f377f;">id</span>,&nbsp;<span style="color:blue;">out</span>&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">rid</span>))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">NotFoundResult</span>();
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Reservation</span>?&nbsp;<span style="font-weight:bold;color:#1f377f;">reservation</span>&nbsp;=&nbsp;<span style="font-weight:bold;color:#1f377f;">dto</span>.<span style="font-weight:bold;color:#74531f;">Validate</span>(<span style="font-weight:bold;color:#1f377f;">rid</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">if</span>&nbsp;(<span style="font-weight:bold;color:#1f377f;">reservation</span>&nbsp;<span style="color:blue;">is</span>&nbsp;<span style="color:blue;">null</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">BadRequestResult</span>();
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">restaurant</span>&nbsp;=&nbsp;<span style="color:blue;">await</span>&nbsp;RestaurantDatabase
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.<span style="font-weight:bold;color:#74531f;">GetRestaurant</span>(<span style="font-weight:bold;color:#1f377f;">restaurantId</span>).<span style="font-weight:bold;color:#74531f;">ConfigureAwait</span>(<span style="color:blue;">false</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">if</span>&nbsp;(<span style="font-weight:bold;color:#1f377f;">restaurant</span>&nbsp;<span style="color:blue;">is</span>&nbsp;<span style="color:blue;">null</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">NotFoundResult</span>();
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">using</span>&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">scope</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">TransactionScope</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">TransactionScopeAsyncFlowOption</span>.Enabled);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">existing</span>&nbsp;=&nbsp;<span style="color:blue;">await</span>&nbsp;Repository
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.<span style="font-weight:bold;color:#74531f;">ReadReservation</span>(<span style="font-weight:bold;color:#1f377f;">restaurant</span>.Id,&nbsp;<span style="font-weight:bold;color:#1f377f;">reservation</span>.Id)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.<span style="font-weight:bold;color:#74531f;">ConfigureAwait</span>(<span style="color:blue;">false</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">if</span>&nbsp;(<span style="font-weight:bold;color:#1f377f;">existing</span>&nbsp;<span style="color:blue;">is</span>&nbsp;<span style="color:blue;">null</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">NotFoundResult</span>();
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">reservations</span>&nbsp;=&nbsp;<span style="color:blue;">await</span>&nbsp;Repository
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.<span style="font-weight:bold;color:#74531f;">ReadReservations</span>(<span style="font-weight:bold;color:#1f377f;">restaurant</span>.Id,&nbsp;<span style="font-weight:bold;color:#1f377f;">reservation</span>.At)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.<span style="font-weight:bold;color:#74531f;">ConfigureAwait</span>(<span style="color:blue;">false</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">reservations</span>&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">reservations</span>.<span style="font-weight:bold;color:#74531f;">Where</span>(<span style="font-weight:bold;color:#1f377f;">r</span>&nbsp;=&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">r</span>.Id&nbsp;<span style="font-weight:bold;color:#74531f;">!=</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">reservation</span>.Id).<span style="font-weight:bold;color:#74531f;">ToList</span>();
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">now</span>&nbsp;=&nbsp;Clock.<span style="font-weight:bold;color:#74531f;">GetCurrentDateTime</span>();
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">ok</span>&nbsp;=&nbsp;<span style="font-weight:bold;color:#1f377f;">restaurant</span>.MaitreD.<span style="font-weight:bold;color:#74531f;">WillAccept</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">now</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">reservations</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">reservation</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">if</span>&nbsp;(!<span style="font-weight:bold;color:#1f377f;">ok</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="color:#74531f;">NoTables500InternalServerError</span>();
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">await</span>&nbsp;Repository.<span style="font-weight:bold;color:#74531f;">Update</span>(<span style="font-weight:bold;color:#1f377f;">restaurant</span>.Id,&nbsp;<span style="font-weight:bold;color:#1f377f;">reservation</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.<span style="font-weight:bold;color:#74531f;">ConfigureAwait</span>(<span style="color:blue;">false</span>);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">scope</span>.<span style="font-weight:bold;color:#74531f;">Complete</span>();
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">OkObjectResult</span>(<span style="font-weight:bold;color:#1f377f;">reservation</span>.<span style="font-weight:bold;color:#74531f;">ToDto</span>());
+}</pre>
+    </p>
+    <p>
+        While I've definitely seen longer methods in the wild, this variation is already so big that it no longer fits on my laptop screen. I have to scroll up and down to read the whole thing. When looking at the bottom of the method, I have to <em>remember</em> what was at the top, because I can no longer see it.
+    </p>
+    <p>
+        A major point of <a href="/code-that-fits-in-your-head">Code That Fits in Your Head</a> is that what limits programmer productivity is human cognition. If you have to scroll your screen because you can't see the whole method at once, does that fit in your brain? Chances are, it doesn't.
+    </p>
+    <p>
+        Can you spot the Impureim Sandwich now?
+    </p>
+    <p>
+        If you can't, that's understandable. It's not really clear because there's quite a few small decisions being made in this code. You could argue, for example, that this decision is referentially transparent:
+    </p>
+    <p>
+        <pre><span style="font-weight:bold;color:#8f08c4;">if</span>&nbsp;(<span style="font-weight:bold;color:#1f377f;">existing</span>&nbsp;<span style="color:blue;">is</span>&nbsp;<span style="color:blue;">null</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">NotFoundResult</span>();</pre>
+    </p>
+    <p>
+        These two lines of code are deterministic and have no side effects. The branch only returns a <code>NotFoundResult</code> when <code>existing is null</code>. Additionally, these two lines of code are surrounded by impure actions both before and after. Is this the Sandwich, then?
+    </p>
+    <p>
+        No, it's not. This is how <a href="/2015/08/03/idiomatic-or-idiosyncratic">idiomatic</a> imperative code looks. To borrow a diagram from <a href="/2020/03/23/repeatable-execution">another article</a>, pure and impure code is interleaved without discipline:
+    </p>
+    <p>
+        <img src="/content/binary/impure-with-stripes-of-purity.png" alt="A box of mostly impure (red) code with vertical stripes of green symbolising pure code.">
+    </p>
+    <p>
+        Even so, the above <code>Put</code> method implements the Functional Core, Imperative Shell architecture. The <code>Put</code> method <em>is</em> the Imperative Shell, but where's the Functional Core?
+    </p>
+    <h3 id="e9ccab8ae8234c139934b87238dcf672">
+        Shell perspective <a href="#e9ccab8ae8234c139934b87238dcf672">#</a>
+    </h3>
+    <p>
+        One thing to be aware of is that when looking at the Imperative Shell code, the Functional Core is close to invisible. This is because it's typically only a single function call.
+    </p>
+    <p>
+        In the above <code>Put</code> method, this is the Functional Core:
+    </p>
+    <p>
+        <pre><span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">ok</span>&nbsp;=&nbsp;<span style="font-weight:bold;color:#1f377f;">restaurant</span>.MaitreD.<span style="font-weight:bold;color:#74531f;">WillAccept</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">now</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">reservations</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">reservation</span>);
+<span style="font-weight:bold;color:#8f08c4;">if</span>&nbsp;(!<span style="font-weight:bold;color:#1f377f;">ok</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="color:#74531f;">NoTables500InternalServerError</span>();</pre>
+    </p>
+    <p>
+        It's only a few lines of code, and had I not given myself the constraint of staying within an 80 character line width, I could have instead laid it out like this and inlined the <code>ok</code> flag:
+    </p>
+    <p>
+        <pre><span style="font-weight:bold;color:#8f08c4;">if</span>&nbsp;(!<span style="font-weight:bold;color:#1f377f;">restaurant</span>.MaitreD.<span style="font-weight:bold;color:#74531f;">WillAccept</span>(<span style="font-weight:bold;color:#1f377f;">now</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">reservations</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">reservation</span>))
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="color:#74531f;">NoTables500InternalServerError</span>();</pre>
+    </p>
+    <p>
+        Now that I try this, in fact, it turns out that this actually still stays within 80 characters. To be honest, I don't know exactly why I had that the former code instead of this, but perhaps I found the latter alternative too dense. Or perhaps I simply didn't think of it. Code is rarely perfect. Usually when I revisit a piece of code after having been away from it for some time, I find some thing that I want to change.
+    </p>
+    <p>
+        In any case, that's beside the point. What matters here is that when you're looking through the Imperative Shell code, the Functional Core looks insignificant. Blink and you'll miss it. Even if we ignore all the other small pure decisions (the <code>if</code> statements) and pretend that we already have an Impureim Sandwich, from this viewpoint, the architecture <em>looks</em> like this:
+    </p>
+    <p>
+        <img src="/content/binary/impure-tiny-pure-impure-sandwich-box.png" alt="A box with a big red section on top, a thin green sliver middle, and another big red part at the bottom.">
+    </p>
+    <p>
+        It's tempting to ask, then: What's all the fuss about? Why even bother?
+    </p>
+    <p>
+        This is a natural experience for a code reader. After all, if you don't know a code base well, you often start at the entry point to try to understand how the application handles a certain stimulus. Such as an HTTP <code>PUT</code> request. When you do that, you see all of the Imperative Shell code before you see the Functional Core code. This could give you the wrong impression about the balance of responsibility.
+    </p>
+    <p>
+        After all, code like the above <code>Put</code> method has inlined most of the impure code so that it's right in your face. Granted, there's still some code hiding behind, say, <code>Repository.ReadReservations</code>, but a substantial fraction of the imperative code is visible in the method.
+    </p>
+    <p>
+        On the other hand, the Functional Core is just a single function call. If we inlined all of that code, too, the picture might rather look like this:
+    </p>
+    <p>
+        <img src="/content/binary/impure-pure-impure-sandwich-box.png" alt="A box with a thin red slice on top, a thick green middle, and a thin red slice at the bottom.">
+    </p>
+    <p>
+        This obviously depends on the de-facto ratio of pure to imperative code. In any case, inlining the pure code is a thought experiment only, because the whole point of functional architecture is that <a href="/2021/07/28/referential-transparency-fits-in-your-head">a referentially transparent function fits in your head</a>. Regardless of the complexity and amount of code hiding behind that <code>MaitreD.WillAccept</code> function, the return value is <em>equal</em> to the function call. It's the ultimate abstraction.
+    </p>
+    <h3 id="f3019f4107254a82b4280753cbbfab5f">
+        Standard combinators <a href="#f3019f4107254a82b4280753cbbfab5f">#</a>
+    </h3>
+    <p>
+        As I've already suggested, the inlined <code>Put</code> method looks like a Transaction Script. The <a href="https://en.wikipedia.org/wiki/Cyclomatic_complexity">cyclomatic complexity</a> fortunately hovers on <a href="https://en.wikipedia.org/wiki/The_Magical_Number_Seven,_Plus_or_Minus_Two">the magical number seven</a>, and branching is exclusively organized around <a href="https://en.wikipedia.org/wiki/Guard_(computer_science)">Guard Clauses</a>. Apart from that, there are no nested <code>if</code> statements or <code>for</code> loops.
+    </p>
+    <p>
+        Apart from the Guard Clauses, this mostly looks like a procedure that runs in a straight line from top to bottom. The exception is all those small conditionals that may cause the procedure to exit prematurely. Conditions like this:
+    </p>
+    <p>
+        <pre><span style="font-weight:bold;color:#8f08c4;">if</span>&nbsp;(!<span style="color:#2b91af;">Guid</span>.<span style="color:#74531f;">TryParse</span>(<span style="font-weight:bold;color:#1f377f;">id</span>,&nbsp;<span style="color:blue;">out</span>&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">rid</span>))
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">NotFoundResult</span>();</pre>
+    </p>
+    <p>
+        or
+    </p>
+    <p>
+        <pre><span style="font-weight:bold;color:#8f08c4;">if</span>&nbsp;(<span style="font-weight:bold;color:#1f377f;">reservation</span>&nbsp;<span style="color:blue;">is</span>&nbsp;<span style="color:blue;">null</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">BadRequestResult</span>();</pre>
+    </p>
+    <p>
+        Such checks occur throughout the method. Each of them are actually small pure islands amidst all the imperative code, but each is ad hoc. Each checks if it's possible for the procedure to continue, and returns a kind of error value if it decides that it's not.
+    </p>
+    <p>
+        Is there a way to model such 'derailments' from the main flow?
+    </p>
+    <p>
+        If you've ever encountered Scott Wlaschin's <a href="https://fsharpforfunandprofit.com/rop/">Railway Oriented Programming</a> you may already see where this is going. Railway-oriented programming is a fantastic metaphor, because it gives you a way to visualize that you have, indeed, a main track, but then you have a side track that you may shuffle some trains too. And once the train is on the side track, it can't go back to the main track.
+    </p>
+    <p>
+        That's how the <a href="/2022/05/09/an-either-monad">Either monad</a> works. Instead of all those ad-hoc <code>if</code> statements, we should be able to replace them with what we may call <em>standard combinators</em>. The most important of these combinators is <a href="/2022/03/28/monads">monadic bind</a>. Composing a Transaction Script like <code>Put</code> with standard combinators will 'hide away' those small decisions, and make the Sandwich nature more apparent.
+    </p>
+    <p>
+        If we had had pure code, we could just have composed Either-valued functions. Unfortunately, most of what's going on in the <code>Put</code> method happens in a Task-based context. Thankfully, Either is one of those monads that nest well, implying that we can <a href="">turn the combination into a composed TaskEither monad</a>. The linked article shows the core <code>TaskEither</code> <code>SelectMany</code> implementations.
+    </p>
+    <p>
+        The way to encode all those small decisions between 'main track' or 'side track', then, is to wrap 'naked' values in the desired <code><span style="color:#2b91af;">Task</span>&lt;<span style="color:#2b91af;">Either</span>&lt;<span style="color:#2b91af;">L</span>,&nbsp;<span style="color:#2b91af;">R</span>&gt;&gt;&nbsp;</code> <a href="https://bartoszmilewski.com/2014/01/14/functors-are-containers/">container</a>:
+    </p>
+    <p>
+        <pre><span style="color:#2b91af;">Task</span>.<span style="color:#74531f;">FromResult</span>(<span style="font-weight:bold;color:#1f377f;">id</span>.<span style="font-weight:bold;color:#74531f;">TryParseGuid</span>().<span style="font-weight:bold;color:#74531f;">OnNull</span>((<span style="color:#2b91af;">ActionResult</span>)<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">NotFoundResult</span>()))</pre>
+    </p>
+    <p>
+        This little code snippet makes use of a few small building blocks that we also need to introduce. First, .NET's standard <code>TryParse</code> APIs don't, compose, but since <a href="/2019/07/15/tester-doer-isomorphisms">they're isomorphic to Maybe-valued functions</a>, you can write an adapter like this:
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:#2b91af;">Guid</span>?&nbsp;<span style="color:#74531f;">TryParseGuid</span>(<span style="color:blue;">this</span>&nbsp;<span style="color:blue;">string</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">candidate</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">if</span>&nbsp;(<span style="color:#2b91af;">Guid</span>.<span style="color:#74531f;">TryParse</span>(<span style="font-weight:bold;color:#1f377f;">candidate</span>,&nbsp;<span style="color:blue;">out</span>&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">guid</span>))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">guid</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">else</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">null</span>;
+}</pre>
+    </p>
+    <p>
+        In this code base, I treat <a href="https://learn.microsoft.com/dotnet/csharp/language-reference/builtin-types/nullable-reference-types">nullable reference types</a> as equivalent to the <a href="/2022/04/25/the-maybe-monad">Maybe monad</a>, but if your language doesn't have that feature, you can use Maybe instead.
+    </p>
+    <p>
+        To implement the <code>Put</code> method, however, we don't want nullable (or Maybe) values. We need Either values, so we may introduce a <a href="/2022/07/18/natural-transformations">natural transformation</a>:
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:#2b91af;">Either</span>&lt;<span style="color:#2b91af;">L</span>,&nbsp;<span style="color:#2b91af;">R</span>&gt;&nbsp;<span style="color:#74531f;">OnNull</span>&lt;<span style="color:#2b91af;">L</span>,&nbsp;<span style="color:#2b91af;">R</span>&gt;(<span style="color:blue;">this</span>&nbsp;<span style="color:#2b91af;">R</span>?&nbsp;<span style="font-weight:bold;color:#1f377f;">candidate</span>,&nbsp;<span style="color:#2b91af;">L</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">left</span>)&nbsp;<span style="color:blue;">where</span>&nbsp;<span style="color:#2b91af;">R</span>&nbsp;:&nbsp;<span style="color:blue;">struct</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">if</span>&nbsp;(<span style="font-weight:bold;color:#1f377f;">candidate</span>.HasValue)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="color:#74531f;">Right</span>&lt;<span style="color:#2b91af;">L</span>,&nbsp;<span style="color:#2b91af;">R</span>&gt;(<span style="font-weight:bold;color:#1f377f;">candidate</span>.Value);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="color:#74531f;">Left</span>&lt;<span style="color:#2b91af;">L</span>,&nbsp;<span style="color:#2b91af;">R</span>&gt;(<span style="font-weight:bold;color:#1f377f;">left</span>);
+}</pre>
+    </p>
+    <p>
+        In <a href="https://www.haskell.org/">Haskell</a> one might just make use of the <a href="https://hackage.haskell.org/package/base/docs/Data-Maybe.html#v:maybe">built-in</a> <a href="/2019/05/20/maybe-catamorphism">Maybe catamorphism</a>:
+    </p>
+    <p>
+        <pre>ghci&gt; maybe (Left "boo!") Right $ Just 123
+Right 123
+ghci&gt; maybe (Left "boo!") Right $ Nothing
+Left "boo!"</pre>
+    </p>
+    <p>
+        Such conversions from <code>Maybe</code> to <code>Either</code> hover just around the <a href="https://wiki.haskell.org/Fairbairn_threshold">Fairbairn threshold</a>, but since we are going to need it more than once, it makes sense to add a specialized <code>OnNull</code> transformation to the C# code base. The one shown here handles <a href="https://learn.microsoft.com/dotnet/csharp/language-reference/builtin-types/nullable-value-types">nullable value types</a>, but the code base also includes an overload that handles nullable reference types. It's almost identical.
+    </p>
+    <h3 id="f158fc8250db4f07b1419a044fe23f91">
+        Support for query syntax <a href="#f158fc8250db4f07b1419a044fe23f91">#</a>
+    </h3>
+    <p>
+        There's more than one way to consume monadic values in C#. While many C# developers like <a href="https://learn.microsoft.com/dotnet/csharp/linq/">LINQ</a>, most seem to prefer the familiar <em>method call syntax</em>; that is, just call the <code>Select</code>, <code>SelectMany</code>, and <code>Where</code> methods as the normal <a href="https://learn.microsoft.com/dotnet/csharp/programming-guide/classes-and-structs/extension-methods">extension methods</a> they are. Another option, however, is to use <a href="https://learn.microsoft.com/dotnet/csharp/linq/get-started/query-expression-basics">query syntax</a>. This is what I'm aiming for here, since it'll make it easier to spot the Impureim Sandwich.
+    </p>
+    <p>
+        You'll see the entire sandwich later in the article. Before that, I'll highlight details and explain how to implement them. You can always scroll down to see the end result, and then scroll back here, if that's more to your liking.
+    </p>
+    <p>
+        The sandwich starts by parsing the <code>id</code> into a <a href="https://learn.microsoft.com/dotnet/api/system.guid">GUID</a> using the above building blocks:
+    </p>
+    <p>
+        <pre><span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">sandwich</span>&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">from</span>&nbsp;rid&nbsp;<span style="color:blue;">in</span>&nbsp;<span style="color:#2b91af;">Task</span>.<span style="color:#74531f;">FromResult</span>(<span style="font-weight:bold;color:#1f377f;">id</span>.<span style="font-weight:bold;color:#74531f;">TryParseGuid</span>().<span style="font-weight:bold;color:#74531f;">OnNull</span>((<span style="color:#2b91af;">ActionResult</span>)<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">NotFoundResult</span>()))</pre>
+    </p>
+    <p>
+        It then immediately proceeds to <code>Validate</code> (<a href="https://lexi-lambda.github.io/blog/2019/11/05/parse-don-t-validate/">parse</a>, really) the <code>dto</code> into a proper Domain Model:
+    </p>
+    <p>
+        <pre><span style="color:blue;">from</span>&nbsp;reservation&nbsp;<span style="color:blue;">in</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">dto</span>.<span style="font-weight:bold;color:#74531f;">Validate</span>(rid).<span style="font-weight:bold;color:#74531f;">OnNull</span>((<span style="color:#2b91af;">ActionResult</span>)<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">BadRequestResult</span>())</pre>
+    </p>
+    <p>
+        Notice that the second <code>from</code> expression doesn't wrap the result with <code>Task.FromResult</code>. How does that work? Is the return value of <code>dto.Validate</code> already a <code>Task</code>? No, this works because I added 'degenerate' <code>SelectMany</code> overloads:
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:#2b91af;">Task</span>&lt;<span style="color:#2b91af;">Either</span>&lt;<span style="color:#2b91af;">L</span>,&nbsp;<span style="color:#2b91af;">R1</span>&gt;&gt;&nbsp;<span style="color:#74531f;">SelectMany</span>&lt;<span style="color:#2b91af;">L</span>,&nbsp;<span style="color:#2b91af;">R</span>,&nbsp;<span style="color:#2b91af;">R1</span>&gt;(
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>&nbsp;<span style="color:#2b91af;">Task</span>&lt;<span style="color:#2b91af;">Either</span>&lt;<span style="color:#2b91af;">L</span>,&nbsp;<span style="color:#2b91af;">R</span>&gt;&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">source</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:#2b91af;">R</span>,&nbsp;<span style="color:#2b91af;">Either</span>&lt;<span style="color:#2b91af;">L</span>,&nbsp;<span style="color:#2b91af;">R1</span>&gt;&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">selector</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">source</span>.<span style="font-weight:bold;color:#74531f;">SelectMany</span>(<span style="font-weight:bold;color:#1f377f;">x</span>&nbsp;=&gt;&nbsp;<span style="color:#2b91af;">Task</span>.<span style="color:#74531f;">FromResult</span>(<span style="font-weight:bold;color:#1f377f;">selector</span>(<span style="font-weight:bold;color:#1f377f;">x</span>)));
+}
+ 
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:#2b91af;">Task</span>&lt;<span style="color:#2b91af;">Either</span>&lt;<span style="color:#2b91af;">L</span>,&nbsp;<span style="color:#2b91af;">R1</span>&gt;&gt;&nbsp;<span style="color:#74531f;">SelectMany</span>&lt;<span style="color:#2b91af;">L</span>,&nbsp;<span style="color:#2b91af;">U</span>,&nbsp;<span style="color:#2b91af;">R</span>,&nbsp;<span style="color:#2b91af;">R1</span>&gt;(
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>&nbsp;<span style="color:#2b91af;">Task</span>&lt;<span style="color:#2b91af;">Either</span>&lt;<span style="color:#2b91af;">L</span>,&nbsp;<span style="color:#2b91af;">R</span>&gt;&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">source</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:#2b91af;">R</span>,&nbsp;<span style="color:#2b91af;">Either</span>&lt;<span style="color:#2b91af;">L</span>,&nbsp;<span style="color:#2b91af;">U</span>&gt;&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">k</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:#2b91af;">R</span>,&nbsp;<span style="color:#2b91af;">U</span>,&nbsp;<span style="color:#2b91af;">R1</span>&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">s</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">source</span>.<span style="font-weight:bold;color:#74531f;">SelectMany</span>(<span style="font-weight:bold;color:#1f377f;">x</span>&nbsp;=&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">k</span>(<span style="font-weight:bold;color:#1f377f;">x</span>).<span style="font-weight:bold;color:#74531f;">Select</span>(<span style="font-weight:bold;color:#1f377f;">y</span>&nbsp;=&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">s</span>(<span style="font-weight:bold;color:#1f377f;">x</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">y</span>)));
+}</pre>
+    </p>
+    <p>
+        Notice that the <code>selector</code> only produces an <code><span style="color:#2b91af;">Either</span>&lt;<span style="color:#2b91af;">L</span>,&nbsp;<span style="color:#2b91af;">R1</span>&gt;</code> value, rather than <code><span style="color:#2b91af;">Task</span>&lt;<span style="color:#2b91af;">Either</span>&lt;<span style="color:#2b91af;">L</span>,&nbsp;<span style="color:#2b91af;">R1</span>&gt;&gt;</code>. This allows query syntax to 'pick up' the previous value (<code>rid</code>, which is 'really' a <code><span style="color:#2b91af;">Task</span>&lt;<span style="color:#2b91af;">Either</span>&lt;<span style="color:#2b91af;">ActionResult</span>,&nbsp;<span style="color:#2b91af;">Guid</span>&gt;&gt;</code>) and continue with a function that doesn't produce a <code>Task</code>, but rather just an <code>Either</code> value. The first of these two overloads then wraps that <code>Either</code> value and wraps it with <code>Task.FromResult</code>. The second overload is just the usual <a href="/2019/12/16/zone-of-ceremony">ceremony</a> that enables query syntax.
+    </p>
+    <p>
+        Why, then, doesn't the <code>sandwich</code> use the same trick for <code>rid</code>? Why does it explicitly call <code>Task.FromResult</code>?
+    </p>
+    <p>
+        As far as I can tell, this is because of type inference. It looks as though the C# compiler infers the monad's type from the first expression. If I change the first expression to
+    </p>
+    <p>
+        <pre><span style="color:blue;">from</span>&nbsp;rid&nbsp;<span style="color:blue;">in</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">id</span>.<span style="font-weight:bold;color:#74531f;">TryParseGuid</span>().<span style="font-weight:bold;color:#74531f;">OnNull</span>((<span style="color:#2b91af;">ActionResult</span>)<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">NotFoundResult</span>())</pre>
+    </p>
+    <p>
+        the compiler thinks that the query expression is based on <code><span style="color:#2b91af;">Either</span>&lt;<span style="color:#2b91af;">L</span>,&nbsp;<span style="color:#2b91af;">R</span>&gt;</code>, rather than <code><span style="color:#2b91af;">Task</span>&lt;<span style="color:#2b91af;">Either</span>&lt;<span style="color:#2b91af;">L</span>,&nbsp;<span style="color:#2b91af;">R</span>&gt;&gt;</code>. This means that once we run into the first <code>Task</code> value, the entire expression no longer works.
+    </p>
+    <p>
+        By explicitly wrapping the first expression in a <code>Task</code>, the compiler correctly infers the monad we'd like it to. If there's a more elegant way to do this, I'm not aware of it.
+    </p>
+    <h3 id="066473b442cc4dd4904b43dccd257fa4">
+        Values that don't fail <a href="#066473b442cc4dd4904b43dccd257fa4">#</a>
+    </h3>
+    <p>
+        The sandwich proceeds to query various databases, using the now-familiar <code>OnNull</code> combinators to transform nullable values to <code>Either</code> values.
+    </p>
+    <p>
+        <pre><span style="color:blue;">from</span>&nbsp;restaurant&nbsp;<span style="color:blue;">in</span>&nbsp;RestaurantDatabase
+&nbsp;&nbsp;&nbsp;&nbsp;.<span style="font-weight:bold;color:#74531f;">GetRestaurant</span>(<span style="font-weight:bold;color:#1f377f;">restaurantId</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;.<span style="font-weight:bold;color:#74531f;">OnNull</span>((<span style="color:#2b91af;">ActionResult</span>)<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">NotFoundResult</span>())
+<span style="color:blue;">from</span>&nbsp;existing&nbsp;<span style="color:blue;">in</span>&nbsp;Repository
+&nbsp;&nbsp;&nbsp;&nbsp;.<span style="font-weight:bold;color:#74531f;">ReadReservation</span>(restaurant.Id,&nbsp;reservation.Id)
+&nbsp;&nbsp;&nbsp;&nbsp;.<span style="font-weight:bold;color:#74531f;">OnNull</span>((<span style="color:#2b91af;">ActionResult</span>)<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">NotFoundResult</span>())</pre>
+    </p>
+    <p>
+        This works like before because both <code>GetRestaurant</code> and <code>ReadReservation</code> are queries that may fail to return a value. Here's the interface definition of <code>ReadReservation</code>:
+    </p>
+    <p>
+        <pre><span style="color:#2b91af;">Task</span>&lt;<span style="color:#2b91af;">Reservation</span>?&gt;&nbsp;<span style="font-weight:bold;color:#74531f;">ReadReservation</span>(<span style="color:blue;">int</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">restaurantId</span>,&nbsp;<span style="color:#2b91af;">Guid</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">id</span>);</pre>
+    </p>
+    <p>
+        Notice the question mark that indicates that the result may be <code>null</code>.
+    </p>
+    <p>
+        The <code>GetRestaurant</code> method is similar.
+    </p>
+    <p>
+        The next query that the sandwich has to perform, however, is different. The return type of the <code>ReadReservations</code> method is <code><span style="color:#2b91af;">Task</span>&lt;<span style="color:#2b91af;">IReadOnlyCollection</span>&lt;<span style="color:#2b91af;">Reservation</span>&gt;&gt;</code>. Notice that the type contained in the <code>Task</code> is <em>not</em> nullable. Barring database connection errors, this query <a href="/2024/01/29/error-categories-and-category-errors">can't fail</a>. If it finds no data, it returns an empty collection.
+    </p>
+    <p>
+        Since the value isn't nullable, we can't use <code>OnNull</code> to turn it into a <code><span style="color:#2b91af;">Task</span>&lt;<span style="color:#2b91af;">Either</span>&lt;<span style="color:#2b91af;">L</span>,&nbsp;<span style="color:#2b91af;">R</span>&gt;&gt;</code> value. We could try to use the <code>Right</code> creation function for that.
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:#2b91af;">Either</span>&lt;<span style="color:#2b91af;">L</span>,&nbsp;<span style="color:#2b91af;">R</span>&gt;&nbsp;<span style="color:#74531f;">Right</span>&lt;<span style="color:#2b91af;">L</span>,&nbsp;<span style="color:#2b91af;">R</span>&gt;(<span style="color:#2b91af;">R</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">right</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="color:#2b91af;">Either</span>&lt;<span style="color:#2b91af;">L</span>,&nbsp;<span style="color:#2b91af;">R</span>&gt;.<span style="color:#74531f;">Right</span>(<span style="font-weight:bold;color:#1f377f;">right</span>);
+}</pre>
+    </p>
+    <p>
+        This works, but is awkward:
+    </p>
+    <p>
+        <pre><span style="color:blue;">from</span>&nbsp;reservations&nbsp;<span style="color:blue;">in</span>&nbsp;Repository
+&nbsp;&nbsp;&nbsp;&nbsp;.<span style="font-weight:bold;color:#74531f;">ReadReservations</span>(restaurant.Id,&nbsp;reservation.At)
+&nbsp;&nbsp;&nbsp;&nbsp;.<span style="font-weight:bold;color:#74531f;">Traverse</span>(<span style="font-weight:bold;color:#1f377f;">rs</span>&nbsp;=&gt;&nbsp;<span style="color:#2b91af;">Either</span>.<span style="color:#74531f;">Right</span>&lt;<span style="color:#2b91af;">ActionResult</span>,&nbsp;<span style="color:#2b91af;">IReadOnlyCollection</span>&lt;<span style="color:#2b91af;">Reservation</span>&gt;&gt;(<span style="font-weight:bold;color:#1f377f;">rs</span>))</pre>
+    </p>
+    <p>
+        The problem with calling <code>Either.Right</code> is that while the compiler can infer which type to use for <code>R</code>, it doesn't know what the <code>L</code> type is. Thus, we have to tell it, and we can't tell it what <code>L</code> is without <code>also</code> telling it what <code>R</code> is. Even though it already knows that.
+    </p>
+    <p>
+        In such scenarios, the <a href="https://fsharp.org/">F#</a> compiler can usually figure it out, and <a href="https://en.wikipedia.org/wiki/Glasgow_Haskell_Compiler">GHC</a> always can (unless you add some exotic language extensions to your code). C# doesn't have any syntax that enables you to tell the compiler about only the type that it doesn't know about, and let it infer the rest.
+    </p>
+    <p>
+        All is not lost, though, because there's a little trick you can use in cases such as this. You <em>can</em> let the C# compiler infer the <code>R</code> type so that you only have to tell it what <code>L</code> is. It's a two-stage process. First, define an extension method on <code>R</code>:
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:#2b91af;">RightBuilder</span>&lt;<span style="color:#2b91af;">R</span>&gt;&nbsp;<span style="color:#74531f;">ToRight</span>&lt;<span style="color:#2b91af;">R</span>&gt;(<span style="color:blue;">this</span>&nbsp;<span style="color:#2b91af;">R</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">right</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">RightBuilder</span>&lt;<span style="color:#2b91af;">R</span>&gt;(<span style="font-weight:bold;color:#1f377f;">right</span>);
+}</pre>
+    </p>
+    <p>
+        The only type argument on this <code>ToRight</code> method is <code>R</code>, and since the <code>right</code> parameter is of the type <code>R</code>, the C# compiler can always infer the type of <code>R</code> from the type of <code>right</code>.
+    </p>
+    <p>
+        What's <code><span style="color:#2b91af;">RightBuilder</span>&lt;<span style="color:#2b91af;">R</span>&gt;</code>? It's this little auxiliary class:
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">sealed</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">RightBuilder</span>&lt;<span style="color:#2b91af;">R</span>&gt;
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;<span style="color:#2b91af;">R</span>&nbsp;right;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">RightBuilder</span>(<span style="color:#2b91af;">R</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">right</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.right&nbsp;=&nbsp;<span style="font-weight:bold;color:#1f377f;">right</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">Either</span>&lt;<span style="color:#2b91af;">L</span>,&nbsp;<span style="color:#2b91af;">R</span>&gt;&nbsp;<span style="font-weight:bold;color:#74531f;">WithLeft</span>&lt;<span style="color:#2b91af;">L</span>&gt;()
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="color:#2b91af;">Either</span>.<span style="color:#74531f;">Right</span>&lt;<span style="color:#2b91af;">L</span>,&nbsp;<span style="color:#2b91af;">R</span>&gt;(right);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+    </p>
+    <p>
+        The code base for <a href="/code-that-fits-in-your-head">Code That Fits in Your Head</a> was written on .NET 3.1, but today you could have made this a <a href="https://learn.microsoft.com/dotnet/csharp/language-reference/builtin-types/record">record</a> instead. The only purpose of this class is to break the type inference into two steps so that the <code>R</code> type can be automatically inferred. In this way, you only need to tell the compiler what the <code>L</code> type is.
+    </p>
+    <p>
+        <pre><span style="color:blue;">from</span>&nbsp;reservations&nbsp;<span style="color:blue;">in</span>&nbsp;Repository
+&nbsp;&nbsp;&nbsp;&nbsp;.<span style="font-weight:bold;color:#74531f;">ReadReservations</span>(restaurant.Id,&nbsp;reservation.At)
+&nbsp;&nbsp;&nbsp;&nbsp;.<span style="font-weight:bold;color:#74531f;">Traverse</span>(<span style="font-weight:bold;color:#1f377f;">rs</span>&nbsp;=&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">rs</span>.<span style="font-weight:bold;color:#74531f;">ToRight</span>().<span style="font-weight:bold;color:#74531f;">WithLeft</span>&lt;<span style="color:#2b91af;">ActionResult</span>&gt;())</pre>
+    </p>
+    <p>
+        As indicated, this style of programming isn't language-neutral. Even if you find this little trick neat, I'd much rather have the compiler just figure it out for me. The entire <code>sandwich</code> query expression is already defined as working with <code><span style="color:#2b91af;">Task</span>&lt;<span style="color:#2b91af;">Either</span>&lt;<span style="color:#2b91af;">ActionResult</span>,&nbsp;<span style="color:#2b91af;">R</span>&gt;&gt;</code>, and the <code>L</code> type can't change like the <code>R</code> type can. Functional compilers can figure this out, and while I intend this article to show object-oriented programmers how functional programming sometimes work, I don't wish to pretend that it's a good idea to write code like this in C#. I've <a href="/2019/03/18/the-programmer-as-decision-maker">covered that ground already</a>.
+    </p>
+    <p>
+        Not surprisingly, there's a mirror-image <code>ToLeft</code>/<code>WithRight</code> combo, too.
+    </p>
+    <h3 id="8628f41e4a8d4c6e8d282c5a64ad1c44">
+        Working with Commands <a href="#8628f41e4a8d4c6e8d282c5a64ad1c44">#</a>
+    </h3>
+    <p>
+        The ultimate goal with the <code>Put</code> method is to modify a row in the database. The method to do that has this interface definition:
+    </p>
+    <p>
+        <pre><span style="color:#2b91af;">Task</span>&nbsp;<span style="font-weight:bold;color:#74531f;">Update</span>(<span style="color:blue;">int</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">restaurantId</span>,&nbsp;<span style="color:#2b91af;">Reservation</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">reservation</span>);</pre>
+    </p>
+    <p>
+        I usually call that non-generic <a href="https://learn.microsoft.com/dotnet/api/system.threading.tasks.task">Task</a> class for 'asynchronous <code>void</code>' when explaining it to non-C# programmers. The <code>Update</code> method is an asynchronous <a href="https://en.wikipedia.org/wiki/Command%E2%80%93query_separation">Command</a>.
+    </p>
+    <p>
+        <code>Task</code> and <code>void</code> aren't legal values for use with LINQ query syntax, so you have to find a way to work around that limitation. In this case I defined a local helper method to make it look like a Query:
+    </p>
+    <p>
+        <pre><span style="color:blue;">async</span>&nbsp;<span style="color:#2b91af;">Task</span>&lt;<span style="color:#2b91af;">Reservation</span>&gt;&nbsp;<span style="font-weight:bold;color:#74531f;">RunUpdate</span>(<span style="color:blue;">int</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">restaurantId</span>,&nbsp;<span style="color:#2b91af;">Reservation</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">reservation</span>,&nbsp;<span style="color:#2b91af;">TransactionScope</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">scope</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">await</span>&nbsp;Repository.<span style="font-weight:bold;color:#74531f;">Update</span>(<span style="font-weight:bold;color:#1f377f;">restaurantId</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">reservation</span>).<span style="font-weight:bold;color:#74531f;">ConfigureAwait</span>(<span style="color:blue;">false</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">scope</span>.<span style="font-weight:bold;color:#74531f;">Complete</span>();
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">reservation</span>;
+}</pre>
+    </p>
+    <p>
+        It just echoes back the <code>reservation</code> parameter once the <code>Update</code> has completed. This makes it composable in the larger query expression.
+    </p>
+    <p>
+        You'll probably not be surprised when I tell you that both F# and Haskell handle this scenario gracefully, without requiring any hoop-jumping.
+    </p>
+    <h3 id="d7c6feabfcb74e2eb5174a9ad3dd9c7f">
+        Full sandwich <a href="#d7c6feabfcb74e2eb5174a9ad3dd9c7f">#</a>
+    </h3>
+    <p>
+        Those are all the building block. Here's the full <code>sandwich</code> definition, colour-coded like the examples in <a href="/2020/03/02/impureim-sandwich">Impureim sandwich</a>.
+    </p>
+    <p>
+        <pre><span style="color:#2b91af;">Task</span>&lt;<span style="color:#2b91af;">Either</span>&lt;<span style="color:#2b91af;">ActionResult</span>,&nbsp;<span style="color:#2b91af;">OkObjectResult</span>&gt;&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">sandwich</span>&nbsp;=
+<span style="background-color: palegreen;">&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">from</span>&nbsp;rid&nbsp;<span style="color:blue;">in</span>&nbsp;<span style="color:#2b91af;">Task</span>.<span style="color:#74531f;">FromResult</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">id</span>.<span style="font-weight:bold;color:#74531f;">TryParseGuid</span>().<span style="font-weight:bold;color:#74531f;">OnNull</span>((<span style="color:#2b91af;">ActionResult</span>)<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">NotFoundResult</span>()))
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">from</span>&nbsp;reservation&nbsp;<span style="color:blue;">in</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">dto</span>.<span style="font-weight:bold;color:#74531f;">Validate</span>(rid).<span style="font-weight:bold;color:#74531f;">OnNull</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(<span style="color:#2b91af;">ActionResult</span>)<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">BadRequestResult</span>())</span>
+ 
+<span style="background-color: lightsalmon;">&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">from</span>&nbsp;restaurant&nbsp;<span style="color:blue;">in</span>&nbsp;RestaurantDatabase
+    &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.<span style="font-weight:bold;color:#74531f;">GetRestaurant</span>(<span style="font-weight:bold;color:#1f377f;">restaurantId</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.<span style="font-weight:bold;color:#74531f;">OnNull</span>((<span style="color:#2b91af;">ActionResult</span>)<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">NotFoundResult</span>())
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">from</span>&nbsp;existing&nbsp;<span style="color:blue;">in</span>&nbsp;Repository
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.<span style="font-weight:bold;color:#74531f;">ReadReservation</span>(restaurant.Id,&nbsp;reservation.Id)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.<span style="font-weight:bold;color:#74531f;">OnNull</span>((<span style="color:#2b91af;">ActionResult</span>)<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">NotFoundResult</span>())
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">from</span>&nbsp;reservations&nbsp;<span style="color:blue;">in</span>&nbsp;Repository
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.<span style="font-weight:bold;color:#74531f;">ReadReservations</span>(restaurant.Id,&nbsp;reservation.At)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.<span style="font-weight:bold;color:#74531f;">Traverse</span>(<span style="font-weight:bold;color:#1f377f;">rs</span>&nbsp;=&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">rs</span>.<span style="font-weight:bold;color:#74531f;">ToRight</span>().<span style="font-weight:bold;color:#74531f;">WithLeft</span>&lt;<span style="color:#2b91af;">ActionResult</span>&gt;())
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;now&nbsp;=&nbsp;Clock.<span style="font-weight:bold;color:#74531f;">GetCurrentDateTime</span>()</span>
+ 
+<span style="background-color: palegreen;">&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;reservations2&nbsp;=
+    &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;reservations.<span style="font-weight:bold;color:#74531f;">Where</span>(<span style="font-weight:bold;color:#1f377f;">r</span>&nbsp;=&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">r</span>.Id&nbsp;<span style="font-weight:bold;color:#74531f;">!=</span>&nbsp;reservation.Id)
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;ok&nbsp;=&nbsp;restaurant.MaitreD.<span style="font-weight:bold;color:#74531f;">WillAccept</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;now,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;reservations2,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;reservation)
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">from</span>&nbsp;reservation2&nbsp;<span style="color:blue;">in</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;ok&nbsp;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;?&nbsp;reservation.<span style="font-weight:bold;color:#74531f;">ToRight</span>().<span style="font-weight:bold;color:#74531f;">WithLeft</span>&lt;<span style="color:#2b91af;">ActionResult</span>&gt;()
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;:&nbsp;<span style="color:#74531f;">NoTables500InternalServerError</span>().<span style="font-weight:bold;color:#74531f;">ToLeft</span>().<span style="font-weight:bold;color:#74531f;">WithRight</span>&lt;<span style="color:#2b91af;">Reservation</span>&gt;()</span>
+ 
+<span style="background-color: lightsalmon;">&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">from</span>&nbsp;reservation3&nbsp;<span style="color:blue;">in</span>&nbsp;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#74531f;">RunUpdate</span>(restaurant.Id,&nbsp;reservation2,&nbsp;<span style="font-weight:bold;color:#1f377f;">scope</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.<span style="font-weight:bold;color:#74531f;">Traverse</span>(<span style="font-weight:bold;color:#1f377f;">r</span>&nbsp;=&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">r</span>.<span style="font-weight:bold;color:#74531f;">ToRight</span>().<span style="font-weight:bold;color:#74531f;">WithLeft</span>&lt;<span style="color:#2b91af;">ActionResult</span>&gt;())</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">select</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">OkObjectResult</span>(reservation3.<span style="font-weight:bold;color:#74531f;">ToDto</span>());</pre>
+    </p>
+    <p>
+        As is evident from the colour-coding, this isn't quite a sandwich. The structure is honestly more accurately depicted like this:
+    </p>
+    <p>
+        <img src="/content/binary/pure-impure-pure-impure-box.png" alt="A box with green, red, green, and red horizontal tiers.">
+    </p>
+    <p>
+        As I've previously argued, <a href="/2023/10/09/whats-a-sandwich">while the metaphor becomes strained, this still works well as a functional-programming architecture</a>.
+    </p>
+    <p>
+        As defined here, the <code>sandwich</code> value is a <code>Task</code> that must be awaited.
+    </p>
+    <p>
+        <pre><span style="color:#2b91af;">Either</span>&lt;<span style="color:#2b91af;">ActionResult</span>,&nbsp;<span style="color:#2b91af;">OkObjectResult</span>&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">either</span>&nbsp;=&nbsp;<span style="color:blue;">await</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">sandwich</span>.<span style="font-weight:bold;color:#74531f;">ConfigureAwait</span>(<span style="color:blue;">false</span>);
+<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">either</span>.<span style="font-weight:bold;color:#74531f;">Match</span>(<span style="font-weight:bold;color:#1f377f;">x</span>&nbsp;=&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">x</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">x</span>&nbsp;=&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">x</span>);</pre>
+    </p>
+    <p>
+        By awaiting the task, we get an <code>Either</code> value. The <code>Put</code> method, on the other hand, must return an <code>ActionResult</code>. How do you turn an <code>Either</code> object into a single object?
+    </p>
+    <p>
+        By pattern matching on it, as the code snippet shows. The <code>L</code> type is already an <code>ActionResult</code>, so we return it without changing it. If C# had had a built-in identity function, I'd used that, but idiomatically, we instead use the <code><span style="font-weight:bold;color:#1f377f;">x</span>&nbsp;=&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">x</span></code> lambda expression.
+    </p>
+    <p>
+        The same is the case for the <code>R</code> type, because <code>OkObjectResult</code> inherits from <code>ActionResult</code>. The identity expression automatically performs the type conversion for us.
+    </p>
+    <p>
+        This, by the way, is a recurring pattern with Either values that I run into in all languages. You've essentially computed an <code>Either&lt;T, T&gt;</code>, with the same type on both sides, and now you just want to return whichever <code>T</code> value is contained in the Either value. You'd think this is such a common pattern that Haskell has a nice abstraction for it, but <a href="https://hoogle.haskell.org/?hoogle=Either%20a%20a%20-%3E%20a">even Hoogle fails to suggest a commonly-accepted function that does this</a>. Apparently, <code>either id id</code> is considered below the Fairbairn threshold, too.
+    </p>
+    <h3 id="fc8f5dd20a494cc297a55ce57c865212">
+        Conclusion <a href="#fc8f5dd20a494cc297a55ce57c865212">#</a>
+    </h3>
+    <p>
+        This article presents an example of a non-trivial Impureim Sandwich. When I introduced the pattern, I gave a few examples. I'd deliberately chosen these examples to be simple so that they highlighted the structure of the idea. The downside of that didactic choice is that some commenters found the examples too simplistic. Therefore, I think that there's value in going through more complex examples.
+    </p>
+    <p>
+        The code base that accompanies <a href="/code-that-fits-in-your-head">Code That Fits in Your Head</a> is complex enough that it borders on the realistic. It was deliberately written that way, and since I assume that the code base is familiar to readers of the book, I thought it'd be a good resource to show how an Impureim Sandwich might look. I explicitly chose to refactor the <code>Put</code> method, since it's easily the most complicated process in the code base.
+    </p>
+    <p>
+        The benefit of that code base is that it's written in a programming language that reach a large audience. Thus, for the reader curious about functional programming I thought that this could also be a useful introduction to some intermediate concepts.
+    </p>
+    <p>
+        As I've commented along the way, however, I wouldn't expect anyone to write production C# code like this. If you're able to do this, you're also able to do it in a language better suited for this programming paradigm.
+    </p>
+</div>
