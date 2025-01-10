@@ -1,0 +1,451 @@
+---
+layout: post
+title: "Modelling data relationships with F# types"
+description: "An F# example implementation of Ghosts of Departed Proofs."
+date: 2025-01-10 6:53 UTC
+tags: [F#, Functional Programming]
+image: "/content/binary/library-with-computation-context.png"
+image_alt: "A box labelled 'library' with a 'sandbox' area inside. To its left, another box labelled 'Client code' with an arrow to the library box, as well as an arrow to a box inside the sandbox area labelled 'Client computation'."
+---
+{% include JB/setup %}
+
+<div id="post">
+    <p>
+        <em>{{ page.description }}</em>
+    </p>
+    <p>
+        In a previous article, <a href="/2025/01/06/encapsulating-rod-cutting">Encapsulating rod-cutting</a>, I used a code example to discuss how to communicate an API's contract to client developers; that is, users of the API. In the article, I wrote
+    </p>
+    <blockquote>
+        <p>
+            "All this said, however, it's also possible that I'm missing an obvious design alternative. If you can think of a way to model this relationship in a non-<a href="https://www.hillelwayne.com/post/constructive/">predicative</a> way, please <a href="https://github.com/ploeh/ploeh.github.com?tab=readme-ov-file#comments">write a comment</a>."
+        </p>
+    </blockquote>
+    <p>
+        And indeed, a reader helpfully offered an alternative:
+    </p>
+    <blockquote>
+        <p>
+            "Regarding the relation between the array and the index, you will find the paper called "Ghosts of departed proofs" interesting. Maybe an overkill in this case, maybe not, but a very interesting and useful technique in general."
+        </p>
+        <footer><cite><a href="https://x.com/Savlambda/status/1876227452886012014">borar</a></cite></footer>
+    </blockquote>
+    <p>
+        I wouldn't call it 'an <em>obvious</em> design alternative', but nonetheless find it interesting. In this article, I'll pick up the code from <a href="/2025/01/06/encapsulating-rod-cutting">Encapsulating rod-cutting</a> and show how the 'Ghosts of Departed Proofs' (GDP) technique may be applied.
+    </p>
+    <h3 id="c43d4e8c8e414b46bf65817e7b00e85e">
+        Problem review <a href="#c43d4e8c8e414b46bf65817e7b00e85e">#</a>
+    </h3>
+    <p>
+        Before we start with the GDP technique, a brief review of the problem is in order. For the complete overview, you should read the <a href="/2025/01/06/encapsulating-rod-cutting">Encapsulating rod-cutting</a> article. In the present article, however, we'll focus on one particular problem related to <a href="/2022/10/24/encapsulation-in-functional-programming">encapsulation</a>:
+    </p>
+    <p>
+        Ideally, the <code>cut</code> function should take two input arguments. The first argument, <code>p</code>, is an array or list of prices. The second argument, <code>n</code>, is the size of a rod to cut optimally. One precondition states that <code>n</code> must be less than or equal to the length of <code>p</code>. This is because the algorithm needs to look up the price of a rod of size <code>n</code>, and it can't do that if <code>n</code> is greater than the length of <code>p</code>. The implied relationship is that <code>p</code> is indexed by rod size, so that if you want to find the price of a rod of size <code>n</code>, you look at the nth element in <code>p</code>.
+    </p>
+    <p>
+        How may we model such a relationship in a way that protects the precondition?
+    </p>
+    <p>
+        An obvious choice, particularly in object-oriented design, is to use a <a href="https://en.wikipedia.org/wiki/Guard_(computer_science)">Guard Clause</a>. In the <a href="https://fsharp.org/">F#</a> code base, it might look like this:
+    </p>
+    <p>
+        <pre><span style="color:blue;">let</span>&nbsp;<span style="color:#74531f;">cut</span>&nbsp;(<span style="font-weight:bold;color:#1f377f;">p</span>&nbsp;:&nbsp;_&nbsp;<span style="color:#2b91af;">array</span>)&nbsp;<span style="font-weight:bold;color:#1f377f;">n</span>&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">p</span>.Length&nbsp;&lt;=&nbsp;<span style="font-weight:bold;color:#1f377f;">n</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">then</span>&nbsp;<span style="color:blue;">raise</span>&nbsp;(<span style="color:#2b91af;">ArgumentOutOfRangeException</span>&nbsp;<span style="color:#a31515;">&quot;n&nbsp;must&nbsp;be&nbsp;less&nbsp;than&nbsp;the&nbsp;length&nbsp;of&nbsp;p&quot;</span>)
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;The&nbsp;rest&nbsp;of&nbsp;the&nbsp;function&nbsp;body...</span></pre>
+    </p>
+    <p>
+        You might argue that in F# and other functional programming languages, throwing exceptions isn't <a href="/2015/08/03/idiomatic-or-idiosyncratic">idiomatic</a>. Instead, you ought to return <code>Result</code> or <code>Option</code> values, here the latter:
+    </p>
+    <p>
+        <pre><span style="color:blue;">let</span>&nbsp;<span style="color:#74531f;">cut</span>&nbsp;(<span style="font-weight:bold;color:#1f377f;">p</span>&nbsp;:&nbsp;_&nbsp;<span style="color:#2b91af;">array</span>)&nbsp;<span style="font-weight:bold;color:#1f377f;">n</span>&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">p</span>.Length&nbsp;&lt;=&nbsp;<span style="font-weight:bold;color:#1f377f;">n</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">then</span>&nbsp;<span style="color:#2b91af;">None</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">else</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;The&nbsp;rest&nbsp;of&nbsp;the&nbsp;function&nbsp;body...</span></pre>
+    </p>
+    <p>
+        To be clear, in most code bases, this is exactly what I would do. What follows is rather exotic, and hardly suitable for most use cases.
+    </p>
+    <h3 id="9457df27904b4b9ea65b4713dea20fbd">
+        Proofs as values <a href="#9457df27904b4b9ea65b4713dea20fbd">#</a>
+    </h3>
+    <p>
+        It's not too hard to model the lower boundary of the <code>n</code> parameter. As is often the case, it turns out that the number must be a natural number. I already covered that in the <a href="/2025/01/06/encapsulating-rod-cutting">previous article</a>. It's much harder, however, to model the upper boundary of the value, because it depends on the size of <code>p</code>.
+    </p>
+    <p>
+        The following is based on the paper <a href="https://dl.acm.org/doi/10.1145/3242744.3242755">Ghosts of Departed Proofs</a>, as well as <a href="https://gist.github.com/Savelenko/9f21c63fdc00b52a64739122176b7453">a helpful Gist</a> also provided by Borar. (The link to the paper is to what I believe is the 'official' page for it, and since it's part of the ACM digital library, it's behind a paywall. Even so, as is the case with most academic papers, it's easy enough to find a PDF of it somewhere else. Not that I endorse content piracy, but it's my impression that academic papers are usually disseminated by the authors themselves.)
+    </p>
+    <p>
+        The idea is to enable a library to issue a 'proof' about a certain condition. In the example I'm going to use here, the proof is that a certain number is in the valid range for a given list of prices.
+    </p>
+    <p>
+        We actually can't entirely escape the need for a run-time check, but we do gain two other benefits. The first is that we're now using the type system to communicate a relationship that otherwise would have to be described in written documentation. The second is that once the proof has been issued, there's no need to perform additional run-time checks.
+    </p>
+    <p>
+        This can help move an API towards a more total, as opposed to <a href="https://en.wikipedia.org/wiki/Partial_function">partial</a>, definition, which again moves towards what Michael Feathers calls <a href="https://youtu.be/AnZ0uTOerUI?si=1gJXYFoVlNTSbjEt">unconditional code</a>. This is particularly useful if the alternative is an API that 'forgets' which run-time guarantees have already been checked. The paper has some examples. I've also recently encountered similar situations when doing <a href="https://adventofcode.com/2024">Advent of Code 2024</a>. Many days my solution involved immutable maps (like hash tables) that I'd recurse over. In many cases I'd write an algorithm where I with absolute certainty knew that a particular key was in the map (if, for example, I'd just put it there three lines earlier). In such cases, you don't want a total function that returns an option or <a href="/2022/04/25/the-maybe-monad">Maybe</a> value. You want a partial function. Or a type-level guarantee that the value is, indeed, in the map.
+    </p>
+    <p>
+        For the example in this article, it's overkill, so you may wonder what the point is. On the other hand, a simple example makes it easier to follow what's going on. Hopefully, once you understand the technique, you can extrapolate it to situations where it might be more warranted.
+    </p>
+    <h3 id="46bc8e47a37f43b3b126946ac29239b0">
+        Proof contexts <a href="#46bc8e47a37f43b3b126946ac29239b0">#</a>
+    </h3>
+    <p>
+        The overall idea should look familiar to practitioners of statically-typed functional programming. Instead of plain functions and data structures, we introduce a special 'context' in which we have to run our computations. This is similar to how <a href="/2023/01/09/the-io-monad">the IO monad</a> works, or, in fact, most monads. You're not supposed to <a href="/2019/02/04/how-to-get-the-value-out-of-the-monad">get the value out of the monad</a>. Rather, you should inject the desired behaviour <em>into</em> the monad.
+    </p>
+    <p>
+        We find a similar design with existential types, or with the <a href="https://hackage.haskell.org/package/base/docs/Control-Monad-ST.html">ST monad</a>, on which the ideas in the GDP paper are acknowledged to be based. We even see a mutation-based variation in the article <a href="/2024/06/24/a-mutable-priority-collection">A mutable priority collection</a> where we may consider the <code>Edit</code> API a variation of the ST monad, since it allows 'localized' state mutation.
+    </p>
+    <p>
+        I'll attempt to illustrate it like this:
+    </p>
+    <p>
+        <img src="/content/binary/library-with-computation-context.png" alt="A box labelled 'library' with a 'sandbox' area inside. To its left, another box labelled 'Client code' with an arrow to the library box, as well as an arrow to a box inside the sandbox area labelled 'Client computation'.">
+    </p>
+    <p>
+        A library offers a set of functions and data structures for immediate use. In addition, it also provides a <a href="https://en.wikipedia.org/wiki/Higher-order_function">higher-oder function</a> that enables client code to embed a computation into a special 'sandbox' area where special rules apply. The paper calls such a context a 'name', which it does because it's trying to be as general as possible. As I'm writing this, I find it easier to think of this 'sandbox' as a 'proof context'. It's a context in which proof values exist. Crucially, as we shall see, they don't exist outside of this context.
+    </p>
+    <h3 id="50d1ba9968d04529be3cbccfd6b05061">
+        Size proofs <a href="#50d1ba9968d04529be3cbccfd6b05061">#</a>
+    </h3>
+    <p>
+        In the rod-cutting example, we particularly care about proving that a given number <code>n</code> is within the size of the price list. We do this by representing the proof as a value:
+    </p>
+    <p>
+        <pre><span style="color:blue;">type</span>&nbsp;<span style="color:#2b91af;">Size</span>&lt;<span style="color:#2b91af;">&#39;a</span>&gt;&nbsp;=&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:#2b91af;">Size</span>&nbsp;<span style="color:blue;">of</span>&nbsp;<span style="color:#2b91af;">int</span>&nbsp;<span style="color:blue;">with</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">member</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">this</span>.Value&nbsp;=&nbsp;<span style="color:blue;">let</span>&nbsp;(<span style="color:#2b91af;">Size</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">i</span>)&nbsp;=&nbsp;<span style="font-weight:bold;color:#1f377f;">this</span>&nbsp;<span style="color:blue;">in</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">i</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">override</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">this</span>.<span style="font-weight:bold;color:#74531f;">ToString</span>&nbsp;()&nbsp;=&nbsp;<span style="color:blue;">let</span>&nbsp;(<span style="color:#2b91af;">Size</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">i</span>)&nbsp;=&nbsp;<span style="font-weight:bold;color:#1f377f;">this</span>&nbsp;<span style="color:blue;">in</span>&nbsp;<span style="color:#74531f;">string</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">i</span></pre>
+    </p>
+    <p>
+        Two things are special about this type definition:
+    </p>
+    <ul>
+        <li>The constructor is <code>private</code>.</li>
+        <li>It has a phantom type <code>'a</code>.</li>
+    </ul>
+    <p>
+        A phantom type is a generic type parameter that has no run-time value. Notice that <code><span style="color:#2b91af;">Size</span>&lt;<span style="color:#2b91af;">&#39;a</span>&gt;</code> contains no value of the type <code>'a</code>. The type only exists at compile-time.
+    </p>
+    <p>
+        You can think of the type parameter as similar to a security token. The issuer of the proof associates a particular security token to vouch for its validity. Usually, when we talk about security tokens, they do have a run-time representation (typically a byte array) because we need to exchange them with other processes. This is, for example, how claims-based authentication works.
+    </p>
+    <p>
+        <img src="/content/binary/claim-with-certificate.png" alt="A box labelled 'claim'. The box has a ribboned seal in the lower right corner." width="200">
+    </p>
+    <p>
+        In this case, our concern isn't security. Rather, we wish to communicate and enforce certain relationships. Since we wish to leverage the type system, we use a type as a token.
+    </p>
+    <p>
+        <img src="/content/binary/size-with-phantom-type.png" alt="A box labelled 'size'. The box has another label in the lower right corner with the generic type argument 'a." width="200">
+    </p>
+    <p>
+        Since the <code>Size</code> constructor is <code>private</code>, the library controls how it issues proofs, a bit like a claims issuer can sign a claim with its private key.
+    </p>
+    <p>
+        Okay, but how are <code>Size</code> proofs issued?
+    </p>
+    <h3 id="28af8638928c4327b0c3a43d6c36711f">
+        Issuing size proofs <a href="#28af8638928c4327b0c3a43d6c36711f">#</a>
+    </h3>
+    <p>
+        As you'll see later, more than one API may issue <code>Size</code> proofs, but the most fundamental is that you can query a price list for such a proof:
+    </p>
+    <p>
+        <pre><span style="color:blue;">type</span>&nbsp;<span style="color:#2b91af;">PriceList</span>&lt;<span style="color:#2b91af;">&#39;a</span>&gt;&nbsp;=&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:#2b91af;">PriceList</span>&nbsp;<span style="color:blue;">of</span>&nbsp;<span style="color:#2b91af;">int</span>&nbsp;<span style="color:#2b91af;">list</span>&nbsp;<span style="color:blue;">with</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">member</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">this</span>.Length&nbsp;=&nbsp;<span style="color:blue;">let</span>&nbsp;(<span style="color:#2b91af;">PriceList</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">prices</span>)&nbsp;=&nbsp;<span style="font-weight:bold;color:#1f377f;">this</span>&nbsp;<span style="color:blue;">in</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">prices</span>.Length
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">member</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">this</span>.<span style="font-weight:bold;color:#74531f;">trySize</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">candidate</span>&nbsp;:&nbsp;<span style="color:#2b91af;">Size</span>&lt;<span style="color:#2b91af;">&#39;a</span>&gt;&nbsp;<span style="color:#2b91af;">option</span>&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;0&nbsp;&lt;&nbsp;<span style="font-weight:bold;color:#1f377f;">candidate</span>&nbsp;&amp;&amp;&nbsp;<span style="font-weight:bold;color:#1f377f;">candidate</span>&nbsp;&lt;=&nbsp;<span style="font-weight:bold;color:#1f377f;">this</span>.Length
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">then</span>&nbsp;<span style="color:#2b91af;">Some</span>&nbsp;(<span style="color:#2b91af;">Size</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">candidate</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">else</span>&nbsp;<span style="color:#2b91af;">None</span></pre>
+    </p>
+    <p>
+        The <code>trySize</code> member function issues a <code><span style="color:#2b91af;">Some</span> <span style="color:#2b91af;">Size</span>&lt;<span style="color:#2b91af;">&#39;a</span>&gt;</code> if the <code>candidate</code> is within the size of the price array. As discussed above, we can't completely avoid a run-time check, but now that we have the proof, we don't need to <em>repeat</em> that run-time check if we wanted to use a particular <code>Size</code> value with the same <code>PriceList</code>.
+    </p>
+    <p>
+        Notice how immutability is an essential part of this design. If, in the object-oriented manner, we allow a price list to change, we could make it shorter. This could invalidate some proof that we previously issued. Since, however, the price list is immutable, we can trust that once we've checked a size once, it remains valid. You can also think of this as a sort of <a href="/encapsulation-and-solid">encapsulation</a>, in the sense that once we've assured ourselves that an object, or here rather a value, is valid, it remains valid. Indeed, <a href="/2024/06/12/simpler-encapsulation-with-immutability">encapsulation is simpler with immutability</a>.
+    </p>
+    <p>
+        You probably still have some questions. For instance, how do we ensure that a size proof issued by one price list can't be used against another price list? Imagine that you have two price lists. One has ten prices, the other twenty. You could have the larger one issue a proof that <em>size 17</em> is valid. What prevents you from using that proof with the smaller price list?
+    </p>
+    <p>
+        That's the job of that phantom type. Notice how a <code><span style="color:#2b91af;">PriceList</span>&lt;<span style="color:#2b91af;">&#39;a</span>&gt;</code> issues a <code><span style="color:#2b91af;">Size</span>&lt;<span style="color:#2b91af;">&#39;a</span>&gt;</code> proof. It's the same generic type argument.
+    </p>
+    <p>
+        Usually, I <a href="/2024/11/04/pendulum-swing-no-haskell-type-annotation-by-default">extol F#'s type inference</a>. I prefer not having to use type annotations unless I have to. When it comes to GDP, however, type annotations are necessary, because we need these phantom types to line up. Without the type annotations, they wouldn't do that.
+    </p>
+    <p>
+        In the above example, the smaller price list might have the type <code><span style="color:#2b91af;">PriceList</span>&lt;<span style="color:#2b91af;">&#39;a</span>&gt;</code> and the larger one the type <code><span style="color:#2b91af;">PriceList</span>&lt;<span style="color:#2b91af;">&#39;b</span>&gt;</code>. The smaller would issue proofs of the type <code><span style="color:#2b91af;">Size</span>&lt;<span style="color:#2b91af;">&#39;a</span>&gt;</code>, and the larger one proofs of the type <code><span style="color:#2b91af;">Size</span>&lt;<span style="color:#2b91af;">&#39;b</span>&gt;</code>. As you'll see, you can't use a <code><span style="color:#2b91af;">Size</span>&lt;<span style="color:#2b91af;">&#39;a</span>&gt;</code> where a <code><span style="color:#2b91af;">Size</span>&lt;<span style="color:#2b91af;">&#39;b</span>&gt;</code> is required, or vice versa.
+    </p>
+    <p>
+        You may still wonder how one then creates <code><span style="color:#2b91af;">PriceList</span>&lt;<span style="color:#2b91af;">&#39;a</span>&gt;</code> values. After all, that type also has a <code>private</code> constructor.
+    </p>
+    <p>
+        We'll get back to that later.
+    </p>
+    <h3 id="193350b5b4ab4327b021ac42403dab11">
+        Proof-based cut API <a href="#193350b5b4ab4327b021ac42403dab11">#</a>
+    </h3>
+    <p>
+        Before we look at how client code may consume APIs based on proofs such as <code><span style="color:#2b91af;">Size</span>&lt;<span style="color:#2b91af;">&#39;a</span>&gt;</code>, we should review their expressive power. What does this design enable us to say?
+    </p>
+    <p>
+        While the first example above, with the Guard Clause alternative, was based on the initial imperative implementation shown in the article <a href="/2024/12/23/implementing-rod-cutting">Implementing rod-cutting</a>, the rest of the present article builds on the refactored code from <a href="/2025/01/06/encapsulating-rod-cutting">Encapsulating rod-cutting</a>.
+    </p>
+    <p>
+        The first change I need to introduce is to the <code>Cut</code> record type:
+    </p>
+    <p>
+        <pre><span style="color:blue;">type</span>&nbsp;<span style="color:#2b91af;">Cut</span>&lt;<span style="color:#2b91af;">&#39;a</span>&gt;&nbsp;=&nbsp;{&nbsp;Revenue&nbsp;:&nbsp;<span style="color:#2b91af;">int</span>;&nbsp;Size&nbsp;:&nbsp;<span style="color:#2b91af;">Size</span>&lt;<span style="color:#2b91af;">&#39;a</span>&gt;&nbsp;}</pre>
+    </p>
+    <p>
+        Notice that I've changed the type of the <code>Size</code> property to <code><span style="color:#2b91af;">Size</span>&lt;<span style="color:#2b91af;">&#39;a</span>&gt;</code>. This has the implication that <code><span style="color:#2b91af;">Cut</span>&lt;<span style="color:#2b91af;">&#39;a</span>&gt;</code> now also has a phantom type, and since client code can't create <code><span style="color:#2b91af;">Size</span>&lt;<span style="color:#2b91af;">&#39;a</span>&gt;</code> values, by transitivity it means that neither can client code create <code><span style="color:#2b91af;">Cut</span>&lt;<span style="color:#2b91af;">&#39;a</span>&gt;</code> values. These values can only be issued as proofs.
+    </p>
+    <p>
+        This enables us to change the type definition of the <code>cut</code> function:
+    </p>
+    <p>
+        <pre><span style="color:blue;">let</span>&nbsp;<span style="color:#74531f;">cut</span>&nbsp;(<span style="color:#2b91af;">PriceList</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">prices</span>&nbsp;:&nbsp;<span style="color:#2b91af;">PriceList</span>&lt;<span style="color:#2b91af;">&#39;a</span>&gt;)&nbsp;(<span style="color:#2b91af;">Size</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">n</span>&nbsp;:&nbsp;<span style="color:#2b91af;">Size</span>&lt;<span style="color:#2b91af;">&#39;a</span>&gt;)&nbsp;:&nbsp;<span style="color:#2b91af;">Cut</span>&lt;<span style="color:#2b91af;">&#39;a</span>&gt;&nbsp;<span style="color:#2b91af;">list</span>&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;Implementation&nbsp;follows&nbsp;here...</span></pre>
+    </p>
+    <p>
+        Notice how all the phantom types line up. In order to call the function, client code must supply a <code><span style="color:#2b91af;">Size</span>&lt;<span style="color:#2b91af;">&#39;a</span>&gt;</code> value issued by a compatible <code><span style="color:#2b91af;">PriceList</span>&lt;<span style="color:#2b91af;">&#39;a</span>&gt;</code> value. Upon a valid call, the function returns a list of <code><span style="color:#2b91af;">Cut</span>&lt;<span style="color:#2b91af;">&#39;a</span>&gt;</code> values.
+    </p>
+    <p>
+        Pay attention to what is being communicated. You may find this strange and impenetrable, but for a reader who understands GDP, much about the contract is communicated through the types. We can see that <code>n</code> relates to <code>prices</code>, because the 'proof token' (the generic type parameter <code>'a</code>) is the same for both arguments. A reader who understands how <code><span style="color:#2b91af;">Size</span>&lt;<span style="color:#2b91af;">&#39;a</span>&gt;</code> proofs are issued will now understand what the preconditions is: The <code>n</code> argument must be valid according to the size of the <code>prices</code> argument.
+    </p>
+    <p>
+        The type of the <code>cut</code> function also communicates a postcondition: It guarantees that the <code>Size</code> values of each <code><span style="color:#2b91af;">Cut</span>&lt;<span style="color:#2b91af;">&#39;a</span>&gt;</code> returned is valid according to the supplied <code>prices</code>. In other words, it means that no <a href="/2013/07/08/defensive-coding">defensive coding</a> is necessary. Client code doesn't have to check whether or not the price of each indicated cut can actually be found in <code>prices</code>. The types guarantee that they can.
+    </p>
+    <p>
+        You may consider the <code>cut</code> function a 'secondary' issuer of <code><span style="color:#2b91af;">Size</span>&lt;<span style="color:#2b91af;">&#39;a</span>&gt;</code> proofs, since it returns such values. If you wanted to call <code>cut</code> again with one of those values, you could.
+    </p>
+    <p>
+        Compared to the previous article, I don't think I changed much else in the <code>cut</code> function than the initial function declaration, and the last line of code, but for good measure, here's the entire function:
+    </p>
+    <p>
+        <pre><span style="color:blue;">let</span>&nbsp;<span style="color:#74531f;">cut</span>&nbsp;(<span style="color:#2b91af;">PriceList</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">prices</span>&nbsp;:&nbsp;<span style="color:#2b91af;">PriceList</span>&lt;<span style="color:#2b91af;">&#39;a</span>&gt;)&nbsp;(<span style="color:#2b91af;">Size</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">n</span>&nbsp;:&nbsp;<span style="color:#2b91af;">Size</span>&lt;<span style="color:#2b91af;">&#39;a</span>&gt;)&nbsp;:&nbsp;<span style="color:#2b91af;">Cut</span>&lt;<span style="color:#2b91af;">&#39;a</span>&gt;&nbsp;<span style="color:#2b91af;">list</span>&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;Implementation&nbsp;follows&nbsp;here...</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">p</span>&nbsp;=&nbsp;0&nbsp;<span style="color:#2b91af;">::</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">prices</span>&nbsp;|&gt;&nbsp;<span style="color:#2b91af;">Array</span>.<span style="color:#74531f;">ofList</span>
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;<span style="color:#74531f;">findBestCut</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">revenues</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">j</span>&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;[1..<span style="font-weight:bold;color:#1f377f;">j</span>]
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:#2b91af;">List</span>.<span style="color:#74531f;">map</span>&nbsp;(<span style="color:blue;">fun</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">i</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">p</span>[<span style="font-weight:bold;color:#1f377f;">i</span>]&nbsp;+&nbsp;<span style="color:#2b91af;">Map</span>.<span style="color:#74531f;">find</span>&nbsp;(<span style="font-weight:bold;color:#1f377f;">j</span>&nbsp;-&nbsp;<span style="font-weight:bold;color:#1f377f;">i</span>)&nbsp;<span style="font-weight:bold;color:#1f377f;">revenues</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">i</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:#2b91af;">List</span>.<span style="color:#74531f;">maxBy</span>&nbsp;<span style="color:#74531f;">fst</span>
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;<span style="color:#74531f;">aggregate</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">acc</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">j</span>&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">revenues</span>&nbsp;=&nbsp;<span style="color:#74531f;">snd</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">acc</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">q</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">i</span>&nbsp;=&nbsp;<span style="color:#74531f;">findBestCut</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">revenues</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">j</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;<span style="color:#74531f;">cuts</span>&nbsp;=&nbsp;<span style="color:#74531f;">fst</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">acc</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#74531f;">cuts</span>&nbsp;&lt;&lt;&nbsp;(<span style="color:#74531f;">cons</span>&nbsp;(<span style="font-weight:bold;color:#1f377f;">q</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">i</span>)),&nbsp;<span style="color:#2b91af;">Map</span>.<span style="color:#74531f;">add</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">revenues</span>.Count&nbsp;<span style="font-weight:bold;color:#1f377f;">q</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">revenues</span>
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;[1..<span style="font-weight:bold;color:#1f377f;">n</span>]
+&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:#2b91af;">List</span>.<span style="color:#74531f;">fold</span>&nbsp;<span style="color:#74531f;">aggregate</span>&nbsp;(<span style="color:#74531f;">id</span>,&nbsp;<span style="color:#2b91af;">Map</span>.<span style="color:#74531f;">add</span>&nbsp;0&nbsp;0&nbsp;<span style="color:#2b91af;">Map</span>.empty)
+&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:#74531f;">fst</span>&nbsp;&lt;|&nbsp;[]&nbsp;<span style="color:green;">//&nbsp;Evaluate&nbsp;Hughes&nbsp;list</span>
+&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:#2b91af;">List</span>.<span style="color:#74531f;">map</span>&nbsp;(<span style="color:blue;">fun</span>&nbsp;(<span style="font-weight:bold;color:#1f377f;">r</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">i</span>)&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;{&nbsp;Revenue&nbsp;=&nbsp;<span style="font-weight:bold;color:#1f377f;">r</span>;&nbsp;Size&nbsp;=&nbsp;<span style="color:#2b91af;">Size</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">i</span>&nbsp;})</pre>
+    </p>
+    <p>
+        The <code>cut</code> function is part of the same module as <code><span style="color:#2b91af;">Size</span>&lt;<span style="color:#2b91af;">&#39;a</span>&gt;</code>, so even though the constructor is <code>private</code>, the <code>cut</code> function can still use it.
+    </p>
+    <p>
+        Thus, the entire proof mechanism is for external use. Internally, the library code may take shortcuts, so it's up to the library author to convince him or herself that the contract holds. In this case, I'm quite confident that the function only issues valid proofs. After all, I've lifted the algorithm from <a href="/ref/clrs">an acclaimed text book</a>, and this particular implementation is covered by more than 10,000 test cases.
+    </p>
+    <h3 id="dcbcbee557a54a8aaa701484ad89e90f">
+        Proof-based solve API <a href="#dcbcbee557a54a8aaa701484ad89e90f">#</a>
+    </h3>
+    <p>
+        The <code>solve</code> code hasn't changed, I believe:
+    </p>
+    <p>
+        <pre><span style="color:blue;">let</span>&nbsp;<span style="color:#74531f;">solve</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">prices</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">n</span>&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">cuts</span>&nbsp;=&nbsp;<span style="color:#74531f;">cut</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">prices</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">n</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;<span style="color:blue;">rec</span>&nbsp;<span style="color:#74531f;">imp</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">n</span>&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">n</span>&nbsp;&lt;=&nbsp;0&nbsp;<span style="color:blue;">then</span>&nbsp;[]&nbsp;<span style="color:blue;">else</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">idx</span>&nbsp;=&nbsp;<span style="font-weight:bold;color:#1f377f;">n</span>&nbsp;-&nbsp;1
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">s</span>&nbsp;=&nbsp;<span style="font-weight:bold;color:#1f377f;">cuts</span>[<span style="font-weight:bold;color:#1f377f;">idx</span>].Size
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">s</span>&nbsp;<span style="color:#2b91af;">::</span>&nbsp;<span style="color:#74531f;">imp</span>&nbsp;(<span style="font-weight:bold;color:#1f377f;">n</span>&nbsp;-&nbsp;<span style="font-weight:bold;color:#1f377f;">s</span>.Value)
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#74531f;">imp</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">n</span>.Value</pre>
+    </p>
+    <p>
+        While the code hasn't changed, the type has. In this case, no explicit type annotations are necessary, because the types are already correctly inferred from the use of <code>cut</code>:
+    </p>
+    <p>
+        <pre>solve:&nbsp;prices:&nbsp;PriceList&lt;&#39;a&gt;&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;n:&nbsp;Size&lt;&#39;a&gt;&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;Size&lt;&#39;a&gt;&nbsp;list</pre>
+    </p>
+    <p>
+        Again, the phantom types line up as desired.
+    </p>
+    <h3 id="f2e9d4cab42b4d74bb472c3aee2e45ef">
+        Proof-based revenue calculation <a href="#f2e9d4cab42b4d74bb472c3aee2e45ef">#</a>
+    </h3>
+    <p>
+        Although I didn't show it in the previous article, I also included a function to calculate the revenue from a list of cuts. It gets the same treatment as the other functions:
+    </p>
+    <p>
+        <pre><span style="color:blue;">let</span>&nbsp;<span style="color:#74531f;">calculateRevenue</span>&nbsp;(<span style="color:#2b91af;">PriceList</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">prices</span>&nbsp;:&nbsp;<span style="color:#2b91af;">PriceList</span>&lt;<span style="color:#2b91af;">&#39;a</span>&gt;)&nbsp;(<span style="font-weight:bold;color:#1f377f;">cuts</span>&nbsp;:&nbsp;<span style="color:#2b91af;">Size</span>&lt;<span style="color:#2b91af;">&#39;a</span>&gt;&nbsp;<span style="color:#2b91af;">list</span>)&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">cuts</span>&nbsp;|&gt;&nbsp;<span style="color:#2b91af;">List</span>.<span style="color:#74531f;">sumBy</span>&nbsp;(<span style="color:blue;">fun</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">s</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">prices</span>[<span style="font-weight:bold;color:#1f377f;">s</span>.Value&nbsp;-&nbsp;1])</pre>
+    </p>
+    <p>
+        Again we see how the GDP-based API communicates a precondition: The <code>cuts</code> must be valid according to the <code>prices</code>; that is, each cut, indicated by its <code>Size</code> property, must be guaranteed to be within the range defined by the price list. This makes the function total; or, unconditional code, as Michael Feathers would put it. The function can't fail at run time.
+    </p>
+    <p>
+        (I am, once more, deliberately ignoring the entirely independent problem of potential integer overflows.)
+    </p>
+    <p>
+        While you could repeatedly call <code><span style="color:#2b91af;">PriceList</span>&lt;<span style="color:#2b91af;">&#39;a</span>&gt;.<span style="font-weight:bold;color:#74531f;">trySize</span></code> to produce a list of cuts, the most natural way to produce such a list of cuts is to first call <code>cut</code>, and then pass its result to <code>calculateRevenue</code>.
+    </p>
+    <p>
+        The function returns <code>int</code>.
+    </p>
+    <h3 id="0a22569816ad4b179a365d2dc3ad81f4">
+        Proof-based printing <a href="#0a22569816ad4b179a365d2dc3ad81f4">#</a>
+    </h3>
+    <p>
+        Finally, here's <code>printSolution</code>:
+    </p>
+    <p>
+        <pre><span style="color:blue;">let</span>&nbsp;<span style="color:#74531f;">printSolution</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">p</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">n</span>&nbsp;=&nbsp;<span style="color:#74531f;">solve</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">p</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">n</span>&nbsp;|&gt;&nbsp;<span style="color:#2b91af;">List</span>.<span style="color:#74531f;">iter</span>&nbsp;(<span style="color:#74531f;">printfn</span>&nbsp;<span style="color:#a31515;">&quot;</span><span style="color:#2b91af;">%O</span><span style="color:#a31515;">&quot;</span>)</pre>
+    </p>
+    <p>
+        It hasn't changed much since the previous incarnation, but the type is now <code>PriceList&lt;&#39;a&gt;&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;Size&lt;&#39;a&gt;&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;unit</code>. Again, the precondition is the same as for <code>cut</code>.
+    </p>
+    <h3 id="2216067c41c44ade8855e4c6f8216d6d">
+        Running client code <a href="#2216067c41c44ade8855e4c6f8216d6d">#</a>
+    </h3>
+    <p>
+        How in the world do you write client code against this API? After all, the types all have <code>private</code> constructors, so we can't create any values.
+    </p>
+    <p>
+        If you trace the code dependencies, you'll notice that <code><span style="color:#2b91af;">PriceList</span>&lt;<span style="color:#2b91af;">&#39;a</span>&gt;</code> sits at the heart of the API. If you have a <code><span style="color:#2b91af;">PriceList</span>&lt;<span style="color:#2b91af;">&#39;a</span>&gt;</code>, you'd be able to produce the other values, too.
+    </p>
+    <p>
+        So how do you create a <code><span style="color:#2b91af;">PriceList</span>&lt;<span style="color:#2b91af;">&#39;a</span>&gt;</code> value?
+    </p>
+    <p>
+        You don't. You call the following <code>runPrices</code> function, and give it a <code>PriceListRunner</code> that it'll embed and run in the 'sandbox' illustrated above.
+    </p>
+    <p>
+        <pre><span style="color:blue;">type</span>&nbsp;<span style="color:#2b91af;">PriceListRunner</span>&lt;<span style="color:#2b91af;">&#39;r</span>&gt;&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">abstract</span>&nbsp;<span style="font-weight:bold;color:#74531f;">Run</span>&lt;<span style="color:#2b91af;">&#39;a</span>&gt;&nbsp;:&nbsp;<span style="color:#2b91af;">PriceList</span>&lt;<span style="color:#2b91af;">&#39;a</span>&gt;&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:#2b91af;">&#39;r</span>
+ 
+<span style="color:blue;">let</span>&nbsp;<span style="color:#74531f;">runPrices</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">pl</span>&nbsp;(<span style="font-weight:bold;color:#1f377f;">ctx</span>&nbsp;:&nbsp;<span style="color:#2b91af;">PriceListRunner</span>&lt;<span style="color:#2b91af;">&#39;r</span>&gt;)&nbsp;=&nbsp;<span style="font-weight:bold;color:#1f377f;">ctx</span>.<span style="font-weight:bold;color:#74531f;">Run</span>&nbsp;(<span style="color:#2b91af;">PriceList</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">pl</span>)</pre>
+    </p>
+    <p>
+        As the paper describes, the GDP trick hinges on rank-2 polymorphism, and the only way (that I know of) this is supported in F# is on methods. An object is therefore required, and we define the abstract <code><span style="color:#2b91af;">PriceListRunner</span>&lt;<span style="color:#2b91af;">&#39;r</span>&gt;</code> class for the purpose.
+    </p>
+    <p>
+        Client code must implement the abstract class to call the <code>runPrices</code> function. Fortunately, since F# has <a href="https://learn.microsoft.com/dotnet/fsharp/language-reference/object-expressions">object expressions</a>, client code might look like this:
+    </p>
+    <p>
+        <pre>[&lt;<span style="color:#2b91af;">Fact</span>&gt;]
+<span style="color:blue;">let</span>&nbsp;<span style="color:#74531f;">``CLRS&nbsp;example``</span>&nbsp;()&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">p</span>&nbsp;=&nbsp;[1;&nbsp;5;&nbsp;8;&nbsp;9;&nbsp;10;&nbsp;17;&nbsp;17;&nbsp;20;&nbsp;24;&nbsp;30]
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">actual</span>&nbsp;=&nbsp;<span style="color:#2b91af;">Rod</span>.<span style="color:#74531f;">runPrices</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">p</span>&nbsp;{&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">PriceListRunner</span>&lt;_&gt;&nbsp;<span style="color:blue;">with</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">member</span>&nbsp;__.<span style="font-weight:bold;color:#74531f;">Run</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">pl</span>&nbsp;=&nbsp;<span style="color:blue;">option</span>&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">n</span>&nbsp;=&nbsp;<span style="font-weight:bold;color:#1f377f;">pl</span>.<span style="font-weight:bold;color:#74531f;">trySize</span>&nbsp;10
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">cuts</span>&nbsp;=&nbsp;<span style="color:#2b91af;">Rod</span>.<span style="color:#74531f;">cut</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">pl</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">n</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:#2b91af;">List</span>.<span style="color:#74531f;">map</span>&nbsp;(<span style="color:blue;">fun</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">c</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;(<span style="font-weight:bold;color:#1f377f;">c</span>.Revenue,&nbsp;<span style="font-weight:bold;color:#1f377f;">c</span>.Size.Value))&nbsp;<span style="font-weight:bold;color:#1f377f;">cuts</span>&nbsp;}&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;[
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(&nbsp;1,&nbsp;&nbsp;1)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(&nbsp;5,&nbsp;&nbsp;2)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(&nbsp;8,&nbsp;&nbsp;3)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(10,&nbsp;&nbsp;2)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(13,&nbsp;&nbsp;2)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(17,&nbsp;&nbsp;6)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(18,&nbsp;&nbsp;1)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(22,&nbsp;&nbsp;2)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(25,&nbsp;&nbsp;3)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(30,&nbsp;10)
+&nbsp;&nbsp;&nbsp;&nbsp;]&nbsp;|&gt;&nbsp;<span style="color:#2b91af;">Some</span>&nbsp;=!&nbsp;<span style="font-weight:bold;color:#1f377f;">actual</span></pre>
+    </p>
+    <p>
+        This is an <a href="https://xunit.net/">xUnit.net</a> test where <code>actual</code> is produced by <code>runPrices</code> and an object expression that defines the code to run in the proof context. When the <code>Run</code> method runs, it runs with a concrete type that the compiler picked for <code>'a</code>. This type is only in scope within that method, and can't escape it.
+    </p>
+    <p>
+        The implementing class is given a <code><span style="color:#2b91af;">PriceList</span>&lt;<span style="color:#2b91af;">&#39;a</span>&gt;</code> as an input argument. In this example, it tries to create a size of 10, which succeeds because the price list has ten elements.
+    </p>
+    <p>
+        Notice that the <code>Run</code> method transforms the <code>cuts</code> to tuples. Why doesn't it return <code>cuts</code> directly?
+    </p>
+    <p>
+        It can't. It's part of the deal. If I change the last line of <code>Run</code> to <code>return cuts</code>, the code no longer compiles. The compiler error is:
+    </p>
+    <blockquote>
+        <p>
+            This code is not sufficiently generic. The type variable 'a could not be generalized because it would escape its scope.
+        </p>
+    </blockquote>
+    <p>
+        Remember I wrote that <code>'a</code> can't escape the scope of <code>Run</code>? This is enforced by the type system.
+    </p>
+    <h3 id="6583d683c77c4bfba53f3f2c1195603e">
+        Preventing misalignment <a href="#6583d683c77c4bfba53f3f2c1195603e">#</a>
+    </h3>
+    <p>
+        You may already consider it a benefit that this kind of API design uses the type system to communicate pre- and postconditions. Perhaps you also wonder how it prevents errors. As already discussed, if you're dealing with multiple price lists, it shouldn't be possible to use a size proof issued by one, with another. Let's see how that might look. We'll start with a correctly coded unit test:
+    </p>
+    <p>
+        <pre>[&lt;<span style="color:#2b91af;">Fact</span>&gt;]
+<span style="color:blue;">let</span>&nbsp;<span style="color:#74531f;">``Nest&nbsp;two&nbsp;solutions``</span>&nbsp;()&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">p1</span>&nbsp;=&nbsp;[1;&nbsp;2;&nbsp;2]
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">p2</span>&nbsp;=&nbsp;[1]
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">actual</span>&nbsp;=&nbsp;<span style="color:#2b91af;">Rod</span>.<span style="color:#74531f;">runPrices</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">p1</span>&nbsp;{&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">PriceListRunner</span>&lt;_&gt;&nbsp;<span style="color:blue;">with</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">member</span>&nbsp;__.<span style="font-weight:bold;color:#74531f;">Run</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">pl1</span>&nbsp;=&nbsp;<span style="color:blue;">option</span>&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">n1</span>&nbsp;=&nbsp;<span style="font-weight:bold;color:#1f377f;">pl1</span>.<span style="font-weight:bold;color:#74531f;">trySize</span>&nbsp;3
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">cuts1</span>&nbsp;=&nbsp;<span style="color:#2b91af;">Rod</span>.<span style="color:#74531f;">solve</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">pl1</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">n1</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">r</span>&nbsp;=&nbsp;<span style="color:#2b91af;">Rod</span>.<span style="color:#74531f;">calculateRevenue</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">pl1</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">cuts1</span>
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">inner</span>&nbsp;=&nbsp;<span style="color:#2b91af;">Rod</span>.<span style="color:#74531f;">runPrices</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">p2</span>&nbsp;{&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">PriceListRunner</span>&lt;_&gt;&nbsp;<span style="color:blue;">with</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">member</span>&nbsp;__.<span style="font-weight:bold;color:#74531f;">Run</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">pl2</span>&nbsp;=&nbsp;<span style="color:blue;">option</span>&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">n2</span>&nbsp;=&nbsp;<span style="font-weight:bold;color:#1f377f;">pl2</span>.<span style="font-weight:bold;color:#74531f;">trySize</span>&nbsp;1
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">cuts2</span>&nbsp;=&nbsp;<span style="color:#2b91af;">Rod</span>.<span style="color:#74531f;">solve</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">pl2</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">n2</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:#2b91af;">Rod</span>.<span style="color:#74531f;">calculateRevenue</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">pl2</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">cuts2</span>&nbsp;}&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;(<span style="font-weight:bold;color:#1f377f;">r</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">inner</span>)&nbsp;}&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Some</span>&nbsp;(3,&nbsp;1)&nbsp;=!&nbsp;<span style="font-weight:bold;color:#1f377f;">actual</span></pre>
+    </p>
+    <p>
+        This code compiles because I haven't mixed up the <code>Size</code> or <code>Cut</code> values. What happens if I 'accidentally' change the 'inner' <code>Rod.solve</code> call to <code><span style="color:blue;">let</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">cuts2</span>&nbsp;=&nbsp;<span style="color:#2b91af;">Rod</span>.<span style="color:#74531f;">solve</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">pl2</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">n1</span></code>?
+    </p>
+    <p>
+        The code doesn't compile:
+    </p>
+    <blockquote>
+        <p>
+            Type mismatch. Expecting a     'Size&lt;'a&gt;'     but given a     'Size&lt;'b&gt;'     The type ''a' does not match the type ''b'
+        </p>
+    </blockquote>
+    <p>
+        This is fortunate, because <code>n1</code> wouldn't work with <code>pl2</code>. Consider that <code>n1</code> contains the number <code>3</code>, which is valid for the larger list <code>pl1</code>, but not the shorter list <code>pl2</code>.
+    </p>
+    <p>
+        Proofs are issued with a particular generic type argument - the type-level 'token', if you will. It's possible for a library API to explicitly propagate such proofs; you see a hint of that in <code>cut</code>, which not only takes as input a <code><span style="color:#2b91af;">Size</span>&lt;<span style="color:#2b91af;">&#39;a</span>&gt;</code> value, but also issues new proofs as a result.
+    </p>
+    <p>
+        At the same time, this design prevents proofs from being mixed up. Each set of proofs belongs to a particular proof context.
+    </p>
+    <p>
+        You get the same compiler error if you accidentally mix up some of the other terms.
+    </p>
+    <h3 id="d143cd141fc143c49e14d8e600492dc0">
+        Conclusion <a href="#d143cd141fc143c49e14d8e600492dc0">#</a>
+    </h3>
+    <p>
+        One goal in the GDP paper is to introduce a type-safe API design that's also <em>ergonomic</em>. Matt Noonan, the author, defines <em>ergonomic</em> as a design where correct use of the API doesn't place an undue burden on the client developer. The paper's example language is <a href="https://www.haskell.org/">Haskell</a> where <a href="https://wiki.haskell.org/Rank-N_types">rank-2 polymorphism</a> has a low impact on the user.
+    </p>
+    <p>
+        F# only supports rank-2 polymorphism in method definitions, which makes consuming a GDP API more awkward than in Haskell. The need to create a new type, and the few lines of boilerplate that entails, is a drawback.
+    </p>
+    <p>
+        Even so, the GDP trick is a nice addition to your functional tool belt. You'l hardly need it every day, but I personally like having some specialized tools lying around together with the everyday ones.
+    </p>
+    <p>
+        But wait! The reason that F# has support for rank-2 polymorphism through object methods is because C# has that language feature. This must mean that the GDP technique works in C# as well, doesn't it? Indeed it does.
+    </p>
+    <p>
+        <strong>Next:</strong> Modelling data relationships with C# types.
+    </p>
+</div>
