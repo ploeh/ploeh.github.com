@@ -1,0 +1,191 @@
+---
+layout: post
+title: "Porting song recommendations to F#"
+description: "A C# code base translated to F#."
+date: 2025-01-24 8:56 UTC
+tags: [F#]
+---
+{% include JB/setup %}
+
+<div id="post">
+    <p>
+        <em>{{ page.description }}</em>
+    </p>
+    <p>
+        This article is part of a <a href="">larger article series</a> that examines variations of how to take on a non-trivial problem using <a href="/2018/11/19/functional-architecture-a-definition">functional architecture</a>. In the <a href="">previous article</a> we established a baseline C# code base. Future articles are going to use that C# code base as a starting point for refactored code. On the other hand, I also want to demonstrate what such solutions may look like in languages like <a href="https://fsharp.org/">F#</a> or <a href="https://www.haskell.org/">Haskell</a>. In this article, you'll see how to port the C# baseline to F#.
+    </p>
+    <h3 id="075d8dc2f6ad4baca4f815137193f814">
+        Data structures <a href="#075d8dc2f6ad4baca4f815137193f814">#</a>
+    </h3>
+    <p>
+        We may start by defining the required data structures. All are going to be <a href="https://learn.microsoft.com/dotnet/fsharp/language-reference/records">records</a>.
+    </p>
+    <p>
+        <pre><span style="color:blue;">type</span>&nbsp;<span style="color:#2b91af;">User</span>&nbsp;=&nbsp;{&nbsp;UserName&nbsp;:&nbsp;<span style="color:#2b91af;">string</span>;&nbsp;TotalScrobbleCount&nbsp;:&nbsp;<span style="color:#2b91af;">int</span>&nbsp;}</pre>
+    </p>
+    <p>
+        Just like the equivalent C# code, a <code>User</code> is just a <code>string</code> and an <code>int</code>. 
+    </p>
+    <p>
+        When creating new values, record syntax can sometimes be awkward, so I also define a curried function to create <code>User</code> values:
+    </p>
+    <p>
+        <pre><span style="color:blue;">let</span>&nbsp;<span style="color:#74531f;">user</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">userName</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">totalScrobbleCount</span>&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;{&nbsp;UserName&nbsp;=&nbsp;<span style="font-weight:bold;color:#1f377f;">userName</span>;&nbsp;TotalScrobbleCount&nbsp;=&nbsp;<span style="font-weight:bold;color:#1f377f;">totalScrobbleCount</span>&nbsp;}</pre>
+    </p>
+    <p>
+        Likewise, I define <code>Song</code> and <code>Scrobble</code> in the same way:
+    </p>
+    <p>
+        <pre><span style="color:blue;">type</span>&nbsp;<span style="color:#2b91af;">Song</span>&nbsp;=&nbsp;{&nbsp;Id&nbsp;:&nbsp;<span style="color:#2b91af;">int</span>;&nbsp;IsVerifiedArtist&nbsp;:&nbsp;<span style="color:#2b91af;">bool</span>;&nbsp;Rating&nbsp;:&nbsp;<span style="color:#2b91af;">byte</span>&nbsp;}
+<span style="color:blue;">let</span>&nbsp;<span style="color:#74531f;">song</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">id</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">isVerfiedArtist</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">rating</span>&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;{&nbsp;Id&nbsp;=&nbsp;<span style="font-weight:bold;color:#1f377f;">id</span>;&nbsp;IsVerifiedArtist&nbsp;=&nbsp;<span style="font-weight:bold;color:#1f377f;">isVerfiedArtist</span>;&nbsp;Rating&nbsp;=&nbsp;<span style="font-weight:bold;color:#1f377f;">rating</span>&nbsp;}
+ 
+<span style="color:blue;">type</span>&nbsp;<span style="color:#2b91af;">Scrobble</span>&nbsp;=&nbsp;{&nbsp;Song&nbsp;:&nbsp;<span style="color:#2b91af;">Song</span>;&nbsp;ScrobbleCount&nbsp;:&nbsp;<span style="color:#2b91af;">int</span>&nbsp;}
+<span style="color:blue;">let</span>&nbsp;<span style="color:#74531f;">scrobble</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">song</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">scrobbleCount</span>&nbsp;=&nbsp;{&nbsp;Song&nbsp;=&nbsp;<span style="font-weight:bold;color:#1f377f;">song</span>;&nbsp;ScrobbleCount&nbsp;=&nbsp;<span style="font-weight:bold;color:#1f377f;">scrobbleCount</span>&nbsp;}</pre>
+    </p>
+    <p>
+        To be honest, I only use those curried functions sparingly, so they're somewhat redundant. Perhaps I should consider getting rid of them. For now, however, they stay.
+    </p>
+    <p>
+        Since I'm moving all the code to F#, I also have to translate the interface.
+    </p>
+    <p>
+        <pre><span style="color:blue;">type</span>&nbsp;<span style="color:#2b91af;">SongService</span>&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">abstract</span>&nbsp;<span style="font-weight:bold;color:#74531f;">GetTopListenersAsync</span>&nbsp;:&nbsp;songId&nbsp;:&nbsp;<span style="color:#2b91af;">int</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:#2b91af;">Task</span>&lt;<span style="color:#2b91af;">IReadOnlyCollection</span>&lt;<span style="color:#2b91af;">User</span>&gt;&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">abstract</span>&nbsp;<span style="font-weight:bold;color:#74531f;">GetTopScrobblesAsync</span>&nbsp;:&nbsp;userName&nbsp;:&nbsp;<span style="color:#2b91af;">string</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:#2b91af;">Task</span>&lt;<span style="color:#2b91af;">IReadOnlyCollection</span>&lt;<span style="color:#2b91af;">Scrobble</span>&gt;&gt;</pre>
+    </p>
+    <p>
+        The syntax is different from C#, but otherwise, this is the same interface.
+    </p>
+    <h3 id="4102e5ed7f394f48ac28f4b4a8af55e8">
+        Implementation <a href="#4102e5ed7f394f48ac28f4b4a8af55e8">#</a>
+    </h3>
+    <p>
+        Those are all the supporting types required to implement the <code>RecommendationsProvider</code>. This is the most direct translation of the C# code that I could think of:
+    </p>
+    <p>
+        <pre><span style="color:blue;">type</span>&nbsp;<span style="color:#2b91af;">RecommendationsProvider</span>&nbsp;(<span style="font-weight:bold;color:#1f377f;">songService</span>&nbsp;:&nbsp;<span style="color:#2b91af;">SongService</span>)&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">member</span>&nbsp;_.<span style="font-weight:bold;color:#74531f;">GetRecommendationsAsync</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">userName</span>&nbsp;=&nbsp;<span style="color:blue;">task</span>&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;1.&nbsp;Get&nbsp;user&#39;s&nbsp;own&nbsp;top&nbsp;scrobbles</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;2.&nbsp;Get&nbsp;other&nbsp;users&nbsp;who&nbsp;listened&nbsp;to&nbsp;the&nbsp;same&nbsp;songs</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;3.&nbsp;Get&nbsp;top&nbsp;scrobbles&nbsp;of&nbsp;those&nbsp;users</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;4.&nbsp;Aggregate&nbsp;the&nbsp;songs&nbsp;into&nbsp;recommendations</span>
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;Impure</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">scrobbles</span>&nbsp;=&nbsp;<span style="font-weight:bold;color:#1f377f;">songService</span>.<span style="font-weight:bold;color:#74531f;">GetTopScrobblesAsync</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">userName</span>
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;Pure</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">scrobblesSnapshot</span>&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">scrobbles</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:#2b91af;">Seq</span>.<span style="color:#74531f;">sortByDescending</span>&nbsp;(<span style="color:blue;">fun</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">s</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">s</span>.ScrobbleCount)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:#2b91af;">Seq</span>.<span style="color:#74531f;">truncate</span>&nbsp;100
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:#2b91af;">Seq</span>.<span style="color:#74531f;">toList</span>
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">recommendationCandidates</span>&nbsp;=&nbsp;<span style="color:#2b91af;">ResizeArray</span>&nbsp;()
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">for</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">scrobble</span>&nbsp;<span style="color:blue;">in</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">scrobblesSnapshot</span>&nbsp;<span style="color:blue;">do</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;Impure</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">otherListeners</span>&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">songService</span>.<span style="font-weight:bold;color:#74531f;">GetTopListenersAsync</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">scrobble</span>.Song.Id
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;Pure</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">otherListenersSnapshot</span>&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">otherListeners</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:#2b91af;">Seq</span>.<span style="color:#74531f;">filter</span>&nbsp;(<span style="color:blue;">fun</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">u</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">u</span>.TotalScrobbleCount&nbsp;&gt;=&nbsp;10_000)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:#2b91af;">Seq</span>.<span style="color:#74531f;">sortByDescending</span>&nbsp;(<span style="color:blue;">fun</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">u</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">u</span>.TotalScrobbleCount)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:#2b91af;">Seq</span>.<span style="color:#74531f;">truncate</span>&nbsp;20
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:#2b91af;">Seq</span>.<span style="color:#74531f;">toList</span>
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">for</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">otherListener</span>&nbsp;<span style="color:blue;">in</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">otherListenersSnapshot</span>&nbsp;<span style="color:blue;">do</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;Impure</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">otherScrobbles</span>&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">songService</span>.<span style="font-weight:bold;color:#74531f;">GetTopScrobblesAsync</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">otherListener</span>.UserName
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;Pure</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">otherScrobblesSnapshot</span>&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">otherScrobbles</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:#2b91af;">Seq</span>.<span style="color:#74531f;">filter</span>&nbsp;(<span style="color:blue;">fun</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">s</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">s</span>.Song.IsVerifiedArtist)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:#2b91af;">Seq</span>.<span style="color:#74531f;">sortByDescending</span>&nbsp;(<span style="color:blue;">fun</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">s</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">s</span>.Song.Rating)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:#2b91af;">Seq</span>.<span style="color:#74531f;">truncate</span>&nbsp;10
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:#2b91af;">Seq</span>.<span style="color:#74531f;">toList</span>
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">otherScrobblesSnapshot</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:#2b91af;">List</span>.<span style="color:#74531f;">map</span>&nbsp;(<span style="color:blue;">fun</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">s</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">s</span>.Song)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">recommendationCandidates</span>.<span style="font-weight:bold;color:#74531f;">AddRange</span>
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;Pure</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">recommendations</span>&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">recommendationCandidates</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:#2b91af;">Seq</span>.<span style="color:#74531f;">sortByDescending</span>&nbsp;(<span style="color:blue;">fun</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">s</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">s</span>.Rating)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:#2b91af;">Seq</span>.<span style="color:#74531f;">truncate</span>&nbsp;200
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:#2b91af;">Seq</span>.<span style="color:#74531f;">toList</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;:&gt;&nbsp;<span style="color:#2b91af;">IReadOnlyCollection</span>&lt;_&gt;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">recommendations</span>&nbsp;}</pre>
+    </p>
+    <p>
+        As you can tell, I've kept the comments from <a href="https://tyrrrz.me/blog/pure-impure-segregation-principle">the original</a>, too.
+    </p>
+    <h3 id="efa00ed5a67641e18b6fec772f2e6aa7">
+        Test Double <a href="#efa00ed5a67641e18b6fec772f2e6aa7">#</a>
+    </h3>
+    <p>
+        In <a href="">the previous article</a>, I'd written the <a href="http://xunitpatterns.com/Fake%20Object.html">Fake</a> <code>SongService</code> in C#. Since, in this article, I'm translating everything to F#, I need to translate the Fake, too.
+    </p>
+    <p>
+        <pre><span style="color:blue;">type</span>&nbsp;<span style="color:#2b91af;">FakeSongService</span>&nbsp;()&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">songs</span>&nbsp;=&nbsp;<span style="color:#2b91af;">ConcurrentDictionary</span>&lt;<span style="color:#2b91af;">int</span>,&nbsp;<span style="color:#2b91af;">Song</span>&gt;&nbsp;()
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">users</span>&nbsp;=&nbsp;<span style="color:#2b91af;">ConcurrentDictionary</span>&lt;<span style="color:#2b91af;">string</span>,&nbsp;<span style="color:#2b91af;">ConcurrentDictionary</span>&lt;<span style="color:#2b91af;">int</span>,&nbsp;<span style="color:#2b91af;">int</span>&gt;&gt;&nbsp;()
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">interface</span>&nbsp;<span style="color:#2b91af;">SongService</span>&nbsp;<span style="color:blue;">with</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">member</span>&nbsp;_.<span style="font-weight:bold;color:#74531f;">GetTopListenersAsync</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">songId</span>&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">listeners</span>&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">users</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:#2b91af;">Seq</span>.<span style="color:#74531f;">filter</span>&nbsp;(<span style="color:blue;">fun</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">kvp</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">kvp</span>.Value.<span style="font-weight:bold;color:#74531f;">ContainsKey</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">songId</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:#2b91af;">Seq</span>.<span style="color:#74531f;">map</span>&nbsp;(<span style="color:blue;">fun</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">kvp</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:#74531f;">user</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">kvp</span>.Key&nbsp;(<span style="color:#2b91af;">Seq</span>.<span style="color:#74531f;">sum</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">kvp</span>.Value.Values))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:#2b91af;">Seq</span>.<span style="color:#74531f;">toList</span>
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Task</span>.<span style="font-weight:bold;color:#74531f;">FromResult</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">listeners</span>
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">member</span>&nbsp;_.<span style="font-weight:bold;color:#74531f;">GetTopScrobblesAsync</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">userName</span>&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">scrobbles</span>&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">users</span>.<span style="font-weight:bold;color:#74531f;">GetOrAdd</span>(<span style="font-weight:bold;color:#1f377f;">userName</span>,&nbsp;<span style="color:#2b91af;">ConcurrentDictionary</span>&lt;_,&nbsp;_&gt;&nbsp;())
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:#2b91af;">Seq</span>.<span style="color:#74531f;">map</span>&nbsp;(<span style="color:blue;">fun</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">kvp</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:#74531f;">scrobble</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">songs</span>[<span style="font-weight:bold;color:#1f377f;">kvp</span>.Key]&nbsp;<span style="font-weight:bold;color:#1f377f;">kvp</span>.Value)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:#2b91af;">Seq</span>.<span style="color:#74531f;">toList</span>
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Task</span>.<span style="font-weight:bold;color:#74531f;">FromResult</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">scrobbles</span>
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">member</span>&nbsp;_.<span style="font-weight:bold;color:#74531f;">Scrobble</span>&nbsp;(<span style="font-weight:bold;color:#1f377f;">userName</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">song</span>&nbsp;:&nbsp;<span style="color:#2b91af;">Song</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">scrobbleCount</span>)&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;<span style="color:#74531f;">addScrobbles</span>&nbsp;(<span style="font-weight:bold;color:#1f377f;">scrobbles</span>&nbsp;:&nbsp;<span style="color:#2b91af;">ConcurrentDictionary</span>&lt;_,&nbsp;_&gt;)&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">scrobbles</span>.<span style="font-weight:bold;color:#74531f;">AddOrUpdate</span>&nbsp;(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">song</span>.Id,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">scrobbleCount</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">fun</span>&nbsp;_&nbsp;<span style="font-weight:bold;color:#1f377f;">oldCount</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">oldCount</span>&nbsp;+&nbsp;<span style="font-weight:bold;color:#1f377f;">scrobbleCount</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:#74531f;">ignore</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">scrobbles</span>
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">users</span>.<span style="font-weight:bold;color:#74531f;">AddOrUpdate</span>&nbsp;(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">userName</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">ConcurrentDictionary</span>&lt;_,&nbsp;_&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;[&nbsp;<span style="color:#2b91af;">KeyValuePair</span>.<span style="font-weight:bold;color:#74531f;">Create</span>&nbsp;(<span style="font-weight:bold;color:#1f377f;">song</span>.Id,&nbsp;<span style="font-weight:bold;color:#1f377f;">scrobbleCount</span>)&nbsp;],
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">fun</span>&nbsp;_&nbsp;<span style="font-weight:bold;color:#1f377f;">scrobbles</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:#74531f;">addScrobbles</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">scrobbles</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:#74531f;">ignore</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">songs</span>.<span style="font-weight:bold;color:#74531f;">AddOrUpdate</span>&nbsp;(<span style="font-weight:bold;color:#1f377f;">song</span>.Id,&nbsp;<span style="font-weight:bold;color:#1f377f;">song</span>,&nbsp;<span style="color:blue;">fun</span>&nbsp;_&nbsp;_&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">song</span>)&nbsp;|&gt;&nbsp;<span style="color:#74531f;">ignore</span></pre>
+    </p>
+    <p>
+        Apart from the code shown here, only minor changes were required for the tests, such as using those curried creation functions instead of constructors, a cast to <code>SongService</code>, and a few other non-behavioural things like that. All tests still pass, so I consider this a faithful translation of the C# code base.
+    </p>
+    <h3 id="28c7110824e941098e791aa66e2ed5c4">
+        Conclusion <a href="#28c7110824e941098e791aa66e2ed5c4">#</a>
+    </h3>
+    <p>
+        This article does more groundwork. Since it may be illuminating to see one problem represented in more than one programming language, I present it in both C#, F#, and Haskell. The next article does exactly that: Translates this F# code to Haskell. Once all three bases are established, we can start introducing solution variations.
+    </p>
+    <p>
+        If you don't care about the Haskell examples, you can always go back to the <a href="">first article in this article series</a> and use the table of contents to jump to the next C# example.
+    </p>
+    <p>
+        <strong>Next:</strong> Porting song recommendations to Haskell.
+    </p>
+</div>
