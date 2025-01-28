@@ -1,0 +1,296 @@
+---
+layout: post
+title: "Song recommendations as an F# Impureim Sandwich"
+description: "A pure function on potentially massive data."
+date: 2025-01-27 16:13 UTC
+tags: [F#, Functional Programming]
+---
+{% include JB/setup %}
+
+<div id="post">
+    <p>
+        <em>{{ page.description }}</em>
+    </p>
+    <p>
+        This article is part of a larger article series titled <a href="">Alternative ways to design with functional programming</a>. In the <a href="">previous article</a>, you saw an example of applying the <a href="/2020/03/02/impureim-sandwich">Impureim Sandwich</a> pattern to the problem at hand: A song recommendation engine that sifts through much historical data.
+    </p>
+    <p>
+        As already covered in <a href="">Song recommendations as an Impureim Sandwich</a>, the drawback, if you will, of a <a href="/2025/01/13/recawr-sandwich">Recawr Sandwich</a> is that you need to collect all data from impure sources before you can pass it to a <a href="https://en.wikipedia.org/wiki/Pure_function">pure function</a>. It may happen that you need so much data that this strategy becomes untenable. <a href="" title="Song recommendations proof-of-concept memory measurements">This may be the case here</a>, but surprisingly often, what strikes us humans as being vast amounts are peanuts for computers.
+    </p>
+    <p>
+        So even if you don't find this particular example realistic, I'll forge on and show how to apply the Recawr Sandwich pattern to this problem. This is essentially a port to <a href="https://fsharp.org/">F#</a> of the C# code from the previous article. If you rather want to see some more realistic architectures to deal with the overall problem, you can always go back to the table of contents in the <a href="">first article of the series</a>.
+    </p>
+    <p>
+        In this article, I'm working with the <em>fsharp-pure-function</em> branch of the Git repository.
+    </p>
+    <h3 id="090279ba52c044c1b9a38d6d29ce26f1">
+        Collecting all the data <a href="#090279ba52c044c1b9a38d6d29ce26f1">#</a>
+    </h3>
+    <p>
+        Like in the previous article, we may start by adding two more members to the <code>SongService</code> interface, which will enable us to enumerate all songs and all users. The full interface, with all four methods, then looks like this:
+    </p>
+    <p>
+        <pre><span style="color:blue;">type</span>&nbsp;<span style="color:#2b91af;">SongService</span>&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">abstract</span>&nbsp;<span style="font-weight:bold;color:#74531f;">GetAllSongs</span>&nbsp;:&nbsp;<span style="color:#2b91af;">unit</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:#2b91af;">Task</span>&lt;<span style="color:#2b91af;">IEnumerable</span>&lt;<span style="color:#2b91af;">Song</span>&gt;&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">abstract</span>&nbsp;<span style="font-weight:bold;color:#74531f;">GetAllUsers</span>&nbsp;:&nbsp;<span style="color:#2b91af;">unit</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:#2b91af;">Task</span>&lt;<span style="color:#2b91af;">IEnumerable</span>&lt;<span style="color:#2b91af;">User</span>&gt;&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">abstract</span>&nbsp;<span style="font-weight:bold;color:#74531f;">GetTopListenersAsync</span>&nbsp;:&nbsp;songId&nbsp;:&nbsp;<span style="color:#2b91af;">int</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:#2b91af;">Task</span>&lt;<span style="color:#2b91af;">IReadOnlyCollection</span>&lt;<span style="color:#2b91af;">User</span>&gt;&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">abstract</span>&nbsp;<span style="font-weight:bold;color:#74531f;">GetTopScrobblesAsync</span>&nbsp;:&nbsp;userName&nbsp;:&nbsp;<span style="color:#2b91af;">string</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:#2b91af;">Task</span>&lt;<span style="color:#2b91af;">IReadOnlyCollection</span>&lt;<span style="color:#2b91af;">Scrobble</span>&gt;&gt;</pre>
+    </p>
+    <p>
+        If you compare with the interface definition shown in the article <a href="">Porting song recommendations to F#</a>, you'll see that <code>GetAllSongs</code> and <code>GetAllUsers</code> are the new methods.
+    </p>
+    <p>
+        They enable you to collect all top listeners, and all top scrobbles, even though it may take some time. To gather all the top listeners, we may add this <code>collectAllTopListeners</code> action:
+    </p>
+    <p>
+        <pre><span style="color:blue;">let</span>&nbsp;<span style="color:#74531f;">collectAllTopListeners</span>&nbsp;(<span style="font-weight:bold;color:#1f377f;">songService</span>&nbsp;:&nbsp;<span style="color:#2b91af;">SongService</span>)&nbsp;=&nbsp;<span style="color:blue;">task</span>&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">d</span>&nbsp;=&nbsp;<span style="color:#2b91af;">Dictionary</span>&lt;<span style="color:#2b91af;">int</span>,&nbsp;<span style="color:#2b91af;">IReadOnlyCollection</span>&lt;<span style="color:#2b91af;">User</span>&gt;&gt;&nbsp;()
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">songs</span>&nbsp;=&nbsp;<span style="font-weight:bold;color:#1f377f;">songService</span>.<span style="font-weight:bold;color:#74531f;">GetAllSongs</span>&nbsp;()
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">do!</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">songs</span>&nbsp;|&gt;&nbsp;<span style="color:#2b91af;">TaskSeq</span>.<span style="color:#74531f;">iter</span>&nbsp;(<span style="color:blue;">fun</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">s</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">task</span>&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">topListeners</span>&nbsp;=&nbsp;<span style="font-weight:bold;color:#1f377f;">songService</span>.<span style="font-weight:bold;color:#74531f;">GetTopListenersAsync</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">s</span>.Id
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">d</span>.<span style="font-weight:bold;color:#74531f;">Add</span>&nbsp;(<span style="font-weight:bold;color:#1f377f;">s</span>.Id,&nbsp;<span style="font-weight:bold;color:#1f377f;">topListeners</span>)&nbsp;}&nbsp;)
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">d</span>&nbsp;:&gt;&nbsp;<span style="color:#2b91af;">IReadOnlyDictionary</span>&lt;_,&nbsp;_&gt;&nbsp;}</pre>
+    </p>
+    <p>
+        Likewise, you can amass all the top scrobbles with a similar action:
+    </p>
+    <p>
+        <pre><span style="color:blue;">let</span>&nbsp;<span style="color:#74531f;">collectAllTopScrobbles</span>&nbsp;(<span style="font-weight:bold;color:#1f377f;">songService</span>&nbsp;:&nbsp;<span style="color:#2b91af;">SongService</span>)&nbsp;=&nbsp;<span style="color:blue;">task</span>&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">d</span>&nbsp;=&nbsp;<span style="color:#2b91af;">Dictionary</span>&lt;<span style="color:#2b91af;">string</span>,&nbsp;<span style="color:#2b91af;">IReadOnlyCollection</span>&lt;<span style="color:#2b91af;">Scrobble</span>&gt;&gt;&nbsp;()
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">users</span>&nbsp;=&nbsp;<span style="font-weight:bold;color:#1f377f;">songService</span>.<span style="font-weight:bold;color:#74531f;">GetAllUsers</span>&nbsp;()
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">do!</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">users</span>&nbsp;|&gt;&nbsp;<span style="color:#2b91af;">TaskSeq</span>.<span style="color:#74531f;">iter</span>&nbsp;(<span style="color:blue;">fun</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">u</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">task</span>&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">topScrobbles</span>&nbsp;=&nbsp;<span style="font-weight:bold;color:#1f377f;">songService</span>.<span style="font-weight:bold;color:#74531f;">GetTopScrobblesAsync</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">u</span>.UserName
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">d</span>.<span style="font-weight:bold;color:#74531f;">Add</span>&nbsp;(<span style="font-weight:bold;color:#1f377f;">u</span>.UserName,&nbsp;<span style="font-weight:bold;color:#1f377f;">topScrobbles</span>)&nbsp;}&nbsp;)
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">d</span>&nbsp;:&gt;&nbsp;<span style="color:#2b91af;">IReadOnlyDictionary</span>&lt;_,&nbsp;_&gt;&nbsp;}</pre>
+    </p>
+    <p>
+        As you may have noticed, they're so similar that, had there been <a href="https://en.wikipedia.org/wiki/Rule_of_three_(computer_programming)">more than two</a>, we might consider extracting the similar parts to a reusable operation.
+    </p>
+    <p>
+        In both cases, we start with the action that enables us to enumerate all the resources (songs or scrobbles) that we're interested in. For each of these, we then invoke the action to get the 'top' resources for that song or scrobble. There's a massive <em>n+1</em> problem here, but you could conceivably parallelize all these queries, as they're independent. Still, it's bound to take much time, possibly hours.
+    </p>
+    <p>
+        All the data is kept in a dictionary per action, so two massive dictionaries in all. Once these two actions return, we're done with the <em>read</em> phase of the Recawr Sandwich.
+    </p>
+    <h3 id="5194a0ec946046068d42c086f7fd2697">
+        Traversals <a href="#5194a0ec946046068d42c086f7fd2697">#</a>
+    </h3>
+    <p>
+        You may have wondered about the above <code>TaskSeq.iter</code> action. That's not part of the standard library. What is it, and where does it come from?
+    </p>
+    <p>
+        It's a specialized <a href="/2024/11/11/traversals">traversal</a>, designed to make asynchronous <a href="https://en.wikipedia.org/wiki/Command%E2%80%93query_separation">Commands</a> more streamlined.
+    </p>
+    <p>
+        <pre><span style="color:blue;">let</span>&nbsp;<span style="color:#74531f;">iter</span>&nbsp;<span style="color:#74531f;">f</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">xs</span>&nbsp;=&nbsp;<span style="color:blue;">task</span>&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">units</span>&nbsp;=&nbsp;<span style="color:#74531f;">traverse</span>&nbsp;<span style="color:#74531f;">f</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">xs</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Seq</span>.<span style="color:#74531f;">iter</span>&nbsp;<span style="color:#74531f;">id</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">units</span>&nbsp;}</pre>
+    </p>
+    <p>
+        If you've ever wondered why the <em>identity function</em> (<code>id</code>) is useful, here's an example. In the first line of code, <code>units</code> is a <code>unit seq</code> value; i.e. a sequence of <code>unit</code> values. To make <code>TaskSeq.iter</code> as easy to use as possible, it should turn that multitude of <code>unit</code> values into a single <code>unit</code> value. There's more than one way to do that, but I found that using <code>Seq.iter</code> was about the most succinct option I could think of. Be that as it may, <code>Seq.iter</code> requires as an argument a function that returns <code>unit</code>, and since we already have <code>unit</code> values, <code>id</code> does the job.
+    </p>
+    <p>
+        The <code>iter</code> action uses the <code>TaskSeq</code> module's <code>traverse</code> function, which is defined like this:
+    </p>
+    <p>
+        <pre><span style="color:blue;">let</span>&nbsp;<span style="color:#74531f;">traverse</span>&nbsp;<span style="color:#74531f;">f</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">xs</span>&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;<span style="color:#74531f;">go</span>&nbsp;<span style="color:#1f377f;">acc</span>&nbsp;<span style="color:#1f377f;">x</span>&nbsp;=&nbsp;<span style="color:blue;">task</span>&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">x&#39;</span>&nbsp;=&nbsp;<span style="color:#1f377f;">x</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">acc&#39;</span>&nbsp;=&nbsp;<span style="color:#1f377f;">acc</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:#2b91af;">Seq</span>.<span style="color:#74531f;">append</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">acc&#39;</span>&nbsp;[<span style="font-weight:bold;color:#1f377f;">x&#39;</span>]&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">xs</span>&nbsp;|&gt;&nbsp;<span style="color:#2b91af;">Seq</span>.<span style="color:#74531f;">map</span>&nbsp;<span style="color:#74531f;">f</span>&nbsp;|&gt;&nbsp;<span style="color:#2b91af;">Seq</span>.<span style="color:#74531f;">fold</span>&nbsp;<span style="color:#74531f;">go</span>&nbsp;(<span style="color:blue;">task</span>&nbsp;{&nbsp;<span style="color:blue;">return</span>&nbsp;[]&nbsp;})</pre>
+    </p>
+    <p>
+        The type of <code>traverse</code> is <code>(&#39;a&nbsp;-&gt;&nbsp;#Task&lt;&#39;c&gt;)&nbsp;-&gt;&nbsp;&#39;a&nbsp;seq&nbsp;-&gt;&nbsp;Task&lt;&#39;c&nbsp;seq&gt;</code>; that is, it applies an asynchronous action to each of a sequence of <code>'a</code> values, and returns an asynchronous workflow that contains a sequence of <code>'c</code> values.
+    </p>
+    <h3 id="16c034285a8d41b39923e27c6b81788e">
+        Dictionary lookups <a href="#16c034285a8d41b39923e27c6b81788e">#</a>
+    </h3>
+    <p>
+        In .NET, queries that may fail are <a href="/2015/08/03/idiomatic-or-idiosyncratic">idiomatically</a> modelled with methods that take <code>out</code> parameters. This is also true for dictionary lookups. Since that kind of design doesn't compose well, it's useful to add a little helper function that instead returns an empty value. While you'd <a href="/2019/07/15/tester-doer-isomorphisms">generally do that by returning an option value</a>, in this case, an empty collection is more appropriate.
+    </p>
+    <p>
+        <pre><span style="color:blue;">let</span>&nbsp;<span style="color:#74531f;">findOrEmpty</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">key</span>&nbsp;(<span style="font-weight:bold;color:#1f377f;">d</span>&nbsp;:&nbsp;<span style="color:#2b91af;">IReadOnlyDictionary</span>&lt;_,&nbsp;<span style="color:#2b91af;">IReadOnlyCollection</span>&lt;_&gt;&gt;)&nbsp;=
+&nbsp;&nbsp;&nbsp;<span style="color:blue;">match</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">d</span>.<span style="font-weight:bold;color:#74531f;">TryGetValue</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">key</span>&nbsp;<span style="color:blue;">with</span>
+&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:blue;">true</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">v</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">v</span>
+&nbsp;&nbsp;&nbsp;|&nbsp;_&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:#2b91af;">List</span>.empty</pre>
+    </p>
+    <p>
+        You may have noticed that I also added a similar helper function in <a href="" titlehint="Song recommendations as a C# Impureim Sandwich">the C# example</a>, although there I called it <code>GetOrEmpty</code>.
+    </p>
+    <h3 id="cddd7cc72cf748b995fc0b58b0971c78">
+        Pure function with local mutation <a href="#cddd7cc72cf748b995fc0b58b0971c78">#</a>
+    </h3>
+    <p>
+        As a first step, we may wish to turn the <code>GetRecommendationsAsync</code> method into a pure function. If you look through the commits in the Git repository, you can see that I actually did this through a series of <a href="https://www.industriallogic.com/blog/whats-this-about-micro-commits/">micro-commits</a>, but here I only present a more coarse-grained version of the changes I made.
+    </p>
+    <p>
+        Instead of a method on a class, we now have a self-contained function that takes, as arguments, two dictionaries, but no <code>SongService</code> dependency.
+    </p>
+    <p>
+        <pre><span style="color:blue;">let</span>&nbsp;<span style="color:#74531f;">getRecommendations</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">topScrobbles</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">topListeners</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">userName</span>&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;1.&nbsp;Get&nbsp;user&#39;s&nbsp;own&nbsp;top&nbsp;scrobbles</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;2.&nbsp;Get&nbsp;other&nbsp;users&nbsp;who&nbsp;listened&nbsp;to&nbsp;the&nbsp;same&nbsp;songs</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;3.&nbsp;Get&nbsp;top&nbsp;scrobbles&nbsp;of&nbsp;those&nbsp;users</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;4.&nbsp;Aggregate&nbsp;the&nbsp;songs&nbsp;into&nbsp;recommendations</span>
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">scrobbles</span>&nbsp;=&nbsp;<span style="font-weight:bold;color:#1f377f;">topScrobbles</span>&nbsp;|&gt;&nbsp;<span style="color:#2b91af;">Dict</span>.<span style="color:#74531f;">findOrEmpty</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">userName</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">scrobblesSnapshot</span>&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">scrobbles</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:#2b91af;">Seq</span>.<span style="color:#74531f;">sortByDescending</span>&nbsp;(<span style="color:blue;">fun</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">s</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">s</span>.ScrobbleCount)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:#2b91af;">Seq</span>.<span style="color:#74531f;">truncate</span>&nbsp;100
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:#2b91af;">Seq</span>.<span style="color:#74531f;">toList</span>
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">recommendationCandidates</span>&nbsp;=&nbsp;<span style="color:#2b91af;">ResizeArray</span>&nbsp;()
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">for</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">scrobble</span>&nbsp;<span style="color:blue;">in</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">scrobblesSnapshot</span>&nbsp;<span style="color:blue;">do</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">otherListeners</span>&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">topListeners</span>&nbsp;|&gt;&nbsp;<span style="color:#2b91af;">Dict</span>.<span style="color:#74531f;">findOrEmpty</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">scrobble</span>.Song.Id
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">otherListenersSnapshot</span>&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">otherListeners</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:#2b91af;">Seq</span>.<span style="color:#74531f;">filter</span>&nbsp;(<span style="color:blue;">fun</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">u</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">u</span>.TotalScrobbleCount&nbsp;&gt;=&nbsp;10_000)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:#2b91af;">Seq</span>.<span style="color:#74531f;">sortByDescending</span>&nbsp;(<span style="color:blue;">fun</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">u</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">u</span>.TotalScrobbleCount)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:#2b91af;">Seq</span>.<span style="color:#74531f;">truncate</span>&nbsp;20
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:#2b91af;">Seq</span>.<span style="color:#74531f;">toList</span>
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">for</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">otherListener</span>&nbsp;<span style="color:blue;">in</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">otherListenersSnapshot</span>&nbsp;<span style="color:blue;">do</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">otherScrobbles</span>&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">topScrobbles</span>&nbsp;|&gt;&nbsp;<span style="color:#2b91af;">Dict</span>.<span style="color:#74531f;">findOrEmpty</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">otherListener</span>.UserName
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">otherScrobblesSnapshot</span>&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">otherScrobbles</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:#2b91af;">Seq</span>.<span style="color:#74531f;">filter</span>&nbsp;(<span style="color:blue;">fun</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">s</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">s</span>.Song.IsVerifiedArtist)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:#2b91af;">Seq</span>.<span style="color:#74531f;">sortByDescending</span>&nbsp;(<span style="color:blue;">fun</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">s</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">s</span>.Song.Rating)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:#2b91af;">Seq</span>.<span style="color:#74531f;">truncate</span>&nbsp;10
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:#2b91af;">Seq</span>.<span style="color:#74531f;">toList</span>
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">otherScrobblesSnapshot</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:#2b91af;">List</span>.<span style="color:#74531f;">map</span>&nbsp;(<span style="color:blue;">fun</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">s</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">s</span>.Song)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">recommendationCandidates</span>.<span style="font-weight:bold;color:#74531f;">AddRange</span>
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">recommendations</span>&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">recommendationCandidates</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:#2b91af;">Seq</span>.<span style="color:#74531f;">sortByDescending</span>&nbsp;(<span style="color:blue;">fun</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">s</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">s</span>.Rating)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:#2b91af;">Seq</span>.<span style="color:#74531f;">truncate</span>&nbsp;200
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:#2b91af;">Seq</span>.<span style="color:#74531f;">toList</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;:&gt;&nbsp;<span style="color:#2b91af;">IReadOnlyCollection</span>&lt;_&gt;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">recommendations</span></pre>
+    </p>
+    <p>
+        Since this is now a pure function, there's no need to run as an asynchronous workflow. The function no longer returns a <code>Task</code>, and I've also dispensed with the <em>Async</em> suffix.
+    </p>
+    <p>
+        The implementation still has imperative remnants. It initializes an empty <code>ResizeArray</code> (AKA <code>List&lt;T&gt;</code>), and loops through nested loops to repeatedly call <a href="https://learn.microsoft.com/dotnet/api/system.collections.generic.list-1.addrange">AddRange</a>.
+    </p>
+    <p>
+        Even though the function contains local state mutation, none of it escapes the function's scope. The function is <a href="https://en.wikipedia.org/wiki/Referential_transparency">referentially transparent</a> because it always returns the same result when given the same input, and it has no side effects.
+    </p>
+    <p>
+        You might still wish that it was 'more functional', which is certainly possible.
+    </p>
+    <h3 id="dda1233fb2ff4bc3b21d49d910fabf6f">
+        A single expression <a href="#dda1233fb2ff4bc3b21d49d910fabf6f">#</a>
+    </h3>
+    <p>
+        A curious property of expression-based languages is that you can conceivably write functions in 'one line of code'. Granted, it would often be a terribly wide line, not at all readable, a beast to maintain, and often with poor performance, so not something you'd want to alway do.
+    </p>
+    <p>
+        In this case, however, we <em>can</em> do that, although in order to stay within an <a href="/2019/11/04/the-80-24-rule">80x24 box</a>, we break the expression over multiple lines.
+    </p>
+    <p>
+        <pre><span style="color:blue;">let</span>&nbsp;<span style="color:#74531f;">getRecommendations</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">topScrobbles</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">topListeners</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">userName</span>&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;1.&nbsp;Get&nbsp;user&#39;s&nbsp;own&nbsp;top&nbsp;scrobbles</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;2.&nbsp;Get&nbsp;other&nbsp;users&nbsp;who&nbsp;listened&nbsp;to&nbsp;the&nbsp;same&nbsp;songs</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;3.&nbsp;Get&nbsp;top&nbsp;scrobbles&nbsp;of&nbsp;those&nbsp;users</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;4.&nbsp;Aggregate&nbsp;the&nbsp;songs&nbsp;into&nbsp;recommendations</span>
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">topScrobbles</span>
+&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:#2b91af;">Dict</span>.<span style="color:#74531f;">findOrEmpty</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">userName</span>
+&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:#2b91af;">Seq</span>.<span style="color:#74531f;">sortByDescending</span>&nbsp;(<span style="color:blue;">fun</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">s</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">s</span>.ScrobbleCount)
+&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:#2b91af;">Seq</span>.<span style="color:#74531f;">truncate</span>&nbsp;100
+&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:#2b91af;">Seq</span>.<span style="color:#74531f;">collect</span>&nbsp;(<span style="color:blue;">fun</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">scrobble</span>&nbsp;<span style="color:blue;">-&gt;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">topListeners</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:#2b91af;">Dict</span>.<span style="color:#74531f;">findOrEmpty</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">scrobble</span>.Song.Id
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:#2b91af;">Seq</span>.<span style="color:#74531f;">filter</span>&nbsp;(<span style="color:blue;">fun</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">u</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">u</span>.TotalScrobbleCount&nbsp;&gt;=&nbsp;10_000)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:#2b91af;">Seq</span>.<span style="color:#74531f;">sortByDescending</span>&nbsp;(<span style="color:blue;">fun</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">u</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">u</span>.TotalScrobbleCount)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:#2b91af;">Seq</span>.<span style="color:#74531f;">truncate</span>&nbsp;20
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:#2b91af;">Seq</span>.<span style="color:#74531f;">collect</span>&nbsp;(<span style="color:blue;">fun</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">otherListener</span>&nbsp;<span style="color:blue;">-&gt;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">topScrobbles</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:#2b91af;">Dict</span>.<span style="color:#74531f;">findOrEmpty</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">otherListener</span>.UserName
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:#2b91af;">Seq</span>.<span style="color:#74531f;">filter</span>&nbsp;(<span style="color:blue;">fun</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">s</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">s</span>.Song.IsVerifiedArtist)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:#2b91af;">Seq</span>.<span style="color:#74531f;">sortByDescending</span>&nbsp;(<span style="color:blue;">fun</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">s</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">s</span>.Song.Rating)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:#2b91af;">Seq</span>.<span style="color:#74531f;">truncate</span>&nbsp;10
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:#2b91af;">Seq</span>.<span style="color:#74531f;">map</span>&nbsp;(<span style="color:blue;">fun</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">s</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">s</span>.Song)))
+&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:#2b91af;">Seq</span>.<span style="color:#74531f;">sortByDescending</span>&nbsp;(<span style="color:blue;">fun</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">s</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">s</span>.Rating)
+&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:#2b91af;">Seq</span>.<span style="color:#74531f;">truncate</span>&nbsp;200
+&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:#2b91af;">Seq</span>.<span style="color:#74531f;">toList</span>
+&nbsp;&nbsp;&nbsp;&nbsp;:&gt;&nbsp;<span style="color:#2b91af;">IReadOnlyCollection</span>&lt;_&gt;</pre>
+    </p>
+    <p>
+        To be honest, the four lines of comments push the function definition over the edge of 24 lines of code, but without them, this variation actually does fit an 80x24 box. Even so, I'm not arguing that this is the best possible way to organize and lay out this function.
+    </p>
+    <p>
+        You may rightly complain that it's too dense. Perhaps you're also concerned about the <a href="https://wiki.c2.com/?ArrowAntiPattern">arrow code</a> tendency.
+    </p>
+    <p>
+        I'm not disagreeing, but at least this represents a milestone where the function is not only referentially transparent, but also implemented without local mutation. Not that that really should be the most important criterion, but once you have an entirely expression-based implementation, it's usually easier to break it up into smaller building blocks.
+    </p>
+    <h3 id="7d81ce38521b406fa306d4bfa79a44bb">
+        Composition from smaller functions <a href="#7d81ce38521b406fa306d4bfa79a44bb">#</a>
+    </h3>
+    <p>
+        To improve readability and maintainability, we may now extract helper functions. The first one easily suggests itself.
+    </p>
+    <p>
+        <pre><span style="color:blue;">let</span>&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:#74531f;">getUsersOwnTopScrobbles</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">topScrobbles</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">userName</span>&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">topScrobbles</span>
+&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:#2b91af;">Dict</span>.<span style="color:#74531f;">findOrEmpty</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">userName</span>
+&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:#2b91af;">Seq</span>.<span style="color:#74531f;">sortByDescending</span>&nbsp;(<span style="color:blue;">fun</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">s</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">s</span>.ScrobbleCount)
+&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:#2b91af;">Seq</span>.<span style="color:#74531f;">truncate</span>&nbsp;100</pre>
+    </p>
+    <p>
+        Each of the subexpressions in the above code listing are candidates for the same kind of treatment, like this one:
+    </p>
+    <p>
+        <pre><span style="color:blue;">let</span>&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:#74531f;">getOtherUsersWhoListenedToTheSameSongs</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">topListeners</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">scrobble</span>&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">topListeners</span>
+&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:#2b91af;">Dict</span>.<span style="color:#74531f;">findOrEmpty</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">scrobble</span>.Song.Id
+&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:#2b91af;">Seq</span>.<span style="color:#74531f;">filter</span>&nbsp;(<span style="color:blue;">fun</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">u</span>&nbsp;-&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">u</span>.TotalScrobbleCount&nbsp;&gt;=&nbsp;10_000)
+&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:#2b91af;">Seq</span>.<span style="color:#74531f;">sortByDescending</span>&nbsp;(<span style="color:blue;">fun</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">u</span>&nbsp;-&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">u</span>.TotalScrobbleCount)
+&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:#2b91af;">Seq</span>.<span style="color:#74531f;">truncate</span>&nbsp;20</pre>
+    </p>
+    <p>
+        Notice that these helper methods are marked <code>private</code> so that they remain implementation details within the module that exports the <code>getRecommendations</code> function.
+    </p>
+    <p>
+        With a few more helper functions, you can now implement the <code>getRecommendations</code> function by composing the helpers.
+    </p>
+    <p>
+        <pre><span style="color:blue;">let</span>&nbsp;<span style="color:#74531f;">getRecommendations</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">topScrobbles</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">topListeners</span>&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#74531f;">getUsersOwnTopScrobbles</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">topScrobbles</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&gt;&gt;&nbsp;<span style="color:#2b91af;">Seq</span>.<span style="color:#74531f;">collect</span>&nbsp;(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#74531f;">getOtherUsersWhoListenedToTheSameSongs</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">topListeners</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&gt;&gt;&nbsp;<span style="color:#2b91af;">Seq</span>.<span style="color:#74531f;">collect</span>&nbsp;(<span style="color:#74531f;">getTopSongsOfOtherUser</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">topScrobbles</span>))
+&nbsp;&nbsp;&nbsp;&nbsp;&gt;&gt;&nbsp;<span style="color:#74531f;">aggregateSongsIntoRecommendations</span></pre>
+    </p>
+    <p>
+        Notice that I've named each of the helper functions after the code comments that accompanied the previous incarnations of this function. If we consider <a href="http://butunclebob.com/ArticleS.TimOttinger.ApologizeIncode">code comments apologies for not properly organizing the code</a>, we've now managed to structure it in such a way that those apologies are no longer required.
+    </p>
+    <h3 id="7467fbb8e803446ea3dff035e7388301">
+        Conclusion <a href="#7467fbb8e803446ea3dff035e7388301">#</a>
+    </h3>
+    <p>
+        If you accept the (perhaps preposterous) assumption that it's possible to fit the required data in <a href="https://en.wikipedia.org/wiki/Persistent_data_structure">persistent data structures</a>, refactoring the recommendation algorithm to a pure function isn't that difficult. That's the pure part of a Recawr Sandwich. While I haven't shown the actual sandwich here, it's identical to the example shown in <a href="">Song recommendations as a C# Impureim Sandwich</a>.
+    </p>
+    <p>
+        I find the final incarnation of the code shown here to be quite attractive. While I've kept the helper functions <code>private</code>, it's always an option to promote them to <code>public</code> functions if you find that warranted. This could improve testability of the overall code base, albeit at the risk of increasing the surface area of the API that you have to maintain and secure.
+    </p>
+    <p>
+        There are always trade-offs to be considered. Even if you, eventually, find that for this particular example, the input data size is just <em>too</em> big to make this alternative viable, there are, in my experience, many other situations when this kind of architecture is a good solution. Even if the input size is a decent amount of megabytes, the simplification offered by an Impureim Sandwich may trump the larger memory footprint. As always, if you're concerned about performance, <a href="https://ericlippert.com/2012/12/17/performance-rant/">measure it</a>.
+    </p>
+    <p>
+        Before we turn to alternative architectures, we'll survey how this variation looks in <a href="https://www.haskell.org/">Haskell</a>. As is generally the case in this article series, if you don't care about Haskell, you can always go back to the table of contents in the <a href="">first article in the series</a> and instead navigate to the next article that interests you.
+    </p>
+    <p>
+        <strong>Next:</strong> Song recommendations as a Haskell Impureim Sandwich.
+    </p>
+</div>
