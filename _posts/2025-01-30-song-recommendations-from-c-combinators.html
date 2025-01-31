@@ -1,0 +1,131 @@
+---
+layout: post
+title: "Song recommendations from C# combinators"
+description: "LINQ-style composition, including SelectMany and Traverse."
+date: 2025-01-30 20:36 UTC
+tags: [Software Design]
+---
+{% include JB/setup %}
+
+<div id="post">
+    <p>
+        <em>{{ page.description }}</em>
+    </p>
+    <p>
+        This article is part of a larger series titled <a href="">Alternative ways to design with functional programming</a>. In the <a href="">previous article</a>, I described, in general terms, a pragmatic small-scale architecture that may <em>look</em> functional, although it really isn't.
+    </p>
+    <p>
+        Please consult the previous articles for context about the example code base. The code shown in this article is from the <em>combinators</em> Git branch.
+    </p>
+    <p>
+        The goal is to extract <a href="https://en.wikipedia.org/wiki/Pure_function">pure functions</a> from the overall recommendations algorithm and compose them using standard combinators, such as <code>SelectMany</code> (<a href="/2022/03/28/monads">monadic <em>bind</em></a>), <code>Select</code>, and <code>Traverse</code>.
+    </p>
+    <h3 id="a667e64d78a346eba94571361ec22fc4">
+        Composition from combinators <a href="#a667e64d78a346eba94571361ec22fc4">#</a>
+    </h3>
+    <p>
+        Let's start with the completed composition, and subsequently look at the most interesting parts.
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">Task</span>&lt;<span style="color:#2b91af;">IReadOnlyList</span>&lt;<span style="color:#2b91af;">Song</span>&gt;&gt;&nbsp;<span style="font-weight:bold;color:#74531f;">GetRecommendationsAsync</span>(<span style="color:blue;">string</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">userName</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;1.&nbsp;Get&nbsp;user&#39;s&nbsp;own&nbsp;top&nbsp;scrobbles</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;2.&nbsp;Get&nbsp;other&nbsp;users&nbsp;who&nbsp;listened&nbsp;to&nbsp;the&nbsp;same&nbsp;songs</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;3.&nbsp;Get&nbsp;top&nbsp;scrobbles&nbsp;of&nbsp;those&nbsp;users</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;4.&nbsp;Aggregate&nbsp;the&nbsp;songs&nbsp;into&nbsp;recommendations</span>
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;_songService.<span style="font-weight:bold;color:#74531f;">GetTopScrobblesAsync</span>(<span style="font-weight:bold;color:#1f377f;">userName</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.<span style="font-weight:bold;color:#74531f;">SelectMany</span>(<span style="font-weight:bold;color:#1f377f;">scrobbles</span>&nbsp;=&gt;&nbsp;<span style="color:#74531f;">UserTopScrobbles</span>(<span style="font-weight:bold;color:#1f377f;">scrobbles</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.<span style="font-weight:bold;color:#74531f;">Traverse</span>(<span style="font-weight:bold;color:#1f377f;">scrobble</span>&nbsp;=&gt;&nbsp;_songService
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.<span style="font-weight:bold;color:#74531f;">GetTopListenersAsync</span>(<span style="font-weight:bold;color:#1f377f;">scrobble</span>.Song.Id)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.<span style="font-weight:bold;color:#74531f;">Select</span>(<span style="color:#74531f;">TopListeners</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.<span style="font-weight:bold;color:#74531f;">SelectMany</span>(<span style="font-weight:bold;color:#1f377f;">users</span>&nbsp;=&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">users</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.<span style="font-weight:bold;color:#74531f;">Traverse</span>(<span style="font-weight:bold;color:#1f377f;">user</span>&nbsp;=&gt;&nbsp;_songService
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.<span style="font-weight:bold;color:#74531f;">GetTopScrobblesAsync</span>(<span style="font-weight:bold;color:#1f377f;">user</span>.UserName)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.<span style="font-weight:bold;color:#74531f;">Select</span>(<span style="color:#74531f;">TopScrobbles</span>))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.<span style="font-weight:bold;color:#74531f;">Select</span>(<span style="color:#74531f;">Songs</span>)))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.<span style="font-weight:bold;color:#74531f;">Select</span>(<span style="color:#74531f;">TakeTopRecommendations</span>));
+}</pre>
+    </p>
+    <p>
+        This is a single expression with nested subexpressions.
+    </p>
+    <p>
+        The functions <code>UserTopScrobbles</code>, <code>TopListeners</code>, <code>TopScrobbles</code>, <code>Songs</code>, and <code>TakeTopRecommendations</code> are <code>private</code> helper functions. Here's one of them:
+    </p>
+    <p>
+        <pre><span style="color:blue;">private</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:#2b91af;">IEnumerable</span>&lt;<span style="color:#2b91af;">Scrobble</span>&gt;&nbsp;<span style="color:#74531f;">UserTopScrobbles</span>(<span style="color:#2b91af;">IEnumerable</span>&lt;<span style="color:#2b91af;">Scrobble</span>&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">scrobbles</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">scrobbles</span>.<span style="font-weight:bold;color:#74531f;">OrderByDescending</span>(<span style="font-weight:bold;color:#1f377f;">scrobble</span>&nbsp;=&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">scrobble</span>.ScrobbleCount).<span style="font-weight:bold;color:#74531f;">Take</span>(100);
+}</pre>
+    </p>
+    <p>
+        The other helpers are also simple, single-expression functions like this one.
+    </p>
+    <p>
+        As <a href="https://tyrrrz.me/blog/pure-impure-segregation-principle">Oleksii Holub implies</a>, you could make each of these small functions <code>public</code> if you wished to test them individually.
+    </p>
+    <p>
+        Let's now look at the various building blocks that enable this composition.
+    </p>
+    <h3 id="2d6d18db84d84ada8084fd9a035918d6">
+        Asynchronous monad <a href="#2d6d18db84d84ada8084fd9a035918d6">#</a>
+    </h3>
+    <p>
+        C# (or .NET) in general only comes with standard combinators for <a href="https://learn.microsoft.com/dotnet/api/system.collections.generic.ienumerable-1">IEnumerable&lt;T&gt;</a>, so whenever you need them for other <a href="/2022/03/28/monads">monads</a>, you have to define them yourself (or pull in a reusable library that defines them). For the above composition, you'll need <code>SelectMany</code> and <code>Select</code> for <code>Task</code> computations. You can see implementations in the article <a href="/2022/06/06/asynchronous-monads">Asynchronous monads</a>, so I'll not repeat the code here.
+    </p>
+    <p>
+        One exception is this extension method, which is a variant monadic <em>return</em>, which I'm not sure if I've published before:
+    </p>
+    <p>
+        <pre><span style="color:blue;">internal</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:#2b91af;">Task</span>&lt;<span style="color:#2b91af;">T</span>&gt;&nbsp;<span style="color:#74531f;">AsTask</span>&lt;<span style="color:#2b91af;">T</span>&gt;(<span style="color:blue;">this</span>&nbsp;<span style="color:#2b91af;">T</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">source</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="color:#2b91af;">Task</span>.<span style="color:#74531f;">FromResult</span>(<span style="font-weight:bold;color:#1f377f;">source</span>);
+}</pre>
+    </p>
+    <p>
+        Nothing much is going on here, since it's just a wrapper of <a href="https://learn.microsoft.com/dotnet/api/system.threading.tasks.task.fromresult">Task.FromResult</a>. The <code>this</code> keyword, however, makes <code>AsTask</code> an extension method, which makes usage marginally prettier. It's not used in the above composition, but, as you'll see below, in the implementation of <code>Traverse</code>.
+    </p>
+    <h3 id="f71260c45e2b45df8a778db7182f5519">
+        Traversal <a href="#f71260c45e2b45df8a778db7182f5519">#</a>
+    </h3>
+    <p>
+        The <a href="/2024/11/11/traversals">traversal</a> could be implemented from a hypothetical <code>Sequence</code> action, but you can also implement it directly, which is what I chose to do here.
+    </p>
+    <p>
+        <pre><span style="color:blue;">internal</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:#2b91af;">Task</span>&lt;<span style="color:#2b91af;">IEnumerable</span>&lt;<span style="color:#2b91af;">TResult</span>&gt;&gt;&nbsp;<span style="color:#74531f;">Traverse</span>&lt;<span style="color:#2b91af;">T</span>,&nbsp;<span style="color:#2b91af;">TResult</span>&gt;(
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>&nbsp;<span style="color:#2b91af;">IEnumerable</span>&lt;<span style="color:#2b91af;">T</span>&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">source</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:#2b91af;">T</span>,&nbsp;<span style="color:#2b91af;">Task</span>&lt;<span style="color:#2b91af;">TResult</span>&gt;&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">selector</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">source</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.<span style="font-weight:bold;color:#74531f;">Select</span>(<span style="font-weight:bold;color:#1f377f;">selector</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.<span style="font-weight:bold;color:#74531f;">Aggregate</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Enumerable</span>.<span style="color:#74531f;">Empty</span>&lt;<span style="color:#2b91af;">TResult</span>&gt;().<span style="font-weight:bold;color:#74531f;">AsTask</span>(),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">async</span>&nbsp;(<span style="font-weight:bold;color:#1f377f;">acc</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">x</span>)&nbsp;=&gt;&nbsp;(<span style="color:blue;">await</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">acc</span>).<span style="font-weight:bold;color:#74531f;">Append</span>(<span style="color:blue;">await</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">x</span>));
+}</pre>
+    </p>
+    <p>
+        Mapping <code>selector</code> over <code>source</code> produces a sequence of tasks. The <code>Aggregate</code> expression subsequently inverts the <a href="https://bartoszmilewski.com/2014/01/14/functors-are-containers/">containers</a> to a single task that contains a sequence of result values.
+    </p>
+    <p>
+        That's really all there is to it.
+    </p>
+    <h3 id="b717fff9dd2b4bdb826dc62a3d3a9050">
+        Conclusion <a href="#b717fff9dd2b4bdb826dc62a3d3a9050">#</a>
+    </h3>
+    <p>
+        In the <a href="">previous article</a>, I made no secret of my position on this refactoring. For the example at hand, the benefit is at best marginal. The purpose of this article isn't to insist that you must write code like this. Rather, it's a demonstration of what's possible.
+    </p>
+    <p>
+        If you have a problem which is similar, but more complicated, refactoring to standard combinators <em>may</em> be a good idea. After all, a standard combinator like <code>SelectMany</code>, <code>Traverse</code>, etc. is well-understood and lawful. You should expect combinators to be defect-free, so using them instead of ad-hoc code constructs like nested loops with conditionals could help eliminate some trivial bugs.
+    </p>
+    <p>
+        Additionally, if you're working with a team comfortable with these few abstractions, code assembled from standard combinators may actually turn out to be <em>more</em> readable that code buried in ad-hoc imperative <a href="https://en.wikipedia.org/wiki/Control_flow">control flow</a>. And if not everyone on the team is on board with this style, perhaps it's <a href="/2015/08/03/idiomatic-or-idiosyncratic">an opportunity to push the envelope a bit</a>.
+    </p>
+    <p>
+        Of course, if you use a language where such constructs are already idiomatic, colleagues should already be used to this style of programming.
+    </p>
+    <p>
+        <strong>Next:</strong> Song recommendations from F# combinators.
+    </p>
+</div>
