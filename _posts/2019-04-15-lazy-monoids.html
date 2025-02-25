@@ -412,3 +412,68 @@ tags: [Software Design]
 		<strong>Next:</strong> <a href="/2017/11/20/monoids-accumulate">Monoids accumulate</a>.
 	</p>
 </div>
+<div id="comments">
+    <hr>
+    <h2 id="comments-header">
+        Comments
+    </h2>
+    <div class="comment" id="861167e818344e1497dac4329166d2ef">
+        <div class="comment-author"><a href="https://github.com/idg10">Ian Griffiths</a> <a href="#861167e818344e1497dac4329166d2ef">#</a></div>
+        <div class="comment-content">
+		<p>In the <a href="#6d247327cf214fa698dc9ec29693bd6f">Lazy monoids as applicative operations</a> section, you mention "<code>Apply</code> overloads".
+		In pondering what those might look like, I found the two examples in the <a href="https://blog.ploeh.dk/2018/10/01/applicative-functors/#cef395ee19644f30bfd1ad7a84b6f912">A C# perspective</a>
+		section of your post on applicative functors, and from those, drew the conclusion that <code>Apply</code> for <code>Lazy&lt;T&gt;</code> would look like this:</p>
+
+		<pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:#2b91af;">Lazy</span>&lt;<span style="color:#2b91af;">TResult</span>&gt;&nbsp;Apply&lt;<span style="color:#2b91af;">T</span>,&nbsp;<span style="color:#2b91af;">TResult</span>&gt;(
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>&nbsp;<span style="color:#2b91af;">Lazy</span>&lt;<span style="color:#2b91af;">Func</span>&lt;<span style="color:#2b91af;">T</span>,&nbsp;<span style="color:#2b91af;">TResult</span>&gt;&gt;&nbsp;selector,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Lazy</span>&lt;<span style="color:#2b91af;">T</span>&gt;&nbsp;source)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Lazy</span>&lt;<span style="color:#2b91af;">TResult</span>&gt;(()&nbsp;=&gt;&nbsp;selector.Value(source.Value));
+}</pre>
+
+		<p>
+			You want to be able to use <code>Apply</code> against a two-argument function, and since C# doesn't curry functions, we've got a couple of options. We could define an additional <code>Apply</code> overload to handle
+			two-argument functions. But since we're going to need to wrap up the function in a <code>Lazy</code> anyway, we could just curry while doing that:
+		</p>
+		<pre><span style="color:#2b91af;">Func</span>&lt;<span style="color:blue;">int</span>,&nbsp;<span style="color:blue;">int</span>,&nbsp;<span style="color:blue;">int</span>&gt;&nbsp;f&nbsp;=&nbsp;(i,&nbsp;j)&nbsp;=&gt;&nbsp;i&nbsp;+&nbsp;j;
+<span style="color:blue;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Lazy</span>&lt;<span style="color:#2b91af;">Func</span>&lt;<span style="color:blue;">int</span>,&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:blue;">int</span>,&nbsp;<span style="color:blue;">int</span>&gt;&gt;&gt;(x =&gt; y =&gt; f(x,&nbsp;y)).Apply(x).Apply(y);
+			</pre>
+		<p>
+			That seems in line not only with your formulation in the article on applicative functors, but also with how they look in Haskell: <code>Applicative</code> defines the first argument to <code>&lt;*&gt;</code> as being <code>f (a -&gt; b)</code>.
+			In other words, the first argument to <code>Apply</code> is not a function, it's a function wrapped in a functor. In Haskell, that means doing something like this:
+			<code>((Just (+)) &lt;*&gt; (Just 10)) &lt;*&gt; (Just 32)</code>
+		</p>
+			
+		<p>
+			But that's apparently not what you've done here. You've called <code>Apply</code> directly on a function (and not a function wrapped in <code>Lazy</code>). But isn't the point of applicative functors that it's not just values that are wrapped up in
+			a functor: so, too, are the functions we might want to map over them, right? If you merely want to map a bare function over a functor, then you can just do that with <code>fmap</code> (or <code>Select</code>, as we normally call it in .NET).
+			(That said, your definition is consistent with <code>liftA2</code>. But my understanding is that the ability to define an applicative
+			in terms of <code>liftA2</code> is an optimization rather than a fundamental feature; originally only <code>&lt;*&gt</code> was part of the typeclass, with <code>liftA2</code> being defined in terms of <code>&lt;*&gt;</code> and <code>fmap</code>.)
+		</p>
+		<p>
+			Not that <code>Select</code> alone would be sufficient here. If you are starting with an unwrapped function, you'd use <code>Select</code> to apply the first argument, but the result would be a <code>Lazy&lt;Func&lt;int, int&gt;&gt;</code>,
+			so you would actually need to use <code>Apply</code> for the second step. So you'd end up with this oddity:
+		</p>
+
+		<pre><span style="color:#2b91af;">Func</span>&lt;<span style="color:blue;">int</span>,&nbsp;<span style="color:blue;">int</span>,&nbsp;<span style="color:blue;">int</span>&gt;&nbsp;f&nbsp;=&nbsp;(i,&nbsp;j)&nbsp;=&gt;&nbsp;i&nbsp;+&nbsp;j;
+<span style="color:#2b91af;">Func</span>&lt;<span style="color:blue;">int</span>,&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:blue;">int</span>,&nbsp;<span style="color:blue;">int</span>&gt;&gt;&nbsp;curried = x =&gt; y => f(x, y);
+return curried.Select(x).Apply(y);
+		</pre>
+
+		<p>
+			In Haskell, that would be equivalent to <code>((fmap (+)) (Just 10)) &lt;*&gt; (Just 32)</code>. Just like in the C# version, I'm using a plain function (<code>(+)</code>), not wrapped in a functor, and so I have to
+			use <code>fmap</code> (aka <code>Select</code>) to apply that unwrapped function to the value in the <code>Maybe</code>.
+		</p>
+		<p>
+			Obviously we could avoid the manual currying in C# by defining overloads that work with 2-argument functions, but I don't think it would change the fundamental fact that with applicative functors, you
+			apply a function wrapper in the functor, whereas if you just want to apply a function directly, that's ordinary functor <code>fmap</code> (aka <code>Select</code>).
+		</p>
+		<p>
+			Weird though this look, it makes plain something that I think is obscured in your <code>...Apply(x).Apply(y)</code> examples: the application of the first argument is a quite different operation, because you're applying
+			a lazy argument to a non-lazy function, but since the result is a lazy function, the application of the second argument needs to do something different: applying a lazy argument to a lazy function. Weird though
+			<code>f.Select(x).Apply(x)</code> looks, it does make it clear that the two stages are not the same thing.
+		</p>
+        </div>
+        <div class="comment-date">2025-02-25 18:40 UTC</div>
+    </div>
+</div>
