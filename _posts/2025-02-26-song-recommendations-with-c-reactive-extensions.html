@@ -1,0 +1,211 @@
+---
+layout: post
+title: "Song recommendations with C# Reactive Extensions"
+description: "Observables as small Recawr Sandwiches."
+date: 2025-02-26 14:23 UTC
+tags: [Architecture, Software Design]
+---
+{% include JB/setup %}
+
+<div id="post">
+    <p>
+        <em>{{ page.description }}</em>
+    </p>
+    <p>
+        This article is part of a series titled <a href="">Alternative ways to design with functional programming</a>. In the <a href="">previous article in the series</a>, you read some general reflections on a pipes-and-filters architecture. This article gives an example in C#.
+    </p>
+    <p>
+        The code shown here is from the <em>rx</em> branch of the example code Git repository. As the name implies, it uses <a href="https://reactivex.io/">ReactiveX</a>, also known as <a href="https://github.com/dotnet/reactive">Reactive Extensions for .NET</a>.
+    </p>
+    <p>
+        To be honest, when refactoring an algorithm that's originally based on sequences of data, there's nothing particularly <em>reactive</em> going on here. You may, therefore, argue that it's a poor fit for this kind of architecture. Be that as it may, keep in mind that the example code <a href="https://x.com/Tyrrrz/status/1493369905869213700">in reality runs for about ten minutes</a>, so moving towards an architecture that supports progress reporting or cancellation may not be entirely inappropriate.
+    </p>
+    <p>
+        The advantage of using Reactive Extensions for this particular example is that, compared to full message-bus-based frameworks, it offers a lightweight <a href="/2024/05/13/gratification">developer experience</a>, which enables us to focus on the essentials of the architecture.
+    </p>
+    <h3 id="e6e596b582524953aeab05c97f898d83">
+        Handle own scrobbles <a href="#e6e596b582524953aeab05c97f898d83">#</a>
+    </h3>
+    <p>
+        We'll start with the part of the process that finds the user's own top scrobbles. Please consult with <a href="https://tyrrrz.me/">Oleksii Holub</a>'s <a href="https://tyrrrz.me/blog/pure-impure-segregation-principle#interleaved-impurities">original article</a>, or my article on <a href="">characterizing the implementation</a>, if you need a refresher.
+    </p>
+    <p>
+        When using Reactive Extensions, should we model this part as <a href="https://learn.microsoft.com/dotnet/api/system.iobservable-1">IObservable&lt;T&gt;</a> or <a href="https://learn.microsoft.com/dotnet/api/system.iobserver-1">IObserver&lt;T&gt;</a>?
+    </p>
+    <p>
+        Once you recall that <code>IObservable&lt;T&gt;</code>, <a href="">being a monad</a>, is eminently composable, the choice is clear. The <code>IObserver&lt;T&gt;</code> interface, on the other hand, gives rise to a <a href="/2021/09/02/contravariant-functors">contravariant functor</a>, but since that abstraction has weaker language support, we should go with the <a href="/2022/03/28/monads">monad</a>.
+    </p>
+    <p>
+        We can start by declaring the type and its initializer:
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">sealed</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">HandleOwnScrobblesObservable</span>&nbsp;:&nbsp;<span style="color:#2b91af;">IObservable</span>&lt;<span style="color:#2b91af;">Scrobble</span>&gt;
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;<span style="color:blue;">string</span>&nbsp;userName;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;<span style="color:#2b91af;">SongService</span>&nbsp;_songService;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">HandleOwnScrobblesObservable</span>(<span style="color:blue;">string</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">userName</span>,&nbsp;<span style="color:#2b91af;">SongService</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">songService</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.userName&nbsp;=&nbsp;<span style="font-weight:bold;color:#1f377f;">userName</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;_songService&nbsp;=&nbsp;<span style="font-weight:bold;color:#1f377f;">songService</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;Implementation&nbsp;goes&nbsp;here...</span></pre>
+    </p>
+    <p>
+        Given a <code>userName</code> we want to produce a (finite) stream of scrobbles, so we declare that the class implements <code><span style="color:#2b91af;">IObservable</span>&lt;<span style="color:#2b91af;">Scrobble</span>&gt;</code>. An instance of this class is also going to need the <code>songService</code>, so that its implementation can query the out-of-process system that holds the data.
+    </p>
+    <p>
+        What's that, you say? Why does <code>_songService</code> have a leading underscore, while the <code>userName</code> field does not? Because Oleksii Golub used that naming convention for that service, but <a href="https://blog.ploeh.dk/2021/05/17/against-consistency/">I don't feel obliged to stay consistent</a> with that.
+    </p>
+    <p>
+        Given that we already have working code, the implementation is relatively straightforward.
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">IDisposable</span>&nbsp;<span style="font-weight:bold;color:#74531f;">Subscribe</span>(<span style="color:#2b91af;">IObserver</span>&lt;<span style="color:#2b91af;">Scrobble</span>&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">observer</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="color:#2b91af;">Observable</span>.<span style="color:#74531f;">Create</span>&lt;<span style="color:#2b91af;">Scrobble</span>&gt;(<span style="font-weight:bold;color:#74531f;">Produce</span>).<span style="font-weight:bold;color:#74531f;">Subscribe</span>(<span style="font-weight:bold;color:#1f377f;">observer</span>);
+}
+ 
+<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">async</span>&nbsp;<span style="color:#2b91af;">Task</span>&nbsp;<span style="font-weight:bold;color:#74531f;">Produce</span>(<span style="color:#2b91af;">IObserver</span>&lt;<span style="color:#2b91af;">Scrobble</span>&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">obs</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;Impure</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">scrobbles</span>&nbsp;=&nbsp;<span style="font-weight:bold;color:#8f08c4;">await</span>&nbsp;_songService.<span style="font-weight:bold;color:#74531f;">GetTopScrobblesAsync</span>(userName);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;Pure</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">scrobblesSnapshot</span>&nbsp;=&nbsp;<span style="font-weight:bold;color:#1f377f;">scrobbles</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.<span style="font-weight:bold;color:#74531f;">OrderByDescending</span>(<span style="font-weight:bold;color:#1f377f;">s</span>&nbsp;=&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">s</span>.ScrobbleCount)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.<span style="font-weight:bold;color:#74531f;">Take</span>(100);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;Impure</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">foreach</span>&nbsp;(<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">scrobble</span>&nbsp;<span style="font-weight:bold;color:#8f08c4;">in</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">scrobblesSnapshot</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">obs</span>.<span style="font-weight:bold;color:#74531f;">OnNext</span>(<span style="font-weight:bold;color:#1f377f;">scrobble</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">obs</span>.<span style="font-weight:bold;color:#74531f;">OnCompleted</span>();
+}</pre>
+    </p>
+    <p>
+        If you are unused to Reactive Extensions, the hardest part may be figuring out how to implement <code>Subscribe</code> without getting bogged down with having to write too much of the implementation. Rx is, after all, a reusable library, so it should come with some building blocks for that, and it does.
+    </p>
+    <p>
+        It seems that the simplest way to implement <code>Subscribe</code> is to delegate to <code>Observable.Create</code>, which takes an expression as input. You can write the implementation inline as a lambda expression, but here I've used a <code>private</code> helper method to slightly decouple the implementation from the library requirements.
+    </p>
+    <p>
+        The first impure step is the same as we've already seen in the 'reference implementation', and the pure step should be familiar too. In the final impure step, the <code>Produce</code> method publishes the scrobbles to any subscribers that may be listening.
+    </p>
+    <p>
+        This is the step where you'll need to extrapolate if you want to implement this kind of architecture on another framework than Reactive Extensions. If you're using a distributed message-based framework, you may have a message bus on which you publish messages, instead of <code>obs</code>. So <code>obs.OnNext</code> may, instead, be <code>bus.Publish</code>, or something to that effect. You may also need to package each scrobble in an explicit message object, and add correlation identifier and such.
+    </p>
+    <p>
+        In many message-based frameworks (<a href="https://particular.net/nservicebus">NServiceBus</a>, for example), you're expected to implement some kind of message handler where messages arrive at a <code>Handle</code> method, typically on a stateless, long-lived object. This enables you to set up robust, distributed systems, but also comes with some overhead that requires you to coordinate or correlate messages.
+    </p>
+    <p>
+        In this code example, <code>userName</code> is just a class field, and once the object is done producing messages, it signals so with <code>obs.OnCompleted()</code>, after which the stream has ended.
+    </p>
+    <p>
+        The Rx implementation is simpler than some message-based systems I just outlined. That's the reason I chose it for this article. It doesn't mean that it's better, because that simplicity comes at the expense of missing capabilities. This system has no persistence, and I while I'm no expert in this field, I don't think it easily expands to a distributed system. And again, to perhaps belabour the obvious, I'm not insisting that any of those capabilities are always needed. I'm only trying to outline some of the trade-offs you should be aware of.
+    </p>
+    <h3 id="67a381ed508a482cb6359fb3eb9a2a88">
+        Handle other listeners <a href="#67a381ed508a482cb6359fb3eb9a2a88">#</a>
+    </h3>
+    <p>
+        <code>HandleOwnScrobblesObservable</code> objects publish <code>Scrobble</code> objects. What does the next 'filter' look like? It's another observable stream, implemented by a class called <code>HandleOtherListenersObservable</code>. It implements <code><span style="color:#2b91af;">IObservable</span>&lt;<span style="color:#2b91af;">User</span>&gt;</code>, and its class declaration, constructor, and <code>Subscribe</code> implementation look a lot like what's already on display above. The main difference is the <code>Produce</code> method.
+    </p>
+    <p>
+        <pre><span style="color:blue;">private</span>&nbsp;<span style="color:blue;">async</span>&nbsp;<span style="color:#2b91af;">Task</span>&nbsp;<span style="font-weight:bold;color:#74531f;">Produce</span>(<span style="color:#2b91af;">IObserver</span>&lt;<span style="color:#2b91af;">User</span>&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">obs</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;Impure</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">otherListeners</span>&nbsp;=&nbsp;<span style="font-weight:bold;color:#8f08c4;">await</span>&nbsp;_songService
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.<span style="font-weight:bold;color:#74531f;">GetTopListenersAsync</span>(scrobble.Song.Id);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;Pure</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">otherListenersSnapshot</span>&nbsp;=&nbsp;<span style="font-weight:bold;color:#1f377f;">otherListeners</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.<span style="font-weight:bold;color:#74531f;">Where</span>(<span style="font-weight:bold;color:#1f377f;">u</span>&nbsp;=&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">u</span>.TotalScrobbleCount&nbsp;&gt;=&nbsp;10_000)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.<span style="font-weight:bold;color:#74531f;">OrderByDescending</span>(<span style="font-weight:bold;color:#1f377f;">u</span>&nbsp;=&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">u</span>.TotalScrobbleCount)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.<span style="font-weight:bold;color:#74531f;">Take</span>(20);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;Impure</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">foreach</span>&nbsp;(<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">otherListener</span>&nbsp;<span style="font-weight:bold;color:#8f08c4;">in</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">otherListenersSnapshot</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">obs</span>.<span style="font-weight:bold;color:#74531f;">OnNext</span>(<span style="font-weight:bold;color:#1f377f;">otherListener</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">obs</span>.<span style="font-weight:bold;color:#74531f;">OnCompleted</span>();
+}</pre>
+    </p>
+    <p>
+        Compared to the reference architecture, this implementation is hardly surprising. The most important point to make is that, as was the goal all along, this is another small <a href="/2025/01/13/recawr-sandwich">Recawr Sandwich</a>.
+    </p>
+    <p>
+        A third observable, <code>HandleOtherScrobblesObservable</code>, handles the third step of the algorithm, and looks much like <code>HandleOtherListenersObservable</code>. You can see it in the Git repository.
+    </p>
+    <h3 id="267208bf1d944a2890cba3efcf3edd97">
+        Composition <a href="#267208bf1d944a2890cba3efcf3edd97">#</a>
+    </h3>
+    <p>
+        The three observable streams constitute most of the building blocks required to implement the song recommendations algorithm. Notice the 'fan-out' nature of the observables. The first step starts with a single <code>userName</code> and produces up to 100 scrobbles. To handle <em>each</em> scrobble, a new instance of <code>HandleOtherListenersObservable</code> is required, and each of those produces up to twenty <code>User</code> notifications, and so on.
+    </p>
+    <p>
+        In the abstract, we may view the <code>HandleOwnScrobblesObservable</code> constructor as a function from <code>string</code> to <code><span style="color:#2b91af;">IObservable</span>&lt;<span style="color:#2b91af;">Scrobble</span>&gt;</code>. Likewise, we may view the <code>HandleOtherListenersObservable</code> constructor as a function that takes a single <code>Scrobble</code> as input, and gives an <code><span style="color:#2b91af;">IObservable</span>&lt;<span style="color:#2b91af;">User</span>&gt;</code> as return value. And finally, <code>HandleOtherScrobblesObservable</code> takes a single <code>User</code> as input to return <code><span style="color:#2b91af;">IObservable</span>&lt;<span style="color:#2b91af;">Song</span>&gt;</code> as output.
+    </p>
+    <p>
+        Quick, what does that look like, and how do you compose them?
+    </p>
+    <p>
+        Indeed, those are <a href="/2022/04/04/kleisli-composition">Kleisli arrows</a>, but in practice, we use <a href="/2022/03/28/monads">monadic bind</a> to compose them. In C# this usually means <code>SelectMany</code>.
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">async</span>&nbsp;<span style="color:#2b91af;">Task</span>&lt;<span style="color:#2b91af;">IReadOnlyList</span>&lt;<span style="color:#2b91af;">Song</span>&gt;&gt;&nbsp;<span style="font-weight:bold;color:#74531f;">GetRecommendationsAsync</span>(<span style="color:blue;">string</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">userName</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;1.&nbsp;Get&nbsp;user&#39;s&nbsp;own&nbsp;top&nbsp;scrobbles</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;2.&nbsp;Get&nbsp;other&nbsp;users&nbsp;who&nbsp;listened&nbsp;to&nbsp;the&nbsp;same&nbsp;songs</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;3.&nbsp;Get&nbsp;top&nbsp;scrobbles&nbsp;of&nbsp;those&nbsp;users</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;4.&nbsp;Aggregate&nbsp;the&nbsp;songs&nbsp;into&nbsp;recommendations</span>
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">songs</span>&nbsp;=&nbsp;<span style="font-weight:bold;color:#8f08c4;">await</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">HandleOwnScrobblesObservable</span>(<span style="font-weight:bold;color:#1f377f;">userName</span>,&nbsp;_songService)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.<span style="font-weight:bold;color:#74531f;">SelectMany</span>(<span style="font-weight:bold;color:#1f377f;">s</span>&nbsp;=&gt;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">HandleOtherListenersObservable</span>(<span style="font-weight:bold;color:#1f377f;">s</span>,&nbsp;_songService))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.<span style="font-weight:bold;color:#74531f;">SelectMany</span>(<span style="font-weight:bold;color:#1f377f;">u</span>&nbsp;=&gt;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">HandleOtherScrobblesObservable</span>(<span style="font-weight:bold;color:#1f377f;">u</span>,&nbsp;_songService))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.<span style="font-weight:bold;color:#74531f;">ToList</span>();
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">songs</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.<span style="font-weight:bold;color:#74531f;">OrderByDescending</span>(<span style="font-weight:bold;color:#1f377f;">s</span>&nbsp;=&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">s</span>.Rating)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.<span style="font-weight:bold;color:#74531f;">Take</span>(200)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.<span style="font-weight:bold;color:#74531f;">ToArray</span>();
+}</pre>
+    </p>
+    <p>
+        The fourth step of the algorithm, you may notice, isn't implemented as an observable, but rather as a standard LINQ pipeline. This is because sorting is required, and if there's a way to sort an observable, I'm not aware of it. After all, given that observable objects may represent infinite data streams, I readily accept that there's no <code>OrderByDescending</code> method on <code>IObservable&lt;T&gt;</code>. (But then, the <a href="https://www.nuget.org/packages/System.Reactive/">System.Reactive</a> library defines <code>Min</code> and <code>Max</code> operations, and exactly how those work when faced with infinite streams, I haven't investigated.)
+    </p>
+    <p>
+        While I could have created a helper function for that small <code>OrderByDescending</code>/<code>Take</code>/<code>ToArray</code> pipeline, I consider it under the <a href="https://wiki.haskell.org/Fairbairn_threshold">Fairbairn threshold</a>.
+    </p>
+    <h3 id="d8778bbf0f6a4e14b0d24181849ff943">
+        Query syntax <a href="#d8778bbf0f6a4e14b0d24181849ff943">#</a>
+    </h3>
+    <p>
+        You can also compose the algorithm using query syntax, which I personally find prettier.
+    </p>
+    <p>
+        <pre><span style="color:#2b91af;">IObservable</span>&lt;<span style="color:#2b91af;">Song</span>&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">obs</span>&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">from</span>&nbsp;scr&nbsp;<span style="color:blue;">in</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">HandleOwnScrobblesObservable</span>(<span style="font-weight:bold;color:#1f377f;">userName</span>,&nbsp;_songService)
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">from</span>&nbsp;usr&nbsp;<span style="color:blue;">in</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">HandleOtherListenersObservable</span>(scr,&nbsp;_songService)
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">from</span>&nbsp;sng&nbsp;<span style="color:blue;">in</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">HandleOtherScrobblesObservable</span>(usr,&nbsp;_songService)
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">select</span>&nbsp;sng;
+<span style="color:#2b91af;">IList</span>&lt;<span style="color:#2b91af;">Song</span>&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">songs</span>&nbsp;=&nbsp;<span style="font-weight:bold;color:#8f08c4;">await</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">obs</span>.<span style="font-weight:bold;color:#74531f;">ToList</span>();
+<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">songs</span>
+&nbsp;&nbsp;&nbsp;&nbsp;.<span style="font-weight:bold;color:#74531f;">OrderByDescending</span>(<span style="font-weight:bold;color:#1f377f;">s</span>&nbsp;=&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">s</span>.Rating)
+&nbsp;&nbsp;&nbsp;&nbsp;.<span style="font-weight:bold;color:#74531f;">Take</span>(200)
+&nbsp;&nbsp;&nbsp;&nbsp;.<span style="font-weight:bold;color:#74531f;">ToArray</span>();</pre>
+    </p>
+    <p>
+        In this code snippet I've used explicit variable type declarations (instead of using the <code>var</code> keyword) for the sole purpose of making it easier to see which types are involved.
+    </p>
+    <h3 id="5b5ac82d3d67486bac8118e59f6b9d1b">
+        Conclusion <a href="#5b5ac82d3d67486bac8118e59f6b9d1b">#</a>
+    </h3>
+    <p>
+        This article shows an implementation example of refactoring the song recommendations problem to a pipes-and-filters architecture. It uses Reactive Extensions for .NET, since this showcases the (de)composition in the simplest possible way. Hopefully, you can extrapolate from this to a more elaborate, distributed asynchronous message-based system, if you need something like that.
+    </p>
+    <p>
+        The next example makes a small move in that direction.
+    </p>
+    <p>
+        <strong>Next:</strong> Song recommendations with F# agents.
+    </p>
+</div>
