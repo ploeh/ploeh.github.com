@@ -1,0 +1,359 @@
+---
+layout: post
+title: "Song recommendations with F# agents"
+description: "MailboxProcessors as small Recawr Sandwiches."
+date: 2025-02-28 7:01 UTC
+tags: [F#, Architecture]
+---
+{% include JB/setup %}
+
+<div id="post">
+    <p>
+        <em>{{ page.description }}</em>
+    </p>
+    <p>
+        This article is part of a series named <a href="">Alternative ways to design with functional programming</a>. As the title implies, over a multitude of articles, I present various alternatives for applying functional programming to a particular problem. When I present the <a href="/2020/03/02/impureim-sandwich">Impureim Sandwich</a> design pattern, the most common reaction is: <em>What if you need to make additional, impure reads in the middle of an algorithm?</em>
+    </p>
+    <p>
+        This article series looks at alternatives when this (in my experience rare) requirement seems inescapable. A <a href="" memo="Song recommendations with pipes and filters">previous article</a> outlined a general alternative: Use some kind of pipes-and-filters architecture to turn an undisciplined <a href="https://martinfowler.com/eaaCatalog/transactionScript.html">Transaction Script</a> into a composition of 'filters', where each filter is a self-contained <a href="/2025/01/13/recawr-sandwich">Recawr Sandwich</a>.
+    </p>
+    <p>
+        Depending on the specific technology choices you make, you may encounter various terminology related to this kind of architecture. Filters may also be called <em>actors</em>, <em>message handlers</em>, or, as is the case in this article, <em>agents</em>. For a consistent pattern language, see <a href="/ref/eip">Enterprise Integration Patterns</a>.
+    </p>
+    <p>
+        The code shown here is taken from the <em>fsharp-agents</em> branch of the example code Git repository.
+    </p>
+    <h3 id="5950d36c50c5467ba893b1b80c2b5034">
+        Async instead of Task <a href="#5950d36c50c5467ba893b1b80c2b5034">#</a>
+    </h3>
+    <p>
+        The <a href="https://fsharp.org/">F#</a> base library comes with a class called <a href="https://fsharp.github.io/fsharp-core-docs/reference/fsharp-control-fsharpmailboxprocessor-1.html">MailboxProcessor</a>, often called an <em>agent</em>. It's an in-memory message handler that can run in the background of other tasks, pulling messages off an internal queue one at a time.
+    </p>
+    <p>
+        It's been around for such a long time that its API is based on <a href="https://fsharp.github.io/fsharp-core-docs/reference/fsharp-control-fsharpasync-1.html">Async&lt;T&gt;</a>, which precedes the now-ubiquitous <a href="https://learn.microsoft.com/dotnet/api/system.threading.tasks.task-1">Task&lt;TResult&gt;</a>. While conversions exist, I thought it'd make the example code simpler if I first redefined the <code>SongService</code> interface to return <code>Async</code>-based results.
+    </p>
+    <p>
+        <pre><span style="color:blue;">type</span>&nbsp;<span style="color:#2b91af;">SongService</span>&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">abstract</span>&nbsp;<span style="font-weight:bold;color:#74531f;">GetTopListenersAsync</span>&nbsp;:&nbsp;songId&nbsp;:&nbsp;<span style="color:#2b91af;">int</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:#2b91af;">Async</span>&lt;<span style="color:#2b91af;">IReadOnlyCollection</span>&lt;<span style="color:#2b91af;">User</span>&gt;&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">abstract</span>&nbsp;<span style="font-weight:bold;color:#74531f;">GetTopScrobblesAsync</span>&nbsp;:&nbsp;userName&nbsp;:&nbsp;<span style="color:#2b91af;">string</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:#2b91af;">Async</span>&lt;<span style="color:#2b91af;">IReadOnlyCollection</span>&lt;<span style="color:#2b91af;">Scrobble</span>&gt;&gt;</pre>
+    </p>
+    <p>
+        Keep in mind that, despite lack of the <a href="/2015/08/03/idiomatic-or-idiosyncratic">idiomatic</a> <code>I</code> prefix, this is an interface, not an abstract class. (It would have had to have the <code>[&lt;AbstractClass&gt;]</code> attribute to be an abstract class.)
+    </p>
+    <p>
+        This is minor change that only affected a few lines of code where I had to change from  <a href="https://learn.microsoft.com/dotnet/fsharp/language-reference/task-expressions">task expressions</a> to <a href="https://learn.microsoft.com/dotnet/fsharp/language-reference/async-expressions">async expressions</a>.
+    </p>
+    <h3 id="49e02be04bbc453db9c6a2c1df8a142e">
+        Gather own scrobbles <a href="#49e02be04bbc453db9c6a2c1df8a142e">#</a>
+    </h3>
+    <p>
+        As was also the case in the <a href="">previous article</a>, we may as well start at the beginning of the algorithm. Given a user name, we'd like to find that user's top scrobbles. Once we've found them, we'd like to post them to an agent. Since F# agents are message-based, we must define an appropriate message type.
+    </p>
+    <p>
+        <pre><span style="color:blue;">type</span>&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:#2b91af;">ScrobbleMessage</span>&nbsp;=&nbsp;<span style="color:#2b91af;">Scrobble</span>&nbsp;<span style="color:blue;">of</span>&nbsp;<span style="color:#2b91af;">Scrobble</span>&nbsp;|&nbsp;<span style="color:#2b91af;">EndOfStream</span></pre>
+    </p>
+    <p>
+        If you recall the <a href="">previous article</a>, with <a href="https://github.com/dotnet/reactive">Reactive Extensions for .NET</a>, you can use the <a href="https://learn.microsoft.com/dotnet/api/system.iobserver-1.oncompleted">OnCompleted</a> method to signal the end of a stream. Such a method isn't available for an F# agent, because an agent is a consumer of messages, rather than a stream of values. For that reason, a <code>ScrobbleMessage</code> may either be a <code>Scrobble</code> or an <code>EndOfStream</code>.
+    </p>
+    <p>
+        With the message definition in place, you can define the first step of the algorithm like this:
+    </p>
+    <p>
+        <pre><span style="color:green;">//&nbsp;string&nbsp;-&gt;&nbsp;SongService&nbsp;-&gt;&nbsp;MailboxProcessor&lt;ScrobbleMessage&gt;&nbsp;-&gt;&nbsp;Async&lt;unit&gt;</span>
+<span style="color:blue;">let</span>&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:#74531f;">gatherOwnScrobbles</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">userName</span>&nbsp;(<span style="font-weight:bold;color:#1f377f;">songService</span>&nbsp;:&nbsp;<span style="color:#2b91af;">SongService</span>)&nbsp;(<span style="color:#1f377f;">channel</span>&nbsp;:&nbsp;<span style="color:#2b91af;">MailboxProcessor</span>&lt;_&gt;)&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">async</span>&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;Impure</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">scrobbles</span>&nbsp;=&nbsp;<span style="font-weight:bold;color:#1f377f;">songService</span>.<span style="font-weight:bold;color:#74531f;">GetTopScrobblesAsync</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">userName</span>
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;Pure</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">scrobblesSnapshot</span>&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">scrobbles</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:#2b91af;">Seq</span>.<span style="color:#74531f;">sortByDescending</span>&nbsp;_.ScrobbleCount
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:#2b91af;">Seq</span>.<span style="color:#74531f;">truncate</span>&nbsp;100
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:#2b91af;">Seq</span>.<span style="color:#74531f;">map</span>&nbsp;<span style="color:#2b91af;">Scrobble</span>
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;Impure</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Seq</span>.<span style="color:#74531f;">iter</span>&nbsp;<span style="color:#1f377f;">channel</span>.<span style="font-weight:bold;color:#74531f;">Post</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">scrobblesSnapshot</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#1f377f;">channel</span>.<span style="font-weight:bold;color:#74531f;">Post</span>&nbsp;<span style="color:#2b91af;">EndOfStream</span>&nbsp;}</pre>
+    </p>
+    <p>
+        The <code>gatherOwnScrobbles</code> action isn't itself an agent. Rather, it takes one as input, to which it posts messages. Notice that the operation returns an <code>Async&lt;unit&gt;</code> value. In other words, it doesn't really return anything, but rather posts messages to the injected <code>channel</code>.
+    </p>
+    <p>
+        Like in the <a href="">previous article</a>, once all scrobbles are posted, <code>gatherOwnScrobbles</code> indicates the end of the stream by posting a final <code>EndOfStream</code> message. This still works in this implementation, since F# agents (as far as I've been able ascertain) handle messages in order. If you're using a distributed messaging framework based on a message bus, and possibly handlers running on multiple machines, you can't always assume this to be the case. As I wrote in <a href="">Song recommendations with pipes and filters</a>, you'll need to extrapolate from both this and the previous article in such cases. This is where a pattern language as presented in <a href="/ref/eip">Enterprise Integration Patterns</a> may come in handy. Perhaps you need a <a href="https://www.enterpriseintegrationpatterns.com/patterns/messaging/MessageSequence.html">Message Sequence</a> in this case.
+    </p>
+    <p>
+        Be that as it may, the <code>gatherOwnScrobbles</code> action is a small <a href="/2025/01/13/recawr-sandwich">Recawr Sandwich</a> with clearly delineated steps.
+    </p>
+    <p>
+        The natural next step is to implement a MailboxProcessor that can receive those scrobble messages.
+    </p>
+    <h3 id="4ec7b8d1fd6a4158ac86dc83621e8082">
+        Gather other listeners <a href="#4ec7b8d1fd6a4158ac86dc83621e8082">#</a>
+    </h3>
+    <p>
+        To handle the messages posted by <code>gatherOwnScrobbles</code> we'll create an agent. This one, however, isn't going to complete the algorithm. Rather, it's going to publish even more messages that yet another agent may deal with. For that, we need another message type:
+    </p>
+    <p>
+        <pre><span style="color:blue;">type</span>&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:#2b91af;">UserMessage</span>&nbsp;=&nbsp;<span style="color:#2b91af;">User</span>&nbsp;<span style="color:blue;">of</span>&nbsp;<span style="color:#2b91af;">User</span>&nbsp;|&nbsp;<span style="color:#2b91af;">EndOfStream</span></pre>
+    </p>
+    <p>
+        We see what starts to look like a pattern: A 'payload' case, and a case to indicate that no more message will be coming.
+    </p>
+    <p>
+        The following action creates an agent that handles scrobble messages and publishes user messages:
+    </p>
+    <p>
+        <pre><span style="color:green;">//&nbsp;SongService&nbsp;-&gt;&nbsp;MailboxProcessor&lt;UserMessage&gt;&nbsp;-&gt;&nbsp;MailboxProcessor&lt;ScrobbleMessage&gt;</span>
+<span style="color:blue;">let</span>&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:#74531f;">gatherOtherListeners</span>
+&nbsp;&nbsp;&nbsp;&nbsp;(<span style="font-weight:bold;color:#1f377f;">songService</span>&nbsp;:&nbsp;<span style="color:#2b91af;">SongService</span>)&nbsp;(<span style="color:#1f377f;">channel</span>&nbsp;:&nbsp;<span style="color:#2b91af;">MailboxProcessor</span>&lt;_&gt;)&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">MailboxProcessor</span>.<span style="font-weight:bold;color:#74531f;">Start</span>&nbsp;&lt;|&nbsp;<span style="color:blue;">fun</span>&nbsp;<span style="color:#1f377f;">inbox</span>&nbsp;<span style="color:blue;">-&gt;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;<span style="color:blue;">rec</span>&nbsp;<span style="color:#74531f;">loop</span>&nbsp;()&nbsp;=&nbsp;<span style="color:blue;">async</span>&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">message</span>&nbsp;=&nbsp;<span style="color:#1f377f;">inbox</span>.<span style="font-weight:bold;color:#74531f;">Receive</span>&nbsp;()
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">match</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">message</span>&nbsp;<span style="color:blue;">with</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:#2b91af;">Scrobble</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">scrobble</span>&nbsp;<span style="color:blue;">-&gt;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;Impure</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">otherListeners</span>&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">songService</span>.<span style="font-weight:bold;color:#74531f;">GetTopListenersAsync</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">scrobble</span>.Song.Id
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;Pure</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">otherListenersSnapshot</span>&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">otherListeners</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:#2b91af;">Seq</span>.<span style="color:#74531f;">filter</span>&nbsp;(<span style="color:blue;">fun</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">u</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">u</span>.TotalScrobbleCount&nbsp;&gt;=&nbsp;10_000)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:#2b91af;">Seq</span>.<span style="color:#74531f;">sortByDescending</span>&nbsp;_.TotalScrobbleCount
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:#2b91af;">Seq</span>.<span style="color:#74531f;">truncate</span>&nbsp;20
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:#2b91af;">Seq</span>.<span style="color:#74531f;">map</span>&nbsp;<span style="color:#2b91af;">User</span>
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;Impure</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Seq</span>.<span style="color:#74531f;">iter</span>&nbsp;<span style="color:#1f377f;">channel</span>.<span style="font-weight:bold;color:#74531f;">Post</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">otherListenersSnapshot</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return!</span>&nbsp;<span style="color:#74531f;">loop</span>&nbsp;()
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:#2b91af;">ScrobbleMessage</span>.<span style="color:#2b91af;">EndOfStream</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:#1f377f;">channel</span>.<span style="font-weight:bold;color:#74531f;">Post</span>&nbsp;<span style="color:#2b91af;">EndOfStream</span>&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#74531f;">loop</span>&nbsp;()</pre>
+    </p>
+    <p>
+        If you can look past some of the infrastructure required to initialize and implement the agent (<code>MailboxProcessor</code>), the main message handler is, once again, a small Recawr Sandwich. The other case in the <code>match</code> expression maps one <code>EndOfStream</code> case to another <code>EndOfStream</code> case. Notice that this case does <em>not</em> recursively call <code>loop</code>. This means that once the agent receives an <code>EndOfStream</code> message, it stops all further message processing.
+    </p>
+    <p>
+        You may have noticed that the <code>loop</code> starts with an 'unmarked' impure step to receive a message. Once a message arrives, it matches on the message. You may argue that there seems to be more than one impure step in the sandwich, but as I've previously outlined, <a href="/2023/10/09/whats-a-sandwich">sometimes a sandwich has more that three layers</a>.
+    </p>
+    <p>
+        I could have compressed the code that receives and dispatches the message to a single line of code:
+    </p>
+    <p>
+        <pre><span style="color:blue;">match!</span>&nbsp;<span style="color:#1f377f;">input</span>.<span style="font-weight:bold;color:#74531f;">Receive</span>&nbsp;()&nbsp;<span style="color:blue;">with</span></pre>
+    </p>
+    <p>
+        I felt, however, that for readers who aren't familiar with F# agents, it would help to instead make things more explicit by having a named <code>message</code> value in the code. It's an example of using an explicit variable for readability purposes.
+    </p>
+    <p>
+        A third agent, created by <code>gatherOtherScrobbles</code>, handles the messages published by <code>gatherOtherListeners</code> by publishing even more song messages. We'll get back to that message type in a moment, but the agent looks similar to the one shown above. You may consult the Git repository if you're curious about the details.
+    </p>
+    <h3 id="a2b09f2657e2497f955927fa13adc438">
+        Collecting the recommendations <a href="#a2b09f2657e2497f955927fa13adc438">#</a>
+    </h3>
+    <p>
+        The final agent is a bit different, because it needs to do two things:
+    </p>
+    <ul>
+        <li>Handle song messages</li>
+        <li>Return the recommendations once they're ready</li>
+    </ul>
+    <p>
+        Because of that extra responsibility, the message type isn't a two-way discriminated union. Instead, it has a third case that we haven't yet seen.
+    </p>
+    <p>
+        <pre><span style="color:blue;">type</span>&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:#2b91af;">SongMessage</span>&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:#2b91af;">Song</span>&nbsp;<span style="color:blue;">of</span>&nbsp;<span style="color:#2b91af;">Song</span>
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:#2b91af;">EndOfStream</span>
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:#2b91af;">Fetch</span>&nbsp;<span style="color:blue;">of</span>&nbsp;<span style="color:#2b91af;">AsyncReplyChannel</span>&lt;<span style="color:#2b91af;">Option</span>&lt;<span style="color:#2b91af;">IReadOnlyCollection</span>&lt;<span style="color:#2b91af;">Song</span>&gt;&gt;&gt;</pre>
+    </p>
+    <p>
+        The <code>Song</code> and <code>EndOfStream</code> cases are similar to what we've already seen. These are the two messages that the <code>gatherOtherScrobbles</code> agent publishes.
+    </p>
+    <p>
+        What does the third case, <code>Fetch</code>, do? It looks odd, with its <code>AsyncReplyChannel</code> payload. In a moment, you'll see how it's used, but essentially, this is how F# agents support the <a href="https://www.enterpriseintegrationpatterns.com/patterns/messaging/RequestReply.html">Request-Reply</a> pattern. Let's see it all in action:
+    </p>
+    <p>
+        <pre><span style="color:green;">//&nbsp;unit&nbsp;-&gt;&nbsp;MailboxProcessor&lt;SongMessage&gt;</span>
+<span style="color:blue;">let</span>&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:#74531f;">collectRecommendations</span>&nbsp;()&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">MailboxProcessor</span>.<span style="font-weight:bold;color:#74531f;">Start</span>&nbsp;&lt;|&nbsp;<span style="color:blue;">fun</span>&nbsp;<span style="color:#1f377f;">input</span>&nbsp;<span style="color:blue;">-&gt;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;<span style="color:blue;">rec</span>&nbsp;<span style="color:#74531f;">loop</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">recommendations</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">isDone</span>&nbsp;=&nbsp;<span style="color:blue;">async</span>&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">message</span>&nbsp;=&nbsp;<span style="color:#1f377f;">input</span>.<span style="font-weight:bold;color:#74531f;">Receive</span>&nbsp;()
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">match</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">message</span>&nbsp;<span style="color:blue;">with</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:#2b91af;">Song</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">song</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">return!</span>&nbsp;<span style="color:#74531f;">loop</span>&nbsp;(<span style="font-weight:bold;color:#1f377f;">song</span>&nbsp;<span style="color:#2b91af;">::</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">recommendations</span>)&nbsp;<span style="color:blue;">false</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:#2b91af;">SongMessage</span>.<span style="color:#2b91af;">EndOfStream</span>&nbsp;<span style="color:blue;">-&gt;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">recommendations</span>&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">recommendations</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:#2b91af;">List</span>.<span style="color:#74531f;">sortByDescending</span>&nbsp;_.Rating
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:#2b91af;">List</span>.<span style="color:#74531f;">truncate</span>&nbsp;200
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return!</span>&nbsp;<span style="color:#74531f;">loop</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">recommendations</span>&nbsp;<span style="color:blue;">true</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:#2b91af;">Fetch</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">replyChannel</span>&nbsp;<span style="color:blue;">-&gt;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">isDone</span>&nbsp;<span style="color:blue;">then</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">replyChannel</span>.<span style="font-weight:bold;color:#74531f;">Reply</span>&nbsp;(<span style="color:#2b91af;">Some</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">recommendations</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">else</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">replyChannel</span>.<span style="font-weight:bold;color:#74531f;">Reply</span>&nbsp;<span style="color:#2b91af;">None</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return!</span>&nbsp;<span style="color:#74531f;">loop</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">recommendations</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">isDone</span>&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#74531f;">loop</span>&nbsp;[]&nbsp;<span style="color:blue;">false</span></pre>
+    </p>
+    <p>
+        The purpose of this agent is to collect all the songs that the previous agent recommended. Once it receives an <code>EndOfStream</code> message, it sorts the songs and keeps only the top 200.
+    </p>
+    <p>
+        Note that the recursive <code>loop</code> action takes two parameters, <code>recommendations</code> and <code>isDone</code>. The loops starts with an empty song list and the flag set to <code>false</code>. When a new <code>Song</code> arrives, the loop prepends the song onto the song list and recurses. Notice that in that case, the flag remains <code>false</code>.
+    </p>
+    <p>
+        Only when an <code>EndOfStream</code> message arrives does the agent calculate the final recommendations. Afterwards, it recursively calls <code>loop</code> with the flag raised (set to <code>true</code>). Notice, however, that the agent doesn't stop handling messages, like the other agents do when encountering an <code>EndOfStream</code> message.
+    </p>
+    <p>
+        At any time during execution, a <code>Fetch</code> message may arrive. This is a request to return the recommendations, if they're ready. In that case, the <code>recommendations</code> are wrapped in a <code>Some</code> case and returned. If the recommendations are not yet ready, <code>None</code> is returned instead.
+    </p>
+    <p>
+        This enables the overall, blocking method to poll for the recommendations until they are ready. You'll see how this works in a moment.
+    </p>
+    <h3 id="729573092e814326a356423e87078f5e">
+        Polling for results <a href="#729573092e814326a356423e87078f5e">#</a>
+    </h3>
+    <p>
+        The <code>MailboxProcessor</code> class defines a <code>PostAndAsyncReply</code> method that does, indeed, fit the <code>Fetch</code> case of the above <code>SongMessage</code> type. This enables us to implement a polling mechanism like this:
+    </p>
+    <p>
+        <pre><span style="color:blue;">let</span>&nbsp;<span style="color:blue;">rec</span>&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:#74531f;">poll</span>&nbsp;(<span style="color:#1f377f;">agent</span>&nbsp;:&nbsp;<span style="color:#2b91af;">MailboxProcessor</span>&lt;_&gt;)&nbsp;=&nbsp;<span style="color:blue;">task</span>&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">match!</span>&nbsp;<span style="color:#1f377f;">agent</span>.<span style="font-weight:bold;color:#74531f;">PostAndAsyncReply</span>&nbsp;<span style="color:#2b91af;">Fetch</span>&nbsp;<span style="color:blue;">with</span>
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:#2b91af;">Some</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">result</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">result</span>
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:#2b91af;">None</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">return!</span>&nbsp;<span style="color:#74531f;">poll</span>&nbsp;<span style="color:#1f377f;">agent</span>&nbsp;}</pre>
+    </p>
+    <p>
+        This recursive action uses <code>PostAndAsyncReply</code> to keep polling its agent until it receives a useful reply. Since this code is mostly meant for illustration purposes, I've allowed myself a few shortcuts.
+    </p>
+    <p>
+        First, this effectively implements a busy loop. Whenever it receives a <code>None</code> reply, it immediately recurses to try again. A more reasonable implementation may put a small delay there, but I think that finding the optimal delay time may be a matter of experimentation. After all, if you're concerned with performance, <a href="https://ericlippert.com/2012/12/17/performance-rant/">race your horses</a>. Given that this is demo code, I don't have any real horses to race, so I'm not going to try. From observation, however, it doesn't seem as though the tests, at least, run any slower despite the tight loop.
+    </p>
+    <p>
+        Secondly, the <code>poll</code> loop keeps going until it receives a useful response. What if that never happens? A more robust implementation should implement some kind of timeout or ceiling that enables it to give up if it's been running for too long.
+    </p>
+    <p>
+        Apart from all that, how does the <code>poll</code> action even type-check? On a <code><span style="color:#2b91af;">MailboxProcessor</span>&lt;<span style="color:#2b91af;">'Msg</span>&gt;</code> object, the <code>PostAndAsyncReply</code> method has this type:
+    </p>
+    <p>
+        <pre>(<span style="color:#2b91af;">AsyncReplyChannel</span>&lt;<span style="color:#2b91af;">'Reply</span>&gt; -&gt; <span style="color:#2b91af;">'Msg</span>) <span style="color:blue;">-&gt;</span> <span style="color:#2b91af;">Async</span>&lt;<span style="color:#2b91af;">'Reply</span>&gt;</pre>
+    </p>
+    <p>
+        ignoring an optional timeout parameter.
+    </p>
+    <p>
+        The above <code>Fetch</code> case constructor fits the type of <code>PostAndAsyncReply</code>, since it has the type
+    </p>
+    <p>
+        <pre><span style="color:#2b91af;">AsyncReplyChannel</span>&lt;<span style="color:#2b91af;">Option</span>&lt;<span style="color:#2b91af;">IReadOnlyCollection</span>&lt;<span style="color:#2b91af;">Song</span>&gt;&gt;&gt; <span style="color:blue;">-&gt;</span> <span style="color:#2b91af;">SongMessage</span></pre>
+    </p>
+    <p>
+        This means that we can infer <code>'Reply</code> to be <code><span style="color:#2b91af;">Option</span>&lt;<span style="color:#2b91af;">IReadOnlyCollection</span>&lt;<span style="color:#2b91af;">Song</span>&gt;&gt;</code>. It also means that <code>'Msg</code> must be <code>SongMessage</code>, and again we can infer that the <code>agent</code> parameter has the type <code><span style="color:#2b91af;">MailboxProcessor</span>&lt;<span style="color:#2b91af;">SongMessage</span>&gt;</code>.
+    </p>
+    <h3 id="d92982c8ced649ceaf2b8c42c6092f4b">
+        Composition <a href="#d92982c8ced649ceaf2b8c42c6092f4b">#</a>
+    </h3>
+    <p>
+        With all components ready, we can now compose them as a blocking method. Notice that, in the following, the <code>GetRecommendationsAsync</code> method hasn't changed type or observable behaviour. The change from <code>Task</code> to <code>Async</code> (described above) required some trivial changes to <code>FakeSongService</code>, but apart from that, I had to change no test code to make this refactoring.
+    </p>
+    <p>
+        As a first attempt, we may compose the agents using the idiomatic left-to-right pipeline operator, like this:
+    </p>
+    <p>
+        <pre><span style="color:blue;">type</span>&nbsp;<span style="color:#2b91af;">RecommendationsProvider</span>&nbsp;(<span style="font-weight:bold;color:#1f377f;">songService</span>&nbsp;:&nbsp;<span style="color:#2b91af;">SongService</span>)&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">member</span>&nbsp;_.<span style="font-weight:bold;color:#74531f;">GetRecommendationsAsync</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">userName</span>&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;<span style="color:#1f377f;">collect</span>&nbsp;=&nbsp;<span style="color:#74531f;">collectRecommendations</span>&nbsp;()
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">task</span>&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">do!</span>&nbsp;<span style="color:#1f377f;">collect</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:#74531f;">gatherOtherScrobbles</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">songService</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:#74531f;">gatherOtherListeners</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">songService</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:#74531f;">gatherOwnScrobbles</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">userName</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">songService</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return!</span>&nbsp;<span style="color:#74531f;">poll</span>&nbsp;<span style="color:#1f377f;">collect</span>&nbsp;}</pre>
+    </p>
+    <p>
+        First, the <code>task</code> expression starts all the agents, and then proceeds to <code>poll</code> the <code>collect</code> agent until it arrives at a result.
+    </p>
+    <p>
+        This passes all tests, but has at least two problems. One problem is that the composition seems backwards. It looks as though the process starts with <code>collect</code>, then proceeds to <code>gatherOtherScrobbles</code>, and so on. In reality, it's the other way around. You should really understand the composition as being defined 'bottom-up', or right-to-left, if we put it on a single line. We'll return to the other problem in a moment, but let's first see if we can do something about this one.
+    </p>
+    <p>
+        My first attempt to fix this problem was to try to use the reverse pipeline operator <code>&lt;|</code>, but due to precedence rules, it didn't work without parentheses. And if we need parentheses anyway, there's no reason to use the reverse pipeline operator.
+    </p>
+    <p>
+        <pre><span style="color:blue;">type</span>&nbsp;<span style="color:#2b91af;">RecommendationsProvider</span>&nbsp;(<span style="font-weight:bold;color:#1f377f;">songService</span>&nbsp;:&nbsp;<span style="color:#2b91af;">SongService</span>)&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">member</span>&nbsp;_.<span style="font-weight:bold;color:#74531f;">GetRecommendationsAsync</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">userName</span>&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;<span style="color:#1f377f;">collect</span>&nbsp;=&nbsp;<span style="color:#74531f;">collectRecommendations</span>&nbsp;()
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">task</span>&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">do!</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#74531f;">gatherOwnScrobbles</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">userName</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">songService</span>&nbsp;(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#74531f;">gatherOtherListeners</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">songService</span>&nbsp;(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#74531f;">gatherOtherScrobbles</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">songService</span>&nbsp;(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#1f377f;">collect</span>)))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return!</span>&nbsp;<span style="color:#74531f;">poll</span>&nbsp;<span style="color:#1f377f;">collect</span>&nbsp;}</pre>
+    </p>
+    <p>
+        This composition uses a slightly unorthodox code formatting style. Since <code>collect</code> is really nested inside of <code>gatherOtherScrobbles</code>, it should really have been indented to the right of it. Likewise, <code>gatherOtherScrobbles</code> is nested inside of <code>gatherOtherListeners</code>, and so on. A more idiomatic formatting of the code might be something like this:
+    </p>
+    <p>
+        <pre><span style="color:blue;">type</span>&nbsp;<span style="color:#2b91af;">RecommendationsProvider</span>&nbsp;(<span style="font-weight:bold;color:#1f377f;">songService</span>&nbsp;:&nbsp;<span style="color:#2b91af;">SongService</span>)&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">member</span>&nbsp;_.<span style="font-weight:bold;color:#74531f;">GetRecommendationsAsync</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">userName</span>&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;<span style="color:#1f377f;">collect</span>&nbsp;=&nbsp;<span style="color:#74531f;">collectRecommendations</span>&nbsp;()
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">task</span>&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">do!</span>&nbsp;<span style="color:#74531f;">gatherOwnScrobbles</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">userName</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">songService</span>&nbsp;(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#74531f;">gatherOtherListeners</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">songService</span>&nbsp;(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#74531f;">gatherOtherScrobbles</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">songService</span>&nbsp;<span style="color:#1f377f;">collect</span>))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return!</span>&nbsp;<span style="color:#74531f;">poll</span>&nbsp;<span style="color:#1f377f;">collect</span>&nbsp;}</pre>
+    </p>
+    <p>
+        This, however, blurs the semantics of the composition in favour of the mechanics of it. I don't consider it an improvement.
+    </p>
+    <p>
+        All of this, however, turns out to be moot because of the other problem. The <code>MailboxProcessor</code> class implements <a href="https://learn.microsoft.com/dotnet/api/system.idisposable">IDisposable</a>, and to be good citizens, we ought to dispose of the objects once we're done with them. This is possible, but we're now back to the backwards order of composition.
+    </p>
+    <p>
+        <pre><span style="color:blue;">type</span>&nbsp;<span style="color:#2b91af;">RecommendationsProvider</span>&nbsp;(<span style="font-weight:bold;color:#1f377f;">songService</span>&nbsp;:&nbsp;<span style="color:#2b91af;">SongService</span>)&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">member</span>&nbsp;_.<span style="font-weight:bold;color:#74531f;">GetRecommendationsAsync</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">userName</span>&nbsp;=&nbsp;<span style="color:blue;">task</span>&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">use</span>&nbsp;<span style="color:#1f377f;">collect</span>&nbsp;=&nbsp;<span style="color:#74531f;">collectRecommendations</span>&nbsp;()
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">use</span>&nbsp;<span style="color:#1f377f;">otherScrobbles</span>&nbsp;=&nbsp;<span style="color:#74531f;">gatherOtherScrobbles</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">songService</span>&nbsp;<span style="color:#1f377f;">collect</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">use</span>&nbsp;<span style="color:#1f377f;">otherListeners</span>&nbsp;=&nbsp;<span style="color:#74531f;">gatherOtherListeners</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">songService</span>&nbsp;<span style="color:#1f377f;">otherScrobbles</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">do!</span>&nbsp;<span style="color:#74531f;">gatherOwnScrobbles</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">userName</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">songService</span>&nbsp;<span style="color:#1f377f;">otherListeners</span>
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return!</span>&nbsp;<span style="color:#74531f;">poll</span>&nbsp;<span style="color:#1f377f;">collect</span>&nbsp;}</pre>
+    </p>
+    <p>
+        This may not be an entirely unsolvable problem, but this is where I'm no longer interested in pursuing this line of inquiry much further. Instead of those 'factory actions' that create and return agents, you could refactor each agent into a separate object that, when disposed of, also disposes of any inner agents it may contain. If so, you could again compose these objects as shown above, and only dispose of the outer object.
+    </p>
+    <h3 id="78e407aecd044d68bd16a8ae207ffa4c">
+        Evaluation <a href="#78e407aecd044d68bd16a8ae207ffa4c">#</a>
+    </h3>
+    <p>
+        These various attempts to make the agents compose nicely, in a way that also works as self-documenting code, reveals that F# agents aren't as composable as <a href="https://reactivex.io/">ReactiveX</a>. To be fair, the <code>MailboxProcessor</code> class also predates Reactive Extensions, so we shouldn't blame it for not being as good as a more recent technology.
+    </p>
+    <p>
+        One major problem is that agents don't compose naturally, <a href="" reminder="Reacive monad">like IObservable&lt;T&gt; does</a>. I briefly considered whether it'd be possible to make <code><span style="color:#2b91af;">MailboxProcessor</span>&lt;'Msg&gt;</code> a <a href="/2022/03/28/monads">monad</a>, but armed with the knowledge of variance imparted by <a href="https://thinkingwithtypes.com/">Thinking with Types</a>, I quickly realized that the type is invariant. This is easily seen because one method, <code>Post</code>, is contravariant in <code>'Msg</code>, whereas most other methods are covariant. I'm using deliberately vague language, since there's no reason to calculate the kind of variance for all methods when you've already found two incompatible members.
+    </p>
+    <p>
+        Another fly in the ointment is that the <code>collectRecommendations</code> action looks messy. As presented, it's not a pretty Impureim Sandwich. Most of the 'middle' message handling could be extracted to a pure function, were it not for the <code>Fetch</code> case. Calling <code>replyChannel.Reply</code> has a side effect, and while I know of refactorings that move side effects around, I'd need access to the <code>replyChannel</code> in order to impart that effect from somewhere else. This would still be possible if I returned an action to be invoked, but I don't see much point in that. In general, that request-reply API doesn't strike me as particularly functional.
+    </p>
+    <p>
+        Based on all that griping, you may be wondering whether this kind of architecture is worth the trouble. Keep in mind, though, that some of the issues I just outlined is the result of the particular <code>MailboxProcessor</code> API. It's not a given that if you use some other message-based framework, you'll run into the same issues.
+    </p>
+    <p>
+        You may also find the notion of posting messages to a chain of agents, only to poll one of them for the result, as carrying coals to Newcastle. Keep in mind, however, that the code presented here refactors a blocking method call that <a href="https://x.com/Tyrrrz/status/1493369905869213700">apparently takes about ten minutes to run to completion</a>. It's possible that I read too much into the situation, but I'm guessing that the 'real' code base that was the inspiration for the example code, doesn't actually block for ten minutes in order to return a result. Rather, I still speculate, it's probably a background batch job that produces persisted views; e.g. as JSON files. If so, you'd really just want to trigger a new batch job and let it run to completion in the background. In such a scenario, I'd find an asynchronous, message-based architecture suitable for the job. In that case, you'd need no polling loop. Rather, you serve persisted view whenever anyone asks for it, and once in a while, that persisted view has been updated by the background process.
+    </p>
+    <h3 id="7c4b1d25b43c4fea9a969eefe7e04fcc">
+        Conclusion <a href="#7c4b1d25b43c4fea9a969eefe7e04fcc">#</a>
+    </h3>
+    <p>
+        Compared to the <a href="">previous article</a>, which used Reactive Extensions to compose self-contained Recawr Sandwiches, using F# agents is a move towards a more standard kind of message-based architecture. Hopefully, it does a good enough job of illustrating how you can refactor an impure action into a composition of individual sandwiches, even if some of the details here are particular to F# agents.
+    </p>
+    <p>
+        It's not necessarily always the best solution to the underlying problem being addressed in this article series, but it seems appropriate if the problem of large data sets is combined with long running time. If you can convert the overall problem to a fire-and-forget architecture, a message-based system may be suitable.
+    </p>
+    <p>
+        If, on the other hand, you need to maintain the blocking nature of the operation, you may need to reach for the big, universal <a href="https://en.wikipedia.org/wiki/Law_of_the_instrument">hammer</a>.
+    </p>
+    <p>
+        <strong>Next:</strong> Song recommendations with free monads.
+    </p>
+</div>
