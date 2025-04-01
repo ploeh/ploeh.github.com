@@ -1,0 +1,541 @@
+---
+layout: post
+title: "Ports and fat adapters"
+description: "Is it worth it having a separate use-case layer?"
+date: 2025-04-01 13:16 UTC
+tags: [Architecture, Software Design, ASP.NET Web API]
+---
+{% include JB/setup %}
+
+<div id="post">
+    <p>
+        <em>{{ page.description }}</em>
+    </p>
+    <p>
+        When I occasionally post something about Ports and Adapters (also known as <a href="https://alistair.cockburn.us/hexagonal-architecture/">hexagonal architecture</a>), a few reactions seem to indicate that I'm 'doing it wrong'. I apologize for the use of <a href="https://en.wikipedia.org/wiki/Weasel_word">weasel words</a>, but I don't intend to put particular people on the spot. Everyone has been nice and polite about it, and it's possible that I've misunderstood the criticism. Even so, a few comments have left me with the impression that there's an elephant in the room that I should address.
+    </p>
+    <p>
+        In short, I usually don't abstract application behaviour from frameworks. I don't create 'application layers', 'use-case classes', 'mediators', or similar. This is a deliberate architecture decision.
+    </p>
+    <p>
+        In this article, I'll use a motivating example to describe the reasoning behind such a decision.
+    </p>
+    <h3 id="c46a4742981f40c9b241d078e862b7a9">
+        Humble Objects <a href="#c46a4742981f40c9b241d078e862b7a9">#</a>
+    </h3>
+    <p>
+        A software architect should consider how the choice of particular technologies impact the development and future sustainability of a solution. It's often a good idea to consider whether it makes sense to decouple application code from frameworks and particular external dependencies. For example, should you hide database access behind an abstraction? Should you decouple the Domain Model from the web framework you use?
+    </p>
+    <p>
+        This isn't always the right decision, but in the following, I'll assume that this is the case.
+    </p>
+    <p>
+        When you apply the <a href="https://en.wikipedia.org/wiki/Dependency_inversion_principle">Dependency Inversion Principle</a> (DIP) you let the application code define the abstractions it needs. If it needs to persist data, it may define a Repository interface. If it needs to send notifications, it may define a 'notification gateway' abstraction. Actual code that, say, communicates with a relational database is an <a href="https://en.wikipedia.org/wiki/Adapter_pattern">Adapter</a>. It translates the application interface into database SDK code.
+    </p>
+    <p>
+        I've been <a href="/2024/07/29/using-ports-and-adapters-to-persist-restaurant-table-configurations">over this ground already</a>, but to take an example from the sample code that accompanies <a href="/2021/06/14/new-book-code-that-fits-in-your-head">Code That Fits in Your Head</a>, here's a single method from the <code>SqlReservationsRepository</code> Adapter:
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">async</span>&nbsp;<span style="color:#2b91af;">Task</span>&nbsp;<span style="font-weight:bold;color:#74531f;">Create</span>(<span style="color:blue;">int</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">restaurantId</span>,&nbsp;<span style="color:#2b91af;">Reservation</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">reservation</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">if</span>&nbsp;(<span style="font-weight:bold;color:#1f377f;">reservation</span>&nbsp;<span style="color:blue;">is</span>&nbsp;<span style="color:blue;">null</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">throw</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">ArgumentNullException</span>(<span style="color:blue;">nameof</span>(<span style="font-weight:bold;color:#1f377f;">reservation</span>));
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">using</span>&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">conn</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">SqlConnection</span>(ConnectionString);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">using</span>&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">cmd</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">SqlCommand</span>(createReservationSql,&nbsp;<span style="font-weight:bold;color:#1f377f;">conn</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">cmd</span>.Parameters.<span style="font-weight:bold;color:#74531f;">AddWithValue</span>(<span style="color:#a31515;">&quot;@Id&quot;</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">reservation</span>.Id);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">cmd</span>.Parameters.<span style="font-weight:bold;color:#74531f;">AddWithValue</span>(<span style="color:#a31515;">&quot;@RestaurantId&quot;</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">restaurantId</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">cmd</span>.Parameters.<span style="font-weight:bold;color:#74531f;">AddWithValue</span>(<span style="color:#a31515;">&quot;@At&quot;</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">reservation</span>.At);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">cmd</span>.Parameters.<span style="font-weight:bold;color:#74531f;">AddWithValue</span>(<span style="color:#a31515;">&quot;@Name&quot;</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">reservation</span>.Name.<span style="font-weight:bold;color:#74531f;">ToString</span>());
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">cmd</span>.Parameters.<span style="font-weight:bold;color:#74531f;">AddWithValue</span>(<span style="color:#a31515;">&quot;@Email&quot;</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">reservation</span>.Email.<span style="font-weight:bold;color:#74531f;">ToString</span>());
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">cmd</span>.Parameters.<span style="font-weight:bold;color:#74531f;">AddWithValue</span>(<span style="color:#a31515;">&quot;@Quantity&quot;</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">reservation</span>.Quantity);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">await</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">conn</span>.<span style="font-weight:bold;color:#74531f;">OpenAsync</span>().<span style="font-weight:bold;color:#74531f;">ConfigureAwait</span>(<span style="color:blue;">false</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">await</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">cmd</span>.<span style="font-weight:bold;color:#74531f;">ExecuteNonQueryAsync</span>().<span style="font-weight:bold;color:#74531f;">ConfigureAwait</span>(<span style="color:blue;">false</span>);
+}</pre>
+    </p>
+    <p>
+        This is one method of a class named <code>SqlReservationsRepository</code>, which is an Adapter that makes ADO.NET code look like the application-specific <code>IReservationsRepository</code> interface.
+    </p>
+    <p>
+        Such Adapters are often as 'thin' as possible. One dimension of measurement is to look at the <a href="https://en.wikipedia.org/wiki/Cyclomatic_complexity">cyclomatic complexity</a>, where the ideal is <em>1</em>, the lowest possible score. The code shown here has a complexity measure of <em>2</em> because of the null guard, which exists because of a static analysis rule.
+    </p>
+    <p>
+        In test parlance, we call such thin Adapters <a href="https://martinfowler.com/bliki/HumbleObject.html">Humble Objects</a>. Or, to paraphrase what <a href="http://blog.jenkster.com/">Kris Jenkins</a> said at the GOTO Copenhagen 2024 conference, separate code into parts that are
+        <ul>
+            <li>hard to test, but easy to get right</li>
+            <li>hard to get right, but easy to test.</li>
+        </ul>
+    </p>
+    <p>
+        You can do the same when sending email, querying a weather service, raising events on pub-sub infrastructure, getting the current date, etc. This isolates your application code from implementation details, such as particular database servers, SDKs, network protocols, and so on.
+    </p>
+    <p>
+        Shouldn't you be doing the same on the receiving end?
+    </p>
+    <h3 id="7a5b7c14c09248999d52f37e2fdc5608">
+        Fat Adapters <a href="#7a5b7c14c09248999d52f37e2fdc5608">#</a>
+    </h3>
+    <p>
+        In his article on <a href="https://alistair.cockburn.us/hexagonal-architecture/">Hexagonal Architecture</a> Alistair Cockburn acknowledges a certain asymmetry. Some ports are activated by the application. Those are the ones already examined. An application reads from and writes to a database. An application sends emails. An application gets the current date.
+    </p>
+    <p>
+        Other ports, on the other hand, <em>drive</em> the application. According to Tomas Petricek's <a href="https://tomasp.net/blog/2015/library-frameworks/">distinction between frameworks and libraries</a> (that I also use), this kind of behaviour characterizes a <em>framework</em>. Examples include web frameworks such as ASP.NET, Express.js, Django, or UI frameworks like Angular, WPF, and so on.
+    </p>
+    <p>
+        While I usually do <a href="/2023/09/04/decomposing-ctfiyhs-sample-code-base">shield my Domain Model from framework code</a>, I tend to write 'fat' Adapters. As far as I can tell, this is what some people have taken issue with.
+    </p>
+    <p>
+        Here's an example:
+    </p>
+    <p>
+        <pre>[<span style="color:#2b91af;">HttpPost</span>(<span style="color:#a31515;">&quot;restaurants/{restaurantId}/reservations&quot;</span>)]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">async</span>&nbsp;<span style="color:#2b91af;">Task</span>&lt;<span style="color:#2b91af;">ActionResult</span>&gt;&nbsp;<span style="font-weight:bold;color:#74531f;">Post</span>(<span style="color:blue;">int</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">restaurantId</span>,&nbsp;<span style="color:#2b91af;">ReservationDto</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">dto</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">if</span>&nbsp;(<span style="font-weight:bold;color:#1f377f;">dto</span>&nbsp;<span style="color:blue;">is</span>&nbsp;<span style="color:blue;">null</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">throw</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">ArgumentNullException</span>(<span style="color:blue;">nameof</span>(<span style="font-weight:bold;color:#1f377f;">dto</span>));
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Reservation</span>?&nbsp;<span style="font-weight:bold;color:#1f377f;">candidate1</span>&nbsp;=&nbsp;<span style="font-weight:bold;color:#1f377f;">dto</span>.<span style="font-weight:bold;color:#74531f;">TryParse</span>();
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">dto</span>.Id&nbsp;=&nbsp;<span style="color:#2b91af;">Guid</span>.<span style="color:#74531f;">NewGuid</span>().<span style="font-weight:bold;color:#74531f;">ToString</span>(<span style="color:#a31515;">&quot;N&quot;</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Reservation</span>?&nbsp;<span style="font-weight:bold;color:#1f377f;">candidate2</span>&nbsp;=&nbsp;<span style="font-weight:bold;color:#1f377f;">dto</span>.<span style="font-weight:bold;color:#74531f;">TryParse</span>();
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Reservation</span>?&nbsp;<span style="font-weight:bold;color:#1f377f;">reservation</span>&nbsp;=&nbsp;<span style="font-weight:bold;color:#1f377f;">candidate1</span>&nbsp;??&nbsp;<span style="font-weight:bold;color:#1f377f;">candidate2</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">if</span>&nbsp;(<span style="font-weight:bold;color:#1f377f;">reservation</span>&nbsp;<span style="color:blue;">is</span>&nbsp;<span style="color:blue;">null</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">BadRequestResult</span>(<span style="color:green;">/*&nbsp;Describe&nbsp;the&nbsp;errors&nbsp;here&nbsp;*/</span>);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">restaurant</span>&nbsp;=&nbsp;<span style="font-weight:bold;color:#8f08c4;">await</span>&nbsp;RestaurantDatabase.<span style="font-weight:bold;color:#74531f;">GetRestaurant</span>(<span style="font-weight:bold;color:#1f377f;">restaurantId</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.<span style="font-weight:bold;color:#74531f;">ConfigureAwait</span>(<span style="color:blue;">false</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">if</span>&nbsp;(<span style="font-weight:bold;color:#1f377f;">restaurant</span>&nbsp;<span style="color:blue;">is</span>&nbsp;<span style="color:blue;">null</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">NotFoundResult</span>();
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">using</span>&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">scope</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">TransactionScope</span>(<span style="color:#2b91af;">TransactionScopeAsyncFlowOption</span>.Enabled);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">reservations</span>&nbsp;=&nbsp;<span style="font-weight:bold;color:#8f08c4;">await</span>&nbsp;Repository
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.<span style="font-weight:bold;color:#74531f;">ReadReservations</span>(<span style="font-weight:bold;color:#1f377f;">restaurant</span>.Id,&nbsp;<span style="font-weight:bold;color:#1f377f;">reservation</span>.At)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.<span style="font-weight:bold;color:#74531f;">ConfigureAwait</span>(<span style="color:blue;">false</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">now</span>&nbsp;=&nbsp;Clock.<span style="font-weight:bold;color:#74531f;">GetCurrentDateTime</span>();
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">if</span>&nbsp;(!<span style="font-weight:bold;color:#1f377f;">restaurant</span>.MaitreD.<span style="font-weight:bold;color:#74531f;">WillAccept</span>(<span style="font-weight:bold;color:#1f377f;">now</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">reservations</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">reservation</span>))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="color:#74531f;">NoTables500InternalServerError</span>();
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">await</span>&nbsp;Repository.<span style="font-weight:bold;color:#74531f;">Create</span>(<span style="font-weight:bold;color:#1f377f;">restaurant</span>.Id,&nbsp;<span style="font-weight:bold;color:#1f377f;">reservation</span>).<span style="font-weight:bold;color:#74531f;">ConfigureAwait</span>(<span style="color:blue;">false</span>);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">scope</span>.<span style="font-weight:bold;color:#74531f;">Complete</span>();
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="color:#74531f;">Reservation201Created</span>(<span style="font-weight:bold;color:#1f377f;">restaurant</span>.Id,&nbsp;<span style="font-weight:bold;color:#1f377f;">reservation</span>);
+}</pre>
+    </p>
+    <p>
+        This is (still) code originating from the example code base that accompanies <a href="/code-that-fits-in-your-head">Code That Fits in Your Head</a>, although I've here used the variation from <a href="/2022/09/12/coalescing-dtos">Coalescing DTOs</a>. I've also inlined the <code>TryCreate</code> helper method, so that the entire use-case flow is visible as a single method.
+    </p>
+    <p>
+        In a sense, we may consider this an Adapter, too. This <code>Post</code> <em>action method</em> is part of a Controller class that handles incoming HTTP requests. It is, however, not that class that deals with the HTTP protocol. Neither does it parse the request body, or checks headers, etc. The ASP.NET framework takes care of that.
+    </p>
+    <p>
+        By following certain naming conventions, adorning the method with an <code>[HttpPost]</code> attribute, and returning <code>ActionResult</code>, this method plays by the rules of the ASP.NET framework. Even if it doesn't implement any particular interface, or inherits from some ASP.NET base class, it clearly 'adapts' to the ASP.NET framework.
+    </p>
+    <p>
+        It does that by attempting to parse and validate input, look up data in data sources, and in general checking preconditions before delegating work to the Domain Model - which happens in the call to <code>MaitreD.WillAccept</code>.
+    </p>
+    <p>
+        This is where some people seem to get uncomfortable. If this is an Adapter, it's a 'fat' one. In this particular example, the cyclomatic complexity is <em>6</em>. Not really a Humble Object.
+    </p>
+    <p>
+        Shouldn't there be some kind of 'use-case' model?
+    </p>
+    <h3 id="21b1d89a43124bff9332d5d99bb32ab7">
+        Use-case Model API <a href="#21b1d89a43124bff9332d5d99bb32ab7">#</a>
+    </h3>
+    <p>
+        I deliberately avoid 'use-case' model, 'mediators', or whatever other name people tend to use. I'll try to explain why by going through the exercise of actually extracting such a model. My point, in short, is that I find it not worth the effort.
+    </p>
+    <p>
+        In the following, I'll call such a model a 'use-case', since this is one piece of terminology that I tend to run into. You may also call it an 'Application Model' or something else.
+    </p>
+    <p>
+        The 'problem' that I apparently am meant to solve is that most of the code in the above <code>Post</code> method is tightly coupled to ASP.NET. If we want to decouple this code, how do we go about it?
+    </p>
+    <p>
+        It's possible that my imagination fails me, but the best I can think of is some kind of 'use-case model' that models the 'make a reservation' use case. Perhaps we should name it <code>MakeReservationUseCase</code>. Should it be some kind of <a href="https://en.wikipedia.org/wiki/Command_pattern">Command</a> object? It could be, but I think that this is awkward, because it also needs to communicate with various dependencies, such as <code>RestaurantDatabase</code>, <code>Repository</code>, and <code>Clock</code>. A long-lived service object that can wrap around those dependencies seems like a better option, but then we need a method on that object.
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">sealed</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">MakeReservationUseCase</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;What&nbsp;to&nbsp;call&nbsp;this&nbsp;method?&nbsp;What&nbsp;to&nbsp;return?&nbsp;I&nbsp;hate&nbsp;this&nbsp;already.</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">object</span>&nbsp;<span style="font-weight:bold;color:#74531f;">MakeReservation</span>(<span style="color:green;">/*&nbsp;What&nbsp;to&nbsp;receive&nbsp;here?&nbsp;*/</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">throw</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">NotImplementedException</span>();
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+    </p>
+    <p>
+        What do we call such a method? Had this been a true Command object, the single parameterless method would be called <code>Execute</code>, but since I'm planning to work with a stateless service, the method should take arguments. I played with options such as <code>Try</code>, <code>Do</code>, or <code>Go</code>, so that you'd have <code>MakeReservationUseCase.Try</code> and so on. Still, I thought this bordered on 'cute' or 'clever' code, and at the very least not particularly <a href="/2015/08/03/idiomatic-or-idiosyncratic">idiomatic</a> C#. So I settled for <code>MakeReservation</code>, but now we have <code>MakeReservationUseCase.MakeReservation</code>, which is clearly redundant. I don't like the direction this design is going.
+    </p>
+    <p>
+        The next question is what parameters this method should take?
+    </p>
+    <p>
+        Considering the above <code>Post</code> method, couldn't we pass the <code>dto</code> object on to the use-case model? Technically, we could, but consider this: The <code>ReservationDto</code> object's raison d'être is to support reception and transmission of JSON objects. As I've already covered in <a href="/2023/12/04/serialization-with-and-without-reflection">an earlier article series</a>, serialization formats are inexplicably coupled to the boundaries of a system.
+    </p>
+    <p>
+        Imagine that we wanted to <a href="/2023/09/04/decomposing-ctfiyhs-sample-code-base">decompose the code base into smaller constituent projects</a>. If so, the use-case model should be independent of the ASP.NET-based code. Does it seem reasonable, then, to define the use-case API in terms of a serialization format?
+    </p>
+    <p>
+        I don't think that's the right design. Perhaps, instead, we should 'explode' the <a href="https://en.wikipedia.org/wiki/Data_transfer_object">Data Transfer Object</a> (DTO) into its primitive constituents?
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">object</span>&nbsp;<span style="font-weight:bold;color:#74531f;">MakeReservation</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">int</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">restaurantId</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">string</span>?&nbsp;<span style="font-weight:bold;color:#1f377f;">id</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">string</span>?&nbsp;<span style="font-weight:bold;color:#1f377f;">at</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">string</span>?&nbsp;<span style="font-weight:bold;color:#1f377f;">email</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">string</span>?&nbsp;<span style="font-weight:bold;color:#1f377f;">name</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">int</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">quantity</span>)</pre>
+    </p>
+    <p>
+        I'm not too happy about this, either. Six parameters is pushing it, and this is even only an example. What if you need to pass more data than that? What if you need to pass a collection? What if each element in that collection contains another collection?
+    </p>
+    <p>
+        <a href="https://refactoring.com/catalog/introduceParameterObject.html">Introduce Parameter Object</a>, you say?
+    </p>
+    <p>
+        Given that this is the way we want to go (in this demonstration), this seems as though it's the only good option, but that means that we'd have to define <em>another</em> reservation object. Not the (JSON) DTO that arrives at the boundary. Not the <code>Reservation</code> Domain Model, because the data has yet to be validated. A <em>third</em> reservation class. I don't even know what to call such a class...
+    </p>
+    <p>
+        So I'll leave those six parameters as above, while pointing out that no matter what we do, there seems to be a problem.
+    </p>
+    <h3 id="cc4afd89b36a4b1f9534e995f7ebb546">
+        Return type woes <a href="#cc4afd89b36a4b1f9534e995f7ebb546">#</a>
+    </h3>
+    <p>
+        What should the <code>MakeReservation</code> method return?
+    </p>
+    <p>
+        The code in the above <code>Post</code> method returns various <code>ActionResult</code> objects that indicate success or various failures. This isn't an option if we want to decouple <code>MakeReservationUseCase</code> from ASP.NET. How may we instead communicate one of four results?
+    </p>
+    <p>
+        Many object-oriented programmers might suggest throwing custom exceptions, and that's a real option. If nothing else, it'd be idiomatic in a language like C#. This would enable us to declare the return type as <code>Reservation</code>, but we would also have to define three custom exception types.
+    </p>
+    <p>
+        There are some advantages to such a design, but it effectively boils down to <a href="https://wiki.c2.com/?DontUseExceptionsForFlowControl">using exceptions for flow control</a>.
+    </p>
+    <p>
+        Is there a way to model heterogeneous, mutually exclusive values? Another object-oriented stable is to introduce a type hierarchy. You could have four different classes that implement the same interface, or inherit from the same base class. If we go in this direction, then what <em>behaviour</em> should we define for this type? What do all four objects have in common? The only thing that they have in common is that we need to convert them to <code>ActionResult</code>.
+    </p>
+    <p>
+        We can't, however, have a method like <code>ToActionResult()</code> that converts the object to <code>ActionResult</code>, because that would couple the API to ASP.NET.
+    </p>
+    <p>
+        You could, of course, use downcasts to check the type of the return value, but if you do that, you might as well leave the method as shown above. If you plan on dynamic type checks and casts, the only base class you need is <code>object</code>.
+    </p>
+    <h3 id="a0fa4b1a896d44a79e127226c7776652">
+        Visitor <a href="#a0fa4b1a896d44a79e127226c7776652">#</a>
+    </h3>
+    <p>
+        If only there was a way to return heterogeneous, mutually exclusive data structures. If only C# had <a href="https://en.wikipedia.org/wiki/Tagged_union">sum types</a>...
+    </p>
+    <p>
+        Fortunately, while C# doesn't have sum types, it <em>is</em> possible to achieve the same goal. Use a <a href="/2018/06/25/visitor-as-a-sum-type">Visitor as a sum type</a>.
+    </p>
+    <p>
+        You could start with a type like this:
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">sealed</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">MakeReservationResult</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">T</span>&nbsp;<span style="font-weight:bold;color:#74531f;">Accept</span>&lt;<span style="color:#2b91af;">T</span>&gt;(<span style="color:#2b91af;">IMakeReservationVisitor</span>&lt;<span style="color:#2b91af;">T</span>&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">visitor</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;Implementation&nbsp;to&nbsp;follow...</span>
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+    </p>
+    <p>
+        As usual with the Visitor design pattern, you'll have to inspect the Visitor interface to learn about the alternatives that it supports:
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">interface</span>&nbsp;<span style="color:#2b91af;">IMakeReservationVisitor</span>&lt;<span style="color:#2b91af;">T</span>&gt;
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">T</span>&nbsp;<span style="font-weight:bold;color:#74531f;">Success</span>(<span style="color:#2b91af;">Reservation</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">reservation</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">T</span>&nbsp;<span style="font-weight:bold;color:#74531f;">InvalidInput</span>(<span style="color:blue;">string</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">message</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">T</span>&nbsp;<span style="font-weight:bold;color:#74531f;">NoSuchRestaurant</span>();
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">T</span>&nbsp;<span style="font-weight:bold;color:#74531f;">NoTablesAvailable</span>();
+}</pre>
+    </p>
+    <p>
+        This enables us to communicate that there's exactly four possible outcomes in a way that doesn't depend on ASP.NET.
+    </p>
+    <p>
+        The 'only' remaining work on the <code>MakeReservationResult</code> class is to implement the <code>Accept</code> method. Are you ready? Okay, here we go:
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">sealed</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">MakeReservationResult</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;<span style="color:#2b91af;">IMakeReservationResult</span>&nbsp;imp;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:#2b91af;">MakeReservationResult</span>(<span style="color:#2b91af;">IMakeReservationResult</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">imp</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.imp&nbsp;=&nbsp;<span style="font-weight:bold;color:#1f377f;">imp</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:#2b91af;">MakeReservationResult</span>&nbsp;<span style="color:#74531f;">Success</span>(<span style="color:#2b91af;">Reservation</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">reservation</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">MakeReservationResult</span>(<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">SuccessResult</span>(<span style="font-weight:bold;color:#1f377f;">reservation</span>));
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:#2b91af;">MakeReservationResult</span>&nbsp;<span style="color:#74531f;">InvalidInput</span>(<span style="color:blue;">string</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">message</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">MakeReservationResult</span>(<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">InvalidInputResult</span>(<span style="font-weight:bold;color:#1f377f;">message</span>));
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:#2b91af;">MakeReservationResult</span>&nbsp;<span style="color:#74531f;">NoSuchRestaurant</span>()
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">MakeReservationResult</span>(<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">NoSuchRestaurantResult</span>());
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:#2b91af;">MakeReservationResult</span>&nbsp;<span style="color:#74531f;">NoTablesAvailable</span>()
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">MakeReservationResult</span>(<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">NoTablesAvailableResult</span>());
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">T</span>&nbsp;<span style="font-weight:bold;color:#74531f;">Accept</span>&lt;<span style="color:#2b91af;">T</span>&gt;(<span style="color:#2b91af;">IMakeReservationVisitor</span>&lt;<span style="color:#2b91af;">T</span>&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">visitor</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">this</span>.imp.<span style="font-weight:bold;color:#74531f;">Accept</span>(<span style="font-weight:bold;color:#1f377f;">visitor</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">interface</span>&nbsp;<span style="color:#2b91af;">IMakeReservationResult</span>
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">T</span>&nbsp;<span style="font-weight:bold;color:#74531f;">Accept</span>&lt;<span style="color:#2b91af;">T</span>&gt;(<span style="color:#2b91af;">IMakeReservationVisitor</span>&lt;<span style="color:#2b91af;">T</span>&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">visitor</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">sealed</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">SuccessResult</span>&nbsp;:&nbsp;<span style="color:#2b91af;">IMakeReservationResult</span>
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;<span style="color:#2b91af;">Reservation</span>&nbsp;reservation;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">SuccessResult</span>(<span style="color:#2b91af;">Reservation</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">reservation</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.reservation&nbsp;=&nbsp;<span style="font-weight:bold;color:#1f377f;">reservation</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">T</span>&nbsp;<span style="font-weight:bold;color:#74531f;">Accept</span>&lt;<span style="color:#2b91af;">T</span>&gt;(<span style="color:#2b91af;">IMakeReservationVisitor</span>&lt;<span style="color:#2b91af;">T</span>&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">visitor</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">visitor</span>.<span style="font-weight:bold;color:#74531f;">Success</span>(reservation);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">sealed</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">InvalidInputResult</span>&nbsp;:&nbsp;<span style="color:#2b91af;">IMakeReservationResult</span>
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;<span style="color:blue;">string</span>&nbsp;message;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">InvalidInputResult</span>(<span style="color:blue;">string</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">message</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.message&nbsp;=&nbsp;<span style="font-weight:bold;color:#1f377f;">message</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">T</span>&nbsp;<span style="font-weight:bold;color:#74531f;">Accept</span>&lt;<span style="color:#2b91af;">T</span>&gt;(<span style="color:#2b91af;">IMakeReservationVisitor</span>&lt;<span style="color:#2b91af;">T</span>&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">visitor</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">visitor</span>.<span style="font-weight:bold;color:#74531f;">InvalidInput</span>(message);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">sealed</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">NoSuchRestaurantResult</span>&nbsp;:&nbsp;<span style="color:#2b91af;">IMakeReservationResult</span>
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">T</span>&nbsp;<span style="font-weight:bold;color:#74531f;">Accept</span>&lt;<span style="color:#2b91af;">T</span>&gt;(<span style="color:#2b91af;">IMakeReservationVisitor</span>&lt;<span style="color:#2b91af;">T</span>&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">visitor</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">visitor</span>.<span style="font-weight:bold;color:#74531f;">NoSuchRestaurant</span>();
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">sealed</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">NoTablesAvailableResult</span>&nbsp;:&nbsp;<span style="color:#2b91af;">IMakeReservationResult</span>
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">T</span>&nbsp;<span style="font-weight:bold;color:#74531f;">Accept</span>&lt;<span style="color:#2b91af;">T</span>&gt;(<span style="color:#2b91af;">IMakeReservationVisitor</span>&lt;<span style="color:#2b91af;">T</span>&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">visitor</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">visitor</span>.<span style="font-weight:bold;color:#74531f;">NoTablesAvailable</span>();
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+    </p>
+    <p>
+        That's a lot of boilerplate code, but it's so automatable that there are programming languages that can do this for you. On .NET, it's called <a href="https://fsharp.org/">F#</a>, and all of that would be a single line of code.
+    </p>
+    <h3 id="6565ec44bc704fdab90010e0fc6c9ec1">
+        Use Case implementation <a href="#6565ec44bc704fdab90010e0fc6c9ec1">#</a>
+    </h3>
+    <p>
+        Implementing <code>MakeReservation</code> is now easy, since it mostly involves moving code from the Controller to the <code>MakeReservationUseCase</code> class, and changing it so that it returns the appropriate <code>MakeReservationResult</code> objects instead of <code>ActionResult</code> objects.
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">sealed</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">MakeReservationUseCase</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">MakeReservationUseCase</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">IClock</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">clock</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">IRestaurantDatabase</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">restaurantDatabase</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">IReservationsRepository</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">repository</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Clock&nbsp;=&nbsp;<span style="font-weight:bold;color:#1f377f;">clock</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;RestaurantDatabase&nbsp;=&nbsp;<span style="font-weight:bold;color:#1f377f;">restaurantDatabase</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Repository&nbsp;=&nbsp;<span style="font-weight:bold;color:#1f377f;">repository</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">IClock</span>&nbsp;Clock&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">IRestaurantDatabase</span>&nbsp;RestaurantDatabase&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">IReservationsRepository</span>&nbsp;Repository&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">async</span>&nbsp;<span style="color:#2b91af;">Task</span>&lt;<span style="color:#2b91af;">MakeReservationResult</span>&gt;&nbsp;<span style="font-weight:bold;color:#74531f;">MakeReservation</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">int</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">restaurantId</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">string</span>?&nbsp;<span style="font-weight:bold;color:#1f377f;">id</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">string</span>?&nbsp;<span style="font-weight:bold;color:#1f377f;">at</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">string</span>?&nbsp;<span style="font-weight:bold;color:#1f377f;">email</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">string</span>?&nbsp;<span style="font-weight:bold;color:#1f377f;">name</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">int</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">quantity</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">if</span>&nbsp;(!<span style="color:#2b91af;">Guid</span>.<span style="color:#74531f;">TryParse</span>(<span style="font-weight:bold;color:#1f377f;">id</span>,&nbsp;<span style="color:blue;">out</span>&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">rid</span>))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">rid</span>&nbsp;=&nbsp;<span style="color:#2b91af;">Guid</span>.<span style="color:#74531f;">NewGuid</span>();
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">if</span>&nbsp;(!<span style="color:#2b91af;">DateTime</span>.<span style="color:#74531f;">TryParse</span>(<span style="font-weight:bold;color:#1f377f;">at</span>,&nbsp;<span style="color:blue;">out</span>&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">rat</span>))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="color:#2b91af;">MakeReservationResult</span>.<span style="color:#74531f;">InvalidInput</span>(<span style="color:#a31515;">&quot;Invalid&nbsp;date.&quot;</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">if</span>&nbsp;(<span style="font-weight:bold;color:#1f377f;">email</span>&nbsp;<span style="color:blue;">is</span>&nbsp;<span style="color:blue;">null</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="color:#2b91af;">MakeReservationResult</span>.<span style="color:#74531f;">InvalidInput</span>(<span style="color:#a31515;">&quot;Invalid&nbsp;email.&quot;</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">if</span>&nbsp;(<span style="font-weight:bold;color:#1f377f;">quantity</span>&nbsp;&lt;&nbsp;1)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="color:#2b91af;">MakeReservationResult</span>.<span style="color:#74531f;">InvalidInput</span>(<span style="color:#a31515;">&quot;Invalid&nbsp;quantity.&quot;</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">reservation</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Reservation</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">rid</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">rat</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Email</span>(<span style="font-weight:bold;color:#1f377f;">email</span>),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Name</span>(<span style="font-weight:bold;color:#1f377f;">name</span>&nbsp;??&nbsp;<span style="color:#a31515;">&quot;&quot;</span>),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">quantity</span>);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">restaurant</span>&nbsp;=&nbsp;<span style="font-weight:bold;color:#8f08c4;">await</span>&nbsp;RestaurantDatabase.<span style="font-weight:bold;color:#74531f;">GetRestaurant</span>(<span style="font-weight:bold;color:#1f377f;">restaurantId</span>).<span style="font-weight:bold;color:#74531f;">ConfigureAwait</span>(<span style="color:blue;">false</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">if</span>&nbsp;(<span style="font-weight:bold;color:#1f377f;">restaurant</span>&nbsp;<span style="color:blue;">is</span>&nbsp;<span style="color:blue;">null</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="color:#2b91af;">MakeReservationResult</span>.<span style="color:#74531f;">NoSuchRestaurant</span>();
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">using</span>&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">scope</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">TransactionScope</span>(<span style="color:#2b91af;">TransactionScopeAsyncFlowOption</span>.Enabled);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">reservations</span>&nbsp;=&nbsp;<span style="font-weight:bold;color:#8f08c4;">await</span>&nbsp;Repository.<span style="font-weight:bold;color:#74531f;">ReadReservations</span>(<span style="font-weight:bold;color:#1f377f;">restaurant</span>.Id,&nbsp;<span style="font-weight:bold;color:#1f377f;">reservation</span>.At)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.<span style="font-weight:bold;color:#74531f;">ConfigureAwait</span>(<span style="color:blue;">false</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">now</span>&nbsp;=&nbsp;Clock.<span style="font-weight:bold;color:#74531f;">GetCurrentDateTime</span>();
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">if</span>&nbsp;(!<span style="font-weight:bold;color:#1f377f;">restaurant</span>.MaitreD.<span style="font-weight:bold;color:#74531f;">WillAccept</span>(<span style="font-weight:bold;color:#1f377f;">now</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">reservations</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">reservation</span>))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="color:#2b91af;">MakeReservationResult</span>.<span style="color:#74531f;">NoTablesAvailable</span>();
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">await</span>&nbsp;Repository.<span style="font-weight:bold;color:#74531f;">Create</span>(<span style="font-weight:bold;color:#1f377f;">restaurant</span>.Id,&nbsp;<span style="font-weight:bold;color:#1f377f;">reservation</span>).<span style="font-weight:bold;color:#74531f;">ConfigureAwait</span>(<span style="color:blue;">false</span>);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">scope</span>.<span style="font-weight:bold;color:#74531f;">Complete</span>();
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="color:#2b91af;">MakeReservationResult</span>.<span style="color:#74531f;">Success</span>(<span style="font-weight:bold;color:#1f377f;">reservation</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+    </p>
+    <p>
+        I had to re-implement input validation, because the <code>TryParse</code> method is defined on <code>ReservationDto</code>, and the Use-case Model shouldn't be coupled to that class. Still, you could argue that if I'd immediately implemented the use-case architecture, I would never had had the parser defined on the DTO.
+    </p>
+    <h3 id="f55a7173c05d440d99375f72e70ba143">
+        Decoupled Controller <a href="#f55a7173c05d440d99375f72e70ba143">#</a>
+    </h3>
+    <p>
+        The Controller method may now delegate implementation to a <code>MakeReservationUseCase</code> object:
+    </p>
+    <p>
+        <pre>[<span style="color:#2b91af;">HttpPost</span>(<span style="color:#a31515;">&quot;restaurants/{restaurantId}/reservations&quot;</span>)]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">async</span>&nbsp;<span style="color:#2b91af;">Task</span>&lt;<span style="color:#2b91af;">ActionResult</span>&gt;&nbsp;<span style="font-weight:bold;color:#74531f;">Post</span>(<span style="color:blue;">int</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">restaurantId</span>,&nbsp;<span style="color:#2b91af;">ReservationDto</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">dto</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">if</span>&nbsp;(<span style="font-weight:bold;color:#1f377f;">dto</span>&nbsp;<span style="color:blue;">is</span>&nbsp;<span style="color:blue;">null</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">throw</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">ArgumentNullException</span>(<span style="color:blue;">nameof</span>(<span style="font-weight:bold;color:#1f377f;">dto</span>));
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">result</span>&nbsp;=&nbsp;<span style="font-weight:bold;color:#8f08c4;">await</span>&nbsp;makeReservationUseCase.<span style="font-weight:bold;color:#74531f;">MakeReservation</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">restaurantId</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">dto</span>.Id,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">dto</span>.At,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">dto</span>.Email,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">dto</span>.Name,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">dto</span>.Quantity).<span style="font-weight:bold;color:#74531f;">ConfigureAwait</span>(<span style="color:blue;">false</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">result</span>.<span style="font-weight:bold;color:#74531f;">Accept</span>(<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">PostReservationVisitor</span>(<span style="font-weight:bold;color:#1f377f;">restaurantId</span>));
+}</pre>
+    </p>
+    <p>
+        While that looks nice and slim, it's not all, because you also need to define the <code>PostReservationVisitor</code> class:
+    </p>
+    <p>
+        <pre><span style="color:blue;">private</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">PostReservationVisitor</span>&nbsp;:&nbsp;<span style="color:#2b91af;">IMakeReservationVisitor</span>&lt;<span style="color:#2b91af;">ActionResult</span>&gt;
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;<span style="color:blue;">int</span>&nbsp;restaurantId;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">PostReservationVisitor</span>(<span style="color:blue;">int</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">restaurantId</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>.restaurantId&nbsp;=&nbsp;<span style="font-weight:bold;color:#1f377f;">restaurantId</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">ActionResult</span>&nbsp;<span style="font-weight:bold;color:#74531f;">Success</span>(<span style="color:#2b91af;">Reservation</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">reservation</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="color:#74531f;">Reservation201Created</span>(restaurantId,&nbsp;<span style="font-weight:bold;color:#1f377f;">reservation</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">ActionResult</span>&nbsp;<span style="font-weight:bold;color:#74531f;">InvalidInput</span>(<span style="color:blue;">string</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">message</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">BadRequestObjectResult</span>(<span style="font-weight:bold;color:#1f377f;">message</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">ActionResult</span>&nbsp;<span style="font-weight:bold;color:#74531f;">NoSuchRestaurant</span>()
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">NotFoundResult</span>();
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">ActionResult</span>&nbsp;<span style="font-weight:bold;color:#74531f;">NoTablesAvailable</span>()
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="color:#74531f;">NoTables500InternalServerError</span>();
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+    </p>
+    <p>
+        Notice that this implementation has to receive the <code>restaurantId</code> value through its constructor, since this piece of data isn't part of the <code>IMakeReservationVisitor</code> API. If only we could have handled all that pattern matching with a simple closure...
+    </p>
+    <p>
+        Well, you can. You could have used <a href="/2018/05/22/church-encoding">Church encoding</a> instead of the Visitor pattern, but many programmers find that less idiomatic, or not sufficiently object-oriented.
+    </p>
+    <p>
+        Be that as it may, the Controller now plays the role of an Adapter between the ASP.NET framework and the framework-neutral Use-case Model. Is it all worth it?
+    </p>
+    <h3 id="e91851ceab124208bfcb3d1705e44bf1">
+        Reflection <a href="#e91851ceab124208bfcb3d1705e44bf1">#</a>
+    </h3>
+    <p>
+        Where does that put us? It's certainly <em>possible</em> to decouple the Use-case Model from the specific framework, but at what cost?
+    </p>
+    <p>
+        In this example, I had to introduce two new classes and one interface, as well as four <code>private</code> implementation classes and a <code>private</code> interface.
+    </p>
+    <p>
+        And that was to support just one use case. If I want to implement a query (HTTP <code>GET</code>), I would need to go through similar motions, but with slight variations. And again for updates (HTTP <code>PUT</code>). And again for deletes. And again for the next resource, such as the restaurant calendar, daily schedule, management of tenants, and so on.
+    </p>
+    <p>
+        The cost seems rather substantial to me. Do the benefits outweigh them? What <em>are</em> the benefits?
+    </p>
+    <p>
+        Well, you now have a technology-neutral application model. You could, conceivably, tear out ASP.NET and replace it with, oh... <a href="https://servicestack.net/">ServiceStack</a>. Perhaps. Theoretically. I haven't tried.
+    </p>
+    <p>
+        This strikes me as an argument similar to insisting that hiding database access behind an interface enables us to replace SQL Server with a document database. That rarely happens, and is not really why we do that.
+    </p>
+    <p>
+        So to be fair, decoupling also protects us from changes in libraries and frameworks. It makes it easier to modify one part of the system without having to worry (too much) about other parts. It makes it easier to subject subsystems to automated testing.
+    </p>
+    <p>
+        Does the above refactoring improve testability? Not really. <code>MakeReservationUseCase</code> may be testable, but so was the original Controller. The entire code base for <a href="/code-that-fits-in-your-head">Code That Fits in Your Head</a> was developed with test-driven development (TDD). The Controllers are mostly covered by <a href="/2021/01/25/self-hosted-integration-tests-in-aspnet">self-hosted integration tests</a>, and bolstered with a few unit tests that directly call their <em>action methods</em>.
+    </p>
+    <p>
+        Another argument for a decoupled Use-case Model is that it might enable you to transplant the entire application to a new context. Since it doesn't depend on ASP.NET, you could reuse it in an Android or iPhone app. Or a batch job. Or an AI-assisted chat bot. Right? Couldn't you?
+    </p>
+    <p>
+        I'd be surprised if that were the case. Every application type has its own style of user interaction, and they tend to be incompatible. The user-interface flow of a web application is fundamentally different from a rich native app.
+    </p>
+    <p>
+        In short, I consider the notion of a technology-neutral Use-case Model to be a distraction. That's why I usually don't bother.
+    </p>
+    <h3 id="df0ed0cff3c84095b3993bb56f06bd08">
+        Conclusion <a href="#df0ed0cff3c84095b3993bb56f06bd08">#</a>
+    </h3>
+    <p>
+        I usually implement Controllers, message handlers, application entry points, and so on as fairly 'fat Adapters' over particular frameworks. I do that because I expect the particular application or user interaction to be intimately tied to that kind of application. This doesn't mean that I just throw everything in there.
+    </p>
+    <p>
+        Fat Adapters should still be covered by automated tests. They should still show appropriate decoupling. Usually, I treat each as an <a href="/2020/03/02/impureim-sandwich">Impureim Sandwich</a>. All impure actions happen in the Fat Adapter, and everything else is done by a <a href="https://en.wikipedia.org/wiki/Pure_function">pure function</a>. Granted, however, this kind of architecture comes much more natural when you are working in a programming language that supports it.
+    </p>
+    <p>
+        C# doesn't really, but you can make it work. And that work, contrary to modelling use cases as classes, is, in my experience, well worth the effort.
+    </p>
+</div>
