@@ -1,0 +1,203 @@
+---
+layout: post
+title: "Song recommendations from Haskell combinators"
+description: "Traversing lists of IO. A refactoring."
+date: 2025-04-03 6:09 UTC
+tags: [Haskell]
+---
+{% include JB/setup %}
+
+<div id="post">
+    <p>
+        <em>{{ page.description }}</em>
+    </p>
+    <p>
+        This article is part of a series named <a href="">Alternative ways to design with functional programming</a>. In the <a href="">previous article</a>, you saw how to refactor the example code base to a composition of standard <a href="https://fsharp.org/">F#</a> combinators. It's a pragmatic solution to the problem of dealing with lots of data in a piecemeal fashion, but although it uses concepts and programming constructs from functional programming, I don't consider it a proper <a href="/2018/11/19/functional-architecture-a-definition">functional architecture</a>.
+    </p>
+    <p>
+        You'd expect the <a href="https://www.haskell.org/">Haskell</a> version to be the most idiomatic of the three language variations, but ironically, I had more trouble making the code in this article look nice than I had with the F# variation. You'll see what the problem is later, but it boils down to a combination of Haskell's right-to-left default composition order, and precedence rules of some of the operators.
+    </p>
+    <p>
+        Please consult the previous articles for context about the example code base. The code shown in this article is from the <em>combinators</em> Git branch. It refactors the code shown in the article <a href="">Porting song recommendations to Haskell</a>.
+    </p>
+    <p>
+        The goal is to extract <a href="https://en.wikipedia.org/wiki/Pure_function">pure functions</a> from the overall recommendations algorithm and compose them using standard combinators, such as <code>=&lt;&lt;</code>, <code>&lt;$&gt;</code>, and <code>traverse</code>.
+    </p>
+    <h3 id="1a8e6b1d3799463d9c70332949317048">
+        Getting rid of local mutation <a href="#1a8e6b1d3799463d9c70332949317048">#</a>
+    </h3>
+    <p>
+        My first goal was to get rid of the <code>IORef</code>-based local mutation shown in the <a href="" hint="Porting song recommendations to Haskell">'baseline' code base</a>. That wasn't too difficult. If you're interested in the <a href="https://www.industriallogic.com/blog/whats-this-about-micro-commits/">micro-commits</a> I made to get to that milestone, you can consult the Git repository. The interim result looked like this:
+    </p>
+    <p>
+        <pre>getRecommendations&nbsp;srvc&nbsp;un&nbsp;=&nbsp;<span style="color:blue;">do</span>
+&nbsp;&nbsp;<span style="color:green;">--&nbsp;1.&nbsp;Get&nbsp;user&#39;s&nbsp;own&nbsp;top&nbsp;scrobbles
+</span>&nbsp;&nbsp;<span style="color:green;">--&nbsp;2.&nbsp;Get&nbsp;other&nbsp;users&nbsp;who&nbsp;listened&nbsp;to&nbsp;the&nbsp;same&nbsp;songs
+</span>&nbsp;&nbsp;<span style="color:green;">--&nbsp;3.&nbsp;Get&nbsp;top&nbsp;scrobbles&nbsp;of&nbsp;those&nbsp;users
+</span>&nbsp;&nbsp;<span style="color:green;">--&nbsp;4.&nbsp;Aggregate&nbsp;the&nbsp;songs&nbsp;into&nbsp;recommendations
+</span>
+&nbsp;&nbsp;<span style="color:green;">--&nbsp;Impure
+</span>&nbsp;&nbsp;scrobbles&nbsp;&lt;-&nbsp;getTopScrobbles&nbsp;srvc&nbsp;un
+ 
+&nbsp;&nbsp;<span style="color:green;">--&nbsp;Pure
+</span>&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;scrobblesSnapshot&nbsp;=&nbsp;<span style="color:blue;">take</span>&nbsp;100&nbsp;$&nbsp;sortOn&nbsp;(Down&nbsp;.&nbsp;scrobbleCount)&nbsp;scrobbles
+ 
+&nbsp;&nbsp;<span style="color:green;">--&nbsp;Impure
+</span>&nbsp;&nbsp;recommendations&nbsp;&lt;-
+&nbsp;&nbsp;&nbsp;&nbsp;join&nbsp;&lt;$&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;traverse&nbsp;(\scrobble&nbsp;-&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">fmap</span>&nbsp;join&nbsp;$
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;traverse&nbsp;(\otherListener&nbsp;-&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">fmap</span>&nbsp;scrobbledSong&nbsp;.
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">take</span>&nbsp;10&nbsp;.
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;sortOn&nbsp;(Down&nbsp;.&nbsp;songRating&nbsp;.&nbsp;scrobbledSong)&nbsp;.
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">filter</span>&nbsp;(songHasVerifiedArtist&nbsp;.&nbsp;scrobbledSong)&nbsp;&lt;$&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;getTopScrobbles&nbsp;srvc&nbsp;(userName&nbsp;otherListener))&nbsp;.
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">take</span>&nbsp;20&nbsp;&lt;$&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;sortOn&nbsp;(Down&nbsp;.&nbsp;userScrobbleCount)&nbsp;.
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">filter</span>&nbsp;((10_000&nbsp;&lt;=)&nbsp;.&nbsp;userScrobbleCount)&nbsp;=&lt;&lt;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;getTopListeners&nbsp;srvc&nbsp;(songId&nbsp;$&nbsp;scrobbledSong&nbsp;scrobble))
+&nbsp;&nbsp;&nbsp;&nbsp;scrobblesSnapshot
+ 
+&nbsp;&nbsp;<span style="color:green;">--&nbsp;Pure
+</span>&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;$&nbsp;<span style="color:blue;">take</span>&nbsp;200&nbsp;$&nbsp;sortOn&nbsp;(Down&nbsp;.&nbsp;songRating)&nbsp;recommendations</pre>
+    </p>
+    <p>
+        Granted, it's not the most readable way to present the algorithm, but it <em>is</em>, after all, only an intermediate step. As usual, I'll remind the reader that Haskell code should, by default, be read from right to left. When split over multiple lines, this also means that an expression should be read from the bottom to the top. Armed with that knowledge (and general knowledge of Haskell), combined with some helpful indentation, it's not altogether unreadable, but not something I'd like to come back to after half a year. And definitely not something I would foist upon (hypothetical) colleagues.
+    </p>
+    <p>
+        The careful reader may notice that I've decided to use the reverse <em>bind</em> operator <code>=&lt;&lt;</code>, rather than the standard <code>&gt;&gt;=</code> operator. I usually do that with Haskell, because most of Haskell is composed from right to left, and <code>=&lt;&lt;</code> is consistent with that direction. The standard <code>&gt;&gt;=</code> operator, on the other hand, composes monadic actions from left to right. You could argue that that's more natural (to Western audiences), but since everything else stays right-to-left biased, using <code>&gt;&gt;=</code> confuses the reading direction.
+    </p>
+    <p>
+        As a Westerner, I prefer left-to-right reading order, but in general I've found it hard to fight Haskell's bias in the other direction.
+    </p>
+    <p>
+        As the <code>-- Pure</code> and <code>-- Impure</code> comments indicate, interleaving the pure functions with impure actions makes the entire expression impure. The more I do that, the less pure code remains.
+    </p>
+    <h3 id="faf4d26cfb2b42f89449be601e91e582">
+        Single expression <a href="#faf4d26cfb2b42f89449be601e91e582">#</a>
+    </h3>
+    <p>
+        Going from from the above snapshot to a single impure expression doesn't require many more steps.
+    </p>
+    <p>
+        <pre>getRecommendations&nbsp;srvc&nbsp;un&nbsp;=
+&nbsp;&nbsp;<span style="color:green;">--&nbsp;1.&nbsp;Get&nbsp;user&#39;s&nbsp;own&nbsp;top&nbsp;scrobbles
+</span>&nbsp;&nbsp;<span style="color:green;">--&nbsp;2.&nbsp;Get&nbsp;other&nbsp;users&nbsp;who&nbsp;listened&nbsp;to&nbsp;the&nbsp;same&nbsp;songs
+</span>&nbsp;&nbsp;<span style="color:green;">--&nbsp;3.&nbsp;Get&nbsp;top&nbsp;scrobbles&nbsp;of&nbsp;those&nbsp;users
+</span>&nbsp;&nbsp;<span style="color:green;">--&nbsp;4.&nbsp;Aggregate&nbsp;the&nbsp;songs&nbsp;into&nbsp;recommendations
+</span>
+&nbsp;&nbsp;<span style="color:blue;">take</span>&nbsp;200&nbsp;.&nbsp;sortOn&nbsp;(Down&nbsp;.&nbsp;songRating)&nbsp;&lt;$&gt;
+&nbsp;&nbsp;((\scrobbles&nbsp;-&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;join&nbsp;&lt;$&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;traverse&nbsp;(\scrobble&nbsp;-&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">fmap</span>&nbsp;join&nbsp;$
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;traverse&nbsp;(\otherListener&nbsp;-&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">fmap</span>&nbsp;scrobbledSong&nbsp;.
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">take</span>&nbsp;10&nbsp;.
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;sortOn&nbsp;(Down&nbsp;.&nbsp;songRating&nbsp;.&nbsp;scrobbledSong)&nbsp;.
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">filter</span>&nbsp;(songHasVerifiedArtist&nbsp;.&nbsp;scrobbledSong)&nbsp;&lt;$&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;getTopScrobbles&nbsp;srvc&nbsp;(userName&nbsp;otherListener))&nbsp;.
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">take</span>&nbsp;20&nbsp;&lt;$&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;sortOn&nbsp;(Down&nbsp;.&nbsp;userScrobbleCount)&nbsp;.
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">filter</span>&nbsp;((10_000&nbsp;&lt;=)&nbsp;.&nbsp;userScrobbleCount)&nbsp;=&lt;&lt;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;getTopListeners&nbsp;srvc&nbsp;(songId&nbsp;$&nbsp;scrobbledSong&nbsp;scrobble))
+&nbsp;&nbsp;&nbsp;&nbsp;(<span style="color:blue;">take</span>&nbsp;100&nbsp;$&nbsp;sortOn&nbsp;(Down&nbsp;.&nbsp;scrobbleCount)&nbsp;scrobbles))&nbsp;=&lt;&lt;
+&nbsp;&nbsp;getTopScrobbles&nbsp;srvc&nbsp;un)</pre>
+    </p>
+    <p>
+        Neither did it improve readability.
+    </p>
+    <h3 id="91851237845f49a8976aeaaa5a24ebf6">
+        Helper functions <a href="#91851237845f49a8976aeaaa5a24ebf6">#</a>
+    </h3>
+    <p>
+        As in previous incarnations of this exercise, it helps if you extract some well-named helper functions, like this one:
+    </p>
+    <p>
+        <pre><span style="color:#2b91af;">getUsersOwnTopScrobbles</span>&nbsp;<span style="color:blue;">::</span>&nbsp;[<span style="color:blue;">Scrobble</span>]&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;[<span style="color:blue;">Scrobble</span>]
+getUsersOwnTopScrobbles&nbsp;=&nbsp;<span style="color:blue;">take</span>&nbsp;100&nbsp;.&nbsp;sortOn&nbsp;(Down&nbsp;.&nbsp;scrobbleCount)</pre>
+    </p>
+    <p>
+        As a one-liner, that one perhaps isn't that impressive, but none of them are particularly complicated. The biggest function is this:
+    </p>
+    <p>
+        <pre><span style="color:#2b91af;">getTopScrobblesOfOtherUsers</span>&nbsp;<span style="color:blue;">::</span>&nbsp;[<span style="color:blue;">Scrobble</span>]&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;[<span style="color:blue;">Song</span>]
+getTopScrobblesOfOtherUsers&nbsp;=
+&nbsp;&nbsp;<span style="color:blue;">fmap</span>&nbsp;scrobbledSong&nbsp;.
+&nbsp;&nbsp;<span style="color:blue;">take</span>&nbsp;10&nbsp;.
+&nbsp;&nbsp;sortOn&nbsp;(Down&nbsp;.&nbsp;songRating&nbsp;.&nbsp;scrobbledSong)&nbsp;.
+&nbsp;&nbsp;<span style="color:blue;">filter</span>&nbsp;(songHasVerifiedArtist&nbsp;.&nbsp;scrobbledSong)</pre>
+    </p>
+    <p>
+        You can see the rest in the Git repository. None of them are exported by the module, which makes them implementation details that you may decide to change or remove at a later date.
+    </p>
+    <p>
+        You can now compose the overall action.
+    </p>
+    <p>
+        <pre>getRecommendations&nbsp;srvc&nbsp;un&nbsp;=
+&nbsp;&nbsp;<span style="color:green;">--&nbsp;1.&nbsp;Get&nbsp;user&#39;s&nbsp;own&nbsp;top&nbsp;scrobbles
+</span>&nbsp;&nbsp;<span style="color:green;">--&nbsp;2.&nbsp;Get&nbsp;other&nbsp;users&nbsp;who&nbsp;listened&nbsp;to&nbsp;the&nbsp;same&nbsp;songs
+</span>&nbsp;&nbsp;<span style="color:green;">--&nbsp;3.&nbsp;Get&nbsp;top&nbsp;scrobbles&nbsp;of&nbsp;those&nbsp;users
+</span>&nbsp;&nbsp;<span style="color:green;">--&nbsp;4.&nbsp;Aggregate&nbsp;the&nbsp;songs&nbsp;into&nbsp;recommendations
+</span>
+&nbsp;&nbsp;(aggregateTheSongsIntoRecommendations&nbsp;.&nbsp;getTopScrobblesOfOtherUsers)&nbsp;.&nbsp;join&nbsp;&lt;$&gt;
+&nbsp;&nbsp;((traverse&nbsp;(getTopScrobbles&nbsp;srvc&nbsp;.&nbsp;userName)&nbsp;.
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;getOtherUsersWhoListenedToTheSameSongs)&nbsp;.&nbsp;join&nbsp;=&lt;&lt;
+&nbsp;&nbsp;&nbsp;&nbsp;(traverse&nbsp;(getTopListeners&nbsp;srvc&nbsp;.&nbsp;(songId&nbsp;.&nbsp;scrobbledSong))&nbsp;.
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;getUsersOwnTopScrobbles&nbsp;=&lt;&lt;&nbsp;getTopScrobbles&nbsp;srvc&nbsp;un))</pre>
+    </p>
+    <p>
+        Some of the parentheses break over multiple lines in a non-conventional way. This is my best effort to format the code in a way that emphasises the four steps comprising the algorithm, while still staying within the bounds of the language, and keeping <a href="https://hackage.haskell.org/package/hlint">hlint</a> silent.
+    </p>
+    <p>
+        I could try to argue that if you squint a bit, the operators and other glue like <code>join</code> should <a href="/2018/07/02/terse-operators-make-business-code-more-readable">fade into the background</a>, but in this case, I don't even buy that argument myself.
+    </p>
+    <p>
+        It bothers me that it's so hard to compose the code in a way that approaches being self-documenting. I find that the F# composition in the <a href="">previous article</a> does a better job of that.
+    </p>
+    <h3 id="f36d4eb691fe4434b89595c5d313f147">
+        Syntactic sugar <a href="#f36d4eb691fe4434b89595c5d313f147">#</a>
+    </h3>
+    <p>
+        The stated goal in this article is to demonstrate how it's possible to use standard combinators to glue the algorithm together. I've been complaining throughout this article that, while possible, it leaves the code less readable than desired.
+    </p>
+    <p>
+        That one reader who actually knows Haskell is likely frustrated with me. After all, the language does offer a way out. Using the syntactic sugar of <code>do</code> notation, you can instead write the composition like this:
+    </p>
+    <p>
+        <pre>getRecommendations&nbsp;srvc&nbsp;un&nbsp;=&nbsp;<span style="color:blue;">do</span>
+&nbsp;&nbsp;<span style="color:green;">--&nbsp;1.&nbsp;Get&nbsp;user&#39;s&nbsp;own&nbsp;top&nbsp;scrobbles
+</span>&nbsp;&nbsp;<span style="color:green;">--&nbsp;2.&nbsp;Get&nbsp;other&nbsp;users&nbsp;who&nbsp;listened&nbsp;to&nbsp;the&nbsp;same&nbsp;songs
+</span>&nbsp;&nbsp;<span style="color:green;">--&nbsp;3.&nbsp;Get&nbsp;top&nbsp;scrobbles&nbsp;of&nbsp;those&nbsp;users
+</span>&nbsp;&nbsp;<span style="color:green;">--&nbsp;4.&nbsp;Aggregate&nbsp;the&nbsp;songs&nbsp;into&nbsp;recommendations
+</span>
+&nbsp;&nbsp;userTops&nbsp;&lt;-&nbsp;getTopScrobbles&nbsp;srvc&nbsp;un&nbsp;&lt;&amp;&gt;&nbsp;getUsersOwnTopScrobbles
+&nbsp;&nbsp;otherListeners&nbsp;&lt;-&nbsp;
+&nbsp;&nbsp;&nbsp;&nbsp;traverse&nbsp;(getTopListeners&nbsp;srvc&nbsp;.&nbsp;(songId&nbsp;.&nbsp;scrobbledSong))&nbsp;userTops&nbsp;&lt;&amp;&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;getOtherUsersWhoListenedToTheSameSongs&nbsp;.&nbsp;join
+&nbsp;&nbsp;songs&nbsp;&lt;-
+&nbsp;&nbsp;&nbsp;&nbsp;traverse&nbsp;(getTopScrobbles&nbsp;srvc&nbsp;.&nbsp;userName)&nbsp;otherListeners&nbsp;&lt;&amp;&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;getTopScrobblesOfOtherUsers&nbsp;.&nbsp;join
+&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;$&nbsp;aggregateTheSongsIntoRecommendations&nbsp;songs</pre>
+    </p>
+    <p>
+        By splitting the process up into steps with named variables, you can achieve the much-yearned-for top-to-bottom reading order. Taking advantage of the <code>&lt;&amp;&gt;</code> operator from <a href="https://hackage.haskell.org/package/base/docs/Data-Functor.html">Data.Functor</a> we also get left-to-right reading order on each line.
+    </p>
+    <p>
+        That's the best I've been able to achieve under the constraint that the <code>IO</code>-bound operations stay interleaved with pure functions.
+    </p>
+    <h3 id="49db6a22b7924c9cb37813b51f1334e6">
+        Conclusion <a href="#49db6a22b7924c9cb37813b51f1334e6">#</a>
+    </h3>
+    <p>
+        Mixing pure functions with impure actions like this is necessary when composing whole programs (usually at the entry point), but shouldn't be consider good functional-programming style in general. The entire <code>getRecommendations</code> action is impure, being non-deterministic.
+    </p>
+    <p>
+        Still, even Haskell code eventually needs to compose code in this way. Therefore, it's relevant covering how this may be done. Even so, alternative architectures exist.
+    </p>
+    <p>
+        <strong>Next:</strong> Song recommendations with pipes and filters.
+    </p>
+</div>
