@@ -1,0 +1,279 @@
+---
+layout: post
+title: "Song recommendations with Haskell free monads"
+description: "A surprisingly easy refactoring."
+date: 2025-04-04 12:34 UTC
+tags: [Functional Programming, Haskell]
+---
+{% include JB/setup %}
+
+<div id="post">
+    <p>
+        <em>{{ page.description }}</em>
+    </p>
+    <p>
+        This article is part of a larger series titled <a href="">Alternative ways to design with functional programming</a>. In short, it uses <a href="https://www.haskell.org/">Haskell</a>, <a href="https://fsharp.org/">F#</a>, and C# to present various internal architectures to deal with an example problem. Please refer to the table of contents included with the <a href="">first article</a> to get a sense of what has already been covered.
+    </p>
+    <p>
+        In this article, you'll see how a free monad may be used to address the problem that when data size is sufficiently large, you may need to load it piecemeal, based on the results of previous steps in an algorithm. In short, the problem being addressed is to calculate a list of song recommendations based on so-called 'scrobble' data from a multitude of other users's music playback history.
+    </p>
+    <p>
+        If you want to follow along with the Git repository, the code presented here is from the Haskell repository's <em>free</em> branch.
+    </p>
+    <h3 id="efc53e7ce8b747ddb18acd0958527b06">
+        Starting point <a href="#efc53e7ce8b747ddb18acd0958527b06">#</a>
+    </h3>
+    <p>
+        Instead of starting from scratch from the code base presented in <a href="">Porting song recommendations to Haskell</a>, I'll start at what was an interim refactoring step in <a href="">Song recommendations from Haskell combinators</a>:
+    </p>
+    <p>
+        <pre><span style="color:#2b91af;">getRecommendations</span>&nbsp;<span style="color:blue;">::</span>&nbsp;<span style="color:blue;">SongService</span>&nbsp;a&nbsp;<span style="color:blue;">=&gt;</span>&nbsp;a&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:#2b91af;">String</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:#2b91af;">IO</span>&nbsp;[<span style="color:blue;">Song</span>]
+getRecommendations&nbsp;srvc&nbsp;un&nbsp;=&nbsp;<span style="color:blue;">do</span>
+&nbsp;&nbsp;<span style="color:green;">--&nbsp;1.&nbsp;Get&nbsp;user&#39;s&nbsp;own&nbsp;top&nbsp;scrobbles
+</span>&nbsp;&nbsp;<span style="color:green;">--&nbsp;2.&nbsp;Get&nbsp;other&nbsp;users&nbsp;who&nbsp;listened&nbsp;to&nbsp;the&nbsp;same&nbsp;songs
+</span>&nbsp;&nbsp;<span style="color:green;">--&nbsp;3.&nbsp;Get&nbsp;top&nbsp;scrobbles&nbsp;of&nbsp;those&nbsp;users
+</span>&nbsp;&nbsp;<span style="color:green;">--&nbsp;4.&nbsp;Aggregate&nbsp;the&nbsp;songs&nbsp;into&nbsp;recommendations
+</span>
+&nbsp;&nbsp;<span style="color:green;">--&nbsp;Impure
+</span>&nbsp;&nbsp;scrobbles&nbsp;&lt;-&nbsp;getTopScrobbles&nbsp;srvc&nbsp;un
+ 
+&nbsp;&nbsp;<span style="color:green;">--&nbsp;Pure
+</span>&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;scrobblesSnapshot&nbsp;=&nbsp;<span style="color:blue;">take</span>&nbsp;100&nbsp;$&nbsp;sortOn&nbsp;(Down&nbsp;.&nbsp;scrobbleCount)&nbsp;scrobbles
+ 
+&nbsp;&nbsp;<span style="color:green;">--&nbsp;Impure
+</span>&nbsp;&nbsp;recommendations&nbsp;&lt;-
+&nbsp;&nbsp;&nbsp;&nbsp;join&nbsp;&lt;$&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;traverse&nbsp;(\scrobble&nbsp;-&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">fmap</span>&nbsp;join&nbsp;$
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;traverse&nbsp;(\otherListener&nbsp;-&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">fmap</span>&nbsp;scrobbledSong&nbsp;.
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">take</span>&nbsp;10&nbsp;.
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;sortOn&nbsp;(Down&nbsp;.&nbsp;songRating&nbsp;.&nbsp;scrobbledSong)&nbsp;.
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">filter</span>&nbsp;(songHasVerifiedArtist&nbsp;.&nbsp;scrobbledSong)&nbsp;&lt;$&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;getTopScrobbles&nbsp;srvc&nbsp;(userName&nbsp;otherListener))&nbsp;.
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">take</span>&nbsp;20&nbsp;&lt;$&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;sortOn&nbsp;(Down&nbsp;.&nbsp;userScrobbleCount)&nbsp;.
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">filter</span>&nbsp;((10_000&nbsp;&lt;=)&nbsp;.&nbsp;userScrobbleCount)&nbsp;=&lt;&lt;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;getTopListeners&nbsp;srvc&nbsp;(songId&nbsp;$&nbsp;scrobbledSong&nbsp;scrobble))
+&nbsp;&nbsp;&nbsp;&nbsp;scrobblesSnapshot
+ 
+&nbsp;&nbsp;<span style="color:green;">--&nbsp;Pure
+</span>&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;$&nbsp;<span style="color:blue;">take</span>&nbsp;200&nbsp;$&nbsp;sortOn&nbsp;(Down&nbsp;.&nbsp;songRating)&nbsp;recommendations</pre>
+    </p>
+    <p>
+        The reason I wanted to start here is that with the <code>IORef</code> out of the way, the only <code>IO</code>-bound code remaining involves the <code>SongService</code> methods.
+    </p>
+    <p>
+        The plan is to replace the <code>SongService</code> type class with a free monad. Once that's done, there's no more <code>IO</code> left; it will have been replaced by the free monad. That's why it's easiest to first get rid of everything else involving <code>IO</code>. If I didn't, the refactoring wouldn't be as easy. As Kent Beck wrote,
+    </p>
+    <blockquote>
+        <p>
+            "for each desired change, make the change easy (warning: this may be hard), then make the easy change"
+        </p>
+        <footer><cite><a href="https://x.com/kentbeck/status/250733358307500032">Tweet</a>, Kent Beck, 2012</cite></footer>
+    </blockquote>
+    <p>
+        Starting from the above incarnation of the code makes the change easy.
+    </p>
+    <h3 id="1d5af97b6c2542698aa20cb449cc771e">
+        Functor <a href="#1d5af97b6c2542698aa20cb449cc771e">#</a>
+    </h3>
+    <p>
+        As a reminder, this type class is the one I'm getting rid of:
+    </p>
+    <p>
+        <pre><span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">SongService</span>&nbsp;a&nbsp;<span style="color:blue;">where</span>
+&nbsp;&nbsp;<span style="color:#2b91af;">getTopListeners</span>&nbsp;<span style="color:blue;">::</span>&nbsp;a&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:#2b91af;">Int</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:#2b91af;">IO</span>&nbsp;[<span style="color:blue;">User</span>]
+&nbsp;&nbsp;<span style="color:#2b91af;">getTopScrobbles</span>&nbsp;<span style="color:blue;">::</span>&nbsp;a&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:#2b91af;">String</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:#2b91af;">IO</span>&nbsp;[<span style="color:blue;">Scrobble</span>]</pre>
+    </p>
+    <p>
+        Converting such an 'interface' to a <a href="https://en.wikipedia.org/wiki/Tagged_union">sum type</a> of instructions is such a well-defined process that I think it could be automated (<a href="https://xkcd.com/1205/">if it were worth the effort</a>). You take each method of the type class and make it a case in the sum type.
+    </p>
+    <p>
+        <pre><span style="color:blue;">data</span>&nbsp;SongInstruction&nbsp;a&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;GetTopListeners&nbsp;Int&nbsp;([User]&nbsp;-&gt;&nbsp;a)
+&nbsp;&nbsp;|&nbsp;GetTopScrobbles&nbsp;String&nbsp;([Scrobble]&nbsp;-&gt;&nbsp;a)
+&nbsp;&nbsp;<span style="color:blue;">deriving</span>&nbsp;(<span style="color:#2b91af;">Functor</span>)</pre>
+    </p>
+    <p>
+        I usually think of such a type as representing possible instructions in a little domain-specific language (DSL). In this case, the DSL allows only two instructions: <code>GetTopListeners</code> and <code>GetTopScrobbles</code>.
+    </p>
+    <p>
+        If you've never seen a free monad before, you may be wondering: <em>What's the <code>a</code>?</em> It's what we may call the <em>carrier type</em>. If you haven't worked with, say, <a href="https://bartoszmilewski.com/2017/02/28/f-algebras/">F-Algebras</a>, this takes some time getting used to, but the carrier type represents a 'potential'. As presented here, it may be anything, but when you want to evaluate or 'run' the program, the <code>a</code> turns out to be the return type of the evaluation.
+    </p>
+    <p>
+        Since <code>SongInstruction</code> is a <code>Functor</code>, it's possible to map <code>a</code> to <code>b</code>, or one concrete type to another, so that the <code>a</code> type parameter can take on more than one concrete type during a small 'program' written in the DSL.
+    </p>
+    <p>
+        In any case, at this point, <code>SongInstruction a</code> is only a <code>Functor</code>, and not yet a <code>Monad</code>.
+    </p>
+    <h3 id="44bb4cf9252b4eeb8ae0fe302a4cbd42">
+        Free monad <a href="#44bb4cf9252b4eeb8ae0fe302a4cbd42">#</a>
+    </h3>
+    <p>
+        You may, if you want to, introduce a type alias that makes <code>SongInstruction a</code> (or, rather, its <code>Free</code> wrapper) a <code>Monad</code>.
+    </p>
+    <p>
+        <pre><span style="color:blue;">type</span>&nbsp;SongProgram&nbsp;=&nbsp;Free&nbsp;SongInstruction</pre>
+    </p>
+    <p>
+        The <code>Free</code> wrapper comes from <a href="https://hackage.haskell.org/package/free/docs/Control-Monad-Free.html">Control.Monad.Free</a>.
+    </p>
+    <p>
+        In the rest of the code listings in this article, I make no use of this type alias, so I only present it here because it's the type <a href="https://en.wikipedia.org/wiki/Glasgow_Haskell_Compiler">the compiler</a> will infer when running the test. In other words, while never explicitly stated, this is going to be the de-facto free monad in this article.
+    </p>
+    <h3 id="368a9eb18f5846d49896baacf66fbb25">
+        From action to function <a href="#368a9eb18f5846d49896baacf66fbb25">#</a>
+    </h3>
+    <p>
+        Changing the <code>getRecommendations</code> action to a function that returns (effectively) <code>Free (SongInstruction [Song])</code> turned out to be easier than I had expected.
+    </p>
+    <p>
+        Since I've <a href="/2024/11/04/pendulum-swing-no-haskell-type-annotation-by-default">decided to omit type declarations whenever possible</a>, refactoring is easier because the type inferencing system can allow changes to function and action types to ripple through to the ultimate callers. (To be clear, however, I here show some of the code with type annotations. I've only added those in the process of writing this article, as an aide to you, the reader. You will not find those type annotations in the Git repository.)
+    </p>
+    <p>
+        First, I added a few helper methods to create 'program instructions':
+    </p>
+    <p>
+        <pre>getTopListeners&nbsp;sid&nbsp;=&nbsp;liftF&nbsp;$&nbsp;GetTopListeners&nbsp;sid&nbsp;<span style="color:blue;">id</span>
+ 
+getTopScrobbles&nbsp;un&nbsp;=&nbsp;liftF&nbsp;$&nbsp;GetTopScrobbles&nbsp;un&nbsp;<span style="color:blue;">id</span></pre>
+    </p>
+    <p>
+        The <code>liftF</code> function wraps a <code>Functor</code> (here, <code>SongInstruction</code>) in a free monad. This makes it easer to write programs in that DSL.
+    </p>
+    <p>
+        The only changes now required to <code>getRecommendations</code> is to remove <code>srvc</code> in four places:
+    </p>
+    <p>
+        <pre><span style="color:#2b91af;">getRecommendations</span>&nbsp;<span style="color:blue;">::</span>&nbsp;<span style="color:blue;">MonadFree</span>&nbsp;<span style="color:blue;">SongInstruction</span>&nbsp;m&nbsp;<span style="color:blue;">=&gt;</span>&nbsp;<span style="color:#2b91af;">String</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;m&nbsp;[<span style="color:blue;">Song</span>]
+getRecommendations&nbsp;un&nbsp;=&nbsp;<span style="color:blue;">do</span>
+&nbsp;&nbsp;<span style="color:green;">--&nbsp;1.&nbsp;Get&nbsp;user&#39;s&nbsp;own&nbsp;top&nbsp;scrobbles
+</span>&nbsp;&nbsp;<span style="color:green;">--&nbsp;2.&nbsp;Get&nbsp;other&nbsp;users&nbsp;who&nbsp;listened&nbsp;to&nbsp;the&nbsp;same&nbsp;songs
+</span>&nbsp;&nbsp;<span style="color:green;">--&nbsp;3.&nbsp;Get&nbsp;top&nbsp;scrobbles&nbsp;of&nbsp;those&nbsp;users
+</span>&nbsp;&nbsp;<span style="color:green;">--&nbsp;4.&nbsp;Aggregate&nbsp;the&nbsp;songs&nbsp;into&nbsp;recommendations
+</span>
+&nbsp;&nbsp;<span style="color:green;">--&nbsp;Impure
+</span>&nbsp;&nbsp;scrobbles&nbsp;&lt;-&nbsp;getTopScrobbles&nbsp;un
+ 
+&nbsp;&nbsp;<span style="color:green;">--&nbsp;Pure
+</span>&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;scrobblesSnapshot&nbsp;=&nbsp;<span style="color:blue;">take</span>&nbsp;100&nbsp;$&nbsp;sortOn&nbsp;(Down&nbsp;.&nbsp;scrobbleCount)&nbsp;scrobbles
+ 
+&nbsp;&nbsp;<span style="color:green;">--&nbsp;Impure
+</span>&nbsp;&nbsp;recommendations&nbsp;&lt;-
+&nbsp;&nbsp;&nbsp;&nbsp;join&nbsp;&lt;$&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;traverse&nbsp;(\scrobble&nbsp;-&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">fmap</span>&nbsp;join&nbsp;$
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;traverse&nbsp;(\otherListener&nbsp;-&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">fmap</span>&nbsp;scrobbledSong&nbsp;.
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">take</span>&nbsp;10&nbsp;.
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;sortOn&nbsp;(Down&nbsp;.&nbsp;songRating&nbsp;.&nbsp;scrobbledSong)&nbsp;.
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">filter</span>&nbsp;(songHasVerifiedArtist&nbsp;.&nbsp;scrobbledSong)&nbsp;&lt;$&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;getTopScrobbles&nbsp;(userName&nbsp;otherListener))&nbsp;.
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">take</span>&nbsp;20&nbsp;&lt;$&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;sortOn&nbsp;(Down&nbsp;.&nbsp;userScrobbleCount)&nbsp;.
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">filter</span>&nbsp;((10_000&nbsp;&lt;=)&nbsp;.&nbsp;userScrobbleCount)&nbsp;=&lt;&lt;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;getTopListeners&nbsp;(songId&nbsp;$&nbsp;scrobbledSong&nbsp;scrobble))
+&nbsp;&nbsp;&nbsp;&nbsp;scrobblesSnapshot
+ 
+&nbsp;&nbsp;<span style="color:green;">--&nbsp;Pure
+</span>&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;$&nbsp;<span style="color:blue;">take</span>&nbsp;200&nbsp;$&nbsp;sortOn&nbsp;(Down&nbsp;.&nbsp;songRating)&nbsp;recommendations</pre>
+    </p>
+    <p>
+        It's almost the same code as before. The only difference is that <code>srvc</code> is not longer a parameter to either <code>getRecommendations</code>, <code>getTopListeners</code>, or <code>getTopScrobbles</code>.
+    </p>
+    <p>
+        Again, I'll point out that I've only added the type annotation for the benefit of you, the reader. We see now, however, that the return type is <code>m [Song]</code>, where <code>m</code> is any <code>MonadFree SongInstruction</code>.
+    </p>
+    <h3 id="9ebdd39dee9a4b3f949de971fb2b3801">
+        Interpreter <a href="#9ebdd39dee9a4b3f949de971fb2b3801">#</a>
+    </h3>
+    <p>
+        As described in <a href="">Porting song recommendations to Haskell</a> I use a <code>FakeSongService</code> as a <a href="https://martinfowler.com/bliki/TestDouble.html">Test Double</a>. <code>SongService</code> is now gone, but I can repurpose the instance implementation as an interpreter of <code>SongInstruction</code> programs.
+    </p>
+    <p>
+        <pre><span style="color:#2b91af;">interpret</span>&nbsp;<span style="color:blue;">::</span>&nbsp;<span style="color:blue;">FakeSongService</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">Free</span>&nbsp;<span style="color:blue;">SongInstruction</span>&nbsp;a&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;a
+interpret&nbsp;(FakeSongService&nbsp;ss&nbsp;us)&nbsp;=&nbsp;iter&nbsp;eval
+&nbsp;&nbsp;<span style="color:blue;">where</span>
+&nbsp;&nbsp;&nbsp;&nbsp;eval&nbsp;(GetTopListeners&nbsp;sid&nbsp;next)&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;next&nbsp;$
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">uncurry</span>&nbsp;User&nbsp;&lt;$&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Map.toList&nbsp;(<span style="color:blue;">sum</span>&nbsp;&lt;$&gt;&nbsp;Map.<span style="color:blue;">filter</span>&nbsp;(Map.member&nbsp;sid)&nbsp;us)
+&nbsp;&nbsp;&nbsp;&nbsp;eval&nbsp;(GetTopScrobbles&nbsp;un&nbsp;next)&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;next&nbsp;$
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">fmap</span>&nbsp;(\(sid,&nbsp;c)&nbsp;-&gt;&nbsp;Scrobble&nbsp;(ss&nbsp;!&nbsp;sid)&nbsp;c)&nbsp;$
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Map.toList&nbsp;$
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Map.findWithDefault&nbsp;Map.empty&nbsp;un&nbsp;us</pre>
+    </p>
+    <p>
+        Compare that code to the previous <code>SongService</code> instance shown in <a href="">Porting song recommendations to Haskell</a>. The functions are nearly identical, only <code>return</code> is replaced by <code>next</code>, and a few other, minute changes.
+    </p>
+    <h3 id="f46a84de631943c0a1d3f59d9fcfc5e8">
+        Test changes <a href="#f46a84de631943c0a1d3f59d9fcfc5e8">#</a>
+    </h3>
+    <p>
+        The hardest part of this refactoring was to adjust the tests. As I've described in <a href="/2021/06/14/new-book-code-that-fits-in-your-head">Code That Fits in Your Head</a>, I don't like when I have to change the System Under Test and the test code in the same commit, but in this case I lacked the skill to do it more incrementally.
+    </p>
+    <p>
+        The issue is that since <code>SongService</code> methods were <code>IO</code>-bound, the tests ran in <code>IO</code>. Particularly for the <a href="https://hackage.haskell.org/package/QuickCheck">QuickCheck</a> properties, I had to remove the <code>ioProperty</code> and <code>monadicIO</code> combinators. This also meant adjusting some of the assertions. The <code>"One user, some songs"</code> test now looks like this:
+    </p>
+    <p>
+        <pre>testProperty&nbsp;<span style="color:#a31515;">&quot;One&nbsp;user,&nbsp;some&nbsp;songs&quot;</span>&nbsp;$&nbsp;\
+&nbsp;&nbsp;(ValidUserName&nbsp;user)
+&nbsp;&nbsp;(<span style="color:blue;">fmap</span>&nbsp;getSong&nbsp;-&gt;&nbsp;songs)
+&nbsp;&nbsp;-&gt;&nbsp;<span style="color:blue;">do</span>
+&nbsp;&nbsp;scrobbleCounts&nbsp;&lt;-&nbsp;vectorOf&nbsp;(<span style="color:blue;">length</span>&nbsp;songs)&nbsp;$&nbsp;choose&nbsp;(1,&nbsp;100)
+&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;scrobbles&nbsp;=&nbsp;<span style="color:blue;">zip</span>&nbsp;songs&nbsp;scrobbleCounts
+&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;srvc&nbsp;=&nbsp;<span style="color:blue;">foldr</span>&nbsp;(<span style="color:blue;">uncurry</span>&nbsp;(scrobble&nbsp;user))&nbsp;emptyService&nbsp;scrobbles
+ 
+&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;actual&nbsp;=&nbsp;interpret&nbsp;srvc&nbsp;$&nbsp;getRecommendations&nbsp;user
+ 
+&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;$&nbsp;counterexample&nbsp;<span style="color:#a31515;">&quot;Should&nbsp;be&nbsp;empty&quot;</span>&nbsp;(<span style="color:blue;">null</span>&nbsp;actual)</pre>
+    </p>
+    <p>
+        Notice the interpreter in action, to the left of the application of <code>getRecommendations</code>. Since <code>interpret</code> reduces any <code>Free SongInstruction a</code> to <code>a</code>, it evaluates <code>Free SongInstruction [Song]</code> to <code>[Song]</code>; that's the type of <code>actual</code>.
+    </p>
+    <p>
+        The change represents a net benefit in my view. All tests are now pure, instead of running in <code>IO</code>. This makes them simpler.
+    </p>
+    <h3 id="8e30c90a008d4a0088ab79a4a6d15532">
+        Final refactoring <a href="#8e30c90a008d4a0088ab79a4a6d15532">#</a>
+    </h3>
+    <p>
+        The above version of the code was only a good starting point for making the changeover to a free monad. Extracting the usual helper functions, you can arrive at this variation of the <code>getRecommendations</code> function:
+    </p>
+    <p>
+        <pre>getRecommendations&nbsp;un&nbsp;=&nbsp;<span style="color:blue;">do</span>
+&nbsp;&nbsp;<span style="color:green;">--&nbsp;1.&nbsp;Get&nbsp;user&#39;s&nbsp;own&nbsp;top&nbsp;scrobbles
+</span>&nbsp;&nbsp;<span style="color:green;">--&nbsp;2.&nbsp;Get&nbsp;other&nbsp;users&nbsp;who&nbsp;listened&nbsp;to&nbsp;the&nbsp;same&nbsp;songs
+</span>&nbsp;&nbsp;<span style="color:green;">--&nbsp;3.&nbsp;Get&nbsp;top&nbsp;scrobbles&nbsp;of&nbsp;those&nbsp;users
+</span>&nbsp;&nbsp;<span style="color:green;">--&nbsp;4.&nbsp;Aggregate&nbsp;the&nbsp;songs&nbsp;into&nbsp;recommendations
+</span>
+&nbsp;&nbsp;userTops&nbsp;&lt;-&nbsp;getTopScrobbles&nbsp;un&nbsp;&lt;&amp;&gt;&nbsp;getUsersOwnTopScrobbles
+&nbsp;&nbsp;otherListeners&nbsp;&lt;-&nbsp;
+&nbsp;&nbsp;&nbsp;&nbsp;traverse&nbsp;(getTopListeners&nbsp;.&nbsp;(songId&nbsp;.&nbsp;scrobbledSong))&nbsp;userTops&nbsp;&lt;&amp;&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;getOtherUsersWhoListenedToTheSameSongs&nbsp;.&nbsp;join
+&nbsp;&nbsp;songs&nbsp;&lt;-
+&nbsp;&nbsp;&nbsp;&nbsp;traverse&nbsp;(getTopScrobbles&nbsp;.&nbsp;userName)&nbsp;otherListeners&nbsp;&lt;&amp;&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;getTopScrobblesOfOtherUsers&nbsp;.&nbsp;join
+&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;$&nbsp;aggregateTheSongsIntoRecommendations&nbsp;songs</pre>
+    </p>
+    <p>
+        Again, it looks a lot like one of the variations shown in <a href="">Porting song recommendations to Haskell</a>, just without the <code>srvc</code> parameter.
+    </p>
+    <h3 id="e7f18ceb9a9d45a19bfea1f248ee872e">
+        Conclusion <a href="#e7f18ceb9a9d45a19bfea1f248ee872e">#</a>
+    </h3>
+    <p>
+        Refactoring from a type class, which in other languages could be an interface, is so easy that you may rightfully ask what the point is. To me, the most important benefit is that you restrict your options. As I discussed in a podcast episode some years ago, <a href="https://www.dotnetrocks.com/details/1542">constraints liberate</a>. Here, we move from allowing <em>anything</em> (<code>IO</code>) to only allowing a limited set of instructions.
+    </p>
+    <p>
+        You could argue that a 'real' interpreter (rather than a test-specific interpreter) might run in <code>IO</code>, such as the <a href="/2017/06/28/pure-times-in-haskell">interpreter shown here</a>. Still, I would argue that most interpreters are smaller, and more stable, than the programs you may write with free monads. Thus, the amount of code you have to review that's allowed to do anything is smaller than it otherwise would have been.
+    </p>
+    <p>
+        In any case, refactoring to a free monad wasn't too difficult in Haskell. How easy is it in F#?
+    </p>
+    <p>
+        <strong>Next:</strong> Song recommendations with F# free monads.
+    </p>
+</div>
