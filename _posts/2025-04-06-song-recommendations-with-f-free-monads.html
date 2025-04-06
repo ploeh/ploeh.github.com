@@ -1,0 +1,377 @@
+---
+layout: post
+title: "Song recommendations with F# free monads"
+description: "With an extensive computation expression."
+date: 2025-04-06 15:41 UTC
+tags: [Functional Programming, F#]
+---
+{% include JB/setup %}
+
+<div id="post">
+    <p>
+        <em>{{ page.description }}</em>
+    </p>
+    <p>
+        This article is part of a series called <a href="">Alternative ways to design with functional programming</a>. As the title suggests, it examines alternative <a href="/2018/11/19/functional-architecture-a-definition">functional-programming architectures</a>. It does so by looking at the same overall example problem: Calculating song recommendations from a large data set of 'scrobbles'; records of playback data for many users. In the previous article, you saw <a href="">how to implement the desired functionality using a free monad in Haskell</a>. In this article, you'll see how to use a free monad in <a href="https://fsharp.org/">F#</a>.
+    </p>
+    <p>
+        If you are following along in the accompanying Git repository, the code shown here is from the <em>fsharp-free</em> branch. The starting point is <em>fsharp-port</em>.
+    </p>
+    <h3 id="88f2fcfe4cc344afb56e666a4fccdde7">
+        Functor <a href="#88f2fcfe4cc344afb56e666a4fccdde7">#</a>
+    </h3>
+    <p>
+        A free monad enables you to define a <a href="/2022/03/28/monads">monad</a> from any <a href="/2018/03/22/functors">functor</a>. In this context, you start with the functor that models an instruction set for a domain-specific language (DSL). The goal is to replace the <code>SongService</code> interface with this instruction set.
+    </p>
+    <p>
+        As a reminder, this is the interface:
+    </p>
+    <p>
+        <pre><span style="color:blue;">type</span>&nbsp;<span style="color:#2b91af;">SongService</span>&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">abstract</span>&nbsp;<span style="font-weight:bold;color:#74531f;">GetTopListenersAsync</span>&nbsp;:&nbsp;songId&nbsp;:&nbsp;<span style="color:#2b91af;">int</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:#2b91af;">Task</span>&lt;<span style="color:#2b91af;">IReadOnlyCollection</span>&lt;<span style="color:#2b91af;">User</span>&gt;&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">abstract</span>&nbsp;<span style="font-weight:bold;color:#74531f;">GetTopScrobblesAsync</span>&nbsp;:&nbsp;userName&nbsp;:&nbsp;<span style="color:#2b91af;">string</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:#2b91af;">Task</span>&lt;<span style="color:#2b91af;">IReadOnlyCollection</span>&lt;<span style="color:#2b91af;">Scrobble</span>&gt;&gt;</pre>
+    </p>
+    <p>
+        I'm following the <a href="/2017/08/07/f-free-monad-recipe">F# free monad recipe</a>, which, I'm happy to report, turned out to be easy to do.
+    </p>
+    <p>
+        First, the <a href="https://en.wikipedia.org/wiki/Tagged_union">sum type</a>:
+    </p>
+    <p>
+        <pre><span style="color:blue;">type</span>&nbsp;<span style="color:#2b91af;">SongInstruction</span>&lt;<span style="color:#2b91af;">&#39;a</span>&gt;&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:#2b91af;">GetTopListeners</span>&nbsp;<span style="color:blue;">of</span>&nbsp;songId&nbsp;:&nbsp;<span style="color:#2b91af;">int</span>&nbsp;*&nbsp;(<span style="color:#2b91af;">IReadOnlyCollection</span>&lt;<span style="color:#2b91af;">User</span>&gt;&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:#2b91af;">&#39;a</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:#2b91af;">GetTopScrobbles</span>&nbsp;<span style="color:blue;">of</span>&nbsp;userName&nbsp;:&nbsp;<span style="color:#2b91af;">string</span>&nbsp;*&nbsp;(<span style="color:#2b91af;">IReadOnlyCollection</span>&lt;<span style="color:#2b91af;">Scrobble</span>&gt;&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:#2b91af;">&#39;a</span>)</pre>
+    </p>
+    <p>
+        If you check with the F# free monad recipe and compare the <code>SongService</code> interface methods with the <code>SongInstruction</code> cases, you should be able to spot the similarity, and how to get from interface to discriminated union.
+    </p>
+    <p>
+        As shown in the <a href="">previous article</a>, in <a href="https://www.haskell.org/">Haskell</a> you can declaratively state that a type should be a <code>Functor</code> instance. In F# you have to implement it yourself.
+    </p>
+    <p>
+        <pre><span style="color:blue;">module</span>&nbsp;<span style="color:#2b91af;">SongInstruction</span>&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;<span style="color:#74531f;">map</span>&nbsp;<span style="color:#74531f;">f</span>&nbsp;=&nbsp;<span style="color:blue;">function</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:#2b91af;">GetTopListeners</span>&nbsp;(&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">songId</span>,&nbsp;<span style="color:#74531f;">next</span>)&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:#2b91af;">GetTopListeners</span>&nbsp;(&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">songId</span>,&nbsp;<span style="color:#74531f;">next</span>&nbsp;&gt;&gt;&nbsp;<span style="color:#74531f;">f</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:#2b91af;">GetTopScrobbles</span>&nbsp;(<span style="font-weight:bold;color:#1f377f;">userName</span>,&nbsp;<span style="color:#74531f;">next</span>)&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:#2b91af;">GetTopScrobbles</span>&nbsp;(<span style="font-weight:bold;color:#1f377f;">userName</span>,&nbsp;<span style="color:#74531f;">next</span>&nbsp;&gt;&gt;&nbsp;<span style="color:#74531f;">f</span>)</pre>
+    </p>
+    <p>
+        Here I've put it in its own little module, in order to make it clear which kind of data the <code>map</code> function handles.
+    </p>
+    <h3 id="253e3a8880c348e3ba2ad9fabeda579b">
+        Monad <a href="#253e3a8880c348e3ba2ad9fabeda579b">#</a>
+    </h3>
+    <p>
+        The next step is to wrap the functor in a data structure that enables you to sequence the above instructions.
+    </p>
+    <p>
+        <pre><span style="color:blue;">type</span>&nbsp;<span style="color:#2b91af;">SongProgram</span>&lt;<span style="color:#2b91af;">&#39;a</span>&gt;&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:#2b91af;">Free</span>&nbsp;<span style="color:blue;">of</span>&nbsp;<span style="color:#2b91af;">SongInstruction</span>&lt;<span style="color:#2b91af;">SongProgram</span>&lt;<span style="color:#2b91af;">&#39;a</span>&gt;&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:#2b91af;">Pure</span>&nbsp;<span style="color:blue;">of</span>&nbsp;<span style="color:#2b91af;">&#39;a</span></pre>
+    </p>
+    <p>
+        A <code>bind</code> function is required to make this type a proper monad:
+    </p>
+    <p>
+        <pre><span style="color:blue;">module</span>&nbsp;<span style="color:#2b91af;">SongProgram</span>&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;<span style="color:blue;">rec</span>&nbsp;<span style="color:#74531f;">bind</span>&nbsp;<span style="color:#74531f;">f</span>&nbsp;=&nbsp;<span style="color:blue;">function</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:#2b91af;">Free</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">inst</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">inst</span>&nbsp;|&gt;&nbsp;<span style="color:#2b91af;">SongInstruction</span>.<span style="color:#74531f;">map</span>&nbsp;(<span style="color:#74531f;">bind</span>&nbsp;<span style="color:#74531f;">f</span>)&nbsp;|&gt;&nbsp;<span style="color:#2b91af;">Free</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:#2b91af;">Pure</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">inst</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:#74531f;">f</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">inst</span></pre>
+    </p>
+    <p>
+        Again, I'm slavishly following the F# free monad recipe; please refer to it for more details.
+    </p>
+    <h3 id="4a3cd3bd35984a30a5596b69951b9131">
+        Computation expression <a href="#4a3cd3bd35984a30a5596b69951b9131">#</a>
+    </h3>
+    <p>
+        Technically, that's all it takes to make it possible to write programs in the little DSL. Doing it exclusively with the above <code>bind</code> function would, however, but quite cumbersome, so you'll also appreciate some syntactic sugar in the form of a <a href="https://learn.microsoft.com/dotnet/fsharp/language-reference/computation-expressions">computation expression</a>.
+    </p>
+    <p>
+        As you will see shortly, I needed to (temporarily) support some imperative language constructs, so I had to make it more involved than usually required.
+    </p>
+    <p>
+        <pre><span style="color:blue;">type</span>&nbsp;<span style="color:#2b91af;">SongProgramBuilder</span>&nbsp;()&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">member</span>&nbsp;_.<span style="font-weight:bold;color:#74531f;">Bind</span>&nbsp;(<span style="font-weight:bold;color:#1f377f;">x</span>,&nbsp;<span style="color:#74531f;">f</span>)&nbsp;=&nbsp;<span style="color:#2b91af;">SongProgram</span>.<span style="color:#74531f;">bind</span>&nbsp;<span style="color:#74531f;">f</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">x</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">member</span>&nbsp;_.<span style="font-weight:bold;color:#74531f;">Return</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">x</span>&nbsp;=&nbsp;<span style="color:#2b91af;">Pure</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">x</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">member</span>&nbsp;_.<span style="font-weight:bold;color:#74531f;">ReturnFrom</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">x</span>&nbsp;=&nbsp;<span style="font-weight:bold;color:#1f377f;">x</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">member</span>&nbsp;_.<span style="font-weight:bold;color:#74531f;">Zero</span>&nbsp;()&nbsp;=&nbsp;<span style="color:#2b91af;">Pure</span>&nbsp;()
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">member</span>&nbsp;_.<span style="font-weight:bold;color:#74531f;">Delay</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">f</span>&nbsp;=&nbsp;<span style="font-weight:bold;color:#1f377f;">f</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">member</span>&nbsp;_.<span style="font-weight:bold;color:#74531f;">Run</span>&nbsp;<span style="color:#74531f;">f</span>&nbsp;=&nbsp;<span style="color:#74531f;">f</span>&nbsp;()
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">member</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">this</span>.<span style="font-weight:bold;color:#74531f;">While</span>&nbsp;(<span style="color:#74531f;">guard</span>,&nbsp;<span style="color:#74531f;">body</span>)&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;<span style="color:#74531f;">not</span>&nbsp;(<span style="color:#74531f;">guard</span>&nbsp;())
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">then</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">this</span>.<span style="font-weight:bold;color:#74531f;">Zero</span>&nbsp;()
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">else</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">this</span>.<span style="font-weight:bold;color:#74531f;">Bind</span>&nbsp;(<span style="color:#74531f;">body</span>&nbsp;(),&nbsp;<span style="color:blue;">fun</span>&nbsp;()&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">this</span>.<span style="font-weight:bold;color:#74531f;">While</span>&nbsp;(<span style="color:#74531f;">guard</span>,&nbsp;<span style="color:#74531f;">body</span>))
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">member</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">this</span>.<span style="font-weight:bold;color:#74531f;">TryWith</span>&nbsp;(<span style="color:#74531f;">body</span>,&nbsp;<span style="color:#74531f;">handler</span>)&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">try</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">this</span>.<span style="font-weight:bold;color:#74531f;">ReturnFrom</span>&nbsp;(<span style="color:#74531f;">body</span>&nbsp;())
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">with</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">e</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:#74531f;">handler</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">e</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">member</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">this</span>.<span style="font-weight:bold;color:#74531f;">TryFinally</span>&nbsp;(<span style="color:#74531f;">body</span>,&nbsp;<span style="color:#74531f;">compensation</span>)&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">try</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">this</span>.<span style="font-weight:bold;color:#74531f;">ReturnFrom</span>&nbsp;(<span style="color:#74531f;">body</span>&nbsp;())
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">finally</span>&nbsp;<span style="color:#74531f;">compensation</span>&nbsp;()
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">member</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">this</span>.<span style="font-weight:bold;color:#74531f;">Using</span>&nbsp;(<span style="color:#1f377f;">disposable</span>&nbsp;:&nbsp;#System.<span style="color:#2b91af;">IDisposable</span>,&nbsp;<span style="color:#74531f;">body</span>)&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;<span style="color:#74531f;">body&#39;</span>&nbsp;=&nbsp;<span style="color:blue;">fun</span>&nbsp;()&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:#74531f;">body</span>&nbsp;<span style="color:#1f377f;">disposable</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">this</span>.<span style="font-weight:bold;color:#74531f;">TryFinally</span>&nbsp;(<span style="color:#74531f;">body&#39;</span>,&nbsp;<span style="color:blue;">fun</span>&nbsp;()&nbsp;<span style="color:blue;">-&gt;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">match</span>&nbsp;<span style="color:#1f377f;">disposable</span>&nbsp;<span style="color:blue;">with</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:blue;">null</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;()
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:#1f377f;">disp</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:#1f377f;">disp</span>.<span style="font-weight:bold;color:#74531f;">Dispose</span>&nbsp;())
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">member</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">this</span>.<span style="font-weight:bold;color:#74531f;">For</span>&nbsp;(<span style="font-weight:bold;color:#1f377f;">sequence</span>&nbsp;:&nbsp;<span style="color:#2b91af;">seq</span>&lt;_&gt;,&nbsp;<span style="color:#74531f;">body</span>)&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">this</span>.<span style="font-weight:bold;color:#74531f;">Using</span>&nbsp;(<span style="font-weight:bold;color:#1f377f;">sequence</span>.<span style="font-weight:bold;color:#74531f;">GetEnumerator</span>&nbsp;(),&nbsp;<span style="color:blue;">fun</span>&nbsp;<span style="color:#1f377f;">enum</span>&nbsp;<span style="color:blue;">-&gt;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">this</span>.<span style="font-weight:bold;color:#74531f;">While</span>&nbsp;(<span style="color:#1f377f;">enum</span>.<span style="font-weight:bold;color:#74531f;">MoveNext</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">this</span>.<span style="font-weight:bold;color:#74531f;">Delay</span>&nbsp;(<span style="color:blue;">fun</span>&nbsp;()&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:#74531f;">body</span>&nbsp;<span style="color:#1f377f;">enum</span>.Current)))
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">member</span>&nbsp;_.<span style="font-weight:bold;color:#74531f;">Combine</span>&nbsp;(<span style="font-weight:bold;color:#1f377f;">x</span>,&nbsp;<span style="color:#74531f;">y</span>)&nbsp;=&nbsp;<span style="font-weight:bold;color:#1f377f;">x</span>&nbsp;|&gt;&nbsp;<span style="color:#2b91af;">SongProgram</span>.<span style="color:#74531f;">bind</span>&nbsp;(<span style="color:blue;">fun</span>&nbsp;()&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:#74531f;">y</span>&nbsp;())</pre>
+    </p>
+    <p>
+        I had to do quite a bit of yak shaving before I got the <code>For</code> method right. Not surprisingly, Scott Wlaschin's <a href="https://fsharpforfunandprofit.com/posts/computation-expressions-intro/">series on computation expressions</a> proved invaluable.
+    </p>
+    <p>
+        As you always do with computation expressions, you leave a builder object somewhere the rest of your code can see it:
+    </p>
+    <p>
+        <pre><span style="color:blue;">let</span>&nbsp;songProgram&nbsp;=&nbsp;<span style="color:#2b91af;">SongProgramBuilder</span>&nbsp;()</pre>
+    </p>
+    <p>
+        You'll soon see an example of using a <code>songProgram</code> computation expression.
+    </p>
+    <h3 id="edfef1f9fe8440aa9fe09256e588c226">
+        Lifted helpers <a href="#edfef1f9fe8440aa9fe09256e588c226">#</a>
+    </h3>
+    <p>
+        Although not strictly required, I often find it useful to add a helper function for each case of the instruction type:
+    </p>
+    <p>
+        <pre><span style="color:blue;">let</span>&nbsp;<span style="color:#74531f;">getTopListeners</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">songId</span>&nbsp;=&nbsp;<span style="color:#2b91af;">Free</span>&nbsp;(<span style="color:#2b91af;">GetTopListeners</span>&nbsp;(<span style="font-weight:bold;color:#1f377f;">songId</span>,&nbsp;<span style="color:#2b91af;">Pure</span>))
+ 
+<span style="color:blue;">let</span>&nbsp;<span style="color:#74531f;">getTopScrobbles</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">userName</span>&nbsp;=&nbsp;<span style="color:#2b91af;">Free</span>&nbsp;(<span style="color:#2b91af;">GetTopScrobbles</span>&nbsp;(<span style="font-weight:bold;color:#1f377f;">userName</span>,&nbsp;<span style="color:#2b91af;">Pure</span>))</pre>
+    </p>
+    <p>
+        This just makes the user code look a bit cleaner.
+    </p>
+    <h3 id="3866c8b8d87c47e58dfa87e762c79ce5">
+        Imperative-looking program <a href="#3866c8b8d87c47e58dfa87e762c79ce5">#</a>
+    </h3>
+    <p>
+        With all that machinery in place, you can now write a <a href="https://en.wikipedia.org/wiki/Referential_transparency">referentially transparent</a> function that implements the same algorithm as the original class method.
+    </p>
+    <p>
+        <pre><span style="color:blue;">let</span>&nbsp;<span style="color:#74531f;">getRecommendations</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">userName</span>&nbsp;=&nbsp;<span style="color:blue;">songProgram</span>&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;1.&nbsp;Get&nbsp;user&#39;s&nbsp;own&nbsp;top&nbsp;scrobbles</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;2.&nbsp;Get&nbsp;other&nbsp;users&nbsp;who&nbsp;listened&nbsp;to&nbsp;the&nbsp;same&nbsp;songs</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;3.&nbsp;Get&nbsp;top&nbsp;scrobbles&nbsp;of&nbsp;those&nbsp;users</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;4.&nbsp;Aggregate&nbsp;the&nbsp;songs&nbsp;into&nbsp;recommendations</span>
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">scrobbles</span>&nbsp;=&nbsp;<span style="color:#74531f;">getTopScrobbles</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">userName</span>
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">scrobblesSnapshot</span>&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">scrobbles</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:#2b91af;">Seq</span>.<span style="color:#74531f;">sortByDescending</span>&nbsp;(<span style="color:blue;">fun</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">s</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">s</span>.ScrobbleCount)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:#2b91af;">Seq</span>.<span style="color:#74531f;">truncate</span>&nbsp;100
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:#2b91af;">Seq</span>.<span style="color:#74531f;">toList</span>
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">recommendationCandidates</span>&nbsp;=&nbsp;<span style="color:#2b91af;">ResizeArray</span>&nbsp;()
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">for</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">scrobble</span>&nbsp;<span style="color:blue;">in</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">scrobblesSnapshot</span>&nbsp;<span style="color:blue;">do</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">otherListeners</span>&nbsp;=&nbsp;<span style="color:#74531f;">getTopListeners</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">scrobble</span>.Song.Id
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">otherListenersSnapshot</span>&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">otherListeners</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:#2b91af;">Seq</span>.<span style="color:#74531f;">filter</span>&nbsp;(<span style="color:blue;">fun</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">u</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">u</span>.TotalScrobbleCount&nbsp;&gt;=&nbsp;10_000)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:#2b91af;">Seq</span>.<span style="color:#74531f;">sortByDescending</span>&nbsp;(<span style="color:blue;">fun</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">u</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">u</span>.TotalScrobbleCount)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:#2b91af;">Seq</span>.<span style="color:#74531f;">truncate</span>&nbsp;20
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:#2b91af;">Seq</span>.<span style="color:#74531f;">toList</span>
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">for</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">otherListener</span>&nbsp;<span style="color:blue;">in</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">otherListenersSnapshot</span>&nbsp;<span style="color:blue;">do</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;Impure</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">otherScrobbles</span>&nbsp;=&nbsp;<span style="color:#74531f;">getTopScrobbles</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">otherListener</span>.UserName
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;Pure</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">otherScrobblesSnapshot</span>&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">otherScrobbles</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:#2b91af;">Seq</span>.<span style="color:#74531f;">filter</span>&nbsp;(<span style="color:blue;">fun</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">s</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">s</span>.Song.IsVerifiedArtist)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:#2b91af;">Seq</span>.<span style="color:#74531f;">sortByDescending</span>&nbsp;(<span style="color:blue;">fun</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">s</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">s</span>.Song.Rating)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:#2b91af;">Seq</span>.<span style="color:#74531f;">truncate</span>&nbsp;10
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:#2b91af;">Seq</span>.<span style="color:#74531f;">toList</span>
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">otherScrobblesSnapshot</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:#2b91af;">List</span>.<span style="color:#74531f;">map</span>&nbsp;(<span style="color:blue;">fun</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">s</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">s</span>.Song)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">recommendationCandidates</span>.<span style="font-weight:bold;color:#74531f;">AddRange</span>
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">recommendations</span>&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">recommendationCandidates</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:#2b91af;">Seq</span>.<span style="color:#74531f;">sortByDescending</span>&nbsp;(<span style="color:blue;">fun</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">s</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">s</span>.Rating)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:#2b91af;">Seq</span>.<span style="color:#74531f;">truncate</span>&nbsp;200
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:#2b91af;">Seq</span>.<span style="color:#74531f;">toList</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;:&gt;&nbsp;<span style="color:#2b91af;">IReadOnlyCollection</span>&lt;_&gt;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">recommendations</span>&nbsp;}</pre>
+    </p>
+    <p>
+        Notice how much it resembles the original <code>GetRecommendationsAsync</code> method on the <code>RecommendationsProvider</code> class. Instead of <code>songService.GetTopScrobblesAsync</code> it just has <code>getTopScrobbles</code>, and instead of <code>songService.GetTopListenersAsync</code> it has <code>getTopListeners</code>. The whole computation is wrapped in <code>songProgram</code>, and the return type is <code>SongProgram&lt;IReadOnlyCollection&lt;Song&gt;&gt;</code>.
+    </p>
+    <p>
+        Perhaps you're wondering how the local state mutation (of <code>recommendationCandidates</code>) squares with my claim that this function is referentially transparent, but consider what referential transparency means. It means that you could replace a particular function call (say, <code>getRecommendations "cat"</code>) with the value it returns. And you can. That the function used local mutation to arrive at that return value is of no concern to the caller.
+    </p>
+    <p>
+        Even so, later in this article, we'll refactor the code to something that looks more like a <a href="https://en.wikipedia.org/wiki/Pure_function">pure function</a>. For now, however, we'll first see how to evaluate programs like the one returned by <code>getRecommendations</code>.
+    </p>
+    <h3 id="fc95832d78e74e94b6318f9cba9e3ee9">
+        Interpreter <a href="#fc95832d78e74e94b6318f9cba9e3ee9">#</a>
+    </h3>
+    <p>
+        Again, I follow the F# free monad recipe. Since I already have a class called <code>FakeSongService</code>, adding an <code>Interpret</code> method was the easiest implementation strategy. A private recursive function takes care of the implementation:
+    </p>
+    <p>
+        <pre><span style="color:blue;">let</span>&nbsp;<span style="color:blue;">rec</span>&nbsp;<span style="color:#74531f;">interpret</span>&nbsp;=&nbsp;<span style="color:blue;">function</span>
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:#2b91af;">Pure</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">x</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">x</span>
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:#2b91af;">Free</span>&nbsp;(<span style="color:#2b91af;">GetTopListeners</span>&nbsp;(<span style="font-weight:bold;color:#1f377f;">songId</span>,&nbsp;<span style="color:#74531f;">next</span>))&nbsp;<span style="color:blue;">-&gt;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">users</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:#2b91af;">Seq</span>.<span style="color:#74531f;">filter</span>&nbsp;(<span style="color:blue;">fun</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">kvp</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">kvp</span>.Value.<span style="font-weight:bold;color:#74531f;">ContainsKey</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">songId</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:#2b91af;">Seq</span>.<span style="color:#74531f;">map</span>&nbsp;(<span style="color:blue;">fun</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">kvp</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:#74531f;">user</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">kvp</span>.Key&nbsp;(<span style="color:#2b91af;">Seq</span>.<span style="color:#74531f;">sum</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">kvp</span>.Value.Values))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:#2b91af;">Seq</span>.<span style="color:#74531f;">toList</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:#74531f;">next</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:#74531f;">interpret</span>
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;<span style="color:#2b91af;">Free</span>&nbsp;(<span style="color:#2b91af;">GetTopScrobbles</span>&nbsp;(<span style="font-weight:bold;color:#1f377f;">userName</span>,&nbsp;<span style="color:#74531f;">next</span>))&nbsp;<span style="color:blue;">-&gt;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">users</span>.<span style="font-weight:bold;color:#74531f;">GetOrAdd</span>(<span style="font-weight:bold;color:#1f377f;">userName</span>,&nbsp;<span style="color:#2b91af;">ConcurrentDictionary</span>&lt;_,&nbsp;_&gt;&nbsp;())
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:#2b91af;">Seq</span>.<span style="color:#74531f;">map</span>&nbsp;(<span style="color:blue;">fun</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">kvp</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:#74531f;">scrobble</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">songs</span>[<span style="font-weight:bold;color:#1f377f;">kvp</span>.Key]&nbsp;<span style="font-weight:bold;color:#1f377f;">kvp</span>.Value)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:#2b91af;">Seq</span>.<span style="color:#74531f;">toList</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:#74531f;">next</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:#74531f;">interpret</span></pre>
+    </p>
+    <p>
+        The implementation closely mirrors the original <a href="http://xunitpatterns.com/Fake%20Object.html">Fake</a> interface implementation, where <code>users</code> and <code>songs</code> are class fields on <code>FakeSongService</code>. This class was first shown in <a href="">Characterising song recommendations</a>.
+    </p>
+    <p>
+        Since I added the <code>interpret</code> function in the class, we need a method that enables client code to call it:
+    </p>
+    <p>
+        <pre><span style="color:blue;">member</span>&nbsp;_.<span style="font-weight:bold;color:#74531f;">Interpret</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">program</span>&nbsp;=&nbsp;<span style="color:#74531f;">interpret</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">program</span></pre>
+    </p>
+    <p>
+        It's now possible to rewrite all the tests.
+    </p>
+    <h3 id="622ba7086970434d812c0fde623eab14">
+        Refactoring the tests <a href="#622ba7086970434d812c0fde623eab14">#</a>
+    </h3>
+    <p>
+        Since the original <code>GetRecommendationsAsync</code> method was task-based, all tests had to run in <a href="https://learn.microsoft.com/dotnet/fsharp/language-reference/task-expressions">task workflows</a>. This is no longer necessary, as this simplified <a href="https://fscheck.github.io/FsCheck/">FsCheck</a> property demonstrates:
+    </p>
+    <p>
+        <pre>[&lt;<span style="color:#2b91af;">Property</span>&gt;]
+<span style="color:blue;">let</span>&nbsp;<span style="color:#74531f;">``One&nbsp;user,&nbsp;some&nbsp;songs``</span>&nbsp;()&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">gen</span>&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">user</span>&nbsp;=&nbsp;<span style="color:#2b91af;">Gen</span>.userName
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">songs</span>&nbsp;=&nbsp;<span style="color:#2b91af;">Gen</span>.<span style="color:#74531f;">arrayOf</span>&nbsp;<span style="color:#2b91af;">Gen</span>.song
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">scrobbleCounts</span>&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Gen</span>.<span style="color:#74531f;">choose</span>&nbsp;(1,&nbsp;100)&nbsp;|&gt;&nbsp;<span style="color:#2b91af;">Gen</span>.<span style="color:#74531f;">arrayOfLength</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">songs</span>.Length
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;(<span style="font-weight:bold;color:#1f377f;">user</span>,&nbsp;<span style="color:#2b91af;">Array</span>.<span style="color:#74531f;">zip</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">songs</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">scrobbleCounts</span>)&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:#2b91af;">Arb</span>.<span style="color:#74531f;">fromGen</span>&nbsp;|&gt;&nbsp;<span style="color:#2b91af;">Prop</span>.<span style="color:#74531f;">forAll</span>&nbsp;&lt;|&nbsp;<span style="color:blue;">fun</span>&nbsp;(<span style="font-weight:bold;color:#1f377f;">user</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">scrobbles</span>)&nbsp;<span style="color:blue;">-&gt;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">srvc</span>&nbsp;=&nbsp;<span style="color:#2b91af;">FakeSongService</span>&nbsp;()
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">scrobbles</span>&nbsp;|&gt;&nbsp;<span style="color:#2b91af;">Array</span>.<span style="color:#74531f;">iter</span>&nbsp;(<span style="color:blue;">fun</span>&nbsp;(<span style="font-weight:bold;color:#1f377f;">s</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">c</span>)&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">srvc</span>.<span style="font-weight:bold;color:#74531f;">Scrobble</span>&nbsp;(<span style="font-weight:bold;color:#1f377f;">user</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">s</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">c</span>))
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">actual</span>&nbsp;=&nbsp;<span style="color:#74531f;">getRecommendations</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">user</span>&nbsp;|&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">srvc</span>.<span style="font-weight:bold;color:#74531f;">Interpret</span>
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Assert</span>.<span style="font-weight:bold;color:#74531f;">Empty</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">actual</span></pre>
+    </p>
+    <p>
+        Originally, this test had to be defined in terms of the <code>task</code> computation expression, but now it's a pure function. In <a href="/2013/06/24/a-heuristic-for-formatting-code-according-to-the-aaa-pattern">the act phase</a> the test calls <code>getRecommendations user</code> and pipes the returned program to <code>srvc.Interpret</code>. The result, <code>actual</code>, is a plain <code>IReadOnlyCollection&lt;Song&gt;</code> value.
+    </p>
+    <p>
+        Similarly, I was able to migrate all the example-based tests over, too.
+    </p>
+    <p>
+        <pre>[&lt;<span style="color:#2b91af;">Fact</span>&gt;]
+<span style="color:blue;">let</span>&nbsp;<span style="color:#74531f;">``One&nbsp;verified&nbsp;recommendation``</span>&nbsp;()&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">srvc</span>&nbsp;=&nbsp;<span style="color:#2b91af;">FakeSongService</span>&nbsp;()
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">srvc</span>.<span style="font-weight:bold;color:#74531f;">Scrobble</span>&nbsp;(<span style="color:#a31515;">&quot;cat&quot;</span>,&nbsp;<span style="color:#74531f;">song</span>&nbsp;1&nbsp;<span style="color:blue;">false</span>&nbsp;6uy,&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;10)
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">srvc</span>.<span style="font-weight:bold;color:#74531f;">Scrobble</span>&nbsp;(<span style="color:#a31515;">&quot;ana&quot;</span>,&nbsp;<span style="color:#74531f;">song</span>&nbsp;1&nbsp;<span style="color:blue;">false</span>&nbsp;5uy,&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;10)
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">srvc</span>.<span style="font-weight:bold;color:#74531f;">Scrobble</span>&nbsp;(<span style="color:#a31515;">&quot;ana&quot;</span>,&nbsp;<span style="color:#74531f;">song</span>&nbsp;2&nbsp;&nbsp;<span style="color:blue;">true</span>&nbsp;5uy,&nbsp;9_9990)
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">actual</span>&nbsp;=&nbsp;<span style="color:#74531f;">getRecommendations</span>&nbsp;<span style="color:#a31515;">&quot;cat&quot;</span>&nbsp;|&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">srvc</span>.<span style="font-weight:bold;color:#74531f;">Interpret</span>
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Assert</span>.<span style="font-weight:bold;color:#74531f;">Equal</span><span style="font-weight:bold;color:#74531f;">&lt;</span><span style="font-weight:bold;color:#74531f;">Song</span><span style="font-weight:bold;color:#74531f;">&gt;</span>&nbsp;([&nbsp;<span style="color:#74531f;">song</span>&nbsp;2&nbsp;<span style="color:blue;">true</span>&nbsp;5uy&nbsp;],&nbsp;<span style="font-weight:bold;color:#1f377f;">actual</span>)</pre>
+    </p>
+    <p>
+        Once all tests were migrated over to the new <code>getRecommendations</code> function, I deleted the old <code>RecommendationsProvider</code> class as well as the <code>SongService</code> interface, since none of them were required any longer. Notice how I managed to move in smaller steps than in the <a href="">previous article</a>. As described in <a href="/2021/06/14/new-book-code-that-fits-in-your-head">Code That Fits in Your Head</a>, I used the <a href="https://martinfowler.com/bliki/StranglerFigApplication.html">Strangler pattern</a> to move incrementally. I should also have done that with the Haskell code base, but fortunately I didn't run into trouble.
+    </p>
+    <p>
+        With all the tests migrated to pure functions, it's time to go back to the <code>getRecommendations</code> to give it some refactoring love.
+    </p>
+    <h3 id="a34d556e4dd646d2a17cb5f54d2a011f">
+        Traverse <a href="#a34d556e4dd646d2a17cb5f54d2a011f">#</a>
+    </h3>
+    <p>
+        The local mutation in the above incarnation of <code>getRecommendations</code> is located within a doubly-nested loop. You typically need a <a href="/2024/11/11/traversals">traversal</a> if you want to refactor such loops to expressions.
+    </p>
+    <p>
+        The traversal needs a <code>map</code> function, so we'll start with that.
+    </p>
+    <p>
+        <pre><span style="color:blue;">let</span>&nbsp;<span style="color:#74531f;">map</span>&nbsp;<span style="color:#74531f;">f</span>&nbsp;=&nbsp;<span style="color:#74531f;">bind</span>&nbsp;(<span style="color:#74531f;">f</span>&nbsp;&gt;&gt;&nbsp;<span style="color:#2b91af;">Pure</span>)</pre>
+    </p>
+    <p>
+        This function is included in the <code>SongProgram</code> module shown above. That's the reason it can call <code>bind</code> without a prefix. The same is true for the <code>traverse</code> function.
+    </p>
+    <p>
+        <pre><span style="color:blue;">let</span>&nbsp;<span style="color:#74531f;">traverse</span>&nbsp;<span style="color:#74531f;">f</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">xs</span>&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;<span style="color:#74531f;">concat</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">xs</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">ys</span>&nbsp;=&nbsp;<span style="font-weight:bold;color:#1f377f;">xs</span>&nbsp;|&gt;&nbsp;<span style="color:#74531f;">bind</span>&nbsp;(<span style="color:blue;">fun</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">x</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">ys</span>&nbsp;|&gt;&nbsp;<span style="color:#74531f;">map</span>&nbsp;(<span style="color:#2b91af;">Seq</span>.<span style="color:#74531f;">append</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">x</span>))
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Seq</span>.<span style="color:#74531f;">fold</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(<span style="color:blue;">fun</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">acc</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">x</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:#74531f;">concat</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">acc</span>&nbsp;(<span style="color:#74531f;">f</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">x</span>&nbsp;|&gt;&nbsp;<span style="color:#74531f;">map</span>&nbsp;<span style="color:#2b91af;">Seq</span>.<span style="color:#74531f;">singleton</span>))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(<span style="color:#2b91af;">Pure</span>&nbsp;(<span style="color:#2b91af;">Seq</span>.empty))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">xs</span></pre>
+    </p>
+    <p>
+        The local <code>concat</code> function concatenates two <code>SongProgram</code> values that contain sequences to a single <code>SongProgram</code> value containing the concatenated sequence. The traversal uses this helper function to <code>fold</code> over the <code>xs</code>.
+    </p>
+    <h3 id="615a74cc93364179a78a4e55679d6577">
+        Refactored program <a href="#615a74cc93364179a78a4e55679d6577">#</a>
+    </h3>
+    <p>
+        You can now go through all the usual motions of replacing the nested loops and the local mutation with traversal, extracting helper functions and so on. If you're interested in the <a href="https://stackoverflow.blog/2022/12/19/use-git-tactically/">small steps</a> I took, you may consult the Git repository. Here, I only present the <code>getRecommendations</code> function in the state I decided to leave it.
+    </p>
+    <p>
+        <pre><span style="color:blue;">let</span>&nbsp;<span style="color:#74531f;">getRecommendations</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">userName</span>&nbsp;=&nbsp;<span style="color:blue;">songProgram</span>&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;1.&nbsp;Get&nbsp;user&#39;s&nbsp;own&nbsp;top&nbsp;scrobbles</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;2.&nbsp;Get&nbsp;other&nbsp;users&nbsp;who&nbsp;listened&nbsp;to&nbsp;the&nbsp;same&nbsp;songs</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;3.&nbsp;Get&nbsp;top&nbsp;scrobbles&nbsp;of&nbsp;those&nbsp;users</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;4.&nbsp;Aggregate&nbsp;the&nbsp;songs&nbsp;into&nbsp;recommendations</span>
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">scrobbles</span>&nbsp;=&nbsp;<span style="color:#74531f;">getTopScrobbles</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">userName</span>
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">otherlListeners</span>&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#74531f;">getUsersOwnTopScrobbles</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">scrobbles</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:#2b91af;">SongProgram</span>.<span style="color:#74531f;">traverse</span>&nbsp;(<span style="color:blue;">fun</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">s</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:#74531f;">getTopListeners</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">s</span>.Song.Id)
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">otherScrobbles</span>&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">otherlListeners</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:#2b91af;">Seq</span>.<span style="color:#74531f;">collect</span>&nbsp;<span style="color:#74531f;">getOtherUsersWhoListenedToTheSameSongs</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:#2b91af;">SongProgram</span>.<span style="color:#74531f;">traverse</span>&nbsp;(<span style="color:blue;">fun</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">u</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:#74531f;">getTopScrobbles</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">u</span>.UserName)
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">otherScrobbles</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:#2b91af;">Seq</span>.<span style="color:#74531f;">collect</span>&nbsp;<span style="color:#74531f;">getTopScrobblesOfUsers</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:#74531f;">aggregateTheSongsIntoRecommendations</span>&nbsp;}</pre>
+    </p>
+    <p>
+        Notice the two applications of <code>traverse</code>, which replace the twice-nested loop.
+    </p>
+    <p>
+        The type of <code>getRecommendations</code> is unchanged, and all tests still pass.
+    </p>
+    <h3 id="32d20c7df6384010902d6cb53526e9d6">
+        Conclusion <a href="#32d20c7df6384010902d6cb53526e9d6">#</a>
+    </h3>
+    <p>
+        As expected, it required more boilerplate code to refactor the <code>GetRecommendationsAsync</code> method to a design based on a free monad, than the corresponding refactoring did in Haskell. Even so, following the F# free monad recipe made it smooth sailing. I did, however, hit a snag, mostly of my own manufacture, when implementing support for <code>for</code> loops in the computation expression builder, but that problem turned out to be unrelated to the free monad.
+    </p>
+    <p>
+        Again, you may wonder what the point is. First, I'll refer you to the decision flowchart in the <a href="/2017/08/07/f-free-monad-recipe">F# free monad recipe</a>, as well as remind you that these articles are all intended to be descriptive rather than prescriptive. They only present what is possible. It's up to you to decide which option to choose.
+    </p>
+    <p>
+        Second, a <code>SongProgram&lt;'a&gt;</code> may look similar to an interface, but consider how much more restricted it is. A <a href="/2017/01/30/partial-application-is-dependency-injection">method that uses dependency injection is inherently impure</a>; in such a method, everything may happen, including every kind of bug.
+    </p>
+    <p>
+        The F# type system does not check whether or not unconstrained side effects or non-determinism takes place, but still, a type like <code>SongProgram&lt;'a&gt;</code> strongly suggests that only <code>SongProgram</code>-related actions take place.
+    </p>
+    <p>
+        I think that free monads still have a place in F#, although mostly as a niche use case. In C#, on the other hand, free monads aren't useful because the language lacks features to make this kind of programming workable. Still, for demonstration purposes only, it <em>can</em> be done.
+    </p>
+    <p>
+        <strong>Next:</strong> Song recommendations with C# free monads.
+    </p>
+</div>
