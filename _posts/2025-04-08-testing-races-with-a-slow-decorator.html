@@ -1,0 +1,374 @@
+---
+layout: post
+title: "Testing races with a slow Decorator"
+description: "Delaying database interactions for test purposes."
+date: 2025-04-08 5:37 UTC
+tags: [Unit Testing]
+---
+{% include JB/setup %}
+
+<div id="post">
+    <p>
+        <em>{{ page.description }}</em>
+    </p>
+    <p>
+        In chapter 12 in <a href="/2021/06/14/new-book-code-that-fits-in-your-head">Code That Fits in Your Head</a>, I cover a typical <a href="https://en.wikipedia.org/wiki/Race_condition">race condition</a> and how to test for it. The book comes with a pedagogical explanation of the problem, including a diagram in the style of <a href="/ref/ddia">Designing Data-Intensive Applications</a>. In short, the problem occurs when two or more clients are competing for the last remaining seats in a particular time slot.
+    </p>
+    <p>
+        In my two-day workshop based on the book, I also cover this scenario. The goal is to show how to write automated tests for this kind of non-deterministic behaviour. In the book, and in the workshop, my approach is to rely on the <a href="https://en.wikipedia.org/wiki/Law_of_large_numbers">law of large numbers</a>. An automated test attempts to trigger the race condition by trying 'enough' times. A timeout on the test assumes that if the test does not trigger the condition in the allotted time window, then the bug is addressed.
+    </p>
+    <p>
+        At one of my workshops, one participant told me of a more efficient and elegant way to test for this. I wish I could remember exactly at which workshop it was, and who the gentleman was, but alas, it escapes me.
+    </p>
+    <h3 id="05f24d2c08e34c5fbbd7e91dc8667969">
+        Reproducing the condition <a href="#05f24d2c08e34c5fbbd7e91dc8667969">#</a>
+    </h3>
+    <p>
+        How do you deterministically reproduce non-deterministic behaviour? The default answer is almost tautological. You can't, since it's non-deterministic.
+    </p>
+    <p>
+        The irony, however, is that in the workshop, I deterministically demonstrate the problem. The problem, in short, is that in order to decide whether or not to accept a reservation request, the system first reads data from its database, runs a fairly complex piece of decision logic, and finally writes the reservation to the database - if it decides to accept it, based on what it read. When competing processes vie for the last remaining seats, a race may occur where both (or all) base their decision on the same data, so they all come to the conclusion that they still have enough remaining capacity. Again, refer to the book, and its accompanying code base, for the details.
+    </p>
+    <p>
+        How do I demonstrate this condition in the workshop? I go into the Controller code and insert a temporary, human-scale delay after reading from the database, but before making the decision:
+    </p>
+    <p>
+        <pre><span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">reservations</span>&nbsp;=&nbsp;<span style="font-weight:bold;color:#8f08c4;">await</span>&nbsp;Repository.<span style="font-weight:bold;color:#74531f;">ReadReservations</span>(<span style="font-weight:bold;color:#1f377f;">r</span>.At);
+ 
+<span style="font-weight:bold;color:#8f08c4;">await</span>&nbsp;<span style="color:#2b91af;">Task</span>.<span style="color:#74531f;">Delay</span>(<span style="color:#2b91af;">TimeSpan</span>.<span style="color:#74531f;">FromSeconds</span>(10));
+ 
+<span style="font-weight:bold;color:#8f08c4;">if</span>&nbsp;(!MaitreD.<span style="font-weight:bold;color:#74531f;">WillAccept</span>(<span style="color:#2b91af;">DateTime</span>.Now,&nbsp;<span style="font-weight:bold;color:#1f377f;">reservations</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">r</span>))
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="color:#74531f;">NoTables500InternalServerError</span>();
+
+<span style="font-weight:bold;color:#8f08c4;">await</span>&nbsp;Repository.<span style="font-weight:bold;color:#74531f;">Create</span>(<span style="font-weight:bold;color:#1f377f;">restaurant</span>.Id,&nbsp;<span style="font-weight:bold;color:#1f377f;">reservation</span>);</pre>
+    </p>
+    <p>
+        Then I open two windows, from which I, within a couple of seconds of each other, try to make competing reservations. When the bug is present, both reservations are accepted, although, according to business rules, only one should be.
+    </p>
+    <p>
+        So that's how to deterministically demonstrate the problem. Just insert a long enough delay.
+    </p>
+    <p>
+        We can't, however, leave such delays in the production code, so I never even considered that this simple technique could be used for automated testing.
+    </p>
+    <h3 id="d908cad4489642babb34a58a37c678c7">
+        Slowing things down with a Decorator <a href="#d908cad4489642babb34a58a37c678c7">#</a>
+    </h3>
+    <p>
+        That's until my workshop participant told me his trick: Why don't you slow down the database interactions for test-purposes only? At first, I thought he had in mind some nasty compiler pragmas or environment hacks, but no. Why don't you use a <a href="https://en.wikipedia.org/wiki/Decorator_pattern">Decorator</a> to slow things down?
+    </p>
+    <p>
+        Indeed, why not?
+    </p>
+    <p>
+        Fortunately, all database interaction already takes place behind an <code>IReservationsRepository</code> interface. Adding a test-only, delaying Decorator is straightforward.
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">sealed</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">SlowReservationsRepository</span>&nbsp;:&nbsp;<span style="color:#2b91af;">IReservationsRepository</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;<span style="color:#2b91af;">TimeSpan</span>&nbsp;halfDelay;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">SlowReservationsRepository</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">TimeSpan</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">delay</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">IReservationsRepository</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">inner</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Delay&nbsp;=&nbsp;<span style="font-weight:bold;color:#1f377f;">delay</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;halfDelay&nbsp;=&nbsp;<span style="font-weight:bold;color:#1f377f;">delay</span>&nbsp;<span style="font-weight:bold;color:#74531f;">/</span>&nbsp;2;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Inner&nbsp;=&nbsp;<span style="font-weight:bold;color:#1f377f;">inner</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">TimeSpan</span>&nbsp;Delay&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">IReservationsRepository</span>&nbsp;Inner&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">async</span>&nbsp;<span style="color:#2b91af;">Task</span>&nbsp;<span style="font-weight:bold;color:#74531f;">Create</span>(<span style="color:blue;">int</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">restaurantId</span>,&nbsp;<span style="color:#2b91af;">Reservation</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">reservation</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">await</span>&nbsp;<span style="color:#2b91af;">Task</span>.<span style="color:#74531f;">Delay</span>(halfDelay);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">await</span>&nbsp;Inner.<span style="font-weight:bold;color:#74531f;">Create</span>(<span style="font-weight:bold;color:#1f377f;">restaurantId</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">reservation</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">await</span>&nbsp;<span style="color:#2b91af;">Task</span>.<span style="color:#74531f;">Delay</span>(halfDelay);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">async</span>&nbsp;<span style="color:#2b91af;">Task</span>&nbsp;<span style="font-weight:bold;color:#74531f;">Delete</span>(<span style="color:blue;">int</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">restaurantId</span>,&nbsp;<span style="color:#2b91af;">Guid</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">id</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">await</span>&nbsp;<span style="color:#2b91af;">Task</span>.<span style="color:#74531f;">Delay</span>(halfDelay);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">await</span>&nbsp;Inner.<span style="font-weight:bold;color:#74531f;">Delete</span>(<span style="font-weight:bold;color:#1f377f;">restaurantId</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">id</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">await</span>&nbsp;<span style="color:#2b91af;">Task</span>.<span style="color:#74531f;">Delay</span>(halfDelay);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">async</span>&nbsp;<span style="color:#2b91af;">Task</span>&lt;<span style="color:#2b91af;">Reservation</span>?&gt;&nbsp;<span style="font-weight:bold;color:#74531f;">ReadReservation</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">int</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">restaurantId</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Guid</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">id</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">await</span>&nbsp;<span style="color:#2b91af;">Task</span>.<span style="color:#74531f;">Delay</span>(halfDelay);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">result</span>&nbsp;=&nbsp;<span style="font-weight:bold;color:#8f08c4;">await</span>&nbsp;Inner.<span style="font-weight:bold;color:#74531f;">ReadReservation</span>(<span style="font-weight:bold;color:#1f377f;">restaurantId</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">id</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">await</span>&nbsp;<span style="color:#2b91af;">Task</span>.<span style="color:#74531f;">Delay</span>(halfDelay);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">result</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">async</span>&nbsp;<span style="color:#2b91af;">Task</span>&lt;<span style="color:#2b91af;">IReadOnlyCollection</span>&lt;<span style="color:#2b91af;">Reservation</span>&gt;&gt;&nbsp;<span style="font-weight:bold;color:#74531f;">ReadReservations</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">int</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">restaurantId</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">DateTime</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">min</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">DateTime</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">max</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">await</span>&nbsp;<span style="color:#2b91af;">Task</span>.<span style="color:#74531f;">Delay</span>(halfDelay);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">result</span>&nbsp;=&nbsp;<span style="font-weight:bold;color:#8f08c4;">await</span>&nbsp;Inner.<span style="font-weight:bold;color:#74531f;">ReadReservations</span>(<span style="font-weight:bold;color:#1f377f;">restaurantId</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">min</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">max</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">await</span>&nbsp;<span style="color:#2b91af;">Task</span>.<span style="color:#74531f;">Delay</span>(halfDelay);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">result</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">async</span>&nbsp;<span style="color:#2b91af;">Task</span>&nbsp;<span style="font-weight:bold;color:#74531f;">Update</span>(<span style="color:blue;">int</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">restaurantId</span>,&nbsp;<span style="color:#2b91af;">Reservation</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">reservation</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">await</span>&nbsp;<span style="color:#2b91af;">Task</span>.<span style="color:#74531f;">Delay</span>(halfDelay);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">await</span>&nbsp;Inner.<span style="font-weight:bold;color:#74531f;">Update</span>(<span style="font-weight:bold;color:#1f377f;">restaurantId</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">reservation</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">await</span>&nbsp;<span style="color:#2b91af;">Task</span>.<span style="color:#74531f;">Delay</span>(halfDelay);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+    </p>
+    <p>
+        This one uniformly slows down all operations. I arbitrarily decided to split the <code>Delay</code> in half, in order to apply half of it before each action, and the other half after. Honestly, I didn't mull this over too much; I just thought that if I did it that way, I wouldn't have to speculate whether it would make a difference if the delay happened before or after the action in question.
+    </p>
+    <h3 id="a0e3b21e6def42b781e47a98b19f2294">
+        Slowing down tests <a href="#a0e3b21e6def42b781e47a98b19f2294">#</a>
+    </h3>
+    <p>
+        I added a few helper methods to the <code>RestaurantService</code> class that inherits from <a href="https://learn.microsoft.com/dotnet/api/microsoft.aspnetcore.mvc.testing.webapplicationfactory-1"><span style="color:#2b91af;">WebApplicationFactory</span>&lt;<span style="color:#2b91af;">Startup</span>&gt;</a>, mainly to enable decoration of the injected Repository. With those changes, I could now rewrite my test like this:
+    </p>
+    <p>
+        <pre>[<span style="color:#2b91af;">Fact</span>]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">async</span>&nbsp;<span style="color:#2b91af;">Task</span>&nbsp;<span style="font-weight:bold;color:#74531f;">NoOverbookingRace</span>()
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">date</span>&nbsp;=&nbsp;<span style="color:#2b91af;">DateTime</span>.Now.Date.<span style="font-weight:bold;color:#74531f;">AddDays</span>(1).<span style="font-weight:bold;color:#74531f;">AddHours</span>(18.5);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">using</span>&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">service</span>&nbsp;=&nbsp;<span style="color:#2b91af;">RestaurantService</span>.<span style="color:#74531f;">CreateWith</span>(<span style="font-weight:bold;color:#1f377f;">repo</span>&nbsp;=&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">SlowReservationsRepository</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">TimeSpan</span>.<span style="color:#74531f;">FromMilliseconds</span>(100),&nbsp;<span style="font-weight:bold;color:#1f377f;">repo</span>));
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">task1</span>&nbsp;=&nbsp;<span style="font-weight:bold;color:#1f377f;">service</span>.<span style="font-weight:bold;color:#74531f;">PostReservation</span>(<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">ReservationDtoBuilder</span>()
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.<span style="font-weight:bold;color:#74531f;">WithDate</span>(<span style="font-weight:bold;color:#1f377f;">date</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.<span style="font-weight:bold;color:#74531f;">WithQuantity</span>(10)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.<span style="font-weight:bold;color:#74531f;">Build</span>());
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">task2</span>&nbsp;=&nbsp;<span style="font-weight:bold;color:#1f377f;">service</span>.<span style="font-weight:bold;color:#74531f;">PostReservation</span>(<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">ReservationDtoBuilder</span>()
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.<span style="font-weight:bold;color:#74531f;">WithDate</span>(<span style="font-weight:bold;color:#1f377f;">date</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.<span style="font-weight:bold;color:#74531f;">WithQuantity</span>(10)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.<span style="font-weight:bold;color:#74531f;">Build</span>());
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">actual</span>&nbsp;=&nbsp;<span style="font-weight:bold;color:#8f08c4;">await</span>&nbsp;<span style="color:#2b91af;">Task</span>.<span style="color:#74531f;">WhenAll</span>(<span style="font-weight:bold;color:#1f377f;">task1</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">task2</span>);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Assert</span>.<span style="color:#74531f;">Single</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">actual</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">msg</span>&nbsp;=&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">msg</span>.StatusCode&nbsp;==&nbsp;<span style="color:#2b91af;">HttpStatusCode</span>.InternalServerError);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">ok</span>&nbsp;=&nbsp;<span style="color:#2b91af;">Assert</span>.<span style="color:#74531f;">Single</span>(<span style="font-weight:bold;color:#1f377f;">actual</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">msg</span>&nbsp;=&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">msg</span>.IsSuccessStatusCode);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;Check&nbsp;that&nbsp;the&nbsp;reservation&nbsp;was&nbsp;actually&nbsp;created:</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">resp</span>&nbsp;=&nbsp;<span style="font-weight:bold;color:#8f08c4;">await</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">service</span>.<span style="font-weight:bold;color:#74531f;">GetReservation</span>(<span style="font-weight:bold;color:#1f377f;">ok</span>.Headers.Location);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">resp</span>.<span style="font-weight:bold;color:#74531f;">EnsureSuccessStatusCode</span>();
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">reservation</span>&nbsp;=&nbsp;<span style="font-weight:bold;color:#8f08c4;">await</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">resp</span>.<span style="font-weight:bold;color:#74531f;">ParseJsonContent</span>&lt;<span style="color:#2b91af;">ReservationDto</span>&gt;();
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Assert</span>.<span style="color:#74531f;">Equal</span>(10,&nbsp;<span style="font-weight:bold;color:#1f377f;">reservation</span>.Quantity);
+}</pre>
+    </p>
+    <p>
+        The restaurant being tested has a maximum capacity of ten guests, so while it can accommodate either of the two requests, it can't make room for both.
+    </p>
+    <p>
+        For this example, I arbitrarily chose to configure the Decorator with a 100-millisecond delay. Every interaction with the database caused by that test gets a built-in 100-millisecond delay. 50 ms before each action, and 50 ms after.
+    </p>
+    <p>
+        The test starts both tasks, <code>task1</code> and <code>task2</code>, without awaiting them. This allows them to run concurrently. After starting both tasks, the test awaits both of them with <a href="https://learn.microsoft.com/dotnet/api/system.threading.tasks.task.whenall">Task.WhenAll</a>.
+    </p>
+    <p>
+        The <a href="/2013/06/24/a-heuristic-for-formatting-code-according-to-the-aaa-pattern">assertion phase</a> of the test is more involved than you may be used to see. The reason is that it deals with more than one possible failure scenario.
+    </p>
+    <p>
+        The first two assertions (<code>Assert.Single</code>) deal with the complete absence of transaction control in the application. In that case, both <code>POST</code> requests succeed, which they aren't supposed to. If the system works properly, it should accept one request and reject the other.
+    </p>
+    <p>
+        The rest of the assertions check that the successful reservation was actually created. That's another failure scenario.
+    </p>
+    <p>
+        The way I chose to deal with the race condition is standard in .NET. I used a <a href="https://learn.microsoft.com/dotnet/api/system.transactions.transactionscope">TransactionScope</a>. This is peculiar and, in my opinion, questionable API that enables you to start a transaction <em>anywhere</em> in your code, and then complete when you you're done. In the code base that accompanies <a href="/code-that-fits-in-your-head">Code That Fits in Your Head</a>, it looks like this:
+    </p>
+    <p>
+        <pre><span style="color:blue;">private</span>&nbsp;<span style="color:blue;">async</span>&nbsp;<span style="color:#2b91af;">Task</span>&lt;<span style="color:#2b91af;">ActionResult</span>&gt;&nbsp;<span style="font-weight:bold;color:#74531f;">TryCreate</span>(<span style="color:#2b91af;">Restaurant</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">restaurant</span>,&nbsp;<span style="color:#2b91af;">Reservation</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">reservation</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">using</span>&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">scope</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">TransactionScope</span>(<span style="color:#2b91af;">TransactionScopeAsyncFlowOption</span>.Enabled);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">reservations</span>&nbsp;=&nbsp;<span style="font-weight:bold;color:#8f08c4;">await</span>&nbsp;Repository
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.<span style="font-weight:bold;color:#74531f;">ReadReservations</span>(<span style="font-weight:bold;color:#1f377f;">restaurant</span>.Id,&nbsp;<span style="font-weight:bold;color:#1f377f;">reservation</span>.At)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.<span style="font-weight:bold;color:#74531f;">ConfigureAwait</span>(<span style="color:blue;">false</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">now</span>&nbsp;=&nbsp;Clock.<span style="font-weight:bold;color:#74531f;">GetCurrentDateTime</span>();
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">if</span>&nbsp;(!<span style="font-weight:bold;color:#1f377f;">restaurant</span>.MaitreD.<span style="font-weight:bold;color:#74531f;">WillAccept</span>(<span style="font-weight:bold;color:#1f377f;">now</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">reservations</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">reservation</span>))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="color:#74531f;">NoTables500InternalServerError</span>();
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">await</span>&nbsp;Repository.<span style="font-weight:bold;color:#74531f;">Create</span>(<span style="font-weight:bold;color:#1f377f;">restaurant</span>.Id,&nbsp;<span style="font-weight:bold;color:#1f377f;">reservation</span>).<span style="font-weight:bold;color:#74531f;">ConfigureAwait</span>(<span style="color:blue;">false</span>);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">scope</span>.<span style="font-weight:bold;color:#74531f;">Complete</span>();
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="color:#74531f;">Reservation201Created</span>(<span style="font-weight:bold;color:#1f377f;">restaurant</span>.Id,&nbsp;<span style="font-weight:bold;color:#1f377f;">reservation</span>);
+}</pre>
+    </p>
+    <p>
+        Notice the <code>scope.Complete()</code> statement towards the end.
+    </p>
+    <p>
+        What happens if someone forgets to call <code>scope.Complete()</code>?
+    </p>
+    <p>
+        In that case, the thread that wins the race returns <code>201 Created</code>, but when the <code>scope</code> goes out of scope, it's disposed of. If <code>Complete()</code> wasn't called, the transaction is rolled back, but the HTTP response code remains <code>201</code>. Thus, the two assertions that inspect the response codes aren't enough to catch this particular kind of defect.
+    </p>
+    <p>
+        Instead, the test subsequently queries the System Under Test to verify that the resource was, indeed, created.
+    </p>
+    <h3 id="064b9e4646544b60b47b25e2cc4cc8a5">
+        Wait time <a href="#064b9e4646544b60b47b25e2cc4cc8a5">#</a>
+    </h3>
+    <p>
+        The original test shown in the book times out after 30 seconds if it can't produce the race condition. Compared to that, the refactored test shown here is <em>fast</em>. Even so, we may fear that it spends too much time doing nothing. How much time might that be?
+    </p>
+    <p>
+        The <code>TryCreate</code> helper method shown above is the only part of a <code>POST</code> request that interacts with the Repository. As you can see, it calls it twice: Once to read, and once to write, if it decides to do that. With a 100 ms delay, that's 200 ms.
+    </p>
+    <p>
+        And while the test issues two <code>POST</code> requests, they run in parallel. That's the whole point. It means that they'll still run in approximately 200 ms.
+    </p>
+    <p>
+        The test then issues a <code>GET</code> request to verify that the resource was created. That triggers another database read, which takes another 100 ms.
+    </p>
+    <p>
+        That's 300 ms in all. Given that these tests are part of a second-level test suite, and not your default developer test suite, that may be good enough.
+    </p>
+    <p>
+        Still, that's the <code>POST</code> scenario. I also wrote a test that checks for a race condition when doing <code>PUT</code> requests, and it performs more work.
+    </p>
+    <p>
+        <pre>[<span style="color:#2b91af;">Fact</span>]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">async</span>&nbsp;<span style="color:#2b91af;">Task</span>&nbsp;<span style="font-weight:bold;color:#74531f;">NoOverbookingPutRace</span>()
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">date</span>&nbsp;=&nbsp;<span style="color:#2b91af;">DateTime</span>.Now.Date.<span style="font-weight:bold;color:#74531f;">AddDays</span>(1).<span style="font-weight:bold;color:#74531f;">AddHours</span>(18.5);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">using</span>&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">service</span>&nbsp;=&nbsp;<span style="color:#2b91af;">RestaurantService</span>.<span style="color:#74531f;">CreateWith</span>(<span style="font-weight:bold;color:#1f377f;">repo</span>&nbsp;=&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">SlowReservationsRepository</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">TimeSpan</span>.<span style="color:#74531f;">FromMilliseconds</span>(100),&nbsp;<span style="font-weight:bold;color:#1f377f;">repo</span>));
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;(<span style="font-weight:bold;color:#1f377f;">address1</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">dto1</span>)&nbsp;=&nbsp;<span style="font-weight:bold;color:#8f08c4;">await</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">service</span>.<span style="font-weight:bold;color:#74531f;">PostReservation</span>(<span style="font-weight:bold;color:#1f377f;">date</span>,&nbsp;4);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;(<span style="font-weight:bold;color:#1f377f;">address2</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">dto2</span>)&nbsp;=&nbsp;<span style="font-weight:bold;color:#8f08c4;">await</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">service</span>.<span style="font-weight:bold;color:#74531f;">PostReservation</span>(<span style="font-weight:bold;color:#1f377f;">date</span>,&nbsp;4);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">dto1</span>.Quantity&nbsp;+=&nbsp;2;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">dto2</span>.Quantity&nbsp;+=&nbsp;2;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">task1</span>&nbsp;=&nbsp;<span style="font-weight:bold;color:#1f377f;">service</span>.<span style="font-weight:bold;color:#74531f;">PutReservation</span>(<span style="font-weight:bold;color:#1f377f;">address1</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">dto1</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">task2</span>&nbsp;=&nbsp;<span style="font-weight:bold;color:#1f377f;">service</span>.<span style="font-weight:bold;color:#74531f;">PutReservation</span>(<span style="font-weight:bold;color:#1f377f;">address2</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">dto2</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">actual</span>&nbsp;=&nbsp;<span style="font-weight:bold;color:#8f08c4;">await</span>&nbsp;<span style="color:#2b91af;">Task</span>.<span style="color:#74531f;">WhenAll</span>(<span style="font-weight:bold;color:#1f377f;">task1</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">task2</span>);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Assert</span>.<span style="color:#74531f;">Single</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">actual</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">msg</span>&nbsp;=&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">msg</span>.StatusCode&nbsp;==&nbsp;<span style="color:#2b91af;">HttpStatusCode</span>.InternalServerError);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">ok</span>&nbsp;=&nbsp;<span style="color:#2b91af;">Assert</span>.<span style="color:#74531f;">Single</span>(<span style="font-weight:bold;color:#1f377f;">actual</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">msg</span>&nbsp;=&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">msg</span>.IsSuccessStatusCode);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;Check&nbsp;that&nbsp;the&nbsp;reservations&nbsp;now&nbsp;have&nbsp;consistent&nbsp;values:</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">client</span>&nbsp;=&nbsp;<span style="font-weight:bold;color:#1f377f;">service</span>.<span style="font-weight:bold;color:#74531f;">CreateClient</span>();
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">resp1</span>&nbsp;=&nbsp;<span style="font-weight:bold;color:#8f08c4;">await</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">client</span>.<span style="font-weight:bold;color:#74531f;">GetAsync</span>(<span style="font-weight:bold;color:#1f377f;">address1</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">resp2</span>&nbsp;=&nbsp;<span style="font-weight:bold;color:#8f08c4;">await</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">client</span>.<span style="font-weight:bold;color:#74531f;">GetAsync</span>(<span style="font-weight:bold;color:#1f377f;">address2</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">resp1</span>.<span style="font-weight:bold;color:#74531f;">EnsureSuccessStatusCode</span>();
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">resp2</span>.<span style="font-weight:bold;color:#74531f;">EnsureSuccessStatusCode</span>();
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">body1</span>&nbsp;=&nbsp;<span style="font-weight:bold;color:#8f08c4;">await</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">resp1</span>.<span style="font-weight:bold;color:#74531f;">ParseJsonContent</span>&lt;<span style="color:#2b91af;">ReservationDto</span>&gt;();
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">body2</span>&nbsp;=&nbsp;<span style="font-weight:bold;color:#8f08c4;">await</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">resp2</span>.<span style="font-weight:bold;color:#74531f;">ParseJsonContent</span>&lt;<span style="color:#2b91af;">ReservationDto</span>&gt;();
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Assert</span>.<span style="color:#74531f;">Single</span>(<span style="color:blue;">new</span>[]&nbsp;{&nbsp;<span style="font-weight:bold;color:#1f377f;">body1</span>.Quantity,&nbsp;<span style="font-weight:bold;color:#1f377f;">body2</span>.Quantity&nbsp;},&nbsp;6);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Assert</span>.<span style="color:#74531f;">Single</span>(<span style="color:blue;">new</span>[]&nbsp;{&nbsp;<span style="font-weight:bold;color:#1f377f;">body1</span>.Quantity,&nbsp;<span style="font-weight:bold;color:#1f377f;">body2</span>.Quantity&nbsp;},&nbsp;4);
+}</pre>
+    </p>
+    <p>
+        This test first has to create two reservations in a nice, sequential manner. Then it attempts to perform two concurrent updates, and finally it tests that all is as it should be: That both reservations still exist, but only one had its <code>Quantity</code> increased to <code>6</code>.
+    </p>
+    <p>
+        This test first makes two <code>POST</code> requests, nicely serialized so as to avoid a race condition. That's 400 ms.
+    </p>
+    <p>
+        Each <code>PUT</code> request triggers three Repository actions, for a total of 300 ms (since they run in parallel).
+    </p>
+    <p>
+        Finally, the test issues two <code>GET</code> requests for verification, for another 2 times 100 ms. Now that I'm writing this, I realize that I could also have parallelized these two calls, but as you read on, you'll see why that's not necessary.
+    </p>
+    <p>
+        In all, this test waits for 900 ms. That's almost a second.
+    </p>
+    <p>
+        Can we improve on that?
+    </p>
+    <h3 id="b5c26b0e8a80487db636d47cd408cf3a">
+        Decreasing unnecessary wait time <a href="#b5c26b0e8a80487db636d47cd408cf3a">#</a>
+    </h3>
+    <p>
+        In the latter example, the 300 ms wait time for the parallel <code>PUT</code> requests are necessary to trigger the race condition, but the rest of the test's actions don't need slowing down. We can remove the unwarranted wait time by setting up two services: One slow, and one normal.
+    </p>
+    <p>
+        To be honest, I could have modelled this by just instantiating two service objects, but why do something as pedestrian as that when you can turn <code>RestaurantService</code> into a <a href="/2020/10/19/monomorphic-functors">monomorphic functor</a>?
+    </p>
+    <p>
+        <pre><span style="color:blue;">internal</span>&nbsp;<span style="color:#2b91af;">RestaurantService</span>&nbsp;<span style="font-weight:bold;color:#74531f;">Select</span>(<span style="color:#2b91af;">Func</span>&lt;<span style="color:#2b91af;">IReservationsRepository</span>,&nbsp;<span style="color:#2b91af;">IReservationsRepository</span>&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">selector</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">if</span>&nbsp;(<span style="font-weight:bold;color:#1f377f;">selector</span>&nbsp;<span style="color:blue;">is</span>&nbsp;<span style="color:blue;">null</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">throw</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">ArgumentNullException</span>(<span style="color:blue;">nameof</span>(<span style="font-weight:bold;color:#1f377f;">selector</span>));
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">RestaurantService</span>(<span style="font-weight:bold;color:#1f377f;">selector</span>(repository));
+}</pre>
+    </p>
+    <p>
+        Granted, this is verging on the frivolous, but when writing code for a blog post, I think I'm allowed a little fun.
+    </p>
+    <p>
+        In any case, this now enables me to rewrite the test like this:
+    </p>
+    <p>
+        <pre>[<span style="color:#2b91af;">Fact</span>]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">async</span>&nbsp;<span style="color:#2b91af;">Task</span>&nbsp;<span style="font-weight:bold;color:#74531f;">NoOverbookingRace</span>()
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">date</span>&nbsp;=&nbsp;<span style="color:#2b91af;">DateTime</span>.Now.Date.<span style="font-weight:bold;color:#74531f;">AddDays</span>(1).<span style="font-weight:bold;color:#74531f;">AddHours</span>(18.5);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">using</span>&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">service</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">RestaurantService</span>();
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">using</span>&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">slowService</span>&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">from</span>&nbsp;repo&nbsp;<span style="color:blue;">in</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">service</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">select</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">SlowReservationsRepository</span>(<span style="color:#2b91af;">TimeSpan</span>.<span style="color:#74531f;">FromMilliseconds</span>(100),&nbsp;repo);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">task1</span>&nbsp;=&nbsp;<span style="font-weight:bold;color:#1f377f;">slowService</span>.<span style="font-weight:bold;color:#74531f;">PostReservation</span>(<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">ReservationDtoBuilder</span>()
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.<span style="font-weight:bold;color:#74531f;">WithDate</span>(<span style="font-weight:bold;color:#1f377f;">date</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.<span style="font-weight:bold;color:#74531f;">WithQuantity</span>(10)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.<span style="font-weight:bold;color:#74531f;">Build</span>());
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">task2</span>&nbsp;=&nbsp;<span style="font-weight:bold;color:#1f377f;">slowService</span>.<span style="font-weight:bold;color:#74531f;">PostReservation</span>(<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">ReservationDtoBuilder</span>()
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.<span style="font-weight:bold;color:#74531f;">WithDate</span>(<span style="font-weight:bold;color:#1f377f;">date</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.<span style="font-weight:bold;color:#74531f;">WithQuantity</span>(10)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.<span style="font-weight:bold;color:#74531f;">Build</span>());
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">actual</span>&nbsp;=&nbsp;<span style="font-weight:bold;color:#8f08c4;">await</span>&nbsp;<span style="color:#2b91af;">Task</span>.<span style="color:#74531f;">WhenAll</span>(<span style="font-weight:bold;color:#1f377f;">task1</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">task2</span>);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Assert</span>.<span style="color:#74531f;">Single</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">actual</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">msg</span>&nbsp;=&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">msg</span>.StatusCode&nbsp;==&nbsp;<span style="color:#2b91af;">HttpStatusCode</span>.InternalServerError);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">ok</span>&nbsp;=&nbsp;<span style="color:#2b91af;">Assert</span>.<span style="color:#74531f;">Single</span>(<span style="font-weight:bold;color:#1f377f;">actual</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">msg</span>&nbsp;=&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">msg</span>.IsSuccessStatusCode);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;Check&nbsp;that&nbsp;the&nbsp;reservation&nbsp;was&nbsp;actually&nbsp;created:</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">resp</span>&nbsp;=&nbsp;<span style="font-weight:bold;color:#8f08c4;">await</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">service</span>.<span style="font-weight:bold;color:#74531f;">GetReservation</span>(<span style="font-weight:bold;color:#1f377f;">ok</span>.Headers.Location);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">resp</span>.<span style="font-weight:bold;color:#74531f;">EnsureSuccessStatusCode</span>();
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">reservation</span>&nbsp;=&nbsp;<span style="font-weight:bold;color:#8f08c4;">await</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">resp</span>.<span style="font-weight:bold;color:#74531f;">ParseJsonContent</span>&lt;<span style="color:#2b91af;">ReservationDto</span>&gt;();
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Assert</span>.<span style="color:#74531f;">Equal</span>(10,&nbsp;<span style="font-weight:bold;color:#1f377f;">reservation</span>.Quantity);
+}</pre>
+    </p>
+    <p>
+        Notice how only the parallel execution of <code>task1</code> and <code>task2</code> run on the slow system. The rest runs as fast as it can. It's as if the client was hitting two different servers that just happen to connect to the same database. Now the test only waits for the 200 ms described above. The <code>PUT</code> test, likewise, only idles for 300 ms instead of 900 ms.
+    </p>
+    <h3 id="90a4897a10b24d2c98d09129884f7e13">
+        Near-deterministic tests <a href="#90a4897a10b24d2c98d09129884f7e13">#</a>
+    </h3>
+    <p>
+        Does this deterministically reproduce the race condition? In practice, it may move us close enough, but theoretically the race is still on. With the increased wait time, it's now much more unlikely that the race condition does <em>not</em> happen, but it still could.
+    </p>
+    <p>
+        Imagine that <code>task1</code> queries the Repository. Just as it's received a response, but before <code>task2</code> starts its query, execution is paused, perhaps because of garbage collection. Once the program resumes, <code>task1</code> runs to completion before <code>task2</code> reads from the database. In that case, <code>task2</code> ends up making the right decision, rejecting the reservation. Even if no transaction control were in place.
+    </p>
+    <p>
+        This may not be a particularly realistic scenario, but I suppose it could happen if the computer is stressed in general. Even so, you might decide to make such <a href="https://en.wikipedia.org/wiki/False_positives_and_false_negatives">false-negative</a> scenarios even more unlikely by increasing the delay time. Of course, the downside is that tests take even longer to run.
+    </p>
+    <p>
+        Another potential problem is that there's no <em>guarantee</em> that <code>task1</code> and <code>task2</code> run in parallel. Even if the test doesn't <code>await</code> any of the tasks, both start executing immediately. There's an (unlikely) chance that <code>task1</code> completes before <code>task2</code> starts. Again, I don't consider this likely, but I suppose it could happen because of thread starvation, generation 2 garbage collection, the disk running full, etc. The point is that the test shown here is still playing the odds, even if the odds are really good.
+    </p>
+    <h3 id="335493859fd0494488353e60de46c9c3">
+        Conclusion <a href="#335493859fd0494488353e60de46c9c3">#</a>
+    </h3>
+    <p>
+        Instead of running a scenario 'enough' times that reproducing a race condition is likely, you can increase the odds to near-certainty by slowing down the race. In this example, the race involves a database, but you might also encounter race conditions internally in multi-threaded code. I'm not insisting that the technique described in this article applies universally, but if you can slow down certain interactions in the right way, you may be able reproduce problems as automated tests.
+    </p>
+    <p>
+        If you've ever troubleshot a race condition, you've probably tried inserting sleeps into the code in various places to understand the problem. As described above, a single, strategically-placed <code>Task.Delay</code> may be all you need to reproduce a problem. What escaped me for a long time, however, was that I didn't realize that I could cleanly insert such pauses into production code. Until my workshop participant suggested using a Decorator.
+    </p>
+    <p>
+        A delaying Decorator slows interactions with the database down sufficiently to reproduce the race condition as an automated test.
+    </p>
+</div>
