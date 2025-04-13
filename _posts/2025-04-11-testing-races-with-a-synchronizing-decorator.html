@@ -1,0 +1,202 @@
+---
+layout: post
+title: "Testing races with a synchronizing Decorator"
+description: "Synchronized database reads for testing purposes."
+date: 2025-04-11 10:26 UTC
+tags: [Unit Testing]
+---
+{% include JB/setup %}
+
+<div id="post">
+    <p>
+        <em>{{ page.description }}</em>
+    </p>
+    <p>
+        In a previous article, you saw how to use a <a href="">slow Decorator to test for race conditions.</a> Towards the end, I discussed how that solution is only near-deterministic. In this article, I discuss a technique which is, I think, properly deterministic, but unfortunately less elegant.
+    </p>
+    <p>
+        In short, it works by letting a <a href="https://en.wikipedia.org/wiki/Decorator_pattern">Decorator</a> synchronize reads.
+    </p>
+    <h3 id="867f586443864351a77bbeb8d2e00859">
+        The problem <a href="#867f586443864351a77bbeb8d2e00859">#</a>
+    </h3>
+    <p>
+        In the previous article, I used words to describe the problem, but really, I should be showing, not telling. Here's a variation on the previous test that exemplifies the problem.
+    </p>
+    <p>
+        <pre>[<span style="color:#2b91af;">Fact</span>]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">async</span>&nbsp;<span style="color:#2b91af;">Task</span>&nbsp;<span style="font-weight:bold;color:#74531f;">NoOverbookingRace</span>()
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">date</span>&nbsp;=&nbsp;<span style="color:#2b91af;">DateTime</span>.Now.Date.<span style="font-weight:bold;color:#74531f;">AddDays</span>(1).<span style="font-weight:bold;color:#74531f;">AddHours</span>(18.5);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">using</span>&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">service</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">RestaurantService</span>();
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">using</span>&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">slowService</span>&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">from</span>&nbsp;repo&nbsp;<span style="color:blue;">in</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">service</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">select</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">SlowReservationsRepository</span>(<span style="color:#2b91af;">TimeSpan</span>.<span style="color:#74531f;">FromMilliseconds</span>(100),&nbsp;repo);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">task1</span>&nbsp;=&nbsp;<span style="font-weight:bold;color:#1f377f;">slowService</span>.<span style="font-weight:bold;color:#74531f;">PostReservation</span>(<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">ReservationDtoBuilder</span>()
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.<span style="font-weight:bold;color:#74531f;">WithDate</span>(<span style="font-weight:bold;color:#1f377f;">date</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.<span style="font-weight:bold;color:#74531f;">WithQuantity</span>(10)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.<span style="font-weight:bold;color:#74531f;">Build</span>());
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">await</span>&nbsp;<span style="color:#2b91af;">Task</span>.<span style="color:#74531f;">Delay</span>(<span style="color:#2b91af;">TimeSpan</span>.<span style="color:#74531f;">FromSeconds</span>(1));
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">task2</span>&nbsp;=&nbsp;<span style="font-weight:bold;color:#1f377f;">slowService</span>.<span style="font-weight:bold;color:#74531f;">PostReservation</span>(<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">ReservationDtoBuilder</span>()
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.<span style="font-weight:bold;color:#74531f;">WithDate</span>(<span style="font-weight:bold;color:#1f377f;">date</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.<span style="font-weight:bold;color:#74531f;">WithQuantity</span>(10)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.<span style="font-weight:bold;color:#74531f;">Build</span>());
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">actual</span>&nbsp;=&nbsp;<span style="font-weight:bold;color:#8f08c4;">await</span>&nbsp;<span style="color:#2b91af;">Task</span>.<span style="color:#74531f;">WhenAll</span>(<span style="font-weight:bold;color:#1f377f;">task1</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">task2</span>);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Assert</span>.<span style="color:#74531f;">Single</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">actual</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">msg</span>&nbsp;=&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">msg</span>.StatusCode&nbsp;==&nbsp;<span style="color:#2b91af;">HttpStatusCode</span>.InternalServerError);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">ok</span>&nbsp;=&nbsp;<span style="color:#2b91af;">Assert</span>.<span style="color:#74531f;">Single</span>(<span style="font-weight:bold;color:#1f377f;">actual</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">msg</span>&nbsp;=&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">msg</span>.IsSuccessStatusCode);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;Check&nbsp;that&nbsp;the&nbsp;reservation&nbsp;was&nbsp;actually&nbsp;created:</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">resp</span>&nbsp;=&nbsp;<span style="font-weight:bold;color:#8f08c4;">await</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">service</span>.<span style="font-weight:bold;color:#74531f;">GetReservation</span>(<span style="font-weight:bold;color:#1f377f;">ok</span>.Headers.Location);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">resp</span>.<span style="font-weight:bold;color:#74531f;">EnsureSuccessStatusCode</span>();
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">reservation</span>&nbsp;=&nbsp;<span style="font-weight:bold;color:#8f08c4;">await</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">resp</span>.<span style="font-weight:bold;color:#74531f;">ParseJsonContent</span>&lt;<span style="color:#2b91af;">ReservationDto</span>&gt;();
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Assert</span>.<span style="color:#74531f;">Equal</span>(10,&nbsp;<span style="font-weight:bold;color:#1f377f;">reservation</span>.Quantity);
+}</pre>
+    </p>
+    <p>
+        Apart from a single new line of code, this is is identical to the test shown in the previous article. The added line is the <code>Task.Delay</code> between <code>task1</code> and <code>task2</code>.
+    </p>
+    <p>
+        What's the point of adding this delay there? Only to <em>demonstrate</em> a problem. That's one of the situations I described in the previous article: Even though the test starts both tasks without awaiting them, they aren't guaranteed to run in parallel. Both start as soon as they're created, so <code>task2</code> is going to be ever so slightly behind <code>task1</code>. What happens if there's a delay between the creation of these two tasks?
+    </p>
+    <p>
+        Here I've explicitly introduced such a delay for demonstration purposes, but such a delay could happen on a real system for a number of reasons, including garbage collection, thread starvation, the OS running a higher-priority task, etc.
+    </p>
+    <p>
+        Why might that pause matter?
+    </p>
+    <p>
+        Because it may produce <a href="https://en.wikipedia.org/wiki/False_positives_and_false_negatives">false negatives</a>. Imagine a situation where there's <em>no</em> transaction control; where there's no <a href="https://learn.microsoft.com/dotnet/api/system.transactions.transactionscope">TransactionScope</a> around the database interactions. If the pause is long enough, the tasks effectively run in sequence (instead of in parallel), in which case the system correctly rejects the second attempt.
+    </p>
+    <p>
+        This is even when using the <code>SlowReservationsRepository</code> Decorator.
+    </p>
+    <p>
+        How long does the pause need to be before this happens?
+    </p>
+    <p>
+        As described in the previous article, with a configured delay of 100 ms for the <code>SlowReservationsRepository</code>, creating a new reservation is delayed by 300 ms. This bears out. Experimenting on my own machine, if I change that explicit, artificial delay to 300 ms, and remove the transaction control, the test sometimes fails, and sometimes passes. With the above one-second delay, the test always passes, even when transaction control is missing.
+    </p>
+    <p>
+        You could decide that a 300 ms pause at just the worst possible time is so unlikely that you're willing to simply accept those odds. I would probably be, too. Still, <a href="/2018/11/12/what-to-test-and-not-to-test">what to test, and what not to test</a> is a function of context. You may find yourself in a context where that's not good enough. What other options are there?
+    </p>
+    <h3 id="702b62450cb24cdc95f384b15d80a07c">
+        Synchronizing Decorator <a href="#702b62450cb24cdc95f384b15d80a07c">#</a>
+    </h3>
+    <p>
+        What you <em>really</em> need to reproduce the race condition is to synchronize the database reads. If you could make sure that the Repository only returns data when enough reads have been performed, you can deterministically reproduce the problem.
+    </p>
+    <p>
+        Again, start with a Decorator. This time, build into it a way to synchronize reads.
+    </p>
+    <p>
+        <pre><span style="color:blue;">internal</span>&nbsp;<span style="color:blue;">sealed</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">SynchronizedReaderRepository</span>&nbsp;:&nbsp;<span style="color:#2b91af;">IReservationsRepository</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;<span style="color:#2b91af;">CountdownEvent</span>&nbsp;countdownEvent&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">CountdownEvent</span>(2);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">SynchronizedReaderRepository</span>(<span style="color:#2b91af;">IReservationsRepository</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">inner</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Inner&nbsp;=&nbsp;<span style="font-weight:bold;color:#1f377f;">inner</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">IReservationsRepository</span>&nbsp;Inner&nbsp;{&nbsp;<span style="color:blue;">get</span>;&nbsp;}</pre>
+    </p>
+    <p>
+        Here I've used a <a href="https://learn.microsoft.com/dotnet/api/system.threading.countdownevent">CountdownEvent</a> object to ensure that reads only progress when the countdown reaches zero. It's possible that more appropriate threading APIs exist, but this serves well as a proof of concept.
+    </p>
+    <p>
+        The method you need to synchronize is <code>ReadReservations</code>, so you can leave all the other methods to delegate to <code>Inner</code>. Only <code>ReadReservations</code> is special.
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">async</span>&nbsp;<span style="color:#2b91af;">Task</span>&lt;<span style="color:#2b91af;">IReadOnlyCollection</span>&lt;<span style="color:#2b91af;">Reservation</span>&gt;&gt;&nbsp;<span style="font-weight:bold;color:#74531f;">ReadReservations</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">int</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">restaurantId</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">DateTime</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">min</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">DateTime</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">max</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">result</span>&nbsp;=&nbsp;<span style="font-weight:bold;color:#8f08c4;">await</span>&nbsp;Inner&nbsp;.<span style="font-weight:bold;color:#74531f;">ReadReservations</span>(<span style="font-weight:bold;color:#1f377f;">restaurantId</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">min</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">max</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;countdownEvent.<span style="font-weight:bold;color:#74531f;">Signal</span>();
+&nbsp;&nbsp;&nbsp;&nbsp;countdownEvent.<span style="font-weight:bold;color:#74531f;">Wait</span>();
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">result</span>;
+}</pre>
+    </p>
+    <p>
+        This implementation also starts by delegating to <code>Inner</code>, but before it returns the <code>result</code>, it signals the <code>countdownEvent</code> and blocks the thread by waiting on the <code>countdownEvent</code>. Only when both threads have signalled it does the counter reach zero, and the methods may proceed.
+    </p>
+    <p>
+        If we assume that, while the test is running, no other calls to <code>ReadReservations</code> is made, this guarantees that both threads receive the same answer. This will make both competing threads come to the answer that they can accept the reservation. If no transaction control is in place, the system will overbook the requested time slot.
+    </p>
+    <h3 id="008987e40f7e4d5baeda6b245d086a43">
+        Testing with the synchronizing Repository <a href="#008987e40f7e4d5baeda6b245d086a43">#</a>
+    </h3>
+    <p>
+        The test that uses <code>SynchronizedReaderRepository</code> is almost identical to the previous test.
+    </p>
+    <p>
+        <pre>[<span style="color:#2b91af;">Fact</span>]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">async</span>&nbsp;<span style="color:#2b91af;">Task</span>&nbsp;<span style="font-weight:bold;color:#74531f;">NoOverbookingRace</span>()
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">date</span>&nbsp;=&nbsp;<span style="color:#2b91af;">DateTime</span>.Now.Date.<span style="font-weight:bold;color:#74531f;">AddDays</span>(1).<span style="font-weight:bold;color:#74531f;">AddHours</span>(18.5);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">using</span>&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">service</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">RestaurantService</span>();
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">using</span>&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">syncedService</span>&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">service</span>.<span style="font-weight:bold;color:#74531f;">Select</span>(<span style="font-weight:bold;color:#1f377f;">repo</span>&nbsp;=&gt;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">SynchronizedReaderRepository</span>(<span style="font-weight:bold;color:#1f377f;">repo</span>));
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">task1</span>&nbsp;=&nbsp;<span style="font-weight:bold;color:#1f377f;">syncedService</span>.<span style="font-weight:bold;color:#74531f;">PostReservation</span>(<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">ReservationDtoBuilder</span>()
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.<span style="font-weight:bold;color:#74531f;">WithDate</span>(<span style="font-weight:bold;color:#1f377f;">date</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.<span style="font-weight:bold;color:#74531f;">WithQuantity</span>(10)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.<span style="font-weight:bold;color:#74531f;">Build</span>());
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">task2</span>&nbsp;=&nbsp;<span style="font-weight:bold;color:#1f377f;">syncedService</span>.<span style="font-weight:bold;color:#74531f;">PostReservation</span>(<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">ReservationDtoBuilder</span>()
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.<span style="font-weight:bold;color:#74531f;">WithDate</span>(<span style="font-weight:bold;color:#1f377f;">date</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.<span style="font-weight:bold;color:#74531f;">WithQuantity</span>(10)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.<span style="font-weight:bold;color:#74531f;">Build</span>());
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">actual</span>&nbsp;=&nbsp;<span style="font-weight:bold;color:#8f08c4;">await</span>&nbsp;<span style="color:#2b91af;">Task</span>.<span style="color:#74531f;">WhenAll</span>(<span style="font-weight:bold;color:#1f377f;">task1</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">task2</span>);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Assert</span>.<span style="color:#74531f;">Single</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">actual</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">msg</span>&nbsp;=&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">msg</span>.StatusCode&nbsp;==&nbsp;<span style="color:#2b91af;">HttpStatusCode</span>.InternalServerError);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">ok</span>&nbsp;=&nbsp;<span style="color:#2b91af;">Assert</span>.<span style="color:#74531f;">Single</span>(<span style="font-weight:bold;color:#1f377f;">actual</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">msg</span>&nbsp;=&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">msg</span>.IsSuccessStatusCode);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;Check&nbsp;that&nbsp;the&nbsp;reservation&nbsp;was&nbsp;actually&nbsp;created:</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">resp</span>&nbsp;=&nbsp;<span style="font-weight:bold;color:#8f08c4;">await</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">service</span>.<span style="font-weight:bold;color:#74531f;">GetReservation</span>(<span style="font-weight:bold;color:#1f377f;">ok</span>.Headers.Location);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">resp</span>.<span style="font-weight:bold;color:#74531f;">EnsureSuccessStatusCode</span>();
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">reservation</span>&nbsp;=&nbsp;<span style="font-weight:bold;color:#8f08c4;">await</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">resp</span>.<span style="font-weight:bold;color:#74531f;">ParseJsonContent</span>&lt;<span style="color:#2b91af;">ReservationDto</span>&gt;();
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Assert</span>.<span style="color:#74531f;">Equal</span>(10,&nbsp;<span style="font-weight:bold;color:#1f377f;">reservation</span>.Quantity);
+}</pre>
+    </p>
+    <p>
+        Contrary to using the slow Repository, this test doesn't allow false negatives. If transaction control is missing from the System Under Test (SUT), this test fails. And it passes when transaction control is in place.
+    </p>
+    <h3 id="c261a239b7a44a819eed3d4526adefed">
+        Disadvantages <a href="#c261a239b7a44a819eed3d4526adefed">#</a>
+    </h3>
+    <p>
+        That sounds great, so why not just do this, instead of using a delaying Decorator? Because, as usual, there are trade-offs involved. This kind of solution comes with some disadvantages that are worth taking into account.
+    </p>
+    <p>
+        In short, this could make the test more <a href="http://xunitpatterns.com/Fragile%20Test.html">fragile</a>. As shown above, <code>SynchronizedReaderRepository</code> makes a specific assumption. It assumes that it needs to synchronize exactly two parallel readers. One problem with this is that this may be coupled to exactly one test. If you had other tests, you'd need to write a new Decorator, or generalize this one in some way.
+    </p>
+    <p>
+        Another problem is that this makes the test sensitive to changes in the SUT. What if a code change introduces a new call to <code>ReadReservations</code>? If so, the <code>countdownEvent</code> may unblock the threads too soon. One such change may be that the SUT decides to also query for surrounding times slots. You might be able to make <code>SynchronizedReaderRepository</code> robust against such changes by keeping a dictionary of synchronization objects (such as the above <code>CountdownEvent</code>) per argument set, but that clearly complicates the implementation.
+    </p>
+    <p>
+        And even so, it doesn't protect against identical 'double reads', even though these may be less likely to happen.
+    </p>
+    <p>
+        This Decorator is also vulnerable to caching. If you have a read-through cache that wraps around <code>SynchronizedReaderRepository</code>, only the first query may get to it, which would then cause it to block forever. Perhaps, again, you could fix this with the <a href="https://learn.microsoft.com/dotnet/api/system.threading.countdownevent.wait">Wait</a> overload that takes a timeout value.
+    </p>
+    <p>
+        That said, if you cache reads, the pessimistic locking that <a href="https://learn.microsoft.com/dotnet/api/system.transactions.transactionscope">TransactionScope</a> uses isn't going to work. You could, perhaps, address that concern with optimistic concurrency, but that comes with its own problems.
+    </p>
+    <h3 id="d7dcb5c138e1451499f5c2c2162fb416">
+        Conclusion <a href="#d7dcb5c138e1451499f5c2c2162fb416">#</a>
+    </h3>
+    <p>
+        You can address race conditions in various ways, but synchronization has been around for a long time. Not only can you use synchronization primitives and APIs to make your code thread-safe, you can also use them to deterministically reproduce race conditions, or to test that such a bug is no longer present in the system.
+    </p>
+    <p>
+        I don't want to claim that this is universally possible, but if you run into such problems, it's at least worth considering if you could take advantage of synchronization to reproduce a problem.
+    </p>
+    <p>
+        Of course, the implication is that you understand what the problem is. This is often the hardest part of dealing with race conditions, and the ideas described in this article don't help with that.
+    </p>
+</div>
