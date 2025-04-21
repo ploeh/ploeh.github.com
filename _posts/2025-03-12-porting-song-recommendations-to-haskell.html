@@ -1,0 +1,328 @@
+---
+layout: post
+title: "Porting song recommendations to Haskell"
+description: "An F# code base translated to Haskell."
+date: 2025-03-12 16:31 UTC
+tags: [Haskell, Property-based Testing]
+---
+{% include JB/setup %}
+
+<div id="post">
+    <p>
+        <em>{{ page.description }}</em>
+    </p>
+    <p>
+        This article is part of a <a href="">larger article series</a> that examines variations of how to take on a non-trivial problem using <a href="/2018/11/19/functional-architecture-a-definition">functional architecture</a>. In a <a href="">previous article</a> we established a baseline C# code base. Future articles are going to use that C# code base as a starting point for refactored code. On the other hand, I also want to demonstrate what such solutions may look like in languages like <a href="https://fsharp.org/">F#</a> or <a href="https://www.haskell.org/">Haskell</a>. In this article, you'll see how to port the baseline to Haskell. To be honest, I first <a href="">ported the C# code to F#</a>, and then used the F# code as a guide to implement equivalent Haskell code.
+    </p>
+    <p>
+        If you're following along in the Git repositories, this is a repository separate from the .NET repositories. The code shown here is from the <em>master</em> branch.
+    </p>
+    <p>
+        If you don't care about Haskell, you can always go back to the table of contents in <a href="">the 'root' article</a> and proceed to the next topic that interests you.
+    </p>
+    <h3 id="2c7511eb050b4d399f7e7fb154c5d990">
+        Data structures <a href="#2c7511eb050b4d399f7e7fb154c5d990">#</a>
+    </h3>
+    <p>
+        When working with statically typed functional languages like Haskell, it often makes most sense to start by declaring data structures.
+    </p>
+    <p>
+        <pre><span style="color:blue;">data</span>&nbsp;User&nbsp;=&nbsp;User
+&nbsp;&nbsp;{&nbsp;userName&nbsp;::&nbsp;String
+&nbsp;&nbsp;,&nbsp;userScrobbleCount&nbsp;::&nbsp;Int&nbsp;}
+&nbsp;&nbsp;<span style="color:blue;">deriving</span>&nbsp;(<span style="color:#2b91af;">Show</span>,&nbsp;<span style="color:#2b91af;">Eq</span>)</pre>
+    </p>
+    <p>
+        This is much like an F# or C# record declaration, and this one echoes the corresponding types in F# and C#. The most significant difference is that here, a user's total count of scrobbles is called <code>userScrobbleCount</code> rather than <code>TotalScrobbleCount</code>. The motivation behind that variation is that Haskell data 'getters' are actually top-level functions, so it's usually a good idea to prefix them with the name of the data structure they work on. Since the data structure is called <code>User</code>, both 'getter' functions get the <code>user</code> prefix.
+    </p>
+    <p>
+        I found <code>userTotalScrobbleCount</code> a bit too verbose to my tastes, so I dropped the <code>Total</code> part. Whether or not that's appropriate remains to be seen. Naming in programming is always hard, and there's a risk that you don't get it right the first time around. Unless you're publishing a reusable library, however, the option to rename it later remains.
+    </p>
+    <p>
+        The other two data structures are quite similar:
+    </p>
+    <p>
+        <pre><span style="color:blue;">data</span>&nbsp;Song&nbsp;=&nbsp;Song
+&nbsp;&nbsp;{&nbsp;songId&nbsp;::&nbsp;Int
+&nbsp;&nbsp;,&nbsp;songHasVerifiedArtist&nbsp;::&nbsp;Bool
+&nbsp;&nbsp;,&nbsp;songRating&nbsp;::&nbsp;Word8&nbsp;}
+&nbsp;&nbsp;<span style="color:blue;">deriving</span>&nbsp;(<span style="color:#2b91af;">Show</span>,&nbsp;<span style="color:#2b91af;">Eq</span>)
+ 
+<span style="color:blue;">data</span>&nbsp;Scrobble&nbsp;=&nbsp;Scrobble
+&nbsp;&nbsp;{&nbsp;scrobbledSong&nbsp;::&nbsp;Song
+&nbsp;&nbsp;,&nbsp;scrobbleCount&nbsp;::&nbsp;Int&nbsp;}
+&nbsp;&nbsp;<span style="color:blue;">deriving</span>&nbsp;(<span style="color:#2b91af;">Show</span>,&nbsp;<span style="color:#2b91af;">Eq</span>)</pre>
+    </p>
+    <p>
+        I thought that <code>scrobbledSong</code> was more descriptive than <code>scrobbleSong</code>, so I allowed myself that little deviation from the <a href="/2015/08/03/idiomatic-or-idiosyncratic">idiomatic</a> naming convention. It didn't cause any problems, but I'm still not sure if that was a good decision.
+    </p>
+    <p>
+        How does one translate a C# interface to Haskell? Although type classes aren't quite the same as a C# or Java interfaces, this language feature is close enough that I can use it in that role. I don't consider such a type class idiomatic in Haskell, but as an counterpart to the C# interface, it works well enough.
+    </p>
+    <p>
+        <pre><span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">SongService</span>&nbsp;a&nbsp;<span style="color:blue;">where</span>
+&nbsp;&nbsp;<span style="color:#2b91af;">getTopListeners</span>&nbsp;<span style="color:blue;">::</span>&nbsp;a&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:#2b91af;">Int</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:#2b91af;">IO</span>&nbsp;[<span style="color:blue;">User</span>]
+&nbsp;&nbsp;<span style="color:#2b91af;">getTopScrobbles</span>&nbsp;<span style="color:blue;">::</span>&nbsp;a&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:#2b91af;">String</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:#2b91af;">IO</span>&nbsp;[<span style="color:blue;">Scrobble</span>]</pre>
+    </p>
+    <p>
+        Any instance of the <code>SongService</code> class supports queries for top listeners of a particular song, as well as for top scrobbles for a user.
+    </p>
+    <p>
+        To reiterate, I don't intend to keep this type class around if I can help it, but for didactic reasons, it'll remain in some of the future refactorings, so that you can contrast and compare the Haskell code to the C# and F# peers.
+    </p>
+    <h3 id="83350f6a8a484249b466fcb72978c64d">
+        Test Double <a href="#83350f6a8a484249b466fcb72978c64d">#</a>
+    </h3>
+    <p>
+        To support tests, I needed a <a href="https://martinfowler.com/bliki/TestDouble.html">Test Double</a>, so I defined the following <a href="http://xunitpatterns.com/Fake%20Object.html">Fake</a> service, which is nothing but a deterministic in-memory instance. The type itself is just a wrapper of two maps.
+    </p>
+    <p>
+        <pre><span style="color:blue;">data</span>&nbsp;FakeSongService&nbsp;=&nbsp;FakeSongService
+&nbsp;&nbsp;{&nbsp;fakeSongs&nbsp;::&nbsp;Map&nbsp;Int&nbsp;Song
+&nbsp;&nbsp;,&nbsp;fakeUsers&nbsp;::&nbsp;Map&nbsp;String&nbsp;(Map&nbsp;Int&nbsp;Int)&nbsp;}
+&nbsp;&nbsp;<span style="color:blue;">deriving</span>&nbsp;(<span style="color:#2b91af;">Show</span>,&nbsp;<span style="color:#2b91af;">Eq</span>)</pre>
+    </p>
+    <p>
+        Like the equivalent C# class, <code>fakeSongs</code> is a map from song ID to <code>Song</code>, while <code>fakeUsers</code> is a bit more complex. It's a map keyed on user name, but the value is another map. The keys of that inner map are song IDs, while the values are the number of times the song was scrobbled by that user.
+    </p>
+    <p>
+        The <code>FakeSongService</code> data structure is a <code>SongService</code> instance by explicit implementation:
+    </p>
+    <p>
+        <pre><span style="color:blue;">instance</span>&nbsp;<span style="color:blue;">SongService</span>&nbsp;<span style="color:blue;">FakeSongService</span>&nbsp;<span style="color:blue;">where</span>
+&nbsp;&nbsp;getTopListeners&nbsp;srvc&nbsp;sid&nbsp;=&nbsp;<span style="color:blue;">do</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;$
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">uncurry</span>&nbsp;User&nbsp;&lt;$&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Map.toList&nbsp;(<span style="color:blue;">sum</span>&nbsp;&lt;$&gt;&nbsp;Map.<span style="color:blue;">filter</span>&nbsp;(Map.member&nbsp;sid)&nbsp;(fakeUsers&nbsp;srvc))
+&nbsp;&nbsp;getTopScrobbles&nbsp;srvc&nbsp;userName&nbsp;=&nbsp;<span style="color:blue;">do</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;$
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">fmap</span>&nbsp;(\(sid,&nbsp;c)&nbsp;-&gt;&nbsp;Scrobble&nbsp;(fakeSongs&nbsp;srvc&nbsp;!&nbsp;sid)&nbsp;c)&nbsp;$
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Map.toList&nbsp;$
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Map.findWithDefault&nbsp;Map.empty&nbsp;userName&nbsp;(fakeUsers&nbsp;srvc)</pre>
+    </p>
+    <p>
+        In order to find all the top listeners of a song, it finds all the <code>fakeUsers</code> who have the song ID (<code>sid</code>) in their inner map, sum all of those users' scrobble counts together and creates <code>User</code> values from that data.
+    </p>
+    <p>
+        To find the top scrobbles of a user, the instance finds the user in the <code>fakeUsers</code> map, looks each of that user's scrobbled song up in <code>fakeSongs</code>, and creates <code>Scrobble</code> values from that information.
+    </p>
+    <p>
+        Finally, test code needs a way to add data to a <code>FakeSongService</code> value, which this <a href="http://xunitpatterns.com/Test%20Utility%20Method.html">test-specific helper function</a> accomplishes:
+    </p>
+    <p>
+        <pre>scrobble&nbsp;userName&nbsp;s&nbsp;c&nbsp;(FakeSongService&nbsp;ss&nbsp;us)&nbsp;=
+&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;sid&nbsp;=&nbsp;songId&nbsp;s
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;ss&#39;&nbsp;=&nbsp;Map.insertWith&nbsp;(\_&nbsp;_&nbsp;-&gt;&nbsp;s)&nbsp;sid&nbsp;s&nbsp;ss
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;us&#39;&nbsp;=&nbsp;Map.insertWith&nbsp;(Map.unionWith&nbsp;<span style="color:#2b91af;">(+)</span>)&nbsp;userName&nbsp;(Map.singleton&nbsp;sid&nbsp;c)&nbsp;us
+&nbsp;&nbsp;<span style="color:blue;">in</span>&nbsp;FakeSongService&nbsp;ss&#39;&nbsp;us&#39;</pre>
+    </p>
+    <p>
+        Given a user name, a song, a scrobble count, and a <code>FakeSongService</code>, this function returns a new <code>FakeSongService</code> value with the new data added to the data already there.
+    </p>
+    <h3 id="1e89e2737f3e4fe1849f840052f305e2">
+        QuickCheck Arbitraries <a href="#1e89e2737f3e4fe1849f840052f305e2">#</a>
+    </h3>
+    <p>
+        In the F# test code I used <a href="https://fscheck.github.io/FsCheck/">FsCheck</a> to get good coverage of the code. For Haskell, I'll use <a href="https://hackage.haskell.org/package/QuickCheck">QuickCheck</a>.
+    </p>
+    <p>
+        Porting the ideas from the F# tests, I define a QuickCheck generator for user names:
+    </p>
+    <p>
+        <pre><span style="color:#2b91af;">alphaNum</span>&nbsp;<span style="color:blue;">::</span>&nbsp;<span style="color:blue;">Gen</span>&nbsp;<span style="color:#2b91af;">Char</span>
+alphaNum&nbsp;=&nbsp;elements&nbsp;([<span style="color:#a31515;">&#39;a&#39;</span>..<span style="color:#a31515;">&#39;z&#39;</span>]&nbsp;++&nbsp;[<span style="color:#a31515;">&#39;A&#39;</span>..<span style="color:#a31515;">&#39;Z&#39;</span>]&nbsp;++&nbsp;[<span style="color:#a31515;">&#39;0&#39;</span>..<span style="color:#a31515;">&#39;9&#39;</span>])
+ 
+<span style="color:#2b91af;">userName</span>&nbsp;<span style="color:blue;">::</span>&nbsp;<span style="color:blue;">Gen</span>&nbsp;<span style="color:#2b91af;">String</span>
+userName&nbsp;=&nbsp;<span style="color:blue;">do</span>
+&nbsp;&nbsp;len&nbsp;&lt;-&nbsp;choose&nbsp;(1,&nbsp;19)
+&nbsp;&nbsp;first&nbsp;&lt;-&nbsp;elements&nbsp;$&nbsp;[<span style="color:#a31515;">&#39;a&#39;</span>..<span style="color:#a31515;">&#39;z&#39;</span>]&nbsp;++&nbsp;[<span style="color:#a31515;">&#39;A&#39;</span>..<span style="color:#a31515;">&#39;Z&#39;</span>]
+&nbsp;&nbsp;rest&nbsp;&lt;-&nbsp;vectorOf&nbsp;len&nbsp;alphaNum
+&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;$&nbsp;first&nbsp;:&nbsp;rest</pre>
+    </p>
+    <p>
+        It's not that the algorithm only works if usernames are alphanumeric strings that start with a letter and are no longer than twenty characters, but whenever a property is falsified, I'd rather look at a user name like <code>"Yvj0D1I"</code> or <code>"tyD9P1eOqwMMa1Q6u"</code> (which are already bad enough), than something with line breaks and unprintable characters.
+    </p>
+    <p>
+        Working with QuickCheck, it's often <a href="/2019/09/02/naming-newtypes-for-quickcheck-arbitraries">useful to wrap types from the System Under Test in test-specific Arbitrary wrappers</a>:
+    </p>
+    <p>
+        <pre><span style="color:blue;">newtype</span>&nbsp;ValidUserName&nbsp;=&nbsp;ValidUserName&nbsp;{&nbsp;getUserName&nbsp;::&nbsp;String&nbsp;}&nbsp;<span style="color:blue;">deriving</span>&nbsp;(<span style="color:#2b91af;">Show</span>,&nbsp;<span style="color:#2b91af;">Eq</span>)
+ 
+<span style="color:blue;">instance</span>&nbsp;<span style="color:blue;">Arbitrary</span>&nbsp;<span style="color:blue;">ValidUserName</span>&nbsp;<span style="color:blue;">where</span>
+&nbsp;&nbsp;arbitrary&nbsp;=&nbsp;ValidUserName&nbsp;&lt;$&gt;&nbsp;userName</pre>
+    </p>
+    <p>
+        I also defined a (simpler) <code>Arbitrary</code> instance for <code>Song</code> called <code>AnySong</code>.
+    </p>
+    <h3 id="fd6ddacfd3c34430abb30288f5fb37a6">
+        A few properties <a href="#fd6ddacfd3c34430abb30288f5fb37a6">#</a>
+    </h3>
+    <p>
+        With <code>FakeSongService</code> in place, I proceeded to add the test code, starting from the top of the F# test code, and translating each as faithfully as possible. The first one is an <a href="https://agileotter.blogspot.com/2008/12/unit-test-ice-breakers.html">Ice Breaker Test</a> that only verifies that the System Under Test exists and doesn't crash when called.
+    </p>
+    <p>
+        <pre>testProperty&nbsp;<span style="color:#a31515;">&quot;No&nbsp;data&quot;</span>&nbsp;$&nbsp;\&nbsp;(ValidUserName&nbsp;un)&nbsp;-&gt;&nbsp;ioProperty&nbsp;$&nbsp;<span style="color:blue;">do</span>
+&nbsp;&nbsp;actual&nbsp;&lt;-&nbsp;getRecommendations&nbsp;emptyService&nbsp;un
+&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;$&nbsp;<span style="color:blue;">null</span>&nbsp;actual</pre>
+    </p>
+    <p>
+        As I've done since at least 2019, <a href="/2019/03/11/an-example-of-state-based-testing-in-haskell">it seems</a>, I've <a href="/2018/05/07/inlined-hunit-test-lists">inlined test cases as anonymous functions</a>; this time as QuickCheck properties. This one just creates a <code>FakeSongService</code> that contains no data, and asks for recommendations. The expected result is that <code>actual</code> is empty (<code>null</code>), since there's nothing to recommend.
+    </p>
+    <p>
+        A slightly more involved property adds some data to the service before requesting recommendations:
+    </p>
+    <p>
+        <pre>testProperty&nbsp;<span style="color:#a31515;">&quot;One&nbsp;user,&nbsp;some&nbsp;songs&quot;</span>&nbsp;$&nbsp;\
+&nbsp;&nbsp;(ValidUserName&nbsp;user)
+&nbsp;&nbsp;(<span style="color:blue;">fmap</span>&nbsp;getSong&nbsp;-&gt;&nbsp;songs)
+&nbsp;&nbsp;-&gt;&nbsp;monadicIO&nbsp;$&nbsp;<span style="color:blue;">do</span>
+&nbsp;&nbsp;scrobbleCounts&nbsp;&lt;-&nbsp;pick&nbsp;$&nbsp;vectorOf&nbsp;(<span style="color:blue;">length</span>&nbsp;songs)&nbsp;$&nbsp;choose&nbsp;(1,&nbsp;100)
+&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;scrobbles&nbsp;=&nbsp;<span style="color:blue;">zip</span>&nbsp;songs&nbsp;scrobbleCounts
+&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;srvc&nbsp;=&nbsp;<span style="color:blue;">foldr</span>&nbsp;(<span style="color:blue;">uncurry</span>&nbsp;(scrobble&nbsp;user))&nbsp;emptyService&nbsp;scrobbles
+ 
+&nbsp;&nbsp;actual&nbsp;&lt;-&nbsp;run&nbsp;$&nbsp;getRecommendations&nbsp;srvc&nbsp;user
+ 
+&nbsp;&nbsp;assertWith&nbsp;(<span style="color:blue;">null</span>&nbsp;actual)&nbsp;<span style="color:#a31515;">&quot;Should&nbsp;be&nbsp;empty&quot;</span></pre>
+    </p>
+    <p>
+        A couple of things are worthy of note. First, the property <a href="/2018/05/14/project-arbitraries-with-view-patterns">uses a view pattern to project a list of songs from a list of Arbitraries</a>, where <code>getSong</code> is the 'getter' that belongs to the <code>AnySong</code> <code>newtype</code> wrapper.
+    </p>
+    <p>
+        I find view patterns quite useful as a declarative way to 'promote' a single <code>Arbitrary</code> instance to a list. In a third property, I take it a step further:
+    </p>
+    <p>
+        <pre>(<span style="color:blue;">fmap</span>&nbsp;getUserName&nbsp;-&gt;&nbsp;NonEmpty&nbsp;users)</pre>
+    </p>
+    <p>
+        This not only turns the singular <code>ValidUserName</code> wrapper into a list, but by projecting it into <code>NonEmpty</code>, the test declares that <code>users</code> is a non-empty list. QuickCheck picks all that up and generates values accordingly.
+    </p>
+    <p>
+        If you're interested in seeing this more advanced view pattern in context, you may consult the Git repository.
+    </p>
+    <p>
+        Secondly, the <code>"One user, some songs"</code> test runs in <code>monadicIO</code>, which I didn't know existed before I wrote these tests. Together with <code>pick</code>, <code>run</code>, and <code>assertWith</code>, <code>monadicIO</code> is defined in <a href="https://hackage.haskell.org/package/QuickCheck/docs/Test-QuickCheck-Monadic.html">Test.QuickCheck.Monadic</a>. It enables you to write properties that run in <code>IO</code>, which these properties need to do, because <code>getRecommendations</code> is <code>IO</code>-bound.
+    </p>
+    <p>
+        There's one more QuickCheck property in the code base, but it mostly repeats techniques already shown here. See the Git repository for all the details, if necessary.
+    </p>
+    <h3 id="76fa24be614e460e9af82b2652c82c07">
+        Examples <a href="#76fa24be614e460e9af82b2652c82c07">#</a>
+    </h3>
+    <p>
+        In addition to the properties, I also ported the F# examples; that is, 'normal' unit tests. Here's one of them:
+    </p>
+    <p>
+        <pre><span style="color:#a31515;">&quot;One&nbsp;verified&nbsp;recommendation&quot;</span>&nbsp;~:&nbsp;<span style="color:blue;">do</span>
+&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;srvc&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;scrobble&nbsp;<span style="color:#a31515;">&quot;ana&quot;</span>&nbsp;(Song&nbsp;2&nbsp;True&nbsp;5)&nbsp;9_9990&nbsp;$
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;scrobble&nbsp;<span style="color:#a31515;">&quot;ana&quot;</span>&nbsp;(Song&nbsp;1&nbsp;False&nbsp;5)&nbsp;10&nbsp;$
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;scrobble&nbsp;<span style="color:#a31515;">&quot;cat&quot;</span>&nbsp;(Song&nbsp;1&nbsp;False&nbsp;6)&nbsp;10&nbsp;emptyService
+ 
+&nbsp;&nbsp;actual&nbsp;&lt;-&nbsp;getRecommendations&nbsp;srvc&nbsp;<span style="color:#a31515;">&quot;cat&quot;</span>
+ 
+&nbsp;&nbsp;[Song&nbsp;2&nbsp;True&nbsp;5]&nbsp;@=?&nbsp;actual</pre>
+    </p>
+    <p>
+        This one is straightforward, but as I already discussed when <a href="" hint="Characterising song recommendations">characterizing the original code</a>, some of the examples essentially document quirks in the implementation. Here's the relevant test, translated to Haskell:
+    </p>
+    <p>
+        <pre><span style="color:#a31515;">&quot;Only&nbsp;top-rated&nbsp;songs&quot;</span>&nbsp;~:&nbsp;<span style="color:blue;">do</span>
+&nbsp;&nbsp;<span style="color:green;">--&nbsp;Scale&nbsp;ratings&nbsp;to&nbsp;keep&nbsp;them&nbsp;less&nbsp;than&nbsp;or&nbsp;equal&nbsp;to&nbsp;10.
+</span>&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;srvc&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">foldr</span>&nbsp;(\i&nbsp;-&gt;&nbsp;scrobble&nbsp;<span style="color:#a31515;">&quot;hyle&quot;</span>&nbsp;(Song&nbsp;i&nbsp;True&nbsp;(<span style="color:blue;">toEnum</span>&nbsp;i&nbsp;`div`&nbsp;2))&nbsp;500)&nbsp;emptyService&nbsp;[1..20]
+ 
+&nbsp;&nbsp;actual&nbsp;&lt;-&nbsp;getRecommendations&nbsp;srvc&nbsp;<span style="color:#a31515;">&quot;hyle&quot;</span>
+ 
+&nbsp;&nbsp;assertBool&nbsp;<span style="color:#a31515;">&quot;Should&nbsp;not&nbsp;be&nbsp;empty&quot;</span>&nbsp;(<span style="color:blue;">not</span>&nbsp;$&nbsp;<span style="color:blue;">null</span>&nbsp;actual)
+&nbsp;&nbsp;<span style="color:green;">--&nbsp;Since&nbsp;there&#39;s&nbsp;only&nbsp;one&nbsp;user,&nbsp;but&nbsp;with&nbsp;20&nbsp;songs,&nbsp;the&nbsp;implementation
+</span>&nbsp;&nbsp;<span style="color:green;">--&nbsp;loops&nbsp;over&nbsp;the&nbsp;same&nbsp;songs&nbsp;20&nbsp;times,&nbsp;so&nbsp;400&nbsp;songs&nbsp;in&nbsp;total&nbsp;(with
+</span>&nbsp;&nbsp;<span style="color:green;">--&nbsp;duplicates).&nbsp;Ordering&nbsp;on&nbsp;rating,&nbsp;only&nbsp;the&nbsp;top-rated&nbsp;200&nbsp;remains,&nbsp;that
+</span>&nbsp;&nbsp;<span style="color:green;">--&nbsp;is,&nbsp;those&nbsp;rated&nbsp;5-10.&nbsp;Note&nbsp;that&nbsp;this&nbsp;is&nbsp;a&nbsp;Characterization&nbsp;Test,&nbsp;so&nbsp;not
+</span>&nbsp;&nbsp;<span style="color:green;">--&nbsp;necessarily&nbsp;reflective&nbsp;of&nbsp;how&nbsp;a&nbsp;real&nbsp;recommendation&nbsp;system&nbsp;should&nbsp;work.
+</span>&nbsp;&nbsp;assertBool&nbsp;<span style="color:#a31515;">&quot;Should&nbsp;have&nbsp;5+&nbsp;rating&quot;</span>&nbsp;(<span style="color:blue;">all</span>&nbsp;((&gt;=&nbsp;5)&nbsp;.&nbsp;songRating)&nbsp;actual)</pre>
+    </p>
+    <p>
+        This test creates twenty scrobbles for one user: One with a zero rating, two with rating <em>1</em>, two with rating <em>2</em>, and so on, up to a single song with rating <em>10</em>.
+    </p>
+    <p>
+        <a href="https://tyrrrz.me/blog/pure-impure-segregation-principle#interleaved-impurities">The implementation of GetRecommendationsAsync</a> uses these twenty songs to find 'other users' who have these top songs as well. In this case, there's only one user, so for every of those twenty songs, you get the same twenty songs, for a total of 400.
+    </p>
+    <p>
+        There are more unit tests than these. You can see them in the Git repository.
+    </p>
+    <h3 id="29a2c5558184424eaaba9db49dc30368">
+        Implementation <a href="#29a2c5558184424eaaba9db49dc30368">#</a>
+    </h3>
+    <p>
+        The most direct translation of the C# and F# 'reference implementation' that I could think of was this:
+    </p>
+    <p>
+        <pre>getRecommendations&nbsp;srvc&nbsp;un&nbsp;=&nbsp;<span style="color:blue;">do</span>
+&nbsp;&nbsp;<span style="color:green;">--&nbsp;1.&nbsp;Get&nbsp;user&#39;s&nbsp;own&nbsp;top&nbsp;scrobbles
+</span>&nbsp;&nbsp;<span style="color:green;">--&nbsp;2.&nbsp;Get&nbsp;other&nbsp;users&nbsp;who&nbsp;listened&nbsp;to&nbsp;the&nbsp;same&nbsp;songs
+</span>&nbsp;&nbsp;<span style="color:green;">--&nbsp;3.&nbsp;Get&nbsp;top&nbsp;scrobbles&nbsp;of&nbsp;those&nbsp;users
+</span>&nbsp;&nbsp;<span style="color:green;">--&nbsp;4.&nbsp;Aggregate&nbsp;the&nbsp;songs&nbsp;into&nbsp;recommendations
+</span>
+&nbsp;&nbsp;<span style="color:green;">--&nbsp;Impure
+</span>&nbsp;&nbsp;scrobbles&nbsp;&lt;-&nbsp;getTopScrobbles&nbsp;srvc&nbsp;un
+ 
+&nbsp;&nbsp;<span style="color:green;">--&nbsp;Pure
+</span>&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;scrobblesSnapshot&nbsp;=&nbsp;<span style="color:blue;">take</span>&nbsp;100&nbsp;$&nbsp;sortOn&nbsp;(Down&nbsp;.&nbsp;scrobbleCount)&nbsp;scrobbles
+ 
+&nbsp;&nbsp;recommendationCandidates&nbsp;&lt;-&nbsp;newIORef&nbsp;<span style="color:blue;">[]</span>
+&nbsp;&nbsp;forM_&nbsp;scrobblesSnapshot&nbsp;$&nbsp;\scrobble&nbsp;-&gt;&nbsp;<span style="color:blue;">do</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">--&nbsp;Impure
+</span>&nbsp;&nbsp;&nbsp;&nbsp;otherListeners&nbsp;&lt;-&nbsp;getTopListeners&nbsp;srvc&nbsp;$&nbsp;songId&nbsp;$&nbsp;scrobbledSong&nbsp;scrobble
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">--&nbsp;Pure
+</span>&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;otherListenersSnapshot&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">take</span>&nbsp;20&nbsp;$
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;sortOn&nbsp;(Down&nbsp;.&nbsp;userScrobbleCount)&nbsp;$
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">filter</span>&nbsp;((10_000&nbsp;&lt;=)&nbsp;.&nbsp;userScrobbleCount)&nbsp;otherListeners
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;forM_&nbsp;otherListenersSnapshot&nbsp;$&nbsp;\otherListener&nbsp;-&gt;&nbsp;<span style="color:blue;">do</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">--&nbsp;Impure
+</span>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;otherScrobbles&nbsp;&lt;-&nbsp;getTopScrobbles&nbsp;srvc&nbsp;$&nbsp;userName&nbsp;otherListener
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">--&nbsp;Pure
+</span>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;otherScrobblesSnapshot&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">take</span>&nbsp;10&nbsp;$
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;sortOn&nbsp;(Down&nbsp;.&nbsp;songRating&nbsp;.&nbsp;scrobbledSong)&nbsp;$
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">filter</span>&nbsp;(songHasVerifiedArtist&nbsp;.&nbsp;scrobbledSong)&nbsp;otherScrobbles
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;forM_&nbsp;otherScrobblesSnapshot&nbsp;$&nbsp;\otherScrobble&nbsp;-&gt;&nbsp;<span style="color:blue;">do</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;song&nbsp;=&nbsp;scrobbledSong&nbsp;otherScrobble
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;modifyIORef&nbsp;recommendationCandidates&nbsp;(song&nbsp;:)
+ 
+&nbsp;&nbsp;recommendations&nbsp;&lt;-&nbsp;readIORef&nbsp;recommendationCandidates
+&nbsp;&nbsp;<span style="color:green;">--&nbsp;Pure
+</span>&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;$&nbsp;<span style="color:blue;">take</span>&nbsp;200&nbsp;$&nbsp;sortOn&nbsp;(Down&nbsp;.&nbsp;songRating)&nbsp;recommendations</pre>
+    </p>
+    <p>
+        In order to mirror <a href="https://tyrrrz.me/blog/pure-impure-segregation-principle#interleaved-impurities">the original implementation</a> as closely as possible, I declare <code>recommendationCandidates</code> as an <a href="https://hackage.haskell.org/package/base/docs/Data-IORef.html">IORef</a> so that I can incrementally add to it as the action goes through its nested loops. Notice the <code>modifyIORef</code> towards the end of the code listing, which adds a single song to the list.
+    </p>
+    <p>
+        Once all the looping is done, the action uses <code>readIORef</code> to pull the <code>recommendations</code> out of the <code>IORef</code>.
+    </p>
+    <p>
+        As you can see, I also ported the comments from the original C# code.
+    </p>
+    <p>
+        I don't consider this idiomatic Haskell code, but the goal in this article was to mirror the C# code as closely as possible. Once I start refactoring, you'll see some more idiomatic implementations.
+    </p>
+    <h3 id="8192c1e94add4e56b95dad78d4eda818">
+        Conclusion <a href="#8192c1e94add4e56b95dad78d4eda818">#</a>
+    </h3>
+    <p>
+        Together with the previous two articles in this article series, this establishes a baseline from which I can refactor the code. While we might consider the original C# code idiomatic, this port to Haskell isn't. It is, on the other hand, similar enough to both its C# and F# peers that we can compare and contrast all three.
+    </p>
+    <p>
+        Particularly two design choices make this Haskell implementation less than idiomatic. One is the use of <code>IORef</code> to update a list of songs. The other is using a type class to model an external dependency.
+    </p>
+    <p>
+        As I cover various alternative architectures in this article series, you'll see how to get rid of both.
+    </p>
+    <p>
+        <strong>Next:</strong> Song recommendations as an Impureim Sandwich.
+    </p>
+</div>
