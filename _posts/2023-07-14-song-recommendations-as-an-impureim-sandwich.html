@@ -1,0 +1,202 @@
+---
+layout: post
+title: "Song recommendations as an Impureim Sandwich"
+description: "Does your data fit in RAM?"
+date: 2023-07-14 6:55 UTC
+tags: [Functional Programming, Architecture]
+image: "/content/binary/dr-evil-one-million.jpg"
+image_alt="Dr. Evil: One million."
+---
+{% include JB/setup %}
+
+<div id="post">
+    <p>
+        <em>{{ page.description }}</em>
+    </p>
+    <p>
+        This article is part of <a href="">a series on functional programming design alternatives</a>. In the previous article you saw how to add enough <a href="https://en.wikipedia.org/wiki/Characterization_test">Characterisation Tests</a> to capture the intended behaviour of the example song recommendations system originally presented by <a href="https://tyrrrz.me/">Oleksii Holub</a> in the article <a href="https://tyrrrz.me/blog/pure-impure-segregation-principle">Pure-Impure Segregation Principle</a>.
+    </p>
+    <h3 id="572693e6fb56455a958ca0d62aa13319">
+        Problem statement <a href="#572693e6fb56455a958ca0d62aa13319">#</a>
+    </h3>
+    <p>
+        After showing how one problem can be refactored to <a href="https://en.wikipedia.org/wiki/Pure_function">pure functions</a>, Oleksii Holub writes:
+    </p>
+    <blockquote>
+        <p>
+            "Although very useful, the type of "lossless" refactoring shown earlier only works if the data required by the function can be easily encapsulated within its input parameters. Unfortunately, this is not always the case.
+        </p>
+        <p>
+            "Often a function may need to dynamically resolve data from an external API or a database, with no way of knowing about it beforehand. This typically results in an implementation where pure and impure concerns are interleaved with each other, creating a tightly coupled cohesive structure."
+        </p>
+        <footer><cite>Oleksii Holub, <a href="https://tyrrrz.me/blog/pure-impure-segregation-principle">Pure-Impure Segregation Principle</a></cite></footer>
+    </blockquote>
+    <p>
+        The article then proceeds to present the <em>song recommendations</em> example. It's a single C# method that queries a data store or third-party service to recommend songs. I'm imagining that it queries a third-party web service that contains usages data for a system like <a href="https://en.wikipedia.org/wiki/Spotify">Spotify</a>.
+    </p>
+    <blockquote>
+        <p>
+            "The above algorithm works by retrieving the user's most listened songs, finding other people who have also listened to the same titles, and then extracting their top songs as well. Those songs are then aggregated into a list of recommendations and returned to the caller.
+        </p>
+        <p>
+            "It's quite clear that this function would benefit greatly from being pure, seeing how much business logic is encapsulated within it. Unfortunately, the technique we relied upon earlier won't work here.
+        </p>
+        <p>
+            "In order to fully isolate <code>GetRecommendationsAsync(...)</code> from its impure dependencies, we would have to somehow supply the function with an entire list of songs, users, and their scrobbles upfront. If we assume that we're dealing with data on millions of users, it's obvious that this would be completely impractical and likely even impossible."
+        </p>
+        <footer><cite>Oleksii Holub, <a href="https://tyrrrz.me/blog/pure-impure-segregation-principle">Pure-Impure Segregation Principle</a></cite></footer>
+    </blockquote>
+    <p>
+        It does, indeed, sound impractical.
+    </p>
+    <h3 id="ca5fdd1711554b3eb1ae7d516c003959">
+        Data sizes <a href="#ca5fdd1711554b3eb1ae7d516c003959">#</a>
+    </h3>
+    <p>
+        Can you, however, trust your intuition? Research suggests that the human brain is ill-equipped to think about randomness and probabilities, and I've observed something similar when it comes to data sizes.
+    </p>
+    <p>
+        <img src="/content/binary/dr-evil-one-million.jpg" alt="Dr. Evil: One million.">
+    </p>
+    <p>
+        In the real world, a million of anything countable is an almost incomprehensible amount, so it's no wonder if our intuition fails us. <em>A million records</em> sounds like a lot, but if it's only a few integers, is it really that bad?
+    </p>
+    <p>
+        Many systems use 32-bit integers for various IDs. A million IDs, then, is 32 million bits, or approximately 4 MB. As I'm writing this, the smallest Azure instance (<em>Free F1</em>) has 1 GB of memory, and while the OS takes a big bite out of that, 4 MB is nothing.
+    </p>
+    <p>
+        The <em>song recommendations</em> problem implies larger memory pressure. It may not fit on every machine, but it's worth considering if, after all, it doesn't fit in RAM.
+    </p>
+    <h3 id="0579cae8c684409f8a43eaf2baa1d5b0">
+        My real-life experience with developing streaming services <a href="#0579cae8c684409f8a43eaf2baa1d5b0">#</a>
+    </h3>
+    <p>
+        It just so happens that I have professional experience developing REST APIs for a white-label audio streaming service. Back in the early 2010s I helped design and implement the company's online music catalogue, user system, and a few other services. The catalogue is particularly interesting in this regard, since it only changed nightly, and we were planning on relying on HTTP for caching.
+    </p>
+    <p>
+        I vividly recall a meeting we had with the IT operations specialist responsible for the new catalogue service. We explained that we'd set HTTP cache timeouts to 6 hours, and asked if he'd be able to set up a <a href="https://en.wikipedia.org/wiki/Reverse_proxy">reverse proxy</a> so that we didn't have to implement caching in our code base.
+    </p>
+    <p>
+        He asked how much cache space we needed.
+    </p>
+    <p>
+        We knew the size of a typical HTTP response, and the number of tracks, artists, and albums in the system, so after a back-of-the-envelope calculation, we told him: 18 GB.
+    </p>
+    <p>
+        He just shrugged and said <em>"OK"</em>.
+    </p>
+    <p>
+        In 2012 I though that 18 GB was a fair amount of data (I actually still think that). Even so, the operations team had plenty of servers with that capacity.
+    </p>
+    <p>
+        Later, I did more work for that company, but most of it is less relevant to the <em>song recommendations</em> example. What does turn out to be relevant to the topic is something I learned the first few days of my engagement.
+    </p>
+    <p>
+        Early on, before I was involved, the company needed a recommendation system, but hadn't been able to find any off-the-shelf component. This was in the early 2000s and before <a href="https://en.wikipedia.org/wiki/Apache_Solr">Solr</a>, but after <a href="https://en.wikipedia.org/wiki/Apache_Lucene">Lucene</a>. I'm not aware of all the forces that affected my then future client, but in the end, they decided to write their own search and recommendations engine.
+    </p>
+    <p>
+        Essentially, during the night a beefy server would read all relevant data from the database, crunch it, create data structures, and keep all data in memory. Like the reverse proxy, it required a server with more RAM than a normal <a href="https://en.wikipedia.org/wiki/Pizza_box_form_factor">pizza box</a>, but not prohibitively so.
+    </p>
+    <h3 id="8fa70bcec92b4b8681af7ca819e82a22">
+        Costs <a href="#8fa70bcec92b4b8681af7ca819e82a22">#</a>
+    </h3>
+    <p>
+        Consider the cost of hardware, compared to developer time. A few specialised servers may set your organisation back a few thousand of dollars/pounds/euros. That's an amount you can easily burn through in salary if the code is too complicated, or has too many bugs.
+    </p>
+    <p>
+        You may argue that if you already have programmers on staff, they don't cost extra, but a too-complicated code base is still going to slow them down. Thus, the wrong software design could incur an <a href="https://en.wikipedia.org/wiki/Opportunity_cost">opportunity cost</a> greater than the cost of a server.
+    </p>
+    <p>
+        One of many reasons I'm interested in functional programming (FP) is its potential to make code bases simpler. The <a href="/2020/03/02/impureim-sandwich">Impureim Sandwich</a> is a wonderfully simple design, so it's worth pursuing; not only for some FP ideal, but because of its simplifying potential.
+    </p>
+    <p>
+        Intuition may tell us that the <em>song recommendations</em> scenario is prohibitively big, and therefore, an Impureim Sandwich is out of the question. As this overall article series explores, it's not the only alternative, but given its advantages, its worth giving it a second chance.
+    </p>
+    <h3 id="ac5d135ca06a472e88971ad6a8960aac">
+        Analysis <a href="#ac5d135ca06a472e88971ad6a8960aac">#</a>
+    </h3>
+    <p>
+        The <code>GetRecommendationsAsync</code> method from <a href="https://tyrrrz.me/blog/pure-impure-segregation-principle#interleaved-impurities">the example</a> makes a lot of external calls, with its nested loops. The method uses the first call to <code>GetTopScrobblesAsync</code> to produce the <code>scrobblesSnapshot</code> variable, which is capped at 100 objects. If we assume that this method call returns at least 100 objects, the outer <code>foreach</code> loop will make 100 calls to <code>GetTopListenersAsync</code>.
+    </p>
+    <p>
+        If we again assume that each of these return enough data, the inner <code>foreach</code> loop will make 20 calls to <code>GetTopScrobblesAsync</code>, for each object in the outer loop. That's 2,000 external calls, plus the 100 calls in the outer loop, plus the initial call to <code>GetTopScrobblesAsync</code>, for a total of 2,101.
+    </p>
+    <p>
+        When I first saw the example, I didn't know much about the overall context. I didn't know if these impure actions were database queries or web service calls, so I asked Oleksii Holub.
+    </p>
+    <p>
+        It turns out that it's all web service calls, and as I interpret the response, <code>GetRecommendationsAsync</code> is being invoked from a background maintenance process.
+    </p>
+    <blockquote>
+        <p>
+            "It takes around 10 min in total while maintaining it."
+        </p>
+        <footer><cite><a href="https://twitter.com/Tyrrrz/status/1493369905869213700">Oleksii Holub</a></cite></footer>
+    </blockquote>
+    <p>
+        That's good to know, because if we're going to consider an Impureim Sandwich, it implies reading gigabytes of data in the first phase. That's going to take some time, but if this is a background process, we <em>do</em> have time.
+    </p>
+    <h3 id="2160fbaf60434edd9554ff585de5df2b">
+        Memory estimates <a href="#2160fbaf60434edd9554ff585de5df2b">#</a>
+    </h3>
+    <p>
+        One thing is to load an entire song catalogue into memory. That's what required 18 GB in 2012. Another thing is to load all scrobbles; i.e. statistics about plays. Fortunately, in order to produce song recommendations, we only need IDs. Consider again the data structures from the <a href="">previous article</a>:
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">sealed</span>&nbsp;<span style="color:blue;">record</span>&nbsp;<span style="color:#2b91af;">Song</span>(<span style="color:blue;">int</span>&nbsp;Id,&nbsp;<span style="color:blue;">bool</span>&nbsp;IsVerifiedArtist,&nbsp;<span style="color:blue;">byte</span>&nbsp;Rating);
+
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">sealed</span>&nbsp;<span style="color:blue;">record</span>&nbsp;<span style="color:#2b91af;">Scrobble</span>(Song&nbsp;Song,&nbsp;<span style="color:blue;">int</span>&nbsp;ScrobbleCount);
+
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">sealed</span>&nbsp;<span style="color:blue;">record</span>&nbsp;<span style="color:#2b91af;">User</span>(<span style="color:blue;">string</span>&nbsp;UserName,&nbsp;<span style="color:blue;">int</span>&nbsp;TotalScrobbleCount);</pre>
+    </p>
+    <p>
+        Apart from the <code>UserName</code> all values are small predictable values: <code>int</code>, <code>byte</code>, and <code>bool</code>, and while a <code>string</code> may be arbitrarily long, we can make a guess at the average size of a user name. In the <a href="">previous article</a>, I assumed that the user name would be an alphanumeric string between one and twenty characters.
+    </p>
+    <p>
+        How many songs might a system contain? Some numbers thrown around for a system like Spotify suggest a number on the order of 100 million. With an <code>int</code>, a <code>bool</code>, and a <code>byte</code>, we can estimate that a song requires 6 bytes, plus some overhead. Let's guess 8 bytes. A 100 million songs would then require 800 million bytes, or around 800 MB. That eliminates the smallest cloud instances, but is in itself easily within reach for all modern computers. Your phone has more memory than that.
+    </p>
+    <p>
+        How about scrobbles? While I don't use Spotify, <a href="https://www.last.fm/user/ploeh">I do scrobble plays to Last.fm</a>. At the moment I have around 114,000 scrobbles, and while I don't listen to music as much as I used to when I was younger, I have, on the other hand, been at it for a long time: since 2007. If we assume that each user has 200,000 scrobbles, and a scrobble requires 8 bytes, that's 1,600,000 bytes, or 1.6 MB. Practically nothing.
+    </p>
+    <p>
+        The size of a <code>User</code> object depends on how long the user name is, but will probably, on average, be less than 32 bytes. Compared to the user's scrobbles, we can ignore the memory pressure of the user object itself.
+    </p>
+    <p>
+        As the number of users grow, it will dominate the memory requirements for the catalogue. How many users should we assume?
+    </p>
+    <p>
+        A million is probably too few, but for a frame of reference, that would require 1,6 TB. This is where is starts to sound unfeasible to keep all data in RAM. Even though servers with that much RAM exist, they're so expensive (still) that the above cost consideration no longer applies.
+    </p>
+    <p>
+        Still, there are some naive assumptions above. Instead of storing each scrobble in a separate <code>Scrobble</code> object, you could store repeated plays as a single object with the appropriate <code>ScrobbleCount</code> value. If you've listened to the same song 50 times, it doesn't require 400 bytes of storage, but only 8 bytes. That is, after all, orders of magnitude less.
+    </p>
+    <p>
+        In the end, back-of-the-envelope calculations are fine, but measurements are better. It might be worthwhile to develop a proof of concept and measure how much memory it requires.
+    </p>
+    <p>
+        In three articles, I'll explore how a <em>song recommendations</em> Impureim Sandwich looks in various constellations:
+    </p>
+    <ul>
+        <li>Song recommendations as a C# Impureim Sandwich</li>
+        <li>Song recommendations as an F# Impureim Sandwich</li>
+        <li>Song recommendations as a Haskell Impureim Sandwich</li>
+    </ul>
+    <p>
+        In the end, it may turn out that for this particular system, an Impureim Sandwich truly is unfeasible. Keep in mind, though, that the purpose of this article series demonstrates alternative designs. The <em>song recommendations</em> problem is just a placeholder example. Perhaps you have another system where, intuitively, an Impureim Sandwich sounds impossible, but once you run the numbers, it might actually be not only possible, but desirable.
+    </p>
+    <h3 id="d38416a3535743159ba26abb4a78948b">
+        Conclusion <a href="#d38416a3535743159ba26abb4a78948b">#</a>
+    </h3>
+    <p>
+        Modern computers have so vast storage capacities that intuition often fails us. We may think that billions of data points sounds like something that can't possibly fit in RAM. When you run the numbers, however, it may turn out that the required data fits on a normal server.
+    </p>
+    <p>
+        If so, an Impureim Sandwich may still be an option. Load data into memory, pass it as argument to a pure function, and handle the return value.
+    </p>
+    <p>
+        The <em>song recommendations</em> scenario is interesting because an Impureim Sandwich seems to be pushing the envelope. It probably <em>is</em> impractical, but still worth a proof of concept. On the other hand, if it's impractical, it's worthwhile to also explore alternatives. Later articles will do that, but first, if you're interested, the next articles look at the proofs of concept in three languages.
+    </p>
+    <p>
+        <strong>Next:</strong> Song recommendations as a C# Impureim Sandwich.
+    </p>
+</div>
