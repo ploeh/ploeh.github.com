@@ -1,0 +1,330 @@
+---
+layout: post
+title: "Song recommendations as a C# Impureim Sandwich"
+description: "A refactoring example."
+date: 2023-07-20 7:25 UTC
+tags: [Functional Programming]
+---
+{% include JB/setup %}
+
+<div id="post">
+    <p>
+        <em>{{ page.description }}</em>
+    </p>
+    <p>
+        This is an article in a <a href="">larger series about functional programming design alternatives</a>. I'm assuming that you've read the previous articles, but briefly told, I'm considering an example presented by <a href="https://tyrrrz.me/">Oleksii Holub</a> in the article <a href="https://tyrrrz.me/blog/pure-impure-segregation-principle">Pure-Impure Segregation Principle</a>. The example gathers song recommendations for a user in <a href="https://twitter.com/Tyrrrz/status/1493369905869213700">a long-running process</a>.
+    </p>
+    <p>
+        In <a href="">the previous article</a> I argued that while the memory requirements for this problem seem so vast that an <a href="/2020/03/02/impureim-sandwich">Impureim Sandwich</a> seems out of the question, it's nonetheless worthwhile to at least try it out. The refactoring isn't that difficult, and it turns out that it does simplify the code.
+    </p>
+    <h3 id="1fa2f097e260439fbc0bafb67a35a394">
+        Enumeration API <a href="#1fa2f097e260439fbc0bafb67a35a394">#</a>
+    </h3>
+    <p>
+        The data access API is a web service:
+    </p>
+    <blockquote>
+        <p>
+            "I don't own the database, those are requests to an external API service (think Spotify API) that provides the data."
+        </p>
+        <footer><cite><a href="https://twitter.com/Tyrrrz/status/1495465374179119105">Oleksii Holub</a></cite></footer>
+    </blockquote>
+    <p>
+        In order to read all data, we'll have to assume that there's a way to enumerate all songs and all users. With that assumption, I add the <code>GetAllSongs</code> and <code>GetAllUsers</code> methods to the <code>SongService</code> interface:
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">interface</span>&nbsp;<span style="color:#2b91af;">SongService</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;Task&lt;IEnumerable&lt;Song&gt;&gt;&nbsp;GetAllSongs();
+&nbsp;&nbsp;&nbsp;&nbsp;Task&lt;IEnumerable&lt;User&gt;&gt;&nbsp;GetAllUsers();
+&nbsp;&nbsp;&nbsp;&nbsp;Task&lt;IReadOnlyCollection&lt;User&gt;&gt;&nbsp;GetTopListenersAsync(<span style="color:blue;">int</span>&nbsp;songId);
+&nbsp;&nbsp;&nbsp;&nbsp;Task&lt;IReadOnlyCollection&lt;Scrobble&gt;&gt;&nbsp;GetTopScrobblesAsync(<span style="color:blue;">string</span>&nbsp;userName);
+}</pre>
+    </p>
+    <p>
+        It is, of course, a crucial assumption, and it's possible that no such API exists. On the other hand, a REST API could expose such functionality as a paged feed. Leafing through potentially hundreds (or thousands) such pages is bound to take some time, so it's good to know that this is a background process. As I briefly mentioned in <a href="">the previous article</a>, we could imagine that we have a dedicated indexing server for this kind purpose. While we may rightly expect the initial data load to take some time (hours, even), once it's in memory, we should be able to reuse it to calculate song recommendations for all users, instead of just one user.
+    </p>
+    <p>
+        In the previous article I estimated that it should be possible to keep all songs in memory with less than a gigabyte. Users, without scrobbles, also take up surprisingly little space, to the degree that a million users fit in a few dozen megabytes. Even if, eventually, we may be concerned about memory, we don't have to be concerned about this part.
+    </p>
+    <p>
+        In any case, the addition of these two new methods doesn't break the existing example code, although I did have to implement the method in the <code>FakeSongService</code> class that I introduced in the article <a href="">Characterising song recommendations</a>:
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;Task&lt;IEnumerable&lt;Song&gt;&gt;&nbsp;GetAllSongs()
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;Task.FromResult&lt;IEnumerable&lt;Song&gt;&gt;(songs.Values);
+}
+ 
+<span style="color:blue;">public</span>&nbsp;Task&lt;IEnumerable&lt;User&gt;&gt;&nbsp;GetAllUsers()
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;Task.FromResult(users.Select(kvp&nbsp;=&gt;&nbsp;<span style="color:blue;">new</span>&nbsp;User(kvp.Key,&nbsp;kvp.Value.Values.Sum())));
+}</pre>
+    </p>
+    <p>
+        With those additions, we can load all data as the first layer (<em>phase</em>, really) of the sandwich.
+    </p>
+    <h3 id="9e69e4d3be8f4562b0cf9369610f6ebb">
+        Front-loading the data <a href="#9e69e4d3be8f4562b0cf9369610f6ebb">#</a>
+    </h3>
+    <p>
+        Loading all the data is the responsibility of this <code>DataCollector</code> module:
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">DataCollector</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:blue;">async</span>&nbsp;Task&lt;IReadOnlyDictionary&lt;<span style="color:blue;">int</span>,&nbsp;IReadOnlyCollection&lt;User&gt;&gt;&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;CollectAllTopListeners(<span style="color:blue;">this</span>&nbsp;SongService&nbsp;songService)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;dict&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;Dictionary&lt;<span style="color:blue;">int</span>,&nbsp;IReadOnlyCollection&lt;User&gt;&gt;();
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">foreach</span>&nbsp;(var&nbsp;song&nbsp;<span style="color:blue;">in</span>&nbsp;<span style="color:blue;">await</span>&nbsp;songService.GetAllSongs())
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;topListeners&nbsp;=&nbsp;<span style="color:blue;">await</span>&nbsp;songService.GetTopListenersAsync(song.Id);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;dict.Add(song.Id,&nbsp;topListeners);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;dict;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:blue;">async</span>&nbsp;Task&lt;IReadOnlyDictionary&lt;<span style="color:blue;">string</span>,&nbsp;IReadOnlyCollection&lt;Scrobble&gt;&gt;&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;CollectAllTopScrobbles(<span style="color:blue;">this</span>&nbsp;SongService&nbsp;songService)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;dict&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;Dictionary&lt;<span style="color:blue;">string</span>,&nbsp;IReadOnlyCollection&lt;Scrobble&gt;&gt;();
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">foreach</span>&nbsp;(var&nbsp;user&nbsp;<span style="color:blue;">in</span>&nbsp;<span style="color:blue;">await</span>&nbsp;songService.GetAllUsers())
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;topScrobbles&nbsp;=&nbsp;<span style="color:blue;">await</span>&nbsp;songService.GetTopScrobblesAsync(user.UserName);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;dict.Add(user.UserName,&nbsp;topScrobbles);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;dict;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+}</pre>
+    </p>
+    <p>
+        These two methods work with any <code>SongService</code> implementation, so while the code base will work with <code>FakeSongService</code>, real 'production code' might as well use an HTTP-based implementation that pages through the implied web API.
+    </p>
+    <p>
+        The dictionaries returned by the methods are likely to be huge. That's a major point of this exercise. Once the change is implemented and <a href="https://en.wikipedia.org/wiki/Characterization_test">Characterisation Tests</a> show that it still works, it makes sense to generate data to get a sense of the memory footprint.
+    </p>
+    <h3 id="cad69cb800a146e9ac2556c7deaac655">
+        Table-driven methods <a href="#cad69cb800a146e9ac2556c7deaac655">#</a>
+    </h3>
+    <p>
+        Perhaps you wonder why the above <code>CollectAllTopListeners</code> and <code>CollectAllTopScrobbles</code> methods return dictionaries of exactly that shape.
+    </p>
+    <p>
+        <a href="http://amzn.to/1dLYr0r">Code Complete</a> describes a programming technique called <em>table-driven methods</em>. The idea is to replace branching instructions such as <code>if</code>, <code>else</code>, and <code>switch</code> with a lookup table. The overall point, however, is that you can replace function calls with table lookups.
+    </p>
+    <p>
+        Consider the <code>GetTopListenersAsync</code> method. It takes an <code>int</code> as input, and returns a <code>Task&lt;IReadOnlyCollection&lt;User&gt;&gt;
+        </code> as output. If you ignore the <code>Task</code>, that's an <code>IReadOnlyCollection&lt;User&gt;</code>. In other words, you can exchange an <code>int</code> for an <code>IReadOnlyCollection&lt;User&gt;</code>.
+    </p>
+    <p>
+        If you have an <code>IReadOnlyDictionary&lt;<span style="color:blue;">int</span>,&nbsp;IReadOnlyCollection&lt;User&gt;&gt;</code> you can <em>also</em> exchange an <code>int</code> for an <code>IReadOnlyCollection&lt;User&gt;</code>. These two APIs are functionally equivalent - although, of course, they have very different memory and run-time profiles.
+    </p>
+    <p>
+        The same goes for the <code>GetTopScrobblesAsync</code> method: It takes a <code>string</code> as input and returns an <code>IReadOnlyCollection&lt;Scrobble&gt;</code> as output (if you ignore the <code>Task</code>). An <code>IReadOnlyDictionary&lt;<span style="color:blue;">string</span>,&nbsp;IReadOnlyCollection&lt;Scrobble&gt;&gt;</code> is equivalent.
+    </p>
+    <p>
+        To make it practical, it turns out that we also need a little helper method to deal with the case where the dictionary has no entry for a given key:
+    </p>
+    <p>
+        <pre><span style="color:blue;">internal</span>&nbsp;<span style="color:blue;">static</span>&nbsp;IReadOnlyCollection&lt;T&gt;&nbsp;GetOrEmpty&lt;<span style="color:#2b91af;">T</span>,&nbsp;<span style="color:#2b91af;">TKey</span>&gt;(
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>&nbsp;IReadOnlyDictionary&lt;TKey,&nbsp;IReadOnlyCollection&lt;T&gt;&gt;&nbsp;dict,
+&nbsp;&nbsp;&nbsp;&nbsp;TKey&nbsp;key)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;(dict.TryGetValue(key,&nbsp;<span style="color:blue;">out</span>&nbsp;var&nbsp;result))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;result;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;Array.Empty&lt;T&gt;();
+}</pre>
+    </p>
+    <p>
+        If there's no entry for a key, this function instead returns an empty array.
+    </p>
+    <p>
+        That should make it as easy as possible to replace calls to <code>GetTopListenersAsync</code> and <code>GetTopScrobblesAsync</code> with dictionary lookups.
+    </p>
+    <h3 id="43b6cc924db64320a41f0a4093c65e29">
+        Adding method parameters <a href="#43b6cc924db64320a41f0a4093c65e29">#</a>
+    </h3>
+    <p>
+        When refactoring, it's a good idea to proceed in small, controlled steps. You can see each of my <a href="https://www.industriallogic.com/blog/whats-this-about-micro-commits/">micro-commits</a> in the Git repository. Here, I'll give an overview.
+    </p>
+    <p>
+        First, I added two dictionaries as parameters to the <code>GetRecommendationsAsync</code> method. You may recall that the method used to look like this:
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">async</span>&nbsp;Task&lt;IReadOnlyList&lt;Song&gt;&gt;&nbsp;GetRecommendationsAsync(<span style="color:blue;">string</span>&nbsp;userName)</pre>
+    </p>
+    <p>
+        After I added the two dictionaries, it looks like this:
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">async</span>&nbsp;Task&lt;IReadOnlyList&lt;Song&gt;&gt;&nbsp;GetRecommendationsAsync(
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">string</span>&nbsp;userName,
+&nbsp;&nbsp;&nbsp;&nbsp;IReadOnlyDictionary&lt;<span style="color:blue;">string</span>,&nbsp;IReadOnlyCollection&lt;Scrobble&gt;&gt;&nbsp;topScrobbles,
+&nbsp;&nbsp;&nbsp;&nbsp;IReadOnlyDictionary&lt;<span style="color:blue;">int</span>,&nbsp;IReadOnlyCollection&lt;User&gt;&gt;&nbsp;topListeners)</pre>
+    </p>
+    <p>
+        At this point, the <code>GetRecommendationsAsync</code> method uses neither the <code>topScrobbles</code> nor the <code>topListeners</code> parameter. Still, I consider this a <a href="https://stackoverflow.blog/2022/12/19/use-git-tactically/">distinct checkpoint that I commit to Git</a>. As I've outlined in my book <a href="/2021/06/14/new-book-code-that-fits-in-your-head">Code That Fits in Your Head</a>, it's safest to either refactor production code while keeping test code untouched, or refactor test code without editing the production code. An API change like the current is an example of a situation where that separation is impossible. This is the reason I want to keep it small and isolated. While the change does touch both production code and test code, I'm not editing the behaviour of the System Under Test.
+    </p>
+    <p>
+        Tests now look like this:
+    </p>
+    <p>
+        <pre>[&lt;Property&gt;]
+<span style="color:blue;">let</span>&nbsp;``No&nbsp;data``&nbsp;()&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;Gen.userName&nbsp;|&gt;&nbsp;Arb.fromGen&nbsp;|&gt;&nbsp;Prop.forAll&nbsp;&lt;|&nbsp;<span style="color:blue;">fun</span>&nbsp;userName&nbsp;<span style="color:blue;">-&gt;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;task&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;srvc&nbsp;=&nbsp;FakeSongService&nbsp;()
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;sut&nbsp;=&nbsp;RecommendationsProvider&nbsp;srvc
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;topScrobbles&nbsp;=&nbsp;DataCollector.CollectAllTopScrobbles&nbsp;srvc
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;topListeners&nbsp;=&nbsp;DataCollector.CollectAllTopListeners&nbsp;srvc
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;actual&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;sut.GetRecommendationsAsync&nbsp;(userName,&nbsp;topScrobbles,&nbsp;topListeners)
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Assert.Empty&nbsp;actual&nbsp;}&nbsp;:&gt;&nbsp;Task</pre>
+    </p>
+    <p>
+        The test now uses the <code>DataCollector</code> to front-load data into dictionaries that it then passes to <code>GetRecommendationsAsync</code>. Keep in mind that <code>GetRecommendationsAsync</code> doesn't yet use that data, but it's available to it once I make a change to that effect.
+    </p>
+    <p>
+        You may wish to compare this version of the <code>No data</code> test with the previous version shown in the article <a href="">Characterising song recommendations</a>.
+    </p>
+    <h3 id="02c3e9706d044528ad1d5acec6865385">
+        Refactoring to function <a href="#02c3e9706d044528ad1d5acec6865385">#</a>
+    </h3>
+    <p>
+        The code is now ready for refactoring <a href="/2017/01/27/from-dependency-injection-to-dependency-rejection">from dependency injection to dependency rejection</a>. It's even possible to do it one method call at a time, because the data in the <code>FakeSongService</code> is the same as the data in the two dictionaries. It's just two different representations of the same data.
+    </p>
+    <p>
+        Since, as described above, the dictionaries are equivalent to the <code>SongService</code> queries, each is easily replaced with the other. The first impure action in <code>GetRecommendationsAsync</code>, for example, is this one:
+    </p>
+    <p>
+        <pre><span style="color:blue;">var</span>&nbsp;scrobbles&nbsp;=&nbsp;<span style="color:blue;">await</span>&nbsp;_songService.GetTopScrobblesAsync(userName);</pre>
+    </p>
+    <p>
+        The equivalent dictionary lookup enables us to change that line of code to this:
+    </p>
+    <p>
+        <pre><span style="color:blue;">var</span>&nbsp;scrobbles&nbsp;=&nbsp;topScrobbles.GetOrEmpty(userName);</pre>
+    </p>
+    <p>
+        Notice that the dictionary lookup is a <a href="https://en.wikipedia.org/wiki/Pure_function">pure function</a> that the method need not <code>await</code>.
+    </p>
+    <p>
+        Even though the rest of <code>GetRecommendationsAsync</code> still queries the injected <code>SongService</code>, all tests pass, and I can commit this small, isolated change to Git.
+    </p>
+    <p>
+        Proceeding in a similar fashion enables us to eliminate the <code>SongService</code> queries one by one. There are only three method calls, so this can be done in three controlled steps. Once the last impure query has been replaced, the C# compiler complains about the <code>async</code> keyword in the declaration of the <code>GetRecommendationsAsync</code> method.
+    </p>
+    <p>
+        Not only is the <code>async</code> keyword no longer required, the method is no longer asynchronous. There's no reason to return a <code>Task</code>, and the <code>Async</code> method name suffix is also misleading.
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;IReadOnlyList&lt;Song&gt;&nbsp;GetRecommendations(
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">string</span>&nbsp;userName,
+&nbsp;&nbsp;&nbsp;&nbsp;IReadOnlyDictionary&lt;<span style="color:blue;">string</span>,&nbsp;IReadOnlyCollection&lt;Scrobble&gt;&gt;&nbsp;topScrobbles,
+&nbsp;&nbsp;&nbsp;&nbsp;IReadOnlyDictionary&lt;<span style="color:blue;">int</span>,&nbsp;IReadOnlyCollection&lt;User&gt;&gt;&nbsp;topListeners)</pre>
+    </p>
+    <p>
+        The <code>GetRecommendations</code> method no longer uses the injected <code>SongService</code>, and since it's is the only method of the <code>RecommendationsProvider</code> class, we can now (r)eject the dependency.
+    </p>
+    <p>
+        This furthermore means that the class no longer has any class fields; we might as well make it (and the <code>GetRecommendations</code> function) <code>static</code>. Here's the final function in its entirety:
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;IReadOnlyList&lt;Song&gt;&nbsp;GetRecommendations(
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">string</span>&nbsp;userName,
+&nbsp;&nbsp;&nbsp;&nbsp;IReadOnlyDictionary&lt;<span style="color:blue;">string</span>,&nbsp;IReadOnlyCollection&lt;Scrobble&gt;&gt;&nbsp;topScrobbles,
+&nbsp;&nbsp;&nbsp;&nbsp;IReadOnlyDictionary&lt;<span style="color:blue;">int</span>,&nbsp;IReadOnlyCollection&lt;User&gt;&gt;&nbsp;topListeners)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;1.&nbsp;Get&nbsp;user&#39;s&nbsp;own&nbsp;top&nbsp;scrobbles</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;2.&nbsp;Get&nbsp;other&nbsp;users&nbsp;who&nbsp;listened&nbsp;to&nbsp;the&nbsp;same&nbsp;songs</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;3.&nbsp;Get&nbsp;top&nbsp;scrobbles&nbsp;of&nbsp;those&nbsp;users</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;4.&nbsp;Aggregate&nbsp;the&nbsp;songs&nbsp;into&nbsp;recommendations</span>
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;scrobbles&nbsp;=&nbsp;topScrobbles.GetOrEmpty(userName);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;scrobblesSnapshot&nbsp;=&nbsp;scrobbles
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.OrderByDescending(s&nbsp;=&gt;&nbsp;s.ScrobbleCount)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.Take(100)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.ToArray();
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;recommendationCandidates&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;List&lt;Song&gt;();
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">foreach</span>&nbsp;(var&nbsp;scrobble&nbsp;<span style="color:blue;">in</span>&nbsp;scrobblesSnapshot)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;otherListeners&nbsp;=&nbsp;topListeners.GetOrEmpty(scrobble.Song.Id);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;otherListenersSnapshot&nbsp;=&nbsp;otherListeners
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.Where(u&nbsp;=&gt;&nbsp;u.TotalScrobbleCount&nbsp;&gt;=&nbsp;10_000)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.OrderByDescending(u&nbsp;=&gt;&nbsp;u.TotalScrobbleCount)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.Take(20)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.ToArray();
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">foreach</span>&nbsp;(var&nbsp;otherListener&nbsp;<span style="color:blue;">in</span>&nbsp;otherListenersSnapshot)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;otherScrobbles&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;topScrobbles.GetOrEmpty(otherListener.UserName);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;otherScrobblesSnapshot&nbsp;=&nbsp;otherScrobbles
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.Where(s&nbsp;=&gt;&nbsp;s.Song.IsVerifiedArtist)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.OrderByDescending(s&nbsp;=&gt;&nbsp;s.Song.Rating)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.Take(10)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.ToArray();
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;recommendationCandidates.AddRange(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;otherScrobblesSnapshot.Select(s&nbsp;=&gt;&nbsp;s.Song)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;recommendations&nbsp;=&nbsp;recommendationCandidates
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.OrderByDescending(s&nbsp;=&gt;&nbsp;s.Rating)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.Take(200)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.ToArray();
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;recommendations;
+}</pre>
+    </p>
+    <p>
+        The overall structure is similar to <a href="https://tyrrrz.me/blog/pure-impure-segregation-principle">the original version</a>. Now that the code is simpler (because there's no longer any asynchrony) you could keep refactoring. With this C# code example, I'm going to stop here, but when I port it to <a href="https://fsharp.org/">F#</a> I'm going to refactor more aggressively.
+    </p>
+    <h3 id="b421654127ca4580995e008d4c01e3ab">
+        Sandwich <a href="#b421654127ca4580995e008d4c01e3ab">#</a>
+    </h3>
+    <p>
+        One point of the whole exercise is to demonstrate how to refactor to an Impureim Sandwich. The <code>GetRecommendations</code> method shown above constitutes the pure filling of the sandwich, but what does the entire sandwich look like?
+    </p>
+    <p>
+        In this code base, the sandwiches only exist as unit tests, the simplest of which is still the <code>No data</code> test:
+    </p>
+    <p>
+        <pre>[&lt;Property&gt;]
+<span style="color:blue;">let</span>&nbsp;``No&nbsp;data``&nbsp;()&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;Gen.userName&nbsp;|&gt;&nbsp;Arb.fromGen&nbsp;|&gt;&nbsp;Prop.forAll&nbsp;&lt;|&nbsp;<span style="color:blue;">fun</span>&nbsp;user&nbsp;<span style="color:blue;">-&gt;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;task&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;srvc&nbsp;=&nbsp;FakeSongService&nbsp;()
+ 
+<span style="background-color: lightsalmon;">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;topScrobbles&nbsp;=&nbsp;DataCollector.CollectAllTopScrobbles&nbsp;srvc
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;topListeners&nbsp;=&nbsp;DataCollector.CollectAllTopListeners&nbsp;srvc</span>
+<span style="background-color: palegreen;">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;actual&nbsp;=&nbsp;RecommendationsProvider.GetRecommendations&nbsp;(user,&nbsp;topScrobbles,&nbsp;topListeners)</span>
+ 
+<span style="background-color: lightsalmon;">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Assert.Empty&nbsp;actual</span>&nbsp;}&nbsp;:&gt;&nbsp;Task</pre>
+    </p>
+    <p>
+        In the above code snippet, I've coloured in the relevant part of the test. I admit that it's a stretch to colour the last line red, since <code>Assert.Empty</code> is, at least, deterministic. One could argue that since it throws an exception on failure, it's not strictly free of side effects, but that's really a weak argument. It would be easy to refactor <a href="/2022/11/07/applicative-assertions">assertions to pure functions</a>.
+    </p>
+    <p>
+        Instead, you may consider the bottom layer of the sandwich as a placeholder where something impure might happen. The background service that updates the song recommendations may, for example, save the result as a (CQRS-style) materialised view.
+    </p>
+    <p>
+        The above test snippet, then, is more of a sketch of how the Impureim Sandwich may look: First, front-load data using the <code>DataCollector</code> methods; second, call <code>GetRecommendations</code>; third, do something with the result.
+    </p>
+    <h3 id="26a74728792d494e814b8d86f2ad8531">
+        Conclusion <a href="#26a74728792d494e814b8d86f2ad8531">#</a>
+    </h3>
+    <p>
+        The changes demonstrated in this article serve two purposes. One is to show how to refactor an impure action to a pure function, pursuing the notion of an Impureim Sandwich. The second is to evaluate a proof-of-concept: If we do, indeed, front-load all of the data, is it realistic that all <a href="https://yourdatafitsinram.net/">data fits in RAM</a>?
+    </p>
+    <p>
+        We have yet to address that question, but since the present article is already substantial, I'll address that in a separate article.
+    </p>
+    <strong>Next:</strong> Song recommendations proof-of-concept memory measurements.
+</div>
