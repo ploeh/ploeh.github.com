@@ -1,0 +1,346 @@
+---
+layout: post
+title: "Song recommendations proof-of-concept memory measurements"
+description: "An attempt at measurement, and some results."
+date: 2023-07-23 14:02 UTC
+tags: [Miscellaneous]
+image: "/content/binary/song-recommendations-memory-costs.png"
+image_alt: "Song recommendations memory cost line chart."
+---
+{% include JB/setup %}
+
+<div id="post">
+    <p>
+        <em>{{ page.description }}</em>
+    </p>
+    <p>
+        This is an article in a <a href="">larger series about functional programming design alternatives</a>, and a direct continuation of the <a href="">previous article</a>. The question lingering after the <a href="/2020/03/02/impureim-sandwich">Impureim Sandwich</a> proof of concept is: What are the memory requirements of front-loading all users, songs, and scrobbles?
+    </p>
+    <p>
+        One can guess, as I've <a href="">already done</a>, but it's safer to measure. In this article, you'll find a description of the experiment, as well as some results.
+    </p>
+    <h3 id="6f88f7533af54936a2a923903171c831">
+        Test program <a href="#6f88f7533af54936a2a923903171c831">#</a>
+    </h3>
+    <p>
+        Since I don't measure application memory profiles that often, I searched the web to learn how, and found <a href="https://stackoverflow.com/a/28514434/126014">this answer</a> by <a href="https://stackoverflow.com/users/22656/jon-skeet">Jon Skeet</a>. That's a reputable source, so I'm assuming that the described approach is appropriate.
+    </p>
+    <p>
+        I added a new command-line executable to the source code and made this the entry point:
+    </p>
+    <p>
+        <pre><span style="color:blue;">const</span>&nbsp;<span style="color:blue;">int</span>&nbsp;size&nbsp;=&nbsp;100_000;
+ 
+<span style="color:blue;">static</span>&nbsp;<span style="color:blue;">async</span>&nbsp;Task&nbsp;Main()
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;before&nbsp;=&nbsp;GC.GetTotalMemory(<span style="color:blue;">true</span>);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;var&nbsp;(listeners,&nbsp;scrobbles)&nbsp;=&nbsp;<span style="color:blue;">await</span>&nbsp;Populate();
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;after&nbsp;=&nbsp;GC.GetTotalMemory(<span style="color:blue;">true</span>);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;diff&nbsp;=&nbsp;after&nbsp;-&nbsp;before;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;Console.WriteLine(<span style="color:#a31515;">&quot;Total&nbsp;memory:&nbsp;{0:N0}B.&quot;</span>,&nbsp;diff);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;GC.KeepAlive(listeners);
+&nbsp;&nbsp;&nbsp;&nbsp;GC.KeepAlive(scrobbles);
+}</pre>
+    </p>
+    <p>
+        <code>listeners</code> and <code>scrobbles</code> are two dictionaries of data, as described in the <a href="">previous article</a>. Together, they contain the data that we measure. Both are populated by this method:
+    </p>
+    <p>
+        <pre><span style="color:blue;">private</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:blue;">async</span>&nbsp;Task&lt;(
+&nbsp;&nbsp;&nbsp;&nbsp;IReadOnlyDictionary&lt;<span style="color:blue;">int</span>,&nbsp;IReadOnlyCollection&lt;User&gt;&gt;,
+&nbsp;&nbsp;&nbsp;&nbsp;IReadOnlyDictionary&lt;<span style="color:blue;">string</span>,&nbsp;IReadOnlyCollection&lt;Scrobble&gt;&gt;)&gt;&nbsp;Populate()
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;service&nbsp;=&nbsp;PopulateService();
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;listeners&nbsp;=&nbsp;<span style="color:blue;">await</span>&nbsp;service.CollectAllTopListeners();
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;scrobbles&nbsp;=&nbsp;<span style="color:blue;">await</span>&nbsp;service.CollectAllTopScrobbles();
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;(listeners,&nbsp;scrobbles);
+}</pre>
+    </p>
+    <p>
+        The <code>service</code> variable is a <code>FakeSongService</code> object populated with randomly generated data. The <code>CollectAllTopListeners</code> and <code>CollectAllTopScrobbles</code> methods are the same as described in the previous article. When the method returns the two dictionaries, the <code>service</code> object goes out of scope and can be garbage-collected. When the program measures the memory load, it measures the size of the two dictionaries, but not <code>service</code>.
+    </p>
+    <p>
+        I've reused the <a href="https://fscheck.github.io/FsCheck/">FsCheck</a> generators for random data generation:
+    </p>
+    <p>
+        <pre><span style="color:blue;">private</span>&nbsp;<span style="color:blue;">static</span>&nbsp;SongService&nbsp;PopulateService()
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;users&nbsp;=&nbsp;RecommendationsProviderTests.Gen.UserName.Sample(size);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;songs&nbsp;=&nbsp;RecommendationsProviderTests.Gen.Song.Sample(size);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;scrobbleGen&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">from</span>&nbsp;user&nbsp;<span style="color:blue;">in</span>&nbsp;Gen.Elements(users)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">from</span>&nbsp;song&nbsp;<span style="color:blue;">in</span>&nbsp;Gen.Elements(songs)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">from</span>&nbsp;scrobbleCount&nbsp;<span style="color:blue;">in</span>&nbsp;Gen.Choose(1,&nbsp;10)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">select</span>&nbsp;(user,&nbsp;song,&nbsp;scrobbleCount);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;service&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;FakeSongService();
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">foreach</span>&nbsp;(var&nbsp;(user,&nbsp;song,&nbsp;scrobbleCount)&nbsp;<span style="color:blue;">in</span>&nbsp;scrobbleGen.Sample(size))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;service.Scrobble(user,&nbsp;song,&nbsp;scrobbleCount);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;service;
+}</pre>
+    </p>
+    <p>
+        A <code>Gen&lt;T&gt;</code> object comes with a <code>Sample</code> method you can use to request a specified number of randomly generated values.
+    </p>
+    <p>
+        In order to keep the code simple, I used the <code>size</code> value for both the number of songs, number of users, and number of scrobbles. This probably creates too few scrobbles; a topic that requires further discussion later.
+    </p>
+    <h3 id="2759c45eda984c02871d99ff21d9936d">
+        Measurements <a href="#2759c45eda984c02871d99ff21d9936d">#</a>
+    </h3>
+    <p>
+        I ran the above program with various <code>size</code> values; <em>100,000</em> up to <em>1,000,000</em> in <em>100,000</em> increments, and from there up to <em>1,000,000</em> (one million) in <em>500,000</em> increments. At the higher values, it took a good ten minutes to run the program.
+    </p>
+    <p>
+        <img src="/content/binary/song-recommendations-memory-costs.png" alt="Song recommendations memory cost line chart.">
+    </p>
+    <p>
+        As the chart indicates, I ran the program with various data representations (more on that below). While there are four distinct data series, they overlap pairwise so perfectly that the graph doesn't show the difference. The <em>record</em> and <em>struct record</em> data series are so identical that you can't visibly see the difference. The same is true for the <em>bitmasked class</em> and the <em>bitmasked struct</em> data series, which only go to <code>size</code> <em>500,000</em>.
+    </p>
+    <p>
+        There are small, but noticeable jumps from <em>4,500,000</em> to <em>5,000,000</em> and again from <em>8,500,000</em> to <em>9,000,000</em>, but the overall impression is that the relationship is linear. It seems safe to conclude that the solution scales linearly with the data size.
+    </p>
+    <p>
+        The number of bytes per size is almost constant and averages to 178 bytes. How does that compare to <a href="">my previous memory size estimates</a>? There, I estimated a song and a scrobble to require 8 bytes each, and a user less than 32 bytes. The way the above simulation runs, it generates one song, one user, and one scrobble per size unit. Therefore, I'd expect the average memory cost per experiment size to be around <em>8 + 8 + 32 = 48</em>, plus some overhead from the dictionaries.
+    </p>
+    <p>
+        Given that the number I measure is 178, that's 130 bytes of overhead. Honestly, that's more than I expected. I expect a dictionary to maintain an array of keys, perhaps hashed with a bucket per hash value. Perhaps, had I picked another data structure than a plain old <a href="https://learn.microsoft.com/dotnet/api/system.collections.generic.dictionary-2">Dictionary</a>, it's possible that the overhead would be different. Or perhaps I just don't understand .NET's memory model, when push comes to shove.
+    </p>
+    <p>
+        I then tried to split the single <code>size</code> parameter into three that would control the number of users, songs, and scrobbles independently. Setting both the number of users and songs to ten million, I then ran a series of simulations with increasing scrobble counts.
+    </p>
+    <p>
+        <img src="/content/binary/song-recommendations-scrobble-memory-costs.png" alt="Scrobble memory cost line chart.">
+    </p>
+    <p>
+        The relationship still looks linear, and at a hundred million scrobbles (and ten million users and ten million songs), the simulation uses 8.3 GB of memory.
+    </p>
+    <p>
+        I admit that I'm still a bit puzzled by the measurements, compared to my previous estimates. I would have expected those sizes to require about 1,2 GB, plus overhead, so the actual measurements are off by a factor of 7. Not quite an order of magnitude, but close.
+    </p>
+    <h3 id="b1a0539a274f49ef937b15fc07090990">
+        Realism <a href="#b1a0539a274f49ef937b15fc07090990">#</a>
+    </h3>
+    <p>
+        How useful are these measurements? How realistic are the experiments' parameters? Most streaming audio services report having catalogues with around 100 million songs, which is ten times more than what I've measured here. Such services may also have significantly more users than ten million, but what is going to make or break this architecture option (keeping all data in memory) is how many scrobbles users have, and how many times they listen to each song.
+    </p>
+    <p>
+        Even if we naively still believe that a scrobble only takes up 8 bytes, it doesn't follow automatically that 100 scrobbles take up 800 bytes. It depends on how many repeats there are. Recall how we may model a scrobble:
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">sealed</span>&nbsp;<span style="color:blue;">record</span>&nbsp;<span style="color:#2b91af;">Scrobble</span>(Song&nbsp;<span style="font-weight:bold;color:#1f377f;">Song</span>,&nbsp;<span style="color:blue;">int</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">ScrobbleCount</span>);</pre>
+    </p>
+    <p>
+        If a user listens to the same song ten times, we don't have to create ten <code>Scrobble</code> objects; we can create one and set the <code>ScrobbleCount</code> to <code>10</code>.
+    </p>
+    <p>
+        The memory requirement to store users' scrobbles depend on the average listening pattern. Even with millions of users, we may be able to store scrobbles in memory if users listen to relatively few songs. On the other hand, if they only listen to each song once, it's probably not going to fit in memory.
+    </p>
+    <p>
+        Still, we're dangerously close to the edge of what we can fit in memory. Shouldn't I just declare bankruptcy on that idea and move on?
+    </p>
+    <p>
+        The purpose of this <a href="">overall article series</a> is to demonstrate <em>alternatives</em> to the <a href="/2020/03/02/impureim-sandwich">Impureim Sandwich</a> pattern, so I'm ultimately going to do exactly that: Move on.
+    </p>
+    <p>
+        But not yet.
+    </p>
+    <h3 id="a5fce68a31c7414386c451ea2fe219be">
+        Sharding <a href="#a5fce68a31c7414386c451ea2fe219be">#</a>
+    </h3>
+    <p>
+        Some applications are truly global in nature, and when that's the case, keeping everything in memory may not be 'web scale'.
+    </p>
+    <p>
+        Still, I've seen more than one international company treat geographic areas as separate entities. This may be for legal reasons, or other business concerns that are unrelated to technology constraints.
+    </p>
+    <p>
+        As a programmer, you may think that a song recommendations service ought to be truly global. After all, more data produces more accurate results, right?
+    </p>
+    <p>
+        Your business owners may not think so. They may be concerned that regional music tastes may 'bleed over' market boundaries, and that this could ultimately scare customers away.
+    </p>
+    <p>
+        Even if you can technically prove that this isn't a relevant concern, because you can write an algorithm that takes this into account, you may get a direct order that, say, Southeast Asian scrobbles may not be used in North America, or vice verse.
+    </p>
+    <p>
+        It's worth investigating whether such business or legal constraints are already in place, because if they are, this may mean that you can shard the data, and that each shard still fits in memory.
+    </p>
+    <p>
+        You may still think that I'm trying to salvage a bad idea, but that's not my agenda. I discuss these topics because in my experience, many programmers don't consider them. Understanding the wider context of a problem may suggest solution that you might otherwise dismiss.
+    </p>
+    <p>
+        But what if the business constraints change in the future? Shouldn't we be ready for that?
+    </p>
+    <p>
+        Yes and no. You should consider how such changes would impact the architecture. Then you discuss the advantages and disadvantages with other stakeholders.
+    </p>
+    <p>
+        Keep in mind that the reason to consider an Impureim Sandwich is because it's <em>simple</em> and easy to implement and maintain. Other alternatives may be more 'scalable', but also riskier to implement. You should involve other stakeholders in such decisions.
+    </p>
+    <h3 id="2dee0af02fbb4ac9b9176685ecb2cc3a">
+        Song representations <a href="#2dee0af02fbb4ac9b9176685ecb2cc3a">#</a>
+    </h3>
+    <p>
+        The first of the above charts draws graphs for four data series:
+    </p>
+    <ul>
+        <li>struct record</li>
+        <li>record</li>
+        <li>bitmasked struct</li>
+        <li>bitmasked class</li>
+    </ul>
+    <p>
+        These measure four different ways to model data; here more specifically a song.
+    </p>
+    <p>
+        My initial model of a song was a <code>record</code>:
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">sealed</span>&nbsp;<span style="color:blue;">record</span>&nbsp;<span style="color:#2b91af;">Song</span>(<span style="color:blue;">int</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">Id</span>,&nbsp;<span style="color:blue;">bool</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">IsVerifiedArtist</span>,&nbsp;<span style="color:blue;">byte</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">Rating</span>);</pre>
+    </p>
+    <p>
+        Then I thought that perhaps, since the type only contains <a href="https://learn.microsoft.com/dotnet/csharp/language-reference/builtin-types/value-types">value types</a>, it might be better to turn the above <code>record</code> into a <code>record struct</code>:
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">record</span>&nbsp;<span style="color:blue;">struct</span>&nbsp;<span style="color:#2b91af;">Song</span>(<span style="color:blue;">int</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">Id</span>,&nbsp;<span style="color:blue;">bool</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">IsVerifiedArtist</span>,&nbsp;<span style="color:blue;">byte</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">Rating</span>);</pre>
+    </p>
+    <p>
+        It turns out that it makes no visible difference. In the chart, the two data series are so close to each other that you can't distinguish them.
+    </p>
+    <p>
+        Then I thought that instead of an <code>int</code>, a <code>bool</code>, and a <code>byte</code>, I could use a single bitmask to model all three values.
+    </p>
+    <p>
+        After all, I was only guessing when it came to data types anyway. It's likely that <code>Rating</code> is only a five-point or ten-point scale, but I still used a <code>byte</code> to model it. This suggests that I'm not using 96% of the data type's range. Perhaps I could use one of those redundant bits for <code>IsVerifiedArtist</code>, instead of an entire <code>bool</code>.
+    </p>
+    <p>
+        Taking this further, modelling the <code>Id</code> as an <code>int</code> suggests that you may have 4,294,967,295 unique songs. That's 4.3 <em>billion</em> songs - at least an order of magnitude more than those 100 million songs that we hear about. In reality though, most systems that use <code>int</code> for IDs only do so because <code>int</code> is CLS-compliant, and <a href="https://learn.microsoft.com/dotnet/api/system.uint32">uint is not</a>. In other words, most systems that use <code>int</code> for IDs most likely only use the positive half, which means there are 16 bytes to use for other purposes. Enter the <em>bitmasked song:</em>
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;<span style="color:blue;">struct</span>&nbsp;<span style="color:#2b91af;">Song</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">const</span>&nbsp;<span style="color:blue;">uint</span>&nbsp;idMask&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;0b0000_0111_1111_1111_1111_1111_1111_1111;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">const</span>&nbsp;<span style="color:blue;">uint</span>&nbsp;isVerifiedArtistMask&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;0b1000_0000_0000_0000_0000_0000_0000_0000;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">const</span>&nbsp;<span style="color:blue;">uint</span>&nbsp;ratingMask&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;0b0111_1000_0000_0000_0000_0000_0000_0000;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:blue;">readonly</span>&nbsp;<span style="color:blue;">uint</span>&nbsp;bits;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">Song</span>(<span style="color:blue;">int</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">id</span>,&nbsp;<span style="color:blue;">bool</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">isVerifiedArtist</span>,&nbsp;<span style="color:blue;">byte</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">rating</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">idBits</span>&nbsp;=&nbsp;(<span style="color:blue;">uint</span>)id&nbsp;&amp;&nbsp;idMask;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">isVerifiedArtistBits</span>&nbsp;=&nbsp;isVerifiedArtist&nbsp;?&nbsp;isVerifiedArtistMask&nbsp;:&nbsp;0u;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">ratingBits</span>&nbsp;=&nbsp;((<span style="color:blue;">uint</span>)rating&nbsp;&lt;&lt;&nbsp;27)&nbsp;&amp;&nbsp;ratingMask;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;bits&nbsp;=&nbsp;idBits&nbsp;|&nbsp;isVerifiedArtistBits&nbsp;|&nbsp;ratingBits;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">int</span>&nbsp;Id&nbsp;=&gt;&nbsp;(<span style="color:blue;">int</span>)(bits&nbsp;&amp;&nbsp;idMask);
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">bool</span>&nbsp;IsVerifiedArtist&nbsp;=&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(bits&nbsp;&amp;&nbsp;isVerifiedArtistMask)&nbsp;==&nbsp;isVerifiedArtistMask;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">byte</span>&nbsp;Rating&nbsp;=&gt;&nbsp;(<span style="color:blue;">byte</span>)((bits&nbsp;&amp;&nbsp;ratingMask)&nbsp;&gt;&gt;&nbsp;27);
+}</pre>
+    </p>
+    <p>
+        In this representation, I've set aside the lower 27 bits for the ID, enabling IDs to range between 0 and 134,217,727. The top bit is used for <code>IsVerifiedArtist</code>, and the remaining four bits for <code>Rating</code>.
+    </p>
+    <p>
+        This data structure only holds a single <code>uint</code>, and since I made it a <code>struct</code>, I thought it'd have minimal overhead.
+    </p>
+    <p>
+        As you can see in the above chart, that's not the case. When I run the experiment, this representation requires <em>more</em> memory.
+    </p>
+    <p>
+        Just to make sure I wasn't missing anything obvious, I tried making the bitmasked <code>Song</code> a <code>class</code> instead. No visible difference.
+    </p>
+    <p>
+        If you're wondering why the bitmasked data series only go to 500,000, it's because this change made the experiments glacial. It took somewhere between 12 and 24 hours to run the experiment with a <code>size</code> of 500,000.
+    </p>
+    <p>
+        For what it's worth, I don't think the slowdown is directly related to the data representation, but rather to the change I had to make to the <a href="https://fscheck.github.io/FsCheck/">FsCheck</a>-based data generator:
+    </p>
+    <p>
+        <pre><span style="color:blue;">let</span>&nbsp;songParams&nbsp;=&nbsp;gen&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;maxId&nbsp;=&nbsp;0b0111_1111_1111_1111_1111_1111_1111
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;songId&nbsp;=&nbsp;Gen.choose&nbsp;(1,&nbsp;maxId)
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;isVerified&nbsp;=&nbsp;ArbMap.generate&nbsp;ArbMap.defaults
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;rating&nbsp;=&nbsp;Gen.choose&nbsp;(0,&nbsp;10)&nbsp;|&gt;&nbsp;Gen.map&nbsp;byte
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;songId,&nbsp;isVerified,&nbsp;rating&nbsp;}
+ 
+[&lt;CompiledName&nbsp;<span style="color:#a31515;">&quot;Song&quot;</span>&gt;]
+<span style="color:blue;">let</span>&nbsp;song&nbsp;=&nbsp;gen&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;(id,&nbsp;isVerifiedArtist,&nbsp;rating)&nbsp;=&nbsp;songParams
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;Song&nbsp;(id,&nbsp;isVerifiedArtist,&nbsp;rating)&nbsp;}</pre>
+    </p>
+    <p>
+        I can't explain why the bitmasked representation requires more memory, but I'm increasingly having a nagging feeling that I've made a mistake somewhere. If you can spot a mistake, please let me know by leaving a comment.
+    </p>
+    <h3 id="90e12771e0214d239cc2bc1c6a540c0a">
+        Other data representations <a href="#90e12771e0214d239cc2bc1c6a540c0a">#</a>
+    </h3>
+    <p>
+        I also considered whether it'd make sense to represent the entire data set as a huge matrix. One could, for example, let rows represent users, and columns songs, and let each element represent the number of times a user has listened to a particular song:
+    </p>
+    <table>
+        <tr>
+            <td>User</td>
+            <td>Song 1</td>
+            <td>Song 2</td>
+            <td>Song 3</td>
+            <td>...</td>
+        </tr>
+        <tr>
+            <td>123</td>
+            <td>0</td>
+            <td>0</td>
+            <td>4</td>
+            <td>...</td>
+        </tr>
+        <tr>
+            <td>456</td>
+            <td>2</td>
+            <td>0</td>
+            <td>4</td>
+            <td>...</td>
+        </tr>
+        <tr>
+            <td colspan="5">...</td>
+        </tr>
+    </table>
+    <p>
+        Let's say that you may expect some users to listen to a song more than 255 times, but probably not more than 65,535 times. Thus, you could store each play count as a <a href="https://learn.microsoft.com/dotnet/api/system.uint16">ushort</a>. Still, you would need <em>users x songs</em> values, so if you have 100 million songs and 10 million users, that implies 2 PB of memory. That doesn't sound useful.
+    </p>
+    <p>
+        On the other hand, most of those elements are going to be <em>0</em>, so perhaps one could use an <a href="https://en.wikipedia.org/wiki/Adjacency_list">adjacency list</a> instead. That is, however, essentially what an <code>IReadOnlyDictionary&lt;<span style="color:blue;">string</span>,&nbsp;IReadOnlyCollection&lt;Scrobble&gt;&gt;</code> is, so we're now back where we started.
+    </p>
+    <h3 id="80eaf0d1dd9848cb875f74b94cb64054">
+        Conclusion <a href="#80eaf0d1dd9848cb875f74b94cb64054">#</a>
+    </h3>
+    <p>
+        This article reports on some measurements I've made of memory requirements, assuming that we keep all scrobble data in memory. While I suspect that I've made a mistake, it still seems reasonable to conclude that the <em>song recommendations</em> scenario is on the edge of what's possible with the Impureim Sandwich pattern.
+    </p>
+    <p>
+        That's okay. I'm interested in understanding the limitations of solutions.
+    </p>
+    <p>
+        I do think, however, that it's worth taking note of just how massive amounts of data are required before the Impureim Sandwich pattern becomes untenable.
+    </p>
+    <p>
+        When I describe the pattern, the most common reaction is that it doesn't scale. And, as this article has explored, it's true that it doesn't scale. But it scales much, much better than you think. You may have billions of entities in your system, and they may still fit in a few gigabytes. Don't dismiss the Impureim Sandwich before you've made a real effort to understand the memory implications of it. Your intuition is likely to work against you.
+    </p>
+    <p>
+        I'll round off this part of the article series by showing how the Impureim Sandwich looks in other, more functional languages.
+    </p>
+    <p>
+        <strong>Next:</strong> Song recommendations as an F# Impureim Sandwich.
+    </p>
+</div>
