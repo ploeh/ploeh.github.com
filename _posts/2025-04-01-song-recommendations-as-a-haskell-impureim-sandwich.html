@@ -1,0 +1,242 @@
+---
+layout: post
+title: "Song recommendations as a Haskell Impureim Sandwich"
+description: "A pure function on potentially massive data."
+date: 2025-04-01 18:54 UTC
+tags: [Haskell, Functional Programming]
+---
+{% include JB/setup %}
+
+<div id="post">
+    <p>
+        <em>{{ page.description }}</em>
+    </p>
+    <p>
+        This article is part of a larger article series called <a href="">Alternative ways to design with functional programming</a>. As the title suggests, these articles discuss various ways to apply functional-programming principles to a particular problem. All the articles engage with the same problem. In short, the task is to calculate song recommendations for a user, based on massive data sets. Earlier articles in this series give you detailed explanation of the problem.
+    </p>
+    <p>
+        In the <a href="">previous article</a>, you saw how to refactor the 'base' <a href="https://fsharp.org/">F#</a> code base to a <a href="https://en.wikipedia.org/wiki/Pure_function">pure function</a>. In this article, you'll see the same refactoring applied to the 'base' <a href="https://www.haskell.org/">Haskell</a> code base shown in <a href="">Porting song recommendations to Haskell</a>.
+    </p>
+    <p>
+        The Git branch discussed in this article is the <em>pure-function</em> branch in the Haskell Git repository.
+    </p>
+    <h3 id="0ed27ab7abea4417918789c4e30e1204">
+        Collecting all the data <a href="#0ed27ab7abea4417918789c4e30e1204">#</a>
+    </h3>
+    <p>
+        Like in the previous articles, we may start by adding two more methods to the <code>SongService</code> type class, which will enable us to enumerate all songs and all users. The full type class, with all four methods, then looks like this:
+    </p>
+    <p>
+        <pre><span style="color:blue;">class</span>&nbsp;<span style="color:#2b91af;">SongService</span>&nbsp;a&nbsp;<span style="color:blue;">where</span>
+&nbsp;&nbsp;<span style="color:#2b91af;">getAllSongs</span>&nbsp;<span style="color:blue;">::</span>&nbsp;a&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:#2b91af;">IO</span>&nbsp;[<span style="color:blue;">Song</span>]
+&nbsp;&nbsp;<span style="color:#2b91af;">getAllUsers</span>&nbsp;<span style="color:blue;">::</span>&nbsp;a&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:#2b91af;">IO</span>&nbsp;[<span style="color:blue;">User</span>]
+&nbsp;&nbsp;<span style="color:#2b91af;">getTopListeners</span>&nbsp;<span style="color:blue;">::</span>&nbsp;a&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:#2b91af;">Int</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:#2b91af;">IO</span>&nbsp;[<span style="color:blue;">User</span>]
+&nbsp;&nbsp;<span style="color:#2b91af;">getTopScrobbles</span>&nbsp;<span style="color:blue;">::</span>&nbsp;a&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:#2b91af;">String</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:#2b91af;">IO</span>&nbsp;[<span style="color:blue;">Scrobble</span>]</pre>
+    </p>
+    <p>
+        If you compare with the type class definition shown in the article <a href="">Porting song recommendations to Haskell</a>, you'll see that <code>getAllSongs</code> and <code>getAllUsers</code> are the new methods.
+    </p>
+    <p>
+        They enable you to collect all top listeners, and all top scrobbles, even though it may take some time. To gather all the top listeners, we may add this <code>collectAllTopListeners</code> action:
+    </p>
+    <p>
+        <pre>collectAllTopListeners&nbsp;srvc&nbsp;=&nbsp;<span style="color:blue;">do</span>
+&nbsp;&nbsp;songs&nbsp;&lt;-&nbsp;getAllSongs&nbsp;srvc
+&nbsp;&nbsp;listeners&nbsp;&lt;-&nbsp;newIORef&nbsp;Map.empty
+&nbsp;&nbsp;forM_&nbsp;songs&nbsp;$&nbsp;\song&nbsp;-&gt;&nbsp;<span style="color:blue;">do</span>
+&nbsp;&nbsp;&nbsp;&nbsp;topListeners&nbsp;&lt;-&nbsp;getTopListeners&nbsp;srvc&nbsp;$&nbsp;songId&nbsp;song
+&nbsp;&nbsp;&nbsp;&nbsp;modifyIORef&nbsp;listeners&nbsp;(Map.insert&nbsp;(songId&nbsp;song)&nbsp;topListeners)
+&nbsp;&nbsp;readIORef&nbsp;listeners</pre>
+    </p>
+    <p>
+        Likewise, you can amass all the top scrobbles with a similar action:
+    </p>
+    <p>
+        <pre>collectAllTopScrobbles&nbsp;srvc&nbsp;=&nbsp;<span style="color:blue;">do</span>
+&nbsp;&nbsp;users&nbsp;&lt;-&nbsp;getAllUsers&nbsp;srvc
+&nbsp;&nbsp;scrobbles&nbsp;&lt;-&nbsp;newIORef&nbsp;Map.empty
+&nbsp;&nbsp;forM_&nbsp;users&nbsp;$&nbsp;\user&nbsp;-&gt;&nbsp;<span style="color:blue;">do</span>
+&nbsp;&nbsp;&nbsp;&nbsp;topScrobbles&nbsp;&lt;-&nbsp;getTopScrobbles&nbsp;srvc&nbsp;$&nbsp;userName&nbsp;user
+&nbsp;&nbsp;&nbsp;&nbsp;modifyIORef&nbsp;scrobbles&nbsp;(Map.insert&nbsp;(userName&nbsp;user)&nbsp;topScrobbles)
+&nbsp;&nbsp;readIORef&nbsp;scrobbles</pre>
+    </p>
+    <p>
+        As you may have noticed, they're so similar that, had there been <a href="https://en.wikipedia.org/wiki/Rule_of_three_(computer_programming)">more than two</a>, we might consider extracting the similar parts to a reusable operation.
+    </p>
+    <p>
+        In both cases, we start with the action that enables us to enumerate all the resources (songs or scrobbles) that we're interested in. For each of these, we then invoke the action to get the 'top' resources for that song or scrobble. There's a massive <em>n+1</em> problem here, but you could conceivably parallelize all these queries, as they're independent. Still, it's bound to take much time, possibly hours.
+    </p>
+    <p>
+        You may be wondering why I chose to use <code>IORef</code> values for both actions, instead of more <a href="/2015/08/03/idiomatic-or-idiosyncratic">idiomatic</a> combinator-based expressions. Indeed, that is what I would usually do, but in this case, these two actions are heavily IO-bound already, and it makes the Haskell code more similar to the F# code. Not that that is normally a goal, but here I thought it might help you, the reader, to compare the different code bases.
+    </p>
+    <p>
+        All the data is kept in a <a href="https://hackage.haskell.org/package/containers/docs/Data-Map-Strict.html">Map</a> per action, so two massive maps in all. Once these two actions return, we're done with the <em>read</em> phase of the <a href="/2025/01/13/recawr-sandwich">Recawr Sandwich</a>.
+    </p>
+    <h3 id="5378c29512584cab95d484b1bdd97fd9">
+        Referentially transparent function with local mutation <a href="#5378c29512584cab95d484b1bdd97fd9">#</a>
+    </h3>
+    <p>
+        As a first step, we may wish to turn the <code>getRecommendations</code> action into a <a href="https://en.wikipedia.org/wiki/Referential_transparency">referentially transparent</a> function. If you look through the commits in the Git repository, you can see that I actually did this through a series of <a href="https://www.industriallogic.com/blog/whats-this-about-micro-commits/">micro-commits</a>, but here I only present a more coarse-grained version of the changes I made.
+    </p>
+    <p>
+        In this version, I've removed the <code>srvc</code> (<code>SongService</code>) parameter, and instead added the two maps <code>topScrobbles</code> and <code>topListeners</code>.
+    </p>
+    <p>
+        <pre><span style="color:#2b91af;">getRecommendations</span>&nbsp;<span style="color:blue;">::</span>&nbsp;<span style="color:blue;">Map</span>&nbsp;<span style="color:#2b91af;">String</span>&nbsp;[<span style="color:blue;">Scrobble</span>]&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">Map</span>&nbsp;<span style="color:#2b91af;">Int</span>&nbsp;[<span style="color:blue;">User</span>]&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:#2b91af;">String</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:#2b91af;">IO</span>&nbsp;[<span style="color:blue;">Song</span>]
+getRecommendations&nbsp;topScrobbles&nbsp;topListeners&nbsp;un&nbsp;=&nbsp;<span style="color:blue;">do</span>
+&nbsp;&nbsp;<span style="color:green;">--&nbsp;1.&nbsp;Get&nbsp;user&#39;s&nbsp;own&nbsp;top&nbsp;scrobbles
+</span>&nbsp;&nbsp;<span style="color:green;">--&nbsp;2.&nbsp;Get&nbsp;other&nbsp;users&nbsp;who&nbsp;listened&nbsp;to&nbsp;the&nbsp;same&nbsp;songs
+</span>&nbsp;&nbsp;<span style="color:green;">--&nbsp;3.&nbsp;Get&nbsp;top&nbsp;scrobbles&nbsp;of&nbsp;those&nbsp;users
+</span>&nbsp;&nbsp;<span style="color:green;">--&nbsp;4.&nbsp;Aggregate&nbsp;the&nbsp;songs&nbsp;into&nbsp;recommendations
+</span>
+&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;scrobbles&nbsp;=&nbsp;Map.findWithDefault&nbsp;<span style="color:blue;">[]</span>&nbsp;un&nbsp;topScrobbles
+&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;scrobblesSnapshot&nbsp;=&nbsp;<span style="color:blue;">take</span>&nbsp;100&nbsp;$&nbsp;sortOn&nbsp;(Down&nbsp;.&nbsp;scrobbleCount)&nbsp;scrobbles
+ 
+&nbsp;&nbsp;recommendationCandidates&nbsp;&lt;-&nbsp;newIORef&nbsp;<span style="color:blue;">[]</span>
+&nbsp;&nbsp;forM_&nbsp;scrobblesSnapshot&nbsp;$&nbsp;\scrobble&nbsp;-&gt;&nbsp;<span style="color:blue;">do</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;otherListeners&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Map.findWithDefault&nbsp;<span style="color:blue;">[]</span>&nbsp;(songId&nbsp;$&nbsp;scrobbledSong&nbsp;scrobble)&nbsp;topListeners
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;otherListenersSnapshot&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">take</span>&nbsp;20&nbsp;$
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;sortOn&nbsp;(Down&nbsp;.&nbsp;userScrobbleCount)&nbsp;$
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">filter</span>&nbsp;((10_000&nbsp;&lt;=)&nbsp;.&nbsp;userScrobbleCount)&nbsp;otherListeners
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;forM_&nbsp;otherListenersSnapshot&nbsp;$&nbsp;\otherListener&nbsp;-&gt;&nbsp;<span style="color:blue;">do</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;otherScrobbles&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Map.findWithDefault&nbsp;<span style="color:blue;">[]</span>&nbsp;(userName&nbsp;otherListener)&nbsp;topScrobbles
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;otherScrobblesSnapshot&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">take</span>&nbsp;10&nbsp;$
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;sortOn&nbsp;(Down&nbsp;.&nbsp;songRating&nbsp;.&nbsp;scrobbledSong)&nbsp;$
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">filter</span>&nbsp;(songHasVerifiedArtist&nbsp;.&nbsp;scrobbledSong)&nbsp;otherScrobbles
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;forM_&nbsp;otherScrobblesSnapshot&nbsp;$&nbsp;\otherScrobble&nbsp;-&gt;&nbsp;<span style="color:blue;">do</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;song&nbsp;=&nbsp;scrobbledSong&nbsp;otherScrobble
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;modifyIORef&nbsp;recommendationCandidates&nbsp;(song&nbsp;:)
+ 
+&nbsp;&nbsp;recommendations&nbsp;&lt;-&nbsp;readIORef&nbsp;recommendationCandidates
+&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;$&nbsp;<span style="color:blue;">take</span>&nbsp;200&nbsp;$&nbsp;sortOn&nbsp;(Down&nbsp;.&nbsp;songRating)&nbsp;recommendations</pre>
+    </p>
+    <p>
+        You've probably noticed that this action still looks impure, since it returns <code>IO [Song]</code>. Even so, it's referentially transparent, since it's fully deterministic and without side effects.
+    </p>
+    <p>
+        The way I refactored the action, this order of changes was what made most sense to me. Getting rid of the <code>SongService</code> parameter was more important to me than getting rid of the <code>IO</code> wrapper.
+    </p>
+    <p>
+        In any case, this is only an interim state towards a more idiomatic pure Haskell function.
+    </p>
+    <h3 id="5eba5b02d8724403b8ea6f26054fc9af">
+        A single expression <a href="#5eba5b02d8724403b8ea6f26054fc9af">#</a>
+    </h3>
+    <p>
+        A curious property of expression-based languages is that you can conceivably write functions in 'one line of code'. Granted, it would often be a terribly wide line, not at all readable, a beast to maintain, and often with poor performance, so not something you'd want to alway do.
+    </p>
+    <p>
+        In this case, however, we <em>can</em> do that, although in order to stay within an <a href="/2019/11/04/the-80-24-rule">80x24 box</a>, we break the expression over multiple lines.
+    </p>
+    <p>
+        <pre><span style="color:#2b91af;">getRecommendations</span>&nbsp;<span style="color:blue;">::</span>&nbsp;<span style="color:blue;">Map</span>&nbsp;<span style="color:#2b91af;">String</span>&nbsp;[<span style="color:blue;">Scrobble</span>]&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">Map</span>&nbsp;<span style="color:#2b91af;">Int</span>&nbsp;[<span style="color:blue;">User</span>]&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:#2b91af;">String</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;[<span style="color:blue;">Song</span>]
+getRecommendations&nbsp;topScrobbles&nbsp;topListeners&nbsp;un&nbsp;=
+&nbsp;&nbsp;<span style="color:green;">--&nbsp;1.&nbsp;Get&nbsp;user&#39;s&nbsp;own&nbsp;top&nbsp;scrobbles
+</span>&nbsp;&nbsp;<span style="color:green;">--&nbsp;2.&nbsp;Get&nbsp;other&nbsp;users&nbsp;who&nbsp;listened&nbsp;to&nbsp;the&nbsp;same&nbsp;songs
+</span>&nbsp;&nbsp;<span style="color:green;">--&nbsp;3.&nbsp;Get&nbsp;top&nbsp;scrobbles&nbsp;of&nbsp;those&nbsp;users
+</span>&nbsp;&nbsp;<span style="color:green;">--&nbsp;4.&nbsp;Aggregate&nbsp;the&nbsp;songs&nbsp;into&nbsp;recommendations
+</span>
+&nbsp;&nbsp;<span style="color:blue;">take</span>&nbsp;200&nbsp;$
+&nbsp;&nbsp;sortOn&nbsp;(Down&nbsp;.&nbsp;songRating)&nbsp;$
+&nbsp;&nbsp;<span style="color:blue;">fmap</span>&nbsp;scrobbledSong&nbsp;$
+&nbsp;&nbsp;(\otherListener&nbsp;-&gt;&nbsp;<span style="color:blue;">take</span>&nbsp;10&nbsp;$
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;sortOn&nbsp;(Down&nbsp;.&nbsp;songRating&nbsp;.&nbsp;scrobbledSong)&nbsp;$
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">filter</span>&nbsp;(songHasVerifiedArtist&nbsp;.&nbsp;scrobbledSong)&nbsp;$
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Map.findWithDefault&nbsp;<span style="color:blue;">[]</span>&nbsp;(userName&nbsp;otherListener)&nbsp;topScrobbles)&nbsp;=&lt;&lt;
+&nbsp;&nbsp;(\scrobble&nbsp;-&gt;&nbsp;<span style="color:blue;">take</span>&nbsp;20&nbsp;$
+&nbsp;&nbsp;&nbsp;&nbsp;sortOn&nbsp;(Down&nbsp;.&nbsp;userScrobbleCount)&nbsp;$
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">filter</span>&nbsp;((10_000&nbsp;&lt;=)&nbsp;.&nbsp;userScrobbleCount)&nbsp;$
+&nbsp;&nbsp;&nbsp;&nbsp;Map.findWithDefault&nbsp;<span style="color:blue;">[]</span>&nbsp;(songId&nbsp;$&nbsp;scrobbledSong&nbsp;scrobble)&nbsp;topListeners)&nbsp;=&lt;&lt;
+&nbsp;&nbsp;<span style="color:blue;">take</span>&nbsp;100
+&nbsp;&nbsp;(sortOn&nbsp;(Down&nbsp;.&nbsp;scrobbleCount)&nbsp;$&nbsp;Map.findWithDefault&nbsp;<span style="color:blue;">[]</span>&nbsp;un&nbsp;topScrobbles)</pre>
+    </p>
+    <p>
+        This snapshot also got rid of the <code>IORef</code> value, and <code>IO</code> in general. The function is still referentially transparent, but now Haskell can also see that.
+    </p>
+    <p>
+        Even so, this looks dense and confusing. It doesn't help that Haskell should usually be read right-to-left, and bottom-to-top. Is it possible to improve the readability of this function?
+    </p>
+    <h3 id="c621ff8635bd4eabaa085b7b7d4a8c75">
+        Composition from smaller functions <a href="#c621ff8635bd4eabaa085b7b7d4a8c75">#</a>
+    </h3>
+    <p>
+        To improve readability and maintainability, we may now extract helper functions. The first one easily suggests itself.
+    </p>
+    <p>
+        <pre><span style="color:#2b91af;">getUsersOwnTopScrobbles</span>&nbsp;<span style="color:blue;">::</span>&nbsp;<span style="color:blue;">Ord</span>&nbsp;k&nbsp;<span style="color:blue;">=&gt;</span>&nbsp;<span style="color:blue;">Map</span>&nbsp;k&nbsp;[<span style="color:blue;">Scrobble</span>]&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;k&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;[<span style="color:blue;">Scrobble</span>]
+getUsersOwnTopScrobbles&nbsp;topScrobbles&nbsp;un&nbsp;=
+&nbsp;&nbsp;<span style="color:blue;">take</span>&nbsp;100&nbsp;$
+&nbsp;&nbsp;sortOn&nbsp;(Down&nbsp;.&nbsp;scrobbleCount)&nbsp;$&nbsp;Map.findWithDefault&nbsp;<span style="color:blue;">[]</span>&nbsp;un&nbsp;topScrobbles</pre>
+    </p>
+    <p>
+        Each of the subexpressions in the above code listing are candidates for the same kind of treatment, like this one:
+    </p>
+    <p>
+        <pre><span style="color:#2b91af;">getOtherUsersWhoListenedToTheSameSongs</span>&nbsp;<span style="color:blue;">::</span>&nbsp;<span style="color:blue;">Map</span>&nbsp;<span style="color:#2b91af;">Int</span>&nbsp;[<span style="color:blue;">User</span>]&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">Scrobble</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;[<span style="color:blue;">User</span>]
+getOtherUsersWhoListenedToTheSameSongs&nbsp;topListeners&nbsp;scrobble&nbsp;=
+&nbsp;&nbsp;<span style="color:blue;">take</span>&nbsp;20&nbsp;$
+&nbsp;&nbsp;sortOn&nbsp;(Down&nbsp;.&nbsp;userScrobbleCount)&nbsp;$
+&nbsp;&nbsp;<span style="color:blue;">filter</span>&nbsp;((10_000&nbsp;&lt;=)&nbsp;.&nbsp;userScrobbleCount)&nbsp;$
+&nbsp;&nbsp;Map.findWithDefault&nbsp;<span style="color:blue;">[]</span>&nbsp;(songId&nbsp;$&nbsp;scrobbledSong&nbsp;scrobble)&nbsp;topListeners</pre>
+    </p>
+    <p>
+        You can't see it from the code listings themselves, but the module doesn't export these functions. They remain implementation details.
+    </p>
+    <p>
+        With a few more helper functions, you can now implement the <code>getRecommendations</code> function by composing the helpers.
+    </p>
+    <p>
+        <pre><span style="color:#2b91af;">getRecommendations</span>&nbsp;<span style="color:blue;">::</span>&nbsp;<span style="color:blue;">Map</span>&nbsp;<span style="color:#2b91af;">String</span>&nbsp;[<span style="color:blue;">Scrobble</span>]&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">Map</span>&nbsp;<span style="color:#2b91af;">Int</span>&nbsp;[<span style="color:blue;">User</span>]&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:#2b91af;">String</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;[<span style="color:blue;">Song</span>]
+getRecommendations&nbsp;topScrobbles&nbsp;topListeners&nbsp;un&nbsp;=
+&nbsp;&nbsp;<span style="color:green;">--&nbsp;1.&nbsp;Get&nbsp;user&#39;s&nbsp;own&nbsp;top&nbsp;scrobbles
+</span>&nbsp;&nbsp;<span style="color:green;">--&nbsp;2.&nbsp;Get&nbsp;other&nbsp;users&nbsp;who&nbsp;listened&nbsp;to&nbsp;the&nbsp;same&nbsp;songs
+</span>&nbsp;&nbsp;<span style="color:green;">--&nbsp;3.&nbsp;Get&nbsp;top&nbsp;scrobbles&nbsp;of&nbsp;those&nbsp;users
+</span>&nbsp;&nbsp;<span style="color:green;">--&nbsp;4.&nbsp;Aggregate&nbsp;the&nbsp;songs&nbsp;into&nbsp;recommendations
+</span>
+&nbsp;&nbsp;aggregateSongsIntoRecommendations&nbsp;$
+&nbsp;&nbsp;getTopSongsOfOtherUser&nbsp;topScrobbles&nbsp;=&lt;&lt;
+&nbsp;&nbsp;getOtherUsersWhoListenedToTheSameSongs&nbsp;topListeners&nbsp;=&lt;&lt;
+&nbsp;&nbsp;getUsersOwnTopScrobbles&nbsp;topScrobbles&nbsp;un</pre>
+    </p>
+    <p>
+        Since Haskell by default composes from right to left, when you break such a composition over multiple lines (in order to stay within a <a href="/2019/11/04/the-80-24-rule">80x24</a> box), it should be read bottom-up.
+    </p>
+    <p>
+        You can remedy this situation by importing the <code>&</code> operator from <a href="https://hackage.haskell.org/package/base-4.21.0.0/docs/Data-Function.html">Data.Function</a>:
+    </p>
+    <p>
+        <pre><span style="color:#2b91af;">getRecommendations</span>&nbsp;<span style="color:blue;">::</span>&nbsp;<span style="color:blue;">Map</span>&nbsp;<span style="color:#2b91af;">String</span>&nbsp;[<span style="color:blue;">Scrobble</span>]&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">Map</span>&nbsp;<span style="color:#2b91af;">Int</span>&nbsp;[<span style="color:blue;">User</span>]&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:#2b91af;">String</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;[<span style="color:blue;">Song</span>]
+getRecommendations&nbsp;topScrobbles&nbsp;topListeners&nbsp;un&nbsp;=&nbsp;
+&nbsp;&nbsp;getUsersOwnTopScrobbles&nbsp;topScrobbles&nbsp;un&nbsp;&gt;&gt;=
+&nbsp;&nbsp;getOtherUsersWhoListenedToTheSameSongs&nbsp;topListeners&nbsp;&gt;&gt;=
+&nbsp;&nbsp;getTopSongsOfOtherUser&nbsp;topScrobbles&nbsp;&amp;
+&nbsp;&nbsp;aggregateSongsIntoRecommendations</pre>
+    </p>
+    <p>
+        Notice that I've named each of the helper functions after the code comments that accompanied the previous incarnations of this function. If we consider <a href="http://butunclebob.com/ArticleS.TimOttinger.ApologizeIncode">code comments apologies for not properly organizing the code</a>, we've now managed to structure it in such a way that those apologies are no longer required.
+    </p>
+    <h3 id="b934bca9ccf5403491d86a418d0ca8a3">
+        Conclusion <a href="#b934bca9ccf5403491d86a418d0ca8a3">#</a>
+    </h3>
+    <p>
+        If you accept the (perhaps preposterous) assumption that it's possible to fit the required data in <a href="https://en.wikipedia.org/wiki/Persistent_data_structure">persistent data structures</a>, refactoring the recommendation algorithm to a pure function isn't that difficult. That's the pure part of a Recawr Sandwich. While I haven't shown the actual sandwich here, it's quite straightforward. You can find it in the tests in the Haskell Git repository. Also, once you've moved all the data collection to the boundary of the application, you may no longer need the <code>SongService</code> type class.
+    </p>
+    <p>
+        I find the final incarnation of the code shown here to be quite attractive. While I've kept the helper functions private to the module, it's always an option to export them if you find that warranted. This could improve testability of the overall code base, albeit at the risk of increasing the surface area of the API that you have to maintain and secure.
+    </p>
+    <p>
+        There are always trade-offs to be considered. Even if you, eventually, find that for this particular example, the input data size is just <em>too</em> big to make this alternative viable, there are, in my experience, many other situations when this kind of architecture is a good solution. Even if the input size is a decent amount of megabytes, the simplification offered by an <a href="/2020/03/02/impureim-sandwich">Impureim Sandwich</a> may trump the larger memory footprint. As always, if you're concerned about performance, <a href="https://ericlippert.com/2012/12/17/performance-rant/">measure it</a>.
+    </p>
+    <p>
+        This article concludes the overview of using an Recawr Sandwich to address the problem. Since it's, admittedly, a bit of a stretch to imagine running a program that uses terabytes (or more) of memory, we now turn to alternative architectures.
+    </p>
+    <p>
+        <strong>Next:</strong> Song recommendations from combinators.
+    </p>
+</div>
