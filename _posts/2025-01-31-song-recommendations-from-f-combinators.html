@@ -1,0 +1,116 @@
+---
+layout: post
+title: "Song recommendations from F# combinators"
+description: "Traversing sequences of tasks. A refactoring."
+date: 2025-01-31 8:41 UTC
+tags: [F#]
+---
+{% include JB/setup %}
+
+<div id="post">
+    <p>
+        <em>{{ page.description }}</em>
+    </p>
+    <p>
+        This article is part of a series named <a href="">Alternative ways to design with functional programming</a>. In the <a href="">previous article</a>, you saw how to refactor the example code base to a composition of standard combinators. It's a pragmatic solution to the problem of dealing with lots of data in a piecemeal fashion, but although it uses concepts and programming constructs from functional programming, I don't consider it a proper <a href="/2018/11/19/functional-architecture-a-definition">functional architecture</a>.
+    </p>
+    <p>
+        Porting the C# code to <a href="https://fsharp.org/">F#</a> doesn't change that part, but most F# developers will probably agree that this style of programming is more <a href="/2015/08/03/idiomatic-or-idiosyncratic">idiomatic</a> in F# than in C#.
+    </p>
+    <p>
+        Please consult the previous articles for context about the example code base. The code shown in this article is from the <em>fsharp-combinators</em> Git branch. It refactors the code shown in the article <a href="">Porting song recommendations to F#</a>.
+    </p>
+    <p>
+        The goal is to extract <a href="https://en.wikipedia.org/wiki/Pure_function">pure functions</a> from the overall recommendations algorithm and compose them using standard combinators, such as <code>bind</code>, <code>map</code>, and <code>traverse</code>.
+    </p>
+    <h3 id="a83f974b9e474c4a83845e284fb361cc">
+        Composition from combinators <a href="#a83f974b9e474c4a83845e284fb361cc">#</a>
+    </h3>
+    <p>
+        Let's start with the completed composition, and subsequently look at the most interesting parts.
+    </p>
+    <p>
+        <pre><span style="color:blue;">type</span>&nbsp;<span style="color:#2b91af;">RecommendationsProvider</span>&nbsp;(<span style="font-weight:bold;color:#1f377f;">songService</span>&nbsp;:&nbsp;<span style="color:#2b91af;">SongService</span>)&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">member</span>&nbsp;_.GetRecommendationsAsync&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;1.&nbsp;Get&nbsp;user&#39;s&nbsp;own&nbsp;top&nbsp;scrobbles</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;2.&nbsp;Get&nbsp;other&nbsp;users&nbsp;who&nbsp;listened&nbsp;to&nbsp;the&nbsp;same&nbsp;songs</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;3.&nbsp;Get&nbsp;top&nbsp;scrobbles&nbsp;of&nbsp;those&nbsp;users</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;4.&nbsp;Aggregate&nbsp;the&nbsp;songs&nbsp;into&nbsp;recommendations</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">songService</span>.<span style="font-weight:bold;color:#74531f;">GetTopScrobblesAsync</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&gt;&gt;&nbsp;<span style="color:#2b91af;">Task</span>.<span style="color:#74531f;">bind</span>&nbsp;(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#74531f;">getOwnTopScrobbles</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&gt;&gt;&nbsp;<span style="color:#2b91af;">TaskSeq</span>.<span style="color:#74531f;">traverse</span>&nbsp;(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;_.Song.Id
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&gt;&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">songService</span>.<span style="font-weight:bold;color:#74531f;">GetTopListenersAsync</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&gt;&gt;&nbsp;<span style="color:#2b91af;">Task</span>.<span style="color:#74531f;">bind</span>&nbsp;(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#74531f;">getTopScrobbles</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&gt;&gt;&nbsp;<span style="color:#2b91af;">TaskSeq</span>.<span style="color:#74531f;">traverse</span>&nbsp;(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;_.UserName
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&gt;&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">songService</span>.<span style="font-weight:bold;color:#74531f;">GetTopScrobblesAsync</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&gt;&gt;&nbsp;<span style="color:#2b91af;">Task</span>.<span style="color:#74531f;">map</span>&nbsp;<span style="color:#74531f;">aggregateRecommendations</span>)))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&gt;&gt;&nbsp;<span style="color:#2b91af;">Task</span>.<span style="color:#74531f;">map</span>&nbsp;(<span style="color:#2b91af;">Seq</span>.<span style="color:#74531f;">flatten</span>&nbsp;&gt;&gt;&nbsp;<span style="color:#2b91af;">Seq</span>.<span style="color:#74531f;">flatten</span>&nbsp;&gt;&gt;&nbsp;<span style="color:#74531f;">takeTopRecommendations</span>))</pre>
+    </p>
+    <p>
+        This is a single expression with nested subexpressions, and you may notice that it's completely <a href="https://en.wikipedia.org/wiki/Tacit_programming">point-free</a>. This may be a little hardcore even for most F# programmers, since F# idiomatically favours explicit lambda expressions and the pipeline operator <code>|&gt;</code>.
+    </p>
+    <p>
+        Although I'm personally fascinated by point-free programming, I might consider a more <code>fun</code> alternative if working in a team. You can see such a variation in the Git repository in an intermediary commit. The reason that I've pulled so heavily in this direction here is that it more clearly demonstrate why we call such functions <em>combinators</em>: The provide the glue that enable us to compose functions together.
+    </p>
+    <p>
+        If you're wondering, <code>&gt;&gt;</code> is also a combinator. In <a href="https://www.haskell.org/">Haskell</a> it's more common with 'unpronounceable' operators such as <code>&gt;&gt;=</code>, <code>.</code>, <code>&amp;</code>, etc., and I'd argue that such <a href="/2018/07/02/terse-operators-make-business-code-more-readable">terse operators can make code more readable</a>.
+    </p>
+    <p>
+        The functions <code>getOwnTopScrobbles</code>, <code>getTopScrobbles</code>, <code>aggregateRecommendations</code>, and <code>takeTopRecommendations</code> are helper functions. Here's one of them:
+    </p>
+    <p>
+        <pre><span style="color:blue;">let</span>&nbsp;<span style="color:blue;">private</span>&nbsp;<span style="color:#74531f;">getOwnTopScrobbles</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">scrobbles</span>&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">scrobbles</span>&nbsp;|&gt;&nbsp;<span style="color:#2b91af;">Seq</span>.<span style="color:#74531f;">sortByDescending</span>&nbsp;(<span style="color:blue;">fun</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">s</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">s</span>.ScrobbleCount)&nbsp;|&gt;&nbsp;<span style="color:#2b91af;">Seq</span>.<span style="color:#74531f;">truncate</span>&nbsp;100</pre>
+    </p>
+    <p>
+        The other helpers are also simple, single-expression functions like this one.
+    </p>
+    <p>
+        As <a href="https://tyrrrz.me/blog/pure-impure-segregation-principle">Oleksii Holub implies</a>, you could make each of these small functions public if you wished to test them individually.
+    </p>
+    <p>
+        Let's now look at the various building blocks that enable this composition.
+    </p>
+    <h3 id="596f7212bd144ebaa674cbc4e019d892">
+        Combinators <a href="#596f7212bd144ebaa674cbc4e019d892">#</a>
+    </h3>
+    <p>
+        The F# base library comes with more standard combinators than are generally available for C#, not only for lists, but also <code>Option</code> and <code>Result</code> values. On the other hand, when it comes to <a href="/2022/06/06/asynchronous-monads">asynchronous monads</a>, the F# base library offers <code>task</code> and <code>async</code> <a href="https://learn.microsoft.com/dotnet/fsharp/language-reference/computation-expressions">computation expressions</a>, but no <code>Task</code> module. You'll need to add <code>Task.bind</code> and <code>Task.map</code> yourself, or import a library that exports those combinators. The article <a href="/2022/06/06/asynchronous-monads">Asynchronous monads</a> shows the implementation used here.
+    </p>
+    <p>
+        The <a href="/2024/11/11/traversals">traverse</a> implementation shouldn't be too surprising, either, but here I implemented it directly, instead of via <code>sequence</code>.
+    </p>
+    <p>
+        <pre><span style="color:blue;">let</span>&nbsp;<span style="color:#74531f;">traverse</span>&nbsp;<span style="color:#74531f;">f</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">xs</span>&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;<span style="color:#74531f;">go</span>&nbsp;<span style="color:#1f377f;">acc</span>&nbsp;<span style="color:#1f377f;">x</span>&nbsp;=&nbsp;<span style="color:blue;">task</span>&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">x&#39;</span>&nbsp;=&nbsp;<span style="color:#1f377f;">x</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">acc&#39;</span>&nbsp;=&nbsp;<span style="color:#1f377f;">acc</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;<span style="color:#2b91af;">Seq</span>.<span style="color:#74531f;">append</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">acc&#39;</span>&nbsp;[<span style="font-weight:bold;color:#1f377f;">x&#39;</span>]&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">xs</span>&nbsp;|&gt;&nbsp;<span style="color:#2b91af;">Seq</span>.<span style="color:#74531f;">map</span>&nbsp;<span style="color:#74531f;">f</span>&nbsp;|&gt;&nbsp;<span style="color:#2b91af;">Seq</span>.<span style="color:#74531f;">fold</span>&nbsp;<span style="color:#74531f;">go</span>&nbsp;(<span style="color:blue;">task</span>&nbsp;{&nbsp;<span style="color:blue;">return</span>&nbsp;[]&nbsp;})</pre>
+    </p>
+    <p>
+        Finally, the <code>flatten</code> function is the <a href="/2022/03/28/monads">standard implementation</a> that goes via monadic <em>bind</em>. In F#'s <code>Seq</code> module, <em>bind</em> is called <code>collect</code>.
+    </p>
+    <p>
+        <pre><span style="color:blue;">let</span>&nbsp;<span style="color:#74531f;">flatten</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">xs</span>&nbsp;=&nbsp;<span style="color:#2b91af;">Seq</span>.<span style="color:#74531f;">collect</span>&nbsp;<span style="color:#74531f;">id</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">xs</span></pre>
+    </p>
+    <p>
+        That all there is to it.
+    </p>
+    <h3 id="2ecbad404afd47a1a4b12e0e68913543">
+        Conclusion <a href="#2ecbad404afd47a1a4b12e0e68913543">#</a>
+    </h3>
+    <p>
+        In this article, you saw how to port the C# code from the <a href="">previous article</a> to F#. Since this style of programming is more idiomatic in F#, more building blocks and language features are available, and hence this kind of refactoring is better suited to F#.
+    </p>
+    <p>
+        I still don't consider this proper <a href="/2018/11/19/functional-architecture-a-definition">functional architecture</a>, but it's pragmatic and I could see myself writing code like this in a professional setting.
+    </p>
+    <p>
+        <strong>Next:</strong> Song recommendations from Haskell combinators.
+    </p>
+</div>
