@@ -1,0 +1,723 @@
+---
+layout: post
+title: "A parser and interpreter for a very small language"
+description: "A single Haskell script file."
+date: 2025-04-23 11:19 UTC
+tags: [Functional Programming, Haskell, Languages]
+---
+{% include JB/setup %}
+
+<div id="post">
+    <p>
+        <em>{{ page.description }}</em>
+    </p>
+    <p>
+        I recently took the final exam in a course on programming language design. One of the questions was a bout a tiny language, and since this was a take-home exam running over many days, I had time to spare. Although it wasn't part of any questions, I decided to write an interpreter to back up some claims I made in my answers.
+    </p>
+    <p>
+        This article documents my prototype parser and interpreter.
+    </p>
+    <h3 id="f2981bf1bd2e4eba8596864f9bc75777">
+        Language description <a href="#f2981bf1bd2e4eba8596864f9bc75777">#</a>
+    </h3>
+    <p>
+        To be clear, the exam question was <em>not</em> to implement an interpreter, but rather some questions about attributes of the language. The description here is reprinted with kind permission from <a href="https://di.ku.dk/english/staff/?pure=en/persons/162114">Torben Ægidius Mogensen</a>.
+    </p>
+    <blockquote>
+        <p>
+            Consider a functional language where values can be Booleans and pairs. A syntax for the language is given below:
+        </p>
+        <table style="border: none; margin-left: auto; margin-right: auto;">
+            <tr style="border: none;">
+                <td style="border: none;"><em>Program</em></td>
+                <td style="border: none;">&rarr;</td>
+                <td style="border: none;"><em>Function<sup>+</sup></em></td>
+            </tr>
+            <tr style="border: none;">
+                <td style="border: none;"><em>Function</em></td>
+                <td style="border: none;">&rarr;</td>
+                <td style="border: none;"><strong>Fid</strong> <em>Pattern<sup>+</sup></em> = <em>Exp</em></td>
+            </tr>
+            <tr style="border: none;">
+                <td style="border: none;"><em>Pattern</em></td>
+                <td style="border: none;">&rarr;</td>
+                <td style="border: none;"><strong>Vid</strong> | <code>true</code> | <code>false</code> | (<em>Pattern</em>, <em>Pattern</em>)</td>
+            </tr>
+            <tr style="border: none;">
+                <td style="border: none;"><em>Exp</em></td>
+                <td style="border: none;">&rarr;</td>
+                <td style="border: none;"><strong>Vid</strong> | <code>true</code> | <code>false</code> | <strong>Fid</strong> <em>Exp<sup>+</sup></em> | (<em>Exp</em>)</td>
+            </tr>
+        </table>
+        <p>
+            where <strong>Fid</strong> denotes function identifiers (which are lower case) and <strong>Vid</strong> denotes variable identifiers (which are upper case). There can be multiple rules for each functions, but rules must have disjoint patterns. All function calls must be fully applied (no partial applications, so no higher-order functions). A program is executed by calling any function with any argument constructed by pairs and Booleans. An example program is
+        </p>
+        <p>
+            <pre>and true X = X
+and false X = false
+
+alltrue true = true
+alltrue false = false
+alltrue (X, Y) = and (alltrue X) (alltrue Y)</pre>
+        </p>
+        <p>
+            Calling <code>alltrue (true, (false, true))</code> will return <code>false</code>, but <code>alltrue ((true, true), (true, true))</code> will return <code>true</code>.
+        </p>
+    </blockquote>
+    <p>
+        The exam goes on to ask some questions about termination as a property of the language, and whether or not it's <a href="https://en.wikipedia.org/wiki/Turing_completeness">Turing complete</a>, but that's not the scope of this article. Rather, I'd like to describe a prototype parser and interpreter I wrote as a single throwaway <a href="/2024/02/05/statically-and-dynamically-typed-scripts">script file in Haskell</a>.
+    </p>
+    <h3 id="11c8dce522cf48f882e56aa8182bd268">
+        Declarations and imports <a href="#11c8dce522cf48f882e56aa8182bd268">#</a>
+    </h3>
+    <p>
+        The code is a single <a href="https://www.haskell.org/">Haskell</a> module that I interacted with via GHCi (the <a href="https://en.wikipedia.org/wiki/Glasgow_Haskell_Compiler">GHC</a> <a href="https://en.wikipedia.org/wiki/Read%E2%80%93eval%E2%80%93print_loop">REPL</a>). It starts with a single pragma, a module declaration, and imports.
+    </p>
+    <p>
+        <pre>{-#&nbsp;<span style="color:gray;">LANGUAGE</span>&nbsp;FlexibleContexts&nbsp;#-}
+<span style="color:blue;">module</span>&nbsp;Bopa&nbsp;<span style="color:blue;">where</span>
+ 
+<span style="color:blue;">import</span>&nbsp;Control.Monad.Identity&nbsp;(<span style="color:blue;">Identity</span>)
+<span style="color:blue;">import</span>&nbsp;Data.Bifunctor&nbsp;(<span style="color:#2b91af;">first</span>)
+<span style="color:blue;">import</span>&nbsp;Data.Foldable&nbsp;(<span style="color:#2b91af;">find</span>)
+<span style="color:blue;">import</span>&nbsp;Data.List.NonEmpty&nbsp;(<span style="color:blue;">NonEmpty</span>((:|)))
+<span style="color:blue;">import</span>&nbsp;<span style="color:blue;">qualified</span>&nbsp;Data.List.NonEmpty&nbsp;<span style="color:blue;">as</span>&nbsp;NE
+<span style="color:blue;">import</span>&nbsp;Data.Set&nbsp;(<span style="color:blue;">Set</span>)
+<span style="color:blue;">import</span>&nbsp;<span style="color:blue;">qualified</span>&nbsp;Data.Set&nbsp;<span style="color:blue;">as</span>&nbsp;Set
+<span style="color:blue;">import</span>&nbsp;Text.Parsec</pre>
+    </p>
+    <p>
+        The <em>parsec</em> API requires the <code>FlexibleContexts</code> language pragma. The name, <em>Bopa</em> I simply derived from <strong>Bo</strong>ols and <strong>Pa</strong>irs, although I'm aware that this little combination of letters has quite an <a href="https://en.wikipedia.org/wiki/BOPA">alternative connotation for many Danes</a>, including myself.
+    </p>
+    <p>
+        Apart from the <code>base</code> library, the packages <a href="https://hackage.haskell.org/package/parsec">parsec</a> and <a href="https://hackage.haskell.org/package/containers">containers</a> are required. I didn't use an explicit build system, but if they're not already present on your system, <a href="https://stackoverflow.com/a/39848577/126014">you can ask GHCi to load them</a>.
+    </p>
+    <h3 id="6813c3c9813240c1ab806d5126f2a6ce">
+        AST <a href="#6813c3c9813240c1ab806d5126f2a6ce">#</a>
+    </h3>
+    <p>
+        The above language description is a <a href="https://en.wikipedia.org/wiki/Context-free_grammar">context-free grammar</a>, which translates easily into Haskell type declarations.
+    </p>
+    <p>
+        <pre><span style="color:blue;">type</span>&nbsp;Program&nbsp;=&nbsp;NonEmpty&nbsp;Function
+<span style="color:blue;">data</span>&nbsp;Function&nbsp;=
+&nbsp;&nbsp;Function&nbsp;{&nbsp;fid&nbsp;::&nbsp;String,&nbsp;fpats&nbsp;::&nbsp;NonEmpty&nbsp;Pattern,&nbsp;fbody&nbsp;::&nbsp;Exp&nbsp;}
+&nbsp;&nbsp;<span style="color:blue;">deriving</span>&nbsp;(<span style="color:#2b91af;">Eq</span>,&nbsp;<span style="color:#2b91af;">Show</span>)
+<span style="color:blue;">data</span>&nbsp;Pattern&nbsp;=
+&nbsp;&nbsp;VarPat&nbsp;String&nbsp;|&nbsp;TPat&nbsp;|&nbsp;FPat&nbsp;|&nbsp;PairPat&nbsp;Pattern&nbsp;Pattern&nbsp;<span style="color:blue;">deriving</span>&nbsp;(<span style="color:#2b91af;">Eq</span>,&nbsp;<span style="color:#2b91af;">Show</span>)
+<span style="color:blue;">data</span>&nbsp;Exp&nbsp;=
+&nbsp;&nbsp;VarExp&nbsp;String&nbsp;|&nbsp;TExp&nbsp;|&nbsp;FExp&nbsp;|&nbsp;CallExp&nbsp;String&nbsp;(NonEmpty&nbsp;Exp)
+&nbsp;&nbsp;<span style="color:blue;">deriving</span>&nbsp;(<span style="color:#2b91af;">Eq</span>,&nbsp;<span style="color:#2b91af;">Show</span>)</pre>
+    </p>
+    <p>
+        The description doesn't explicitly state how to interpret the superscript +, but I've interpreted it as meaning <em>one or more</em>. Therefore, a <code>Program</code> is a <a href="https://hackage.haskell.org/package/base/docs/Data-List-NonEmpty.html">NonEmpty</a> list of <code>Function</code> values. The same line of reasoning applies for the other places where the + sign appears.
+    </p>
+    <p>
+        Notice that there's more than one representation of Boolean values; <code>TPat</code> is the <code>true</code> <em>pattern</em>, while <code>TExp</code> is the <code>true</code> <em>expression</em>, and likewise for <code>false</code>.
+    </p>
+    <p>
+        These types describe the entire language, and you can, in principle, create programs directly using this API. While I didn't do that (because I wrote a parser instead), here's what the above <code>and</code> function looks like as an <a href="https://en.wikipedia.org/wiki/Abstract_syntax_tree">abstract syntax tree</a> (AST):
+    </p>
+    <p>
+        <pre>Function "and" (TPat :| [VarPat "X"]) (VarExp "X") :| [Function "and" (FPat :| [VarPat "X"]) FExp]</pre>
+    </p>
+    <p>
+        Recall that the <code>:|</code> operator is the <code>NonEmpty</code> data constructor.
+    </p>
+    <h3 id="16d45a1b8baf432dbc4922b746e4689a">
+        Source code parsers <a href="#16d45a1b8baf432dbc4922b746e4689a">#</a>
+    </h3>
+    <p>
+        I wanted to be able to write programs directly in the Bopa language, and not just as ASTs, so the next step was writing parsers for each of the data types defined above. As strongly implied by the above imports, I used the <em>parsec</em> package for that.
+    </p>
+    <p>
+        The <code>Program</code> type is only an alias, and once I have a parser for <code>Function</code>, that one should be straightforward. The parser of <code>Function</code> values is, however, more involved.
+    </p>
+    <p>
+        <pre><span style="color:#2b91af;">functionParser</span>&nbsp;<span style="color:blue;">::</span>&nbsp;<span style="color:blue;">Stream</span>&nbsp;s&nbsp;m&nbsp;<span style="color:#2b91af;">Char</span>&nbsp;<span style="color:blue;">=&gt;</span>&nbsp;<span style="color:blue;">ParsecT</span>&nbsp;s&nbsp;()&nbsp;m&nbsp;<span style="color:blue;">Function</span>
+functionParser&nbsp;=&nbsp;<span style="color:blue;">do</span>
+&nbsp;&nbsp;fnid&nbsp;&lt;-&nbsp;many1&nbsp;lower
+&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;pp&nbsp;=&nbsp;many1&nbsp;(char&nbsp;<span style="color:#a31515;">&#39;&nbsp;&#39;</span>)&nbsp;&gt;&gt;&nbsp;patternParser
+&nbsp;&nbsp;<span style="color:green;">--&nbsp;Next&nbsp;line&nbsp;based&nbsp;on&nbsp;https://stackoverflow.com/a/65570028/126014
+</span>&nbsp;&nbsp;patterns&nbsp;&lt;-&nbsp;<span style="color:#2b91af;">(:|)</span>&nbsp;&lt;$&gt;&nbsp;pp&nbsp;&lt;*&gt;&nbsp;pp&nbsp;`manyTill`&nbsp;try&nbsp;(many1&nbsp;(char&nbsp;<span style="color:#a31515;">&#39;&nbsp;&#39;</span>)&nbsp;&gt;&gt;&nbsp;char&nbsp;<span style="color:#a31515;">&#39;=&#39;</span>)
+&nbsp;&nbsp;skipMany1&nbsp;(char&nbsp;<span style="color:#a31515;">&#39;&nbsp;&#39;</span>)
+&nbsp;&nbsp;Function&nbsp;fnid&nbsp;patterns&nbsp;&lt;$&gt;&nbsp;expParser</pre>
+    </p>
+    <p>
+        I readily admit that I don't have much experience with <em>parsec</em>, so it's possible that this could be done more elegantly. As the comment indicates, I struggled somewhat with a detail or two. I had trouble making it consume patterns until it meets the <code>'='</code> character.
+    </p>
+    <p>
+        The <code>functionParser</code> depends on another parser named <code>pairPatParser</code>, which again is composed from smaller parsers that handle each case of the <code>Pattern</code> <a href="https://en.wikipedia.org/wiki/Tagged_union">sum type</a>.
+    </p>
+    <p>
+        <pre><span style="color:#2b91af;">varPatParser</span>&nbsp;<span style="color:blue;">::</span>&nbsp;<span style="color:blue;">Stream</span>&nbsp;s&nbsp;m&nbsp;<span style="color:#2b91af;">Char</span>&nbsp;<span style="color:blue;">=&gt;</span>&nbsp;<span style="color:blue;">ParsecT</span>&nbsp;s&nbsp;()&nbsp;m&nbsp;<span style="color:blue;">Pattern</span>
+varPatParser&nbsp;=&nbsp;VarPat&nbsp;&lt;$&gt;&nbsp;many1&nbsp;upper
+ 
+<span style="color:#2b91af;">tPatParser</span>&nbsp;<span style="color:blue;">::</span>&nbsp;<span style="color:blue;">Stream</span>&nbsp;s&nbsp;m&nbsp;<span style="color:#2b91af;">Char</span>&nbsp;<span style="color:blue;">=&gt;</span>&nbsp;<span style="color:blue;">ParsecT</span>&nbsp;s&nbsp;()&nbsp;m&nbsp;<span style="color:blue;">Pattern</span>
+tPatParser&nbsp;=&nbsp;string&nbsp;<span style="color:#a31515;">&quot;true&quot;</span>&nbsp;&gt;&gt;&nbsp;<span style="color:blue;">return</span>&nbsp;TPat
+ 
+<span style="color:#2b91af;">fPatParser</span>&nbsp;<span style="color:blue;">::</span>&nbsp;<span style="color:blue;">Stream</span>&nbsp;s&nbsp;m&nbsp;<span style="color:#2b91af;">Char</span>&nbsp;<span style="color:blue;">=&gt;</span>&nbsp;<span style="color:blue;">ParsecT</span>&nbsp;s&nbsp;()&nbsp;m&nbsp;<span style="color:blue;">Pattern</span>
+fPatParser&nbsp;=&nbsp;string&nbsp;<span style="color:#a31515;">&quot;false&quot;</span>&nbsp;&gt;&gt;&nbsp;<span style="color:blue;">return</span>&nbsp;FPat
+ 
+<span style="color:#2b91af;">pairPatParser</span>&nbsp;<span style="color:blue;">::</span>&nbsp;<span style="color:blue;">Stream</span>&nbsp;s&nbsp;m&nbsp;<span style="color:#2b91af;">Char</span>&nbsp;<span style="color:blue;">=&gt;</span>&nbsp;<span style="color:blue;">ParsecT</span>&nbsp;s&nbsp;()&nbsp;m&nbsp;<span style="color:blue;">Pattern</span>
+pairPatParser&nbsp;=&nbsp;<span style="color:blue;">do</span>
+&nbsp;&nbsp;_&nbsp;&lt;-&nbsp;char&nbsp;<span style="color:#a31515;">&#39;(&#39;</span>
+&nbsp;&nbsp;p1&nbsp;&lt;-&nbsp;patternParser
+&nbsp;&nbsp;_&nbsp;&lt;-&nbsp;char&nbsp;<span style="color:#a31515;">&#39;,&#39;</span>
+&nbsp;&nbsp;_&nbsp;&lt;-&nbsp;skipMany&nbsp;$&nbsp;char&nbsp;<span style="color:#a31515;">&#39;&nbsp;&#39;</span>
+&nbsp;&nbsp;p2&nbsp;&lt;-&nbsp;patternParser
+&nbsp;&nbsp;_&nbsp;&lt;-&nbsp;char&nbsp;<span style="color:#a31515;">&#39;)&#39;</span>
+&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;$&nbsp;PairPat&nbsp;p1&nbsp;p2
+ 
+<span style="color:#2b91af;">patternParser</span>&nbsp;<span style="color:blue;">::</span>&nbsp;<span style="color:blue;">Stream</span>&nbsp;s&nbsp;m&nbsp;<span style="color:#2b91af;">Char</span>&nbsp;<span style="color:blue;">=&gt;</span>&nbsp;<span style="color:blue;">ParsecT</span>&nbsp;s&nbsp;()&nbsp;m&nbsp;<span style="color:blue;">Pattern</span>
+patternParser&nbsp;=
+&nbsp;&nbsp;try&nbsp;varPatParser&nbsp;&lt;|&gt;&nbsp;try&nbsp;tPatParser&nbsp;&lt;|&gt;&nbsp;try&nbsp;fPatParser&nbsp;&lt;|&gt;&nbsp;try&nbsp;pairPatParser</pre>
+    </p>
+    <p>
+        You might argue that the first three are so simple that they may not really qualify for the status of top-level values, but being a <em>parsec</em> newbie, I found that it helped <em>me</em> to structure the code that way. The only one of those values more complicated than a one-liner is, obviously, <code>pairPatParser</code>. I later discovered <a href="https://hackage.haskell.org/package/parsec/docs/Text-Parsec.html#v:between">between</a> and <a href="https://hackage.haskell.org/package/parsec/docs/Text-Parsec.html#v:sepBy1">sepBy1</a>, so it's possible I could also have defined <code>pairPatParser</code> as a composition of such combinators. I didn't, however, try, since this is, after all, throwaway prototype code, and what's there already works as intended.
+    </p>
+    <p>
+        As an aside, I would usually keenly attempt such refactorings, but I was working without automated tests. Yes, shocking, I know, but setting up unit tests for Haskell is, unfortunately, a bit of a hassle, and given the nature of the work, I considered <a href="/2018/11/12/what-to-test-and-not-to-test">doing without tests a reasonable trade-off</a>.
+    </p>
+    <p>
+        This takes care of parsing <code>Pattern</code> values, but notice that <code>functionParser</code> also depends on <code>expParser</code>, which, not surprisingly, parses <code>Exp</code> values. Like <code>patternParser</code> it does that by defining a helper parser for each sum type case, and then combining them into one larger parser.
+    </p>
+    <p>
+        <pre><span style="color:#2b91af;">varExpParser</span>&nbsp;<span style="color:blue;">::</span>&nbsp;<span style="color:blue;">Stream</span>&nbsp;s&nbsp;m&nbsp;<span style="color:#2b91af;">Char</span>&nbsp;<span style="color:blue;">=&gt;</span>&nbsp;<span style="color:blue;">ParsecT</span>&nbsp;s&nbsp;()&nbsp;m&nbsp;<span style="color:blue;">Exp</span>
+varExpParser&nbsp;=&nbsp;VarExp&nbsp;&lt;$&gt;&nbsp;many1&nbsp;upper
+ 
+<span style="color:#2b91af;">tExpParser</span>&nbsp;<span style="color:blue;">::</span>&nbsp;<span style="color:blue;">Stream</span>&nbsp;s&nbsp;m&nbsp;<span style="color:#2b91af;">Char</span>&nbsp;<span style="color:blue;">=&gt;</span>&nbsp;<span style="color:blue;">ParsecT</span>&nbsp;s&nbsp;()&nbsp;m&nbsp;<span style="color:blue;">Exp</span>
+tExpParser&nbsp;=&nbsp;string&nbsp;<span style="color:#a31515;">&quot;true&quot;</span>&nbsp;&gt;&gt;&nbsp;<span style="color:blue;">return</span>&nbsp;TExp
+ 
+<span style="color:#2b91af;">fExpParser</span>&nbsp;<span style="color:blue;">::</span>&nbsp;<span style="color:blue;">Stream</span>&nbsp;s&nbsp;m&nbsp;<span style="color:#2b91af;">Char</span>&nbsp;<span style="color:blue;">=&gt;</span>&nbsp;<span style="color:blue;">ParsecT</span>&nbsp;s&nbsp;()&nbsp;m&nbsp;<span style="color:blue;">Exp</span>
+fExpParser&nbsp;=&nbsp;string&nbsp;<span style="color:#a31515;">&quot;false&quot;</span>&nbsp;&gt;&gt;&nbsp;<span style="color:blue;">return</span>&nbsp;FExp
+ 
+<span style="color:#2b91af;">callExpParser</span>&nbsp;<span style="color:blue;">::</span>&nbsp;<span style="color:blue;">Stream</span>&nbsp;s&nbsp;m&nbsp;<span style="color:#2b91af;">Char</span>&nbsp;<span style="color:blue;">=&gt;</span>&nbsp;<span style="color:blue;">ParsecT</span>&nbsp;s&nbsp;()&nbsp;m&nbsp;<span style="color:blue;">Exp</span>
+callExpParser&nbsp;=&nbsp;<span style="color:blue;">do</span>
+&nbsp;&nbsp;fnid&nbsp;&lt;-&nbsp;many1&nbsp;lower
+&nbsp;&nbsp;skipMany1&nbsp;(char&nbsp;<span style="color:#a31515;">&#39;&nbsp;&#39;</span>)
+&nbsp;&nbsp;exps&nbsp;&lt;-&nbsp;NE.fromList&nbsp;&lt;$&gt;&nbsp;expParser&nbsp;`sepBy1`&nbsp;many1&nbsp;(char&nbsp;<span style="color:#a31515;">&#39;&nbsp;&#39;</span>)
+&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;$&nbsp;CallExp&nbsp;fnid&nbsp;exps
+ 
+<span style="color:#2b91af;">expParser</span>&nbsp;<span style="color:blue;">::</span>&nbsp;<span style="color:blue;">Stream</span>&nbsp;s&nbsp;m&nbsp;<span style="color:#2b91af;">Char</span>&nbsp;<span style="color:blue;">=&gt;</span>&nbsp;<span style="color:blue;">ParsecT</span>&nbsp;s&nbsp;()&nbsp;m&nbsp;<span style="color:blue;">Exp</span>
+expParser&nbsp;=
+&nbsp;&nbsp;try&nbsp;varExpParser&nbsp;&lt;|&gt;
+&nbsp;&nbsp;try&nbsp;tExpParser&nbsp;&lt;|&gt;
+&nbsp;&nbsp;try&nbsp;fExpParser&nbsp;&lt;|&gt;
+&nbsp;&nbsp;try&nbsp;callExpParser&nbsp;&lt;|&gt;
+&nbsp;&nbsp;between&nbsp;(char&nbsp;<span style="color:#a31515;">&#39;(&#39;</span>)&nbsp;(char&nbsp;<span style="color:#a31515;">&#39;)&#39;</span>)&nbsp;expParser</pre>
+    </p>
+    <p>
+        Even though I generally favoured implementing each sum type case in a separate, named parser, I inlined parsing of the parenthesized expression; partly because it's so simple, and partly because I didn't know what to call it.
+    </p>
+    <p>
+        You can see that at this point, I'd discovered the <code>between</code> and <code>sepBy1</code> combinators.
+    </p>
+    <p>
+        Finally, it's possible to compose all these smaller parsers together to a parser of Bopa programs.
+    </p>
+    <p>
+        <pre><span style="color:#2b91af;">programParser</span>&nbsp;<span style="color:blue;">::</span>&nbsp;<span style="color:blue;">Stream</span>&nbsp;s&nbsp;m&nbsp;<span style="color:#2b91af;">Char</span>&nbsp;<span style="color:blue;">=&gt;</span>&nbsp;<span style="color:blue;">ParsecT</span>&nbsp;s&nbsp;()&nbsp;m&nbsp;(<span style="color:blue;">NonEmpty</span>&nbsp;<span style="color:blue;">Function</span>)
+programParser&nbsp;=&nbsp;NE.fromList&nbsp;&lt;$&gt;&nbsp;functionParser&nbsp;`sepEndBy1`&nbsp;many1&nbsp;endOfLine</pre>
+    </p>
+    <p>
+        This, however, is parser. How do you run it?
+    </p>
+    <p>
+        Here's a way:
+    </p>
+    <p>
+        <pre><span style="color:#2b91af;">parseProgram</span>&nbsp;<span style="color:blue;">::</span>&nbsp;<span style="color:blue;">Stream</span>&nbsp;s&nbsp;<span style="color:blue;">Identity</span>&nbsp;<span style="color:#2b91af;">Char</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">=&gt;</span>&nbsp;s&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:#2b91af;">Either</span>&nbsp;<span style="color:blue;">ParseError</span>&nbsp;(<span style="color:blue;">NonEmpty</span>&nbsp;<span style="color:blue;">Function</span>)
+parseProgram&nbsp;=&nbsp;parse&nbsp;programParser&nbsp;<span style="color:#a31515;">&quot;&quot;</span></pre>
+    </p>
+    <p>
+        You may, for example, try to parse the above <code>and</code> function:
+    </p>
+    <p>
+        <pre>ghci&gt; parseProgram "and true X = X\nand false X = false"
+Right (Function {fid = "and", fpats = TPat :| [VarPat "X"], fbody = VarExp "X"} :|
+      [Function {fid = "and", fpats = FPat :| [VarPat "X"], fbody = FExp}])</pre>
+    </p>
+    <p>
+        (Output manually formatted to improve readability.)
+    </p>
+    <p>
+        In practice, however, I didn't much do that. Instead, I created source code files and loaded them with the basic file-reading APIs included in the <code>base</code> package. You'll see examples of this later.
+    </p>
+    <h3 id="c513d63f70bb4cccb4f1363cb18fc046">
+        Arguments <a href="#c513d63f70bb4cccb4f1363cb18fc046">#</a>
+    </h3>
+    <p>
+        As described, running a program requires construction of a Boolean value, or pairs of Boolean values, something the language itself does not allow. That's the reason I haven't yet modelled it.
+    </p>
+    <p>
+        <pre><span style="color:blue;">data</span>&nbsp;Arg&nbsp;=&nbsp;TArg&nbsp;|&nbsp;FArg&nbsp;|&nbsp;PairArg&nbsp;Arg&nbsp;Arg&nbsp;<span style="color:blue;">deriving</span>&nbsp;(<span style="color:#2b91af;">Eq</span>,&nbsp;<span style="color:#2b91af;">Ord</span>,&nbsp;<span style="color:#2b91af;">Show</span>)</pre>
+    </p>
+    <p>
+        Notice that <code>true</code> and <code>false</code> gets yet another representation as either <code>TArg</code> or <code>FArg</code>.
+    </p>
+    <p>
+        If I want to be able to run programs by typing <code>alltrue (true, (false, true))</code>, instead of painstakingly creating ASTs, I need a parser for this data type as well. That's not going to be a source code parser, but rather part of a command-line parser.
+    </p>
+    <p>
+        <pre><span style="color:#2b91af;">tArgParser</span>&nbsp;<span style="color:blue;">::</span>&nbsp;<span style="color:blue;">Stream</span>&nbsp;s&nbsp;m&nbsp;<span style="color:#2b91af;">Char</span>&nbsp;<span style="color:blue;">=&gt;</span>&nbsp;<span style="color:blue;">ParsecT</span>&nbsp;s&nbsp;()&nbsp;m&nbsp;<span style="color:blue;">Arg</span>
+tArgParser&nbsp;=&nbsp;string&nbsp;<span style="color:#a31515;">&quot;true&quot;</span>&nbsp;&gt;&gt;&nbsp;<span style="color:blue;">return</span>&nbsp;TArg
+ 
+<span style="color:#2b91af;">fArgParser</span>&nbsp;<span style="color:blue;">::</span>&nbsp;<span style="color:blue;">Stream</span>&nbsp;s&nbsp;m&nbsp;<span style="color:#2b91af;">Char</span>&nbsp;<span style="color:blue;">=&gt;</span>&nbsp;<span style="color:blue;">ParsecT</span>&nbsp;s&nbsp;()&nbsp;m&nbsp;<span style="color:blue;">Arg</span>
+fArgParser&nbsp;=&nbsp;string&nbsp;<span style="color:#a31515;">&quot;false&quot;</span>&nbsp;&gt;&gt;&nbsp;<span style="color:blue;">return</span>&nbsp;FArg
+ 
+<span style="color:#2b91af;">pairArgParser</span>&nbsp;<span style="color:blue;">::</span>&nbsp;<span style="color:blue;">Stream</span>&nbsp;s&nbsp;m&nbsp;<span style="color:#2b91af;">Char</span>&nbsp;<span style="color:blue;">=&gt;</span>&nbsp;<span style="color:blue;">ParsecT</span>&nbsp;s&nbsp;()&nbsp;m&nbsp;<span style="color:blue;">Arg</span>
+pairArgParser&nbsp;=&nbsp;<span style="color:blue;">do</span>
+&nbsp;&nbsp;_&nbsp;&lt;-&nbsp;char&nbsp;<span style="color:#a31515;">&#39;(&#39;</span>
+&nbsp;&nbsp;p1&nbsp;&lt;-&nbsp;argParser
+&nbsp;&nbsp;_&nbsp;&lt;-&nbsp;char&nbsp;<span style="color:#a31515;">&#39;,&#39;</span>
+&nbsp;&nbsp;_&nbsp;&lt;-&nbsp;skipMany&nbsp;$&nbsp;char&nbsp;<span style="color:#a31515;">&#39;&nbsp;&#39;</span>
+&nbsp;&nbsp;p2&nbsp;&lt;-&nbsp;argParser
+&nbsp;&nbsp;_&nbsp;&lt;-&nbsp;char&nbsp;<span style="color:#a31515;">&#39;)&#39;</span>
+&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;$&nbsp;PairArg&nbsp;p1&nbsp;p2
+ 
+<span style="color:#2b91af;">argParser</span>&nbsp;<span style="color:blue;">::</span>&nbsp;<span style="color:blue;">Stream</span>&nbsp;s&nbsp;m&nbsp;<span style="color:#2b91af;">Char</span>&nbsp;<span style="color:blue;">=&gt;</span>&nbsp;<span style="color:blue;">ParsecT</span>&nbsp;s&nbsp;()&nbsp;m&nbsp;<span style="color:blue;">Arg</span>
+argParser&nbsp;=&nbsp;tArgParser&nbsp;&lt;|&gt;&nbsp;fArgParser&nbsp;&lt;|&gt;&nbsp;pairArgParser</pre>
+    </p>
+    <p>
+        To be honest, I think that I just copied and pasted <code>pairPatParser</code> and changed a few things. It looks that way, doesn't it?
+    </p>
+    <h3 id="697f39dc3ff247478681ba5fbe174cfd">
+        Entry points <a href="#697f39dc3ff247478681ba5fbe174cfd">#</a>
+    </h3>
+    <p>
+        In order to execute a program, you need more than arguments. You need to define which function to call. I decided that this was close enough to defining a program <a href="https://en.wikipedia.org/wiki/Entry_point">entry point</a> that it gave name to the next type.
+    </p>
+    <p>
+        <pre><span style="color:blue;">data</span>&nbsp;Entry&nbsp;=&nbsp;Entry&nbsp;String&nbsp;(NonEmpty&nbsp;Arg)&nbsp;<span style="color:blue;">deriving</span>&nbsp;(<span style="color:#2b91af;">Eq</span>,&nbsp;<span style="color:#2b91af;">Show</span>)</pre>
+    </p>
+    <p>
+        The <code>String</code> value identifies the desired function by name, and the <code>NonEmpty</code> list supplies the arguments.
+    </p>
+    <p>
+        Since I wish to be able to run a program by writing e.g. <code>alltrue ((true, true), (true, true))</code>, I need a parser for that, too.
+    </p>
+    <p>
+        <pre><span style="color:#2b91af;">entryParser</span>&nbsp;<span style="color:blue;">::</span>&nbsp;<span style="color:blue;">Stream</span>&nbsp;s&nbsp;m&nbsp;<span style="color:#2b91af;">Char</span>&nbsp;<span style="color:blue;">=&gt;</span>&nbsp;<span style="color:blue;">ParsecT</span>&nbsp;s&nbsp;()&nbsp;m&nbsp;<span style="color:blue;">Entry</span>
+entryParser&nbsp;=&nbsp;<span style="color:blue;">do</span>
+&nbsp;&nbsp;fnid&nbsp;&lt;-&nbsp;many1&nbsp;lower
+&nbsp;&nbsp;skipMany1&nbsp;(char&nbsp;<span style="color:#a31515;">&#39;&nbsp;&#39;</span>)
+&nbsp;&nbsp;args&nbsp;&lt;-&nbsp;NE.fromList&nbsp;&lt;$&gt;&nbsp;argParser&nbsp;`sepBy1`&nbsp;many1&nbsp;(char&nbsp;<span style="color:#a31515;">&#39;&nbsp;&#39;</span>)
+&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;$&nbsp;Entry&nbsp;fnid&nbsp;args</pre>
+    </p>
+    <p>
+        This, again, is a parser; it's convenient to also define a function to run it against input.
+    </p>
+    <p>
+        <pre><span style="color:#2b91af;">parseEntry</span>&nbsp;<span style="color:blue;">::</span>&nbsp;<span style="color:blue;">Stream</span>&nbsp;s&nbsp;<span style="color:blue;">Identity</span>&nbsp;<span style="color:#2b91af;">Char</span>&nbsp;<span style="color:blue;">=&gt;</span>&nbsp;s&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:#2b91af;">Either</span>&nbsp;<span style="color:blue;">ParseError</span>&nbsp;<span style="color:blue;">Entry</span>
+parseEntry&nbsp;=&nbsp;parse&nbsp;entryParser&nbsp;<span style="color:#a31515;">&quot;&quot;</span></pre>
+    </p>
+    <p>
+        Let's see if it works:
+    </p>
+    <p>
+        <pre>ghci&gt; parseEntry "alltrue ((true, true), (true, true))"
+Right (Entry "alltrue" (PairArg (PairArg TArg TArg) (PairArg TArg TArg) :| []))</pre>
+    </p>
+    <p>
+        That seems promising.
+    </p>
+    <h3 id="efcf351461f5483aa6f1ec9945fd3039">
+        Parameter binding <a href="#efcf351461f5483aa6f1ec9945fd3039">#</a>
+    </h3>
+    <p>
+        Armed with the ability to parse programs as well as entry points, 'all' that remains is to execute the program. To that end, I wrote an interpreter. It works with a few helper functions, the first of which attempts to bind patterns to arguments.
+    </p>
+    <p>
+        For example, if we have a variable-name pattern such as <code>X</code> and an argument such as <code>(true, false)</code>, we can bind <code>X</code> to that value. Some examples will help, but I'll show the function first, and then talk you through it.
+    </p>
+    <p>
+        <pre><span style="color:green;">--&nbsp;Attempt&nbsp;pattern&nbsp;matching&nbsp;and,&nbsp;if&nbsp;possible,&nbsp;bind&nbsp;variables&nbsp;to&nbsp;arguments.
+--&nbsp;Returns&nbsp;an&nbsp;association&nbsp;list&nbsp;of&nbsp;bound&nbsp;variables&nbsp;(an&nbsp;&#39;environment&#39;),&nbsp;if&nbsp;any.
+--&nbsp;Returns&nbsp;Left&nbsp;with&nbsp;an&nbsp;error&nbsp;message&nbsp;if&nbsp;no&nbsp;match.
+</span><span style="color:#2b91af;">tryBind</span>&nbsp;<span style="color:blue;">::</span>&nbsp;<span style="color:blue;">NonEmpty</span>&nbsp;<span style="color:blue;">Pattern</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">NonEmpty</span>&nbsp;<span style="color:blue;">Arg</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:#2b91af;">Either</span>&nbsp;<span style="color:#2b91af;">String</span>&nbsp;[(<span style="color:#2b91af;">String</span>,&nbsp;<span style="color:blue;">Arg</span>)]
+tryBind&nbsp;(VarPat&nbsp;p&nbsp;:|&nbsp;<span style="color:blue;">[]</span>)&nbsp;(arg&nbsp;:|&nbsp;<span style="color:blue;">[]</span>)&nbsp;=&nbsp;Right&nbsp;[(p,&nbsp;arg)]
+tryBind&nbsp;(TPat&nbsp;:|&nbsp;<span style="color:blue;">[]</span>)&nbsp;(TArg&nbsp;:|&nbsp;<span style="color:blue;">[]</span>)&nbsp;=&nbsp;Right&nbsp;<span style="color:blue;">[]</span>
+tryBind&nbsp;(FPat&nbsp;:|&nbsp;<span style="color:blue;">[]</span>)&nbsp;(FArg&nbsp;:|&nbsp;<span style="color:blue;">[]</span>)&nbsp;=&nbsp;Right&nbsp;<span style="color:blue;">[]</span>
+tryBind&nbsp;(PairPat&nbsp;p1&nbsp;p2&nbsp;:|&nbsp;<span style="color:blue;">[]</span>)&nbsp;((PairArg&nbsp;a1&nbsp;a2)&nbsp;:|&nbsp;<span style="color:blue;">[]</span>)&nbsp;=
+&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;b1&nbsp;=&nbsp;tryBind&nbsp;(NE.singleton&nbsp;p1)&nbsp;(NE.singleton&nbsp;a1)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;b2&nbsp;=&nbsp;tryBind&nbsp;(NE.singleton&nbsp;p2)&nbsp;(NE.singleton&nbsp;a2)
+&nbsp;&nbsp;<span style="color:blue;">in</span>&nbsp;<span style="color:#2b91af;">(++)</span>&nbsp;&lt;$&gt;&nbsp;b1&nbsp;&lt;*&gt;&nbsp;b2
+tryBind&nbsp;(pat&nbsp;:|&nbsp;(p:ps))&nbsp;(arg&nbsp;:|&nbsp;(a:as))&nbsp;=
+&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;b&nbsp;&nbsp;=&nbsp;tryBind&nbsp;(NE.singleton&nbsp;pat)&nbsp;(NE.singleton&nbsp;arg)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;bs&nbsp;=&nbsp;tryBind&nbsp;(p&nbsp;:|&nbsp;ps)&nbsp;(a&nbsp;:|&nbsp;as)
+&nbsp;&nbsp;<span style="color:blue;">in</span>&nbsp;<span style="color:#2b91af;">(++)</span>&nbsp;&lt;$&gt;&nbsp;b&nbsp;&lt;*&gt;&nbsp;bs
+tryBind&nbsp;_&nbsp;args&nbsp;=&nbsp;Left&nbsp;(<span style="color:#a31515;">&quot;Could&nbsp;not&nbsp;match&nbsp;&quot;</span>&nbsp;++&nbsp;<span style="color:blue;">show</span>&nbsp;args&nbsp;++&nbsp;<span style="color:#a31515;">&quot;.&quot;</span>)</pre>
+    </p>
+    <p>
+        Notice the type declaration: The function takes a <code>NonEmpty</code> list of <code>Pattern</code> values, and another <code>NonEmpty</code> list of <code>Arg</code> values. The first precondition in order to achieve a successful result is that these two lists need to have the same length. If we have more arguments than patterns, we run out of patterns. If we have more patterns than arguments, we can't bind all the parameters in the patterns, and partial application is not allowed.
+    </p>
+    <p>
+        The first four rules of the <code>tryBind</code> function attempt to match a <em>single</em> <code>Pattern</code> value to a <em>single</em> <code>Arg</code> value; notice the use of the <code>:|</code> <code>NonEmpty</code> data constructor: In all four cases, the tail of the <code>NonEmpty</code> lists only matches the empty list <code>[]</code>.
+    </p>
+    <p>
+        The first rule, for example, has a single variable pattern, where <code>p</code> is the variable name, <em>and</em> a single argument <code>arg</code>, so that pattern matching succeeds and the variable name is bound to the argument. Here's an example:
+    </p>
+    <p>
+        <pre>ghci&gt; tryBind (VarPat "X" :| []) (PairArg TArg FArg :| [])
+Right [("X",PairArg TArg FArg)]</pre>
+    </p>
+    <p>
+        The result is a variable environment in which the variable name <code>X</code> is bound to the value <code>PairArg TArg FArg</code> (that is, <code>(true, false)</code>).
+    </p>
+    <p>
+        Sometimes, when matching literals, no variables are bound, in which case the environment is empty:
+    </p>
+    <p>
+        <pre>ghci&gt; tryBind (TPat :| []) (TArg :| [])
+Right []</pre>
+    </p>
+    <p>
+        While the environment itself is empty, the result is still a <code>Right</code> case, indicating that the pattern matched the argument. This, of course, need not be the case:
+    </p>
+    <p>
+        <pre>ghci&gt; tryBind (TPat :| []) (FArg :| [])
+Left "Could not match FArg :| []."</pre>
+    </p>
+    <p>
+        The rule that attempts to match a pair with a pair argument recursively calls <code>tryBind</code> for the left and the right element, and then uses the <code>Applicative</code> nature of <code>Either</code> to compose those two results.
+    </p>
+    <p>
+        <pre>ghci&gt; tryBind (PairPat TPat (VarPat "Y") :| []) (PairArg TArg FArg :| [])
+Right [("Y",FArg)]</pre>
+    </p>
+    <p>
+        In this example, you see how a pair pattern composed of <code>(true, Y)</code> matches the argument <code>(true, false)</code>, resulting in the variable environment where <code>Y</code> is bound to <code>false</code>.
+    </p>
+    <p>
+        The final <code>Right</code>-valued match is when there's more than a single pattern, and more than a single argument. In that case, the function recursively calls itself with the heads of each <code>NonEmpty</code> list, as well as the tails of each <code>NonEmpty</code> list.
+    </p>
+    <p>
+        <pre>ghci&gt; tryBind (PairPat TPat (VarPat "Y") :| [VarPat "Z"]) (PairArg TArg FArg :| [PairArg FArg TArg])
+Right [("Y",FArg),("Z",PairArg FArg TArg)]</pre>
+    </p>
+    <p>
+        In this example, we try to bind the variables in the patterns <code>(true, Y) Z</code> with the arguments <code>(true, false) (false, true)</code>, producing the variable environment where <code>Y</code> is bound to <code>false</code>, and <code>Z</code> is bound to <code>(false, true)</code>.
+    </p>
+    <p>
+        This exhausts all the legal bindings, so the final, wildcard pattern in <code>tryBind</code> returns a <code>Left</code> value indicating the failure. You've already seen an example of that, above.
+    </p>
+    <p>
+        That function is a bit of a mouthful, but fortunately, we've now covered a major part of the interpreter.
+    </p>
+    <h3 id="e44a976114844acbafec41f24ab0e2bf">
+        Pattern matching <a href="#e44a976114844acbafec41f24ab0e2bf">#</a>
+    </h3>
+    <p>
+        The <code>tryBind</code> function attempts to bind a single list of patterns to a list of arguments. A function may, however, list several (non-overlapping) rules, so if the first pattern list doesn't match, the interpreter must try the second, the third, and so on, until there are no more patterns to try. While <code>tryBind</code> does the heavy lifting, another function goes through the list of rules.
+    </p>
+    <p>
+        <pre><span style="color:green;">--&nbsp;Goes&nbsp;through&nbsp;one&nbsp;or&nbsp;more&nbsp;function&nbsp;rules,&nbsp;looking&nbsp;for&nbsp;a&nbsp;match.
+--&nbsp;All&nbsp;the&nbsp;functions&nbsp;in&nbsp;the&nbsp;function&nbsp;list&nbsp;are&nbsp;assumed&nbsp;to&nbsp;have&nbsp;the&nbsp;same&nbsp;name,&nbsp;so
+--&nbsp;that&nbsp;they&nbsp;are&nbsp;all&nbsp;rules&nbsp;of&nbsp;the&nbsp;same&nbsp;function.
+--&nbsp;This&nbsp;precondition&nbsp;is&nbsp;not&nbsp;checked&nbsp;here,&nbsp;but&nbsp;handled&nbsp;by&nbsp;the&nbsp;caller.&nbsp;This&nbsp;isn&#39;t
+--&nbsp;the&nbsp;best&nbsp;implementation&nbsp;decision,&nbsp;but&nbsp;this&nbsp;is,&nbsp;after&nbsp;all,&nbsp;a&nbsp;prototype.
+</span><span style="color:#2b91af;">tryMatch</span>&nbsp;<span style="color:blue;">::</span>&nbsp;<span style="color:blue;">NonEmpty</span>&nbsp;<span style="color:blue;">Function</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">NonEmpty</span>&nbsp;<span style="color:blue;">Arg</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:#2b91af;">Either</span>&nbsp;[<span style="color:#2b91af;">Char</span>]&nbsp;([(<span style="color:#2b91af;">String</span>,&nbsp;<span style="color:blue;">Arg</span>)],&nbsp;<span style="color:blue;">Exp</span>)
+tryMatch&nbsp;(Function&nbsp;_&nbsp;pats&nbsp;body&nbsp;:|&nbsp;<span style="color:blue;">[]</span>)&nbsp;args&nbsp;=&nbsp;(,&nbsp;body)&nbsp;&lt;$&gt;&nbsp;tryBind&nbsp;pats&nbsp;args
+tryMatch&nbsp;(Function&nbsp;_&nbsp;pats&nbsp;body&nbsp;:|&nbsp;(f&nbsp;:&nbsp;fs))&nbsp;args&nbsp;=
+&nbsp;&nbsp;<span style="color:blue;">case</span>&nbsp;tryBind&nbsp;pats&nbsp;args&nbsp;<span style="color:blue;">of</span>
+&nbsp;&nbsp;&nbsp;&nbsp;Right&nbsp;b&nbsp;-&gt;&nbsp;Right&nbsp;(b,&nbsp;body)
+&nbsp;&nbsp;&nbsp;&nbsp;Left&nbsp;_&nbsp;-&gt;&nbsp;tryMatch&nbsp;(f&nbsp;:|&nbsp;fs)&nbsp;args</pre>
+    </p>
+    <p>
+        There are two (Haskell) rules for <code>tryMatch</code>: One where there's only one <code>Function</code> rule, and one where there's more than one.
+    </p>
+    <p>
+        In the first case, <code>tryMatch</code> delegates to <code>tryBind</code>, but if the binding attempt succeeds, also returns the body.
+    </p>
+    <p>
+        <pre>ghci&gt; tryMatch (Function "and" (FPat :| [VarPat "X"]) FExp :| []) (FArg :| [TArg])
+Right ([("X",TArg)],FExp)</pre>
+    </p>
+    <p>
+        This example attempts to bind the <em>second</em> rule of the above <code>and</code> function. Compare the input to the AST for <code>and</code> shown above. The result is a tuple where the first, or left, element is the variable environment, and the second, or right, element is the expression that matched.
+    </p>
+    <p>
+        It's important to return the matching expression, since <code>tryMatch</code> doesn't in itself evaluate the <code>body</code>. In case of multiple rules, the interpreter needs to know which body is associated with the matching pattern.
+    </p>
+    <p>
+        <pre>ghci&gt; tryMatch (Function "and" (TPat :| [VarPat "X"]) (VarExp "X") :|
+               [Function "and" (FPat :| [VarPat "X"]) FExp])
+               (TArg :| [TArg])
+Right ([("X",TArg)],VarExp "X")
+ghci&gt; tryMatch (Function "and" (TPat :| [VarPat "X"]) (VarExp "X") :|
+               [Function "and" (FPat :| [VarPat "X"]) FExp])
+               (FArg :| [TArg])
+Right ([("X",TArg)],FExp)</pre>
+    </p>
+    <p>
+        (Inputs manually formatted for improved readability.)
+    </p>
+    <p>
+        These two examples try to pattern match the above <code>and</code> function. In the first example, the input is <code>true false</code>, which matches the first rule <code>and true X = X</code>. Therefore, the return value is <code>Right ([("X",TArg)],VarExp "X")</code>, indicating a new variable environment in which <code>X</code> is bound to <code>true</code>, and the matching <code>body</code> is <code>VarExp "X"</code>, indicating that the variable <code>X</code> is returned.
+    </p>
+    <p>
+        In the second example, the input is <code>(false, true)</code>, which now matches the second rule <code>and false X = false</code>. The returned tuple now indicates that <code>X</code> is still bound to <code>true</code>, but the returned <code>body</code> is now <code>FExp</code>, indicating the constant return value <code>false</code>.
+    </p>
+    <p>
+        In both cases, <code>tryMatch</code> starts in the second (Haskell) rule, since there are two parameters. In the first example, the first call to <code>tryBind</code> immediately returns a <code>Right</code> result, which is then returned. In the second example, on the other hand, the first call to <code>tryBind</code> returns a <code>Left</code>-value result, which causes <code>tryMatch</code> to recurse back on itself with the remaining (Bopa) rules.
+    </p>
+    <h3 id="8ac0031b02ea46489378c6b25e41ee5e">
+        Evaluation <a href="#8ac0031b02ea46489378c6b25e41ee5e">#</a>
+    </h3>
+    <p>
+        Given a variable environment and an expression, it's now possible to evaluate the expression to a value.
+    </p>
+    <p>
+        <pre><span style="color:green;">--&nbsp;Evaluate&nbsp;an&nbsp;expression,&nbsp;given&nbsp;a&nbsp;program&nbsp;(AST)&nbsp;and&nbsp;an&nbsp;environment.
+--&nbsp;Also&nbsp;required&nbsp;as&nbsp;input&nbsp;is&nbsp;a&nbsp;set&nbsp;used&nbsp;for&nbsp;cycle&nbsp;detection.&nbsp;Set&nbsp;elements&nbsp;are
+--&nbsp;tuples,&nbsp;each&nbsp;consisting&nbsp;of&nbsp;a&nbsp;function&nbsp;identifier&nbsp;(name)&nbsp;and&nbsp;arguments&nbsp;to&nbsp;that
+--&nbsp;function.&nbsp;If&nbsp;the&nbsp;evaluator&nbsp;recursively&nbsp;sees&nbsp;that&nbsp;tuple&nbsp;again,&nbsp;it&nbsp;has&nbsp;detected
+--&nbsp;a&nbsp;cycle,&nbsp;and&nbsp;stops&nbsp;further&nbsp;evaluation.
+</span><span style="color:#2b91af;">eval</span>&nbsp;<span style="color:blue;">::</span>&nbsp;<span style="color:blue;">Foldable</span>&nbsp;t
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">=&gt;</span>&nbsp;<span style="color:blue;">Set</span>&nbsp;(<span style="color:#2b91af;">String</span>,&nbsp;<span style="color:blue;">NonEmpty</span>&nbsp;<span style="color:blue;">Arg</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;t&nbsp;(<span style="color:blue;">NonEmpty</span>&nbsp;<span style="color:blue;">Function</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;[(<span style="color:#2b91af;">String</span>,&nbsp;<span style="color:blue;">Arg</span>)]
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">Exp</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:#2b91af;">Either</span>&nbsp;<span style="color:#2b91af;">String</span>&nbsp;<span style="color:blue;">Arg</span>
+eval&nbsp;_&nbsp;_&nbsp;env&nbsp;(VarExp&nbsp;name)&nbsp;=
+&nbsp;&nbsp;<span style="color:blue;">maybe</span>&nbsp;(Left&nbsp;(<span style="color:#a31515;">&quot;Could&nbsp;not&nbsp;find&nbsp;variable&nbsp;&quot;</span>&nbsp;++&nbsp;name&nbsp;++&nbsp;<span style="color:#a31515;">&quot;.&quot;</span>))&nbsp;Right&nbsp;$
+&nbsp;&nbsp;<span style="color:blue;">lookup</span>&nbsp;name&nbsp;env
+eval&nbsp;_&nbsp;_&nbsp;_&nbsp;TExp&nbsp;=&nbsp;Right&nbsp;TArg
+eval&nbsp;_&nbsp;_&nbsp;_&nbsp;FExp&nbsp;=&nbsp;Right&nbsp;FArg
+eval&nbsp;observedCalls&nbsp;prog&nbsp;env&nbsp;(CallExp&nbsp;fnid&nbsp;exps)&nbsp;=&nbsp;<span style="color:blue;">do</span>
+&nbsp;&nbsp;rules&nbsp;&lt;-
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">maybe</span>&nbsp;(Left&nbsp;(<span style="color:#a31515;">&quot;Could&nbsp;not&nbsp;find&nbsp;function&nbsp;&quot;</span>&nbsp;++&nbsp;fnid&nbsp;++&nbsp;<span style="color:#a31515;">&quot;.&quot;</span>))&nbsp;Right&nbsp;$
+&nbsp;&nbsp;&nbsp;&nbsp;find&nbsp;((fnid&nbsp;==)&nbsp;.&nbsp;fid&nbsp;.&nbsp;NE.<span style="color:blue;">head</span>)&nbsp;prog
+&nbsp;&nbsp;args&nbsp;&lt;-&nbsp;traverse&nbsp;(eval&nbsp;observedCalls&nbsp;prog&nbsp;env)&nbsp;exps
+&nbsp;&nbsp;(env&#39;,&nbsp;body)&nbsp;&lt;-&nbsp;tryMatch&nbsp;rules&nbsp;args
+&nbsp;&nbsp;<span style="color:blue;">if</span>&nbsp;Set.member&nbsp;(fnid,&nbsp;args)&nbsp;observedCalls
+&nbsp;&nbsp;<span style="color:blue;">then</span>&nbsp;Left&nbsp;<span style="color:#a31515;">&quot;Cycle&nbsp;detected.&quot;</span>
+&nbsp;&nbsp;<span style="color:blue;">else</span>&nbsp;eval&nbsp;(Set.insert&nbsp;(fnid,&nbsp;args)&nbsp;observedCalls)&nbsp;prog&nbsp;env&#39;&nbsp;body</pre>
+    </p>
+    <p>
+        This looks like quite a mouthful, but notice that almost half of this code listing is a comment and a type declaration.
+    </p>
+    <p>
+        As the comment indicates, this function includes cycle detection, which was prompted by the exam questions related to the property of termination. You'll see an example of this later.
+    </p>
+    <p>
+        The <code>eval</code> function pattern matches the four different cases of the <code>Exp</code> sum type. In the first case, if the expression is a variable expression, it tries to <code>lookup</code> the variable in the environment. If found, it's returned; otherwise, an error message is returned.
+    </p>
+    <p>
+        The two next (Haskell) rules simply translate the Boolean representations from patterns to argument values.
+    </p>
+    <p>
+        Finally, if the expression is a function call, more work needs to be done. First, <code>eval</code> tries to <code>find</code> the function in the program. The <code>eval</code> function expects the program <code>prog</code> to be grouped in function rules. For example, it'd expect the above <code>and</code> function to be a <code>NonEmpty</code> list of <code>Function</code> values, and it'd expect, say, <code>alltrue</code> to be another <code>NonEmpty</code> list containing three <code>Function</code> values.
+    </p>
+    <p>
+        If <code>eval</code> finds the named function, it proceeds to evaluate all the expressions (<code>exps</code>) that make up the arguments. It traverses <code>exps</code> and calls itself recursively for each argument.
+    </p>
+    <p>
+        Armed with both <code>rules</code> and <code>args</code> it calls <code>tryMatch</code> to get a new variable environment and the <code>body</code> that matched. If it gets past the cycle detection, it proceeds to call itself recursively with the new environment and the <code>body</code> that matched.
+    </p>
+    <p>
+        Supplying a direct example of calling this function is becoming awkward, as it requires balancing quite a few parentheses, but it <em>can</em> be done.
+    </p>
+    <p>
+        <pre>ghci&gt; eval
+        Set.empty
+        [Function "and" (TPat :| [VarPat "X"]) (VarExp "X") :|
+            [Function "and" (FPat :| [VarPat "X"]) FExp]]
+        [("X",TArg)]
+        TExp
+Right TArg</pre>
+    </p>
+    <p>
+        (Input manually formatted for improved readability.)
+    </p>
+    <p>
+        This example starts with an empty cycle-detection set, the rules group for <code>and</code>, a variable environment in which <code>X</code> is already bound to <code>true</code>, and evaluates the expression <code>TExp</code> (i.e. <code>true</code>). The result is <code>TArg</code> (i.e. <code>true</code>) wrapped in <code>Right</code>, indicating that evaluation was successful.
+    </p>
+    <h3 id="168b80834d104f60afd002d157c35173">
+        Interpretation <a href="#168b80834d104f60afd002d157c35173">#</a>
+    </h3>
+    <p>
+        All building blocks for an interpreter are now in place.
+    </p>
+    <p>
+        <pre><span style="color:green;">--&nbsp;Interpret&nbsp;a&nbsp;program&nbsp;(AST),&nbsp;given&nbsp;an&nbsp;entry&nbsp;point&nbsp;and&nbsp;its&nbsp;arguments.
+</span><span style="color:#2b91af;">interpret</span>&nbsp;<span style="color:blue;">::</span>&nbsp;<span style="color:blue;">Foldable</span>&nbsp;f&nbsp;<span style="color:blue;">=&gt;</span>&nbsp;f&nbsp;<span style="color:blue;">Function</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">Entry</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:#2b91af;">Either</span>&nbsp;<span style="color:#2b91af;">String</span>&nbsp;<span style="color:blue;">Arg</span>
+interpret&nbsp;prog&nbsp;(Entry&nbsp;fnid&nbsp;args)&nbsp;=&nbsp;<span style="color:blue;">do</span>
+&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;functions&nbsp;=&nbsp;&nbsp;NE.groupWith&nbsp;fid&nbsp;prog&nbsp;<span style="color:green;">--&nbsp;Group&nbsp;function&nbsp;rules&nbsp;together
+</span>&nbsp;&nbsp;<span style="color:green;">--&nbsp;The&nbsp;rules&nbsp;that&nbsp;make&nbsp;up&nbsp;`fnid`:
+</span>&nbsp;&nbsp;rules&nbsp;&lt;-
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">maybe</span>&nbsp;(Left&nbsp;(<span style="color:#a31515;">&quot;Could&nbsp;not&nbsp;find&nbsp;function&nbsp;&quot;</span>&nbsp;++&nbsp;fnid&nbsp;++&nbsp;<span style="color:#a31515;">&quot;.&quot;</span>))&nbsp;Right&nbsp;$
+&nbsp;&nbsp;&nbsp;&nbsp;find&nbsp;((fnid&nbsp;==)&nbsp;.&nbsp;fid&nbsp;.&nbsp;NE.<span style="color:blue;">head</span>)&nbsp;functions
+&nbsp;&nbsp;(env,&nbsp;body)&nbsp;&lt;-&nbsp;tryMatch&nbsp;rules&nbsp;args
+&nbsp;&nbsp;eval&nbsp;Set.empty&nbsp;functions&nbsp;env&nbsp;body</pre>
+    </p>
+    <p>
+        This function expects that the program (<code>prog</code>) supplied to it is the raw result of parsing a program. The parser doesn't group identically-named function rules together, so that's the first thing that <code>interpret</code> does.
+    </p>
+    <p>
+        It then proceeds to look through <code>functions</code> to <code>find</code> the function indicated by the entry point. If it succeeds, it calls <code>tryMatch</code> to identify the environment and the body to be evaluated. Finally, it calls <code>eval</code> with these values.
+    </p>
+    <p>
+        <pre>ghci&gt; interpret
+        [Function "and" (TPat :| [VarPat "X"]) (VarExp "X"),
+         Function "and" (FPat :| [VarPat "X"]) FExp]
+        (Entry "and" (TArg :| [TArg]))
+Right TArg</pre>
+    </p>
+    <p>
+        (Input manually formatted for improved readability.)
+    </p>
+    <p>
+        Like all the above examples, this example processes the <code>and</code> function, calling it with the input values <code>true true</code>, which returns a value representing <code>true</code>, just as we'd expect.
+    </p>
+    <p>
+        The interpreter seems to be working as intended, but it works on the AST. It's time to connect the parsers with the interpreter.
+    </p>
+    <h3 id="5f712e53c8a9463d9629cc5320287217">
+        Formatting results <a href="#5f712e53c8a9463d9629cc5320287217">#</a>
+    </h3>
+    <p>
+        It'd be more convenient if we feed some source code and a function call into a function and have it spit out the result. In order to make the result prettier, I first added a little formatter for <code>Arg</code>:
+    </p>
+    <p>
+        <pre><span style="color:#2b91af;">formatArg</span>&nbsp;<span style="color:blue;">::</span>&nbsp;<span style="color:blue;">Arg</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:#2b91af;">String</span>
+formatArg&nbsp;TArg&nbsp;=&nbsp;<span style="color:#a31515;">&quot;true&quot;</span>
+formatArg&nbsp;FArg&nbsp;=&nbsp;<span style="color:#a31515;">&quot;false&quot;</span>
+formatArg&nbsp;(PairArg&nbsp;a1&nbsp;a2)&nbsp;=&nbsp;<span style="color:#a31515;">&quot;(&quot;</span>&nbsp;++&nbsp;formatArg&nbsp;a1&nbsp;++&nbsp;<span style="color:#a31515;">&quot;,&nbsp;&quot;</span>&nbsp;++&nbsp;formatArg&nbsp;a2&nbsp;++&nbsp;<span style="color:#a31515;">&quot;)&quot;</span></pre>
+    </p>
+    <p>
+        Not surprisingly, <code>formatArg</code> calls itself recursively in order to deal with pairs, and nested pairs.
+    </p>
+    <p>
+        <pre>ghci&gt; formatArg (PairArg TArg (PairArg FArg TArg))
+"(true, (false, true))"</pre>
+    </p>
+    <p>
+        It's not really required in order to parse and run a program, but I think that such a function should produce output that looks like the input fed into it.
+    </p>
+    <h3 id="eac1a89bb1994545a48b44a013f4d63c">
+        Running programs <a href="#eac1a89bb1994545a48b44a013f4d63c">#</a>
+    </h3>
+    <p>
+        All building blocks are now in place to compose a function that parses and runs a program.
+    </p>
+    <p>
+        <pre><span style="color:green;">--&nbsp;Run&nbsp;a&nbsp;given&nbsp;program&nbsp;source&nbsp;and&nbsp;a&nbsp;command&nbsp;that&nbsp;identifies&nbsp;entry&nbsp;point&nbsp;and
+--&nbsp;arguments.
+--&nbsp;Despite&nbsp;the&nbsp;generalized&nbsp;type,&nbsp;it&nbsp;can&nbsp;be&nbsp;called&nbsp;as
+--&nbsp;String&nbsp;-&gt;&nbsp;String&nbsp;-&gt;&nbsp;Either&nbsp;String&nbsp;String
+</span><span style="color:#2b91af;">run</span>&nbsp;<span style="color:blue;">::</span>&nbsp;(<span style="color:blue;">Stream</span>&nbsp;s1&nbsp;<span style="color:blue;">Identity</span>&nbsp;<span style="color:#2b91af;">Char</span>,&nbsp;<span style="color:blue;">Stream</span>&nbsp;s2&nbsp;<span style="color:blue;">Identity</span>&nbsp;<span style="color:#2b91af;">Char</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">=&gt;</span>&nbsp;s1&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;s2&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:#2b91af;">Either</span>&nbsp;<span style="color:#2b91af;">String</span>&nbsp;<span style="color:#2b91af;">String</span>
+run&nbsp;source&nbsp;cmd&nbsp;=&nbsp;<span style="color:blue;">do</span>
+&nbsp;&nbsp;prog&nbsp;&lt;-&nbsp;first&nbsp;<span style="color:blue;">show</span>&nbsp;$&nbsp;parseProgram&nbsp;source
+&nbsp;&nbsp;exec&nbsp;&lt;-&nbsp;first&nbsp;<span style="color:blue;">show</span>&nbsp;$&nbsp;parseEntry&nbsp;cmd
+&nbsp;&nbsp;formatArg&nbsp;&lt;$&gt;&nbsp;interpret&nbsp;prog&nbsp;exec</pre>
+    </p>
+    <p>
+        As the comment suggests, you can call it by feeding it two string literals:
+    </p>
+    <p>
+        <pre>ghci&gt; run "and true X = X\nand false X = false" "and true true"
+Right "true"</pre>
+    </p>
+    <p>
+        Having to supply entire programs from the REPL gets old fast, however, so instead you can save source code as files. I saved the original examples (containing <code>and</code> and <code>alltrue</code>) in a file named <code>ex.bopa</code>. This enabled me to load the file and call functions in it:
+    </p>
+    <p>
+        <pre>ghci&gt; run &lt;$&gt; readFile "ex.bopa" &lt;*&gt; pure "alltrue (true, (false, true))"
+Right "false"
+ghci&gt; run &lt;$&gt; readFile "ex.bopa" &lt;*&gt; pure "alltrue ((true, true), (true, true))"
+Right "true"</pre>
+    </p>
+    <p>
+        Those are the two examples originally included in the exam set, and fortunately the results are correct.
+    </p>
+    <h3 id="81af068d073e42eebc426b58858d41a7">
+        A few more examples <a href="#81af068d073e42eebc426b58858d41a7">#</a>
+    </h3>
+    <p>
+        I wanted to subject my code to a bit more testing, so wrote a few more example programs. This one I saved in a file called <code>evenodd.bopa</code>:
+    </p>
+    <p>
+        <pre>and  true X = X
+and false X = false
+
+or  true X = true
+or false X = X
+
+not  true = false
+not false =  true
+
+odd  true = true
+odd false = true
+odd (X, Y) = or (and (odd X) (even Y)) (and (even X) (odd Y))
+
+even X = not (odd X)</pre>
+    </p>
+    <p>
+        The idea with <code>odd</code> is that it indicates whether the input contains an odd number of Boolean values; of course, <code>even</code> is then the negation of <code>odd</code>.
+    </p>
+    <p>
+        <pre>ghci&gt run &lt;$&gt readFile "evenodd.bopa" &lt;*&gt pure "odd true"
+Right "true"
+ghci&gt run &lt;$&gt readFile "evenodd.bopa" &lt;*&gt pure "even true"
+Right "false"
+ghci&gt run &lt;$&gt readFile "evenodd.bopa" &lt;*&gt pure "odd (true, false)"
+Right "false"
+ghci&gt run &lt;$&gt readFile "evenodd.bopa" &lt;*&gt pure "even (true, false)"
+Right "true"
+ghci&gt run &lt;$&gt readFile "evenodd.bopa" &lt;*&gt pure "odd (true, (false, true))"
+Right "true"</pre>
+    </p>
+    <p>
+        Ad hoc tests like these gave me confidence that things aren't completely wrong.
+    </p>
+    <h3 id="fc69d006d0014194a06738695fd79419">
+        Cycle detection <a href="#fc69d006d0014194a06738695fd79419">#</a>
+    </h3>
+    <p>
+        Finally, you may be curious to see whether the cycle detection works. The simplest example I could come up with was this:
+    </p>
+    <p>
+        <pre>ghci&gt run "forever X = forever X" "forever false"
+Left "Cycle detected."</pre>
+    </p>
+    <p>
+        Even so, I also wanted to test that it works for a small cycle that involves more than one function, so I saved the following in a file called <code>tictactoe.bopa</code>:
+    </p>
+    <p>
+        <pre>tic X = tac X
+
+tac X = toe X
+
+toe X = tic X
+
+foo (false, Y) = Y
+foo (true, Y) = tic Y</pre>
+    </p>
+    <p>
+        These functions <em>may</em> cause an infinite cycle, depending on input.
+    </p>
+    <p>
+        <pre>ghci&gt run &lt;$&gt readFile "tictactoe.bopa" &lt;*&gt pure "foo (false, (true, false))"
+Right "(true, false)"
+ghci&gt run &lt;$&gt readFile "tictactoe.bopa" &lt;*&gt pure "foo (true, (true, false))"
+Left "Cycle detected."</pre>
+    </p>
+    <p>
+        The <code>run</code> function implements an algorithm that is <em>always</em> able to determine, in finite time, whether a program terminates or not. Thus, in case you're wondering: The language isn't Turing complete.
+    </p>
+    <h3 id="7de04c9a175a454e8618d2d3ce63f191">
+        Conclusion <a href="#7de04c9a175a454e8618d2d3ce63f191">#</a>
+    </h3>
+    <p>
+        Implementing a parser and interpreter for the Bopa language wasn't part of the exam question, but I had some time to spare, and also found that I had trouble describing, in unambiguous terms, how to detect termination. I decided to write the interpreter to show a code example, and then took on the parser as <a href="/2020/01/13/on-doing-katas">an extra exercise</a>.
+    </p>
+    <p>
+        It took me a long day of intense coding to produce the prototype shown here, including the various example Bopa programs. No AI was involved. It was fun.
+    </p>
+</div>
