@@ -1,0 +1,302 @@
+---
+layout: post
+title: "Song recommendations with C# free monads"
+description: "Just because it's possible. Don't do this at work."
+date: 2025-04-07 13:20 UTC
+tags: [Functional Programming]
+---
+{% include JB/setup %}
+
+<div id="post">
+    <p>
+        <em>{{ page.description }}</em>
+    </p>
+    <p>
+        This is the last article in a series named <a href="">Alternative ways to design with functional programming</a>. In it, you've seen various suggestions on how to model a non-trivial problem with various kinds of functional-programming patterns. The previous two articles showed how to use free monads to model the problem in <a href="https://www.haskell.org/">Haskell</a> and <a href="https://fsharp.org/">F#</a>. In this article, I'll repeat the exercise in C#. It's not going to be pretty, but it's possible.
+    </p>
+    <p>
+        What is the point of this exercise? Mostly to supply parity in demo code. If you're more familiar with C# than F# or Haskell, this may give you a better sense of what a free monad is, and how it works. That's all. I don't consider the following practical code, and I don't endorse it.
+    </p>
+    <p>
+        The code shown here is based on the <code>free</code> branch of the <em>DotNet</em> Git repository available with this article series.
+    </p>
+    <h3 id="a33aa288b6e14a7db2fadabceb3ba20f">
+        Functor <a href="#a33aa288b6e14a7db2fadabceb3ba20f">#</a>
+    </h3>
+    <p>
+        A free monad enables you to define a <a href="/2022/03/28/monads">monad</a> from any <a href="/2018/03/22/functors">functor</a>. In this context, you start with the functor that models an instruction set for a domain-specific language (DSL). The goal is to replace the <code>SongService</code> interface with this instruction set.
+    </p>
+    <p>
+        As a reminder, this is the interface:
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">interface</span>&nbsp;<span style="color:#2b91af;">SongService</span>
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Task</span>&lt;<span style="color:#2b91af;">IReadOnlyCollection</span>&lt;<span style="color:#2b91af;">User</span>&gt;&gt;&nbsp;<span style="font-weight:bold;color:#74531f;">GetTopListenersAsync</span>(<span style="color:blue;">int</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">songId</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Task</span>&lt;<span style="color:#2b91af;">IReadOnlyCollection</span>&lt;<span style="color:#2b91af;">Scrobble</span>&gt;&gt;&nbsp;<span style="font-weight:bold;color:#74531f;">GetTopScrobblesAsync</span>(<span style="color:blue;">string</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">userName</span>);
+}</pre>
+    </p>
+    <p>
+        I'll remind the reader that the code is my attempt to reconstruct the sample code shown in <a href="https://tyrrrz.me/blog/pure-impure-segregation-principle">Pure-Impure Segregation Principle</a>. I don't know if <code>SongService</code> is a base class or an interface. Based on the lack of the <a href="/2015/08/03/idiomatic-or-idiosyncratic">idiomatic</a> C# <code>I</code> prefix for interfaces, one may suppose that it was really intended to be a base class, but since I find interfaces easier to handle than base classes, here we are.
+    </p>
+    <p>
+        In any case, the goal is to replace it with an instruction set, starting with a <a href="https://en.wikipedia.org/wiki/Tagged_union">sum type</a>. Since C# comes with no native support for sum types, we'll need to model it with either <a href="/2018/05/22/church-encoding">Church encoding</a> or a <a href="/2018/06/25/visitor-as-a-sum-type">Visitor</a>. I've been over the Visitor territory enough times already, so here I'll go with the Church option, since it's a tad simpler.
+    </p>
+    <p>
+        I start by creating a new class called <code><span style="color:#2b91af;">SongInstruction</span>&lt;<span style="color:#2b91af;">T</span>&gt;</code> with this method:
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">TResult</span>&nbsp;<span style="font-weight:bold;color:#74531f;">Match</span>&lt;<span style="color:#2b91af;">TResult</span>&gt;(
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Func</span>&lt;(<span style="color:blue;">int</span>,&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:#2b91af;">IReadOnlyCollection</span>&lt;<span style="color:#2b91af;">User</span>&gt;,&nbsp;<span style="color:#2b91af;">T</span>&gt;),&nbsp;<span style="color:#2b91af;">TResult</span>&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">getTopListeners</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Func</span>&lt;(<span style="color:blue;">string</span>,&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:#2b91af;">IReadOnlyCollection</span>&lt;<span style="color:#2b91af;">Scrobble</span>&gt;,&nbsp;<span style="color:#2b91af;">T</span>&gt;),&nbsp;<span style="color:#2b91af;">TResult</span>&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">getTopScrobbles</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;imp.<span style="font-weight:bold;color:#74531f;">Match</span>(<span style="font-weight:bold;color:#1f377f;">getTopListeners</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">getTopScrobbles</span>);
+}</pre>
+    </p>
+    <p>
+        If you squint sufficiently hard, you may be able to see how the <code>getTopListeners</code> parameter corresponds to the interface's <code>GetTopListenersAsync</code> method, and likewise for the other parameter.
+    </p>
+    <p>
+        I'm not going to give you a very detailed walkthrough, as I've <a href="/2018/07/24/dependency-injection-revisited">already done that earlier in a different context</a>. Likewise, I'll skip some of the implementation details. All the code is available in the Git repository.
+    </p>
+    <p>
+        To be a functor, the class needs a <code>Select</code> method.
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">SongInstruction</span>&lt;<span style="color:#2b91af;">TResult</span>&gt;&nbsp;<span style="font-weight:bold;color:#74531f;">Select</span>&lt;<span style="color:#2b91af;">TResult</span>&gt;(<span style="color:#2b91af;">Func</span>&lt;<span style="color:#2b91af;">T</span>,&nbsp;<span style="color:#2b91af;">TResult</span>&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">selector</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="font-weight:bold;color:#74531f;">Match</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">t</span>&nbsp;=&gt;&nbsp;<span style="color:#2b91af;">SongInstruction</span>.<span style="color:#74531f;">GetTopListeners</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">t</span>.Item1,&nbsp;<span style="color:green;">//&nbsp;songId</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">users</span>&nbsp;=&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">selector</span>(<span style="font-weight:bold;color:#1f377f;">t</span>.Item2(<span style="font-weight:bold;color:#1f377f;">users</span>))),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">t</span>&nbsp;=&gt;&nbsp;<span style="color:#2b91af;">SongInstruction</span>.<span style="color:#74531f;">GetTopScrobbles</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">t</span>.Item1,&nbsp;<span style="color:green;">//&nbsp;userName</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">songs</span>&nbsp;=&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">selector</span>(<span style="font-weight:bold;color:#1f377f;">t</span>.Item2(<span style="font-weight:bold;color:#1f377f;">songs</span>))));
+}</pre>
+    </p>
+    <p>
+        The name <code>t</code> is, in both cases, short for <em>tuple</em>. It's possible that more recent versions of C# finally allow pattern matching of tuples in lambda expressions, but the version this code is based on doesn't. In both cases <code>Item2</code> is the 'continuation' function.
+    </p>
+    <h3 id="1d16ea38310845e3b2cea2a44ec98d4a">
+        Monad <a href="#1d16ea38310845e3b2cea2a44ec98d4a">#</a>
+    </h3>
+    <p>
+        The next step is to wrap the functor in a data structure that enables you to sequence the above instructions. That has to be another sum type, this time called <code><span style="color:#2b91af;">SongProgram</span>&lt;<span style="color:#2b91af;">T</span>&gt;</code>, characterized by this <code>Match</code> method:
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">TResult</span>&nbsp;<span style="font-weight:bold;color:#74531f;">Match</span>&lt;<span style="color:#2b91af;">TResult</span>&gt;(
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:#2b91af;">SongInstruction</span>&lt;<span style="color:#2b91af;">SongProgram</span>&lt;<span style="color:#2b91af;">T</span>&gt;&gt;,&nbsp;<span style="color:#2b91af;">TResult</span>&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">free</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:#2b91af;">T</span>,&nbsp;<span style="color:#2b91af;">TResult</span>&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">pure</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;imp.<span style="font-weight:bold;color:#74531f;">Match</span>(<span style="font-weight:bold;color:#1f377f;">free</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">pure</span>);
+}</pre>
+    </p>
+    <p>
+        A <code>SelectMany</code> method is required to make this type a proper monad:
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">SongProgram</span>&lt;<span style="color:#2b91af;">TResult</span>&gt;&nbsp;<span style="font-weight:bold;color:#74531f;">SelectMany</span>&lt;<span style="color:#2b91af;">TResult</span>&gt;(
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:#2b91af;">T</span>,&nbsp;<span style="color:#2b91af;">SongProgram</span>&lt;<span style="color:#2b91af;">TResult</span>&gt;&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">selector</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="font-weight:bold;color:#74531f;">Match</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">i</span>&nbsp;=&gt;&nbsp;<span style="color:#2b91af;">SongProgram</span>.<span style="color:#74531f;">Free</span>(<span style="font-weight:bold;color:#1f377f;">i</span>.<span style="font-weight:bold;color:#74531f;">Select</span>(<span style="font-weight:bold;color:#1f377f;">p</span>&nbsp;=&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">p</span>.<span style="font-weight:bold;color:#74531f;">SelectMany</span>(<span style="font-weight:bold;color:#1f377f;">selector</span>))),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">selector</span>);
+}</pre>
+    </p>
+    <p>
+        The code is already verbose enough as it is, so I've used <code>i</code> for <em>instruction</em> and <code>p</code> for <em>program</em>.
+    </p>
+    <h3 id="4c10469d3ba64daa81a9ca05824d1cae">
+        Lifted helpers <a href="#4c10469d3ba64daa81a9ca05824d1cae">#</a>
+    </h3>
+    <p>
+        Although not strictly required, I often find it useful to add a helper method for each case of the instruction type:
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:#2b91af;">SongProgram</span>&lt;<span style="color:#2b91af;">IReadOnlyCollection</span>&lt;<span style="color:#2b91af;">User</span>&gt;&gt;&nbsp;<span style="color:#74531f;">GetTopListeners</span>(<span style="color:blue;">int</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">songId</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="color:#74531f;">Free</span>(<span style="color:#2b91af;">SongInstruction</span>.<span style="color:#74531f;">GetTopListeners</span>(<span style="font-weight:bold;color:#1f377f;">songId</span>,&nbsp;<span style="color:#74531f;">Pure</span>));
+}
+ 
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:#2b91af;">SongProgram</span>&lt;<span style="color:#2b91af;">IReadOnlyCollection</span>&lt;<span style="color:#2b91af;">Scrobble</span>&gt;&gt;&nbsp;<span style="color:#74531f;">GetTopScrobbles</span>(<span style="color:blue;">string</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">userName</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="color:#74531f;">Free</span>(<span style="color:#2b91af;">SongInstruction</span>.<span style="color:#74531f;">GetTopScrobbles</span>(<span style="font-weight:bold;color:#1f377f;">userName</span>,&nbsp;<span style="color:#74531f;">Pure</span>));
+}</pre>
+    </p>
+    <p>
+        This just makes the user code look a bit cleaner.
+    </p>
+    <h3 id="c922ff0d22cb41e4b9fe89effe0b58f1">
+        Song recommendations as a DSL <a href="#c922ff0d22cb41e4b9fe89effe0b58f1">#</a>
+    </h3>
+    <p>
+        Using the composition from <a href="">Song recommendations from C# combinators</a> as a starting point, it doesn't take that many changes to turn it into a <code>SongProgram</code>-valued function.
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:#2b91af;">SongProgram</span>&lt;<span style="color:#2b91af;">IReadOnlyList</span>&lt;<span style="color:#2b91af;">Song</span>&gt;&gt;&nbsp;<span style="color:#74531f;">GetRecommendations</span>(<span style="color:blue;">string</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">userName</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;1.&nbsp;Get&nbsp;user&#39;s&nbsp;own&nbsp;top&nbsp;scrobbles</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;2.&nbsp;Get&nbsp;other&nbsp;users&nbsp;who&nbsp;listened&nbsp;to&nbsp;the&nbsp;same&nbsp;songs</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;3.&nbsp;Get&nbsp;top&nbsp;scrobbles&nbsp;of&nbsp;those&nbsp;users</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;4.&nbsp;Aggregate&nbsp;the&nbsp;songs&nbsp;into&nbsp;recommendations</span>
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="color:#2b91af;">SongProgram</span>.<span style="color:#74531f;">GetTopScrobbles</span>(<span style="font-weight:bold;color:#1f377f;">userName</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.<span style="font-weight:bold;color:#74531f;">SelectMany</span>(<span style="font-weight:bold;color:#1f377f;">scrobbles</span>&nbsp;=&gt;&nbsp;<span style="color:#74531f;">UserTopScrobbles</span>(<span style="font-weight:bold;color:#1f377f;">scrobbles</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.<span style="font-weight:bold;color:#74531f;">Traverse</span>(<span style="font-weight:bold;color:#1f377f;">scrobble</span>&nbsp;=&gt;&nbsp;<span style="color:#2b91af;">SongProgram</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.<span style="color:#74531f;">GetTopListeners</span>(<span style="font-weight:bold;color:#1f377f;">scrobble</span>.Song.Id)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.<span style="font-weight:bold;color:#74531f;">Select</span>(<span style="color:#74531f;">TopListeners</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.<span style="font-weight:bold;color:#74531f;">SelectMany</span>(<span style="font-weight:bold;color:#1f377f;">users</span>&nbsp;=&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">users</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.<span style="font-weight:bold;color:#74531f;">Traverse</span>(<span style="font-weight:bold;color:#1f377f;">user</span>&nbsp;=&gt;&nbsp;<span style="color:#2b91af;">SongProgram</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.<span style="color:#74531f;">GetTopScrobbles</span>(<span style="font-weight:bold;color:#1f377f;">user</span>.UserName)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.<span style="font-weight:bold;color:#74531f;">Select</span>(<span style="color:#74531f;">TopScrobbles</span>))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.<span style="font-weight:bold;color:#74531f;">Select</span>(<span style="color:#74531f;">Songs</span>)))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.<span style="font-weight:bold;color:#74531f;">Select</span>(<span style="color:#74531f;">TakeTopRecommendations</span>));
+}</pre>
+    </p>
+    <p>
+        Notice how much it resembles the original <code>GetRecommendationsAsync</code> method on the <code>RecommendationsProvider</code> class. Instead of <code>songService.GetTopScrobblesAsync</code> it just has <code>SongProgram.GetTopScrobbles</code>, and instead of <code>songService.GetTopListenersAsync</code> it has <code>SongProgram.GetTopListeners</code>.
+    </p>
+    <p>
+        To support this composition, however, a <a href="/2024/11/11/traversals">traversal</a> is required.
+    </p>
+    <h3 id="f6f58bba60324a15a6aa36fb17b55fca">
+        Traverse <a href="#f6f58bba60324a15a6aa36fb17b55fca">#</a>
+    </h3>
+    <p>
+        The traversal needs a <code>Select</code> function on <code>SongProgram</code>, so we'll start with that.
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">SongProgram</span>&lt;<span style="color:#2b91af;">TResult</span>&gt;&nbsp;<span style="font-weight:bold;color:#74531f;">Select</span>&lt;<span style="color:#2b91af;">TResult</span>&gt;(<span style="color:#2b91af;">Func</span>&lt;<span style="color:#2b91af;">T</span>,&nbsp;<span style="color:#2b91af;">TResult</span>&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">selector</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="font-weight:bold;color:#74531f;">SelectMany</span>(<span style="font-weight:bold;color:#1f377f;">x</span>&nbsp;=&gt;&nbsp;<span style="color:#2b91af;">SongProgram</span>.<span style="color:#74531f;">Pure</span>(<span style="font-weight:bold;color:#1f377f;">selector</span>(<span style="font-weight:bold;color:#1f377f;">x</span>)));
+}</pre>
+    </p>
+    <p>
+        This is the standard implementation of a functor from a monad.
+    </p>
+    <p>
+        It turns out that it's also useful to define a function to concatenate two sequence-valued programs.
+    </p>
+    <p>
+        <pre><span style="color:blue;">private</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:#2b91af;">SongProgram</span>&lt;<span style="color:#2b91af;">IEnumerable</span>&lt;<span style="color:#2b91af;">T</span>&gt;&gt;&nbsp;<span style="color:#74531f;">Concat</span>&lt;<span style="color:#2b91af;">T</span>&gt;(
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>&nbsp;<span style="color:#2b91af;">SongProgram</span>&lt;<span style="color:#2b91af;">IEnumerable</span>&lt;<span style="color:#2b91af;">T</span>&gt;&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">xs</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">SongProgram</span>&lt;<span style="color:#2b91af;">IEnumerable</span>&lt;<span style="color:#2b91af;">T</span>&gt;&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">ys</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">xs</span>.<span style="font-weight:bold;color:#74531f;">SelectMany</span>(<span style="font-weight:bold;color:#1f377f;">x</span>&nbsp;=&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">ys</span>.<span style="font-weight:bold;color:#74531f;">Select</span>(<span style="font-weight:bold;color:#1f377f;">y</span>&nbsp;=&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">x</span>.<span style="font-weight:bold;color:#74531f;">Concat</span>(<span style="font-weight:bold;color:#1f377f;">y</span>)));
+}</pre>
+    </p>
+    <p>
+        This could, perhaps, be a <code>public</code> function, but in this situation, I only need it to implement <code>Traverse</code>, so I kept it <code>private</code>. The <code>Traverse</code> function, on the other hand, is <code>public</code>.
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">static</span>&nbsp;<span style="color:#2b91af;">SongProgram</span>&lt;<span style="color:#2b91af;">IEnumerable</span>&lt;<span style="color:#2b91af;">TResult</span>&gt;&gt;&nbsp;<span style="color:#74531f;">Traverse</span>&lt;<span style="color:#2b91af;">T</span>,&nbsp;<span style="color:#2b91af;">TResult</span>&gt;(
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">this</span>&nbsp;<span style="color:#2b91af;">IEnumerable</span>&lt;<span style="color:#2b91af;">T</span>&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">source</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Func</span>&lt;<span style="color:#2b91af;">T</span>,&nbsp;<span style="color:#2b91af;">SongProgram</span>&lt;<span style="color:#2b91af;">TResult</span>&gt;&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">selector</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">source</span>.<span style="font-weight:bold;color:#74531f;">Aggregate</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#74531f;">Pure</span>(<span style="color:#2b91af;">Enumerable</span>.<span style="color:#74531f;">Empty</span>&lt;<span style="color:#2b91af;">TResult</span>&gt;()),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(<span style="font-weight:bold;color:#1f377f;">acc</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">x</span>)&nbsp;=&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">acc</span>.<span style="font-weight:bold;color:#74531f;">Concat</span>(<span style="font-weight:bold;color:#1f377f;">selector</span>(<span style="font-weight:bold;color:#1f377f;">x</span>).<span style="font-weight:bold;color:#74531f;">Select</span>(<span style="font-weight:bold;color:#1f377f;">xr</span>&nbsp;=&gt;&nbsp;<span style="color:blue;">new</span>[]&nbsp;{<span style="font-weight:bold;color:#1f377f;">xr</span>}.<span style="font-weight:bold;color:#74531f;">AsEnumerable</span>())));
+}</pre>
+    </p>
+    <p>
+        Given a sequence of values, <code>Traverse</code> applies <code>selector</code> to each, and collects all resulting programs into a single sequence-valued program. You see it in use in the above <code>GetRecommendations</code> composition.
+    </p>
+    <h3 id="b440d896708d4e1787389d7cc0f473c1">
+        Interpreter <a href="#b440d896708d4e1787389d7cc0f473c1">#</a>
+    </h3>
+    <p>
+        That last missing piece is an interpreter that can evaluate a program. Since I already have a class called <code>FakeSongService</code>, adding an <code>Interpret</code> method was the easiest implementation strategy.
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:#2b91af;">T</span>&nbsp;<span style="font-weight:bold;color:#74531f;">Interpret</span>&lt;<span style="color:#2b91af;">T</span>&gt;(<span style="color:#2b91af;">SongProgram</span>&lt;<span style="color:#2b91af;">T</span>&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">program</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">program</span>.<span style="font-weight:bold;color:#74531f;">Match</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">i</span>&nbsp;=&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">i</span>.<span style="font-weight:bold;color:#74531f;">Match</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">t</span>&nbsp;=&gt;&nbsp;<span style="font-weight:bold;color:#74531f;">Interpret</span>(<span style="font-weight:bold;color:#1f377f;">t</span>.Item2(<span style="font-weight:bold;color:#74531f;">GetTopListernes</span>(<span style="font-weight:bold;color:#1f377f;">t</span>.Item1))),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">t</span>&nbsp;=&gt;&nbsp;<span style="font-weight:bold;color:#74531f;">Interpret</span>(<span style="font-weight:bold;color:#1f377f;">t</span>.Item2(<span style="font-weight:bold;color:#74531f;">GetTopScrobbles</span>(<span style="font-weight:bold;color:#1f377f;">t</span>.Item1)))),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">x</span>&nbsp;=&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">x</span>);
+}</pre>
+    </p>
+    <p>
+        Here, <code>GetTopListernes</code> and <code>GetTopScrobbles</code> are two <code>private</code> helper functions:
+    </p>
+    <p>
+        <pre><span style="color:blue;">private</span>&nbsp;<span style="color:#2b91af;">IReadOnlyCollection</span>&lt;<span style="color:#2b91af;">User</span>&gt;&nbsp;<span style="font-weight:bold;color:#74531f;">GetTopListernes</span>(<span style="color:blue;">int</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">songId</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">listeners</span>&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">from</span>&nbsp;kvp&nbsp;<span style="color:blue;">in</span>&nbsp;users
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">where</span>&nbsp;kvp.Value.<span style="font-weight:bold;color:#74531f;">ContainsKey</span>(<span style="font-weight:bold;color:#1f377f;">songId</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">select</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">User</span>(kvp.Key,&nbsp;kvp.Value.Values.<span style="font-weight:bold;color:#74531f;">Sum</span>());
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">listeners</span>.<span style="font-weight:bold;color:#74531f;">ToList</span>();
+}
+ 
+<span style="color:blue;">private</span>&nbsp;<span style="color:#2b91af;">IReadOnlyCollection</span>&lt;<span style="color:#2b91af;">Scrobble</span>&gt;&nbsp;<span style="font-weight:bold;color:#74531f;">GetTopScrobbles</span>(<span style="color:blue;">string</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">userName</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">scrobbles</span>&nbsp;=&nbsp;users
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.<span style="font-weight:bold;color:#74531f;">GetOrAdd</span>(<span style="font-weight:bold;color:#1f377f;">userName</span>,&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">ConcurrentDictionary</span>&lt;<span style="color:blue;">int</span>,&nbsp;<span style="color:blue;">int</span>&gt;())
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.<span style="font-weight:bold;color:#74531f;">Select</span>(<span style="font-weight:bold;color:#1f377f;">kvp</span>&nbsp;=&gt;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Scrobble</span>(songs[<span style="font-weight:bold;color:#1f377f;">kvp</span>.Key],&nbsp;<span style="font-weight:bold;color:#1f377f;">kvp</span>.Value));
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">scrobbles</span>.<span style="font-weight:bold;color:#74531f;">ToList</span>();
+}</pre>
+    </p>
+    <p>
+        The implementation closely mirrors the original <a href="http://xunitpatterns.com/Fake%20Object.html">Fake</a> interface implementation, where <code>users</code> and <code>songs</code> are class fields on <code>FakeSongService</code>. This class was first shown in <a href="">Characterising song recommendations</a>.
+    </p>
+    <p>
+        It's now possible to rewrite all the tests.
+    </p>
+    <h3 id="0ad149fe02794524a18af4a4f6eefe07">
+        Refactoring the tests <a href="#0ad149fe02794524a18af4a4f6eefe07">#</a>
+    </h3>
+    <p>
+        Since the original <code>GetRecommendationsAsync</code> method was task-based, all tests had to run in <a href="https://learn.microsoft.com/dotnet/fsharp/language-reference/task-expressions">task workflows</a>. This is no longer necessary, as this simplified <a href="https://fscheck.github.io/FsCheck/">FsCheck</a> property demonstrates:
+    </p>
+    <p>
+        <pre>[&lt;<span style="color:#2b91af;">Property</span>&gt;]
+<span style="color:blue;">let</span>&nbsp;<span style="color:#74531f;">``One&nbsp;user,&nbsp;some&nbsp;songs``</span>&nbsp;()&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">gen</span>&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">user</span>&nbsp;=&nbsp;<span style="color:#2b91af;">Gen</span>.userName
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">songs</span>&nbsp;=&nbsp;<span style="color:#2b91af;">Gen</span>.<span style="color:#74531f;">arrayOf</span>&nbsp;<span style="color:#2b91af;">Gen</span>.song
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let!</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">scrobbleCounts</span>&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Gen</span>.<span style="color:#74531f;">choose</span>&nbsp;(1,&nbsp;100)&nbsp;|&gt;&nbsp;<span style="color:#2b91af;">Gen</span>.<span style="color:#74531f;">arrayOfLength</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">songs</span>.Length
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;(<span style="font-weight:bold;color:#1f377f;">user</span>,&nbsp;<span style="color:#2b91af;">Array</span>.<span style="color:#74531f;">zip</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">songs</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">scrobbleCounts</span>)&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;|&gt;&nbsp;<span style="color:#2b91af;">Arb</span>.<span style="color:#74531f;">fromGen</span>&nbsp;|&gt;&nbsp;<span style="color:#2b91af;">Prop</span>.<span style="color:#74531f;">forAll</span>&nbsp;&lt;|&nbsp;<span style="color:blue;">fun</span>&nbsp;(<span style="font-weight:bold;color:#1f377f;">user</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">scrobbles</span>)&nbsp;<span style="color:blue;">-&gt;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">srvc</span>&nbsp;=&nbsp;<span style="color:#2b91af;">FakeSongService</span>&nbsp;()
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">scrobbles</span>&nbsp;|&gt;&nbsp;<span style="color:#2b91af;">Array</span>.<span style="color:#74531f;">iter</span>&nbsp;(<span style="color:blue;">fun</span>&nbsp;(<span style="font-weight:bold;color:#1f377f;">s</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">c</span>)&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">srvc</span>.<span style="font-weight:bold;color:#74531f;">Scrobble</span>&nbsp;(<span style="font-weight:bold;color:#1f377f;">user</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">s</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">c</span>))
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">actual</span>&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">RecommendationsProvider</span>.<span style="font-weight:bold;color:#74531f;">GetRecommendations</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">user</span>&nbsp;|&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">srvc</span>.<span style="font-weight:bold;color:#74531f;">Interpret</span>
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Assert</span>.<span style="font-weight:bold;color:#74531f;">Empty</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">actual</span></pre>
+    </p>
+    <p>
+        Originally, this test had to be defined in terms of the <code>task</code> computation expression, but now it's a pure function. In <a href="/2013/06/24/a-heuristic-for-formatting-code-according-to-the-aaa-pattern">the act phase</a> the test calls <code>RecommendationsProvider.GetRecommendations user</code> and pipes the returned program to <code>srvc.Interpret</code>. The result, <code>actual</code>, is a plain <code>IReadOnlyCollection&lt;Song&gt;</code> value.
+    </p>
+    <p>
+        Similarly, I was able to migrate all the example-based tests over, too.
+    </p>
+    <p>
+        <pre>[&lt;<span style="color:#2b91af;">Fact</span>&gt;]
+<span style="color:blue;">let</span>&nbsp;<span style="color:#74531f;">``One&nbsp;verified&nbsp;recommendation``</span>&nbsp;()&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">srvc</span>&nbsp;=&nbsp;<span style="color:#2b91af;">FakeSongService</span>&nbsp;()
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">srvc</span>.<span style="font-weight:bold;color:#74531f;">Scrobble</span>&nbsp;(<span style="color:#a31515;">&quot;cat&quot;</span>,&nbsp;<span style="color:#2b91af;">Song</span>&nbsp;(1,&nbsp;<span style="color:blue;">false</span>,&nbsp;6uy),&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;10)
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">srvc</span>.<span style="font-weight:bold;color:#74531f;">Scrobble</span>&nbsp;(<span style="color:#a31515;">&quot;ana&quot;</span>,&nbsp;<span style="color:#2b91af;">Song</span>&nbsp;(1,&nbsp;<span style="color:blue;">false</span>,&nbsp;5uy),&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;10)
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">srvc</span>.<span style="font-weight:bold;color:#74531f;">Scrobble</span>&nbsp;(<span style="color:#a31515;">&quot;ana&quot;</span>,&nbsp;<span style="color:#2b91af;">Song</span>&nbsp;(2,&nbsp;&nbsp;<span style="color:blue;">true</span>,&nbsp;5uy),&nbsp;9_9990)
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">actual</span>&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">RecommendationsProvider</span>.<span style="font-weight:bold;color:#74531f;">GetRecommendations</span>&nbsp;<span style="color:#a31515;">&quot;cat&quot;</span>&nbsp;|&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">srvc</span>.<span style="font-weight:bold;color:#74531f;">Interpret</span>
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Assert</span>.<span style="font-weight:bold;color:#74531f;">Equal</span><span style="font-weight:bold;color:#74531f;">&lt;</span><span style="font-weight:bold;color:#74531f;">Song</span><span style="font-weight:bold;color:#74531f;">&gt;</span>&nbsp;([&nbsp;<span style="color:#2b91af;">Song</span>&nbsp;(2,&nbsp;<span style="color:blue;">true</span>,&nbsp;5uy)&nbsp;],&nbsp;<span style="font-weight:bold;color:#1f377f;">actual</span>)</pre>
+    </p>
+    <p>
+        Once all tests were migrated over to the new <code>GetRecommendations</code> function, I deleted the old <code>RecommendationsProvider</code> class as well as the <code>SongService</code> interface, since none of them were required any longer.
+    </p>
+    <h3 id="25ccf7c8525f44b29e2d43eeeb99e713">
+        Conclusion <a href="#25ccf7c8525f44b29e2d43eeeb99e713">#</a>
+    </h3>
+    <p>
+        The lack of proper syntactic sugar, similar to <code>do</code> notation in Haskell, or <a href="https://learn.microsoft.com/dotnet/fsharp/language-reference/computation-expressions">computation expressions</a> in F#, means that free monads aren't a useful design option in C#. Still, perhaps the last three articles help a reader or two understanding what a free monad is.
+    </p>
+</div>
