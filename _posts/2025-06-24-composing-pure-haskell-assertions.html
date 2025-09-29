@@ -1,0 +1,179 @@
+---
+layout: post
+title: "Composing pure Haskell assertions"
+description: "With HUnit and QuickCheck examples."
+date: 2025-06-24 11:22 UTC
+tags: [Haskell, Unit Testing]
+---
+{% include JB/setup %}
+
+<div id="post">
+    <p>
+        <em>{{ page.description }}</em>
+    </p>
+    <p>
+        A question had been in the back of my mind for a long time, but I always got caught up in something seemingly more important, so I didn't get around to investigate until recently. It's simply this:
+    </p>
+    <p>
+        How do you compose <a href="https://en.wikipedia.org/wiki/Pure_function">pure</a> assertions in <a href="https://hackage.haskell.org/package/HUnit/docs/Test-HUnit.html">HUnit</a> or <a href="https://hackage-content.haskell.org/package/QuickCheck/docs/Test-QuickCheck.html">QuickCheck</a>?
+    </p>
+    <p>
+        Let me explain what I mean, and why this isn't quite as straightforward as it may sound.
+    </p>
+    <h3 id="76d1bda9793e4f5c810f387c09fc8324">
+        Assertions as statements <a href="#76d1bda9793e4f5c810f387c09fc8324">#</a>
+    </h3>
+    <p>
+        What do I mean by <em>composing</em> assertions? Really nothing more than wanting to verify more than a single outcome of a test.
+    </p>
+    <p>
+        If you're used to writing test assertions in imperative languages like C#, <a href="https://www.java.com/">Java</a>, <a href="https://www.python.org/">Python</a>, or JavaScript, you think nothing of it. Just write an assertion on one line, and the next assertion on the next line.
+    </p>
+    <p>
+        If you're writing impure <a href="https://www.haskell.org/">Haskell</a>, you can also do that.
+    </p>
+    <p>
+        <pre><span style="color:#a31515;">&quot;CLRS&nbsp;example&quot;</span>&nbsp;~:&nbsp;<span style="color:blue;">do</span>
+&nbsp;&nbsp;<span style="color:#2b91af;">p</span>&nbsp;<span style="color:blue;">::</span>&nbsp;<span style="color:blue;">IOArray</span>&nbsp;<span style="color:#2b91af;">Int</span>&nbsp;<span style="color:#2b91af;">Int</span>&nbsp;&lt;-
+&nbsp;&nbsp;&nbsp;&nbsp;newListArray&nbsp;(1,&nbsp;10)&nbsp;[1,&nbsp;5,&nbsp;8,&nbsp;9,&nbsp;10,&nbsp;17,&nbsp;17,&nbsp;20,&nbsp;24,&nbsp;30]
+ 
+&nbsp;&nbsp;(r,&nbsp;s)&nbsp;&lt;-&nbsp;cutRod&nbsp;p&nbsp;10
+&nbsp;&nbsp;actualRevenue&nbsp;&lt;-&nbsp;getElems&nbsp;r
+&nbsp;&nbsp;actualSizes&nbsp;&lt;-&nbsp;getElems&nbsp;s
+ 
+&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;expectedRevenue&nbsp;=&nbsp;[0,&nbsp;1,&nbsp;5,&nbsp;8,&nbsp;10,&nbsp;13,&nbsp;17,&nbsp;18,&nbsp;22,&nbsp;25,&nbsp;30]
+&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;expectedSizes&nbsp;=&nbsp;[1,&nbsp;2,&nbsp;3,&nbsp;2,&nbsp;2,&nbsp;6,&nbsp;1,&nbsp;2,&nbsp;3,&nbsp;10]
+&nbsp;&nbsp;expectedRevenue&nbsp;@=?&nbsp;actualRevenue
+&nbsp;&nbsp;expectedSizes&nbsp;@=?&nbsp;actualSizes</pre>
+    </p>
+    <p>
+        This example is an <a href="/2018/05/07/inlined-hunit-test-lists">inlined HUnit test</a> which tests the <a href="" title="IO is special">impure cutRod variation</a>. The two final statements are assertions that use the <a href="https://hackage.haskell.org/package/HUnit/docs/Test-HUnit-Base.html#v:-64--61--63-">@=?</a> assertion operator. The value on the left side is the expected value, and to the right goes the actual value. This operator returns a type called <code>Assertion</code>, which <a href="https://hackage.haskell.org/package/HUnit/docs/Test-HUnit-Base.html#t:Assertion">turns out</a> to be nothing but an alias for <code>IO ()</code>.
+    </p>
+    <p>
+        In other words, those assertions are impure actions, and they work similarly to assertions in imperative languages. If the actual value passes the assertion, nothing happens and execution moves on to the assertion on the next line. If, on the other hand, the assertion fails, execution short-circuits, and an error is reported.
+    </p>
+    <p>
+        Imperative languages typically throw exceptions to achieve that behaviour. Even <a href="https://github.com/SwensenSoftware/unquote">Unquote</a> does this. Exactly how HUnit does it I don't know; I haven't looked under the hood.
+    </p>
+    <p>
+        You can do the same with <a href="https://hackage-content.haskell.org/package/QuickCheck/docs/Test-QuickCheck-Monadic.html">Test.QuickCheck.Monadic</a>:
+    </p>
+    <p>
+        <pre>testProperty&nbsp;<span style="color:#a31515;">&quot;cutRod&nbsp;returns&nbsp;correct&nbsp;arrays&quot;</span>&nbsp;$&nbsp;\&nbsp;p&nbsp;-&gt;&nbsp;monadicIO&nbsp;$&nbsp;<span style="color:blue;">do</span>
+&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;n&nbsp;=&nbsp;<span style="color:blue;">length</span>&nbsp;p
+&nbsp;&nbsp;<span style="color:#2b91af;">p&#39;</span>&nbsp;<span style="color:blue;">::</span>&nbsp;<span style="color:blue;">IOArray</span>&nbsp;<span style="color:#2b91af;">Int</span>&nbsp;<span style="color:#2b91af;">Int</span>&nbsp;&lt;-&nbsp;run&nbsp;$&nbsp;newListArray&nbsp;(1,&nbsp;n)&nbsp;p
+ 
+&nbsp;&nbsp;(r,&nbsp;s)&nbsp;::&nbsp;(IOArray&nbsp;Int&nbsp;Int,&nbsp;IOArray&nbsp;Int&nbsp;Int)&nbsp;&lt;-&nbsp;run&nbsp;$&nbsp;cutRod&nbsp;p&#39;&nbsp;n
+&nbsp;&nbsp;actualRevenue&nbsp;&lt;-&nbsp;run&nbsp;$&nbsp;getElems&nbsp;r
+&nbsp;&nbsp;actualSizes&nbsp;&lt;-&nbsp;run&nbsp;$&nbsp;getElems&nbsp;s
+ 
+&nbsp;&nbsp;assertWith&nbsp;(<span style="color:blue;">length</span>&nbsp;actualRevenue&nbsp;==&nbsp;n&nbsp;+&nbsp;1)&nbsp;<span style="color:#a31515;">&quot;Revenue&nbsp;length&nbsp;is&nbsp;incorrect&quot;</span>
+&nbsp;&nbsp;assertWith&nbsp;(<span style="color:blue;">length</span>&nbsp;actualSizes&nbsp;==&nbsp;n)&nbsp;<span style="color:#a31515;">&quot;Size&nbsp;length&nbsp;is&nbsp;incorrect&quot;</span>
+&nbsp;&nbsp;assertWith&nbsp;(<span style="color:blue;">all</span>&nbsp;(\i&nbsp;-&gt;&nbsp;0&nbsp;&lt;=&nbsp;i&nbsp;&amp;&amp;&nbsp;i&nbsp;&lt;=&nbsp;n)&nbsp;actualSizes)&nbsp;<span style="color:#a31515;">&quot;Sizes&nbsp;are&nbsp;not&nbsp;all&nbsp;in&nbsp;[1..n]&quot;</span></pre>
+    </p>
+    <p>
+        Like the previous example, you can repeatedly call <code>assertWith</code>, since this action, too, is a statement that returns no value.
+    </p>
+    <p>
+        So far, so good.
+    </p>
+    <h3 id="7321a1e253aa47b9a005ffc313729bf2">
+        Composing assertions <a href="#7321a1e253aa47b9a005ffc313729bf2">#</a>
+    </h3>
+    <p>
+        What if, however, you want to write tests as pure functions?
+    </p>
+    <p>
+        Pure functions are composed from expressions, while statements aren't allowed (or, at least, ineffective, and subject to be optimized away by a compiler). In other words, the above strategy isn't going to work. If you want to write more than one assertion, you need to figure out how they compose.
+    </p>
+    <p>
+        The naive answer might be to use <a href="https://en.wikipedia.org/wiki/Logical_conjunction">logical conjunction</a> (AKA Boolean <em>and</em>). Write one assertion as a Boolean expression, another assertion as another Boolean expression, and just compose them using the standard 'and' operator. In Haskell, that would be <code>&&</code>.
+    </p>
+    <p>
+        This works to a fashion, but has a major drawback. If such a composed assertion fails, it doesn't tell you why. All you know is that the entire Boolean expression evaluated to <code>False</code>.
+    </p>
+    <p>
+        This is the reason that most testing libraries come with explicit assertion APIs. In HUnit, you may wish to use the <a href="https://hackage.haskell.org/package/HUnit/docs/Test-HUnit-Base.html#v:-126--61--63-">~=?</a> operator, and in QuickCheck the <a href="https://hackage-content.haskell.org/package/QuickCheck/docs/Test-QuickCheck.html#v:-61--61--61-">===</a> operator.
+    </p>
+    <p>
+        The question, however, is how they compose. Ideally, <a href="/2022/11/07/applicative-assertions">assertions should compose applicatively</a>, but I've never seen that in the wild. If not, look for a <a href="/2017/10/06/monoids">monoid</a>, or at least a <a href="/2017/11/27/semigroups">semigroup</a>.
+    </p>
+    <p>
+        Let's do that for both HUnit and QuickCheck.
+    </p>
+    <h3 id="5e1c9efb4ff841d8a588e01920eab8d2">
+        Composing HUnit assertions <a href="#5e1c9efb4ff841d8a588e01920eab8d2">#</a>
+    </h3>
+    <p>
+        My favourite HUnit assertion is the <code>~=?</code> operator, which has the (simplified) type <code>a &gt; a -&gt; Test</code>. In other words, an expression like <code>expectedRevenue&nbsp;~=?&nbsp;actualRevenue</code> has the type <code>Test</code>. The question, then, is: How does <code>Test</code> compose?
+    </p>
+    <p>
+        Not <em>that</em> well, I'm afraid, but I find the following workable. You can compose one or more <code>Test</code> values with the <a href="https://hackage.haskell.org/package/HUnit/docs/Test-HUnit-Base.html#v:TestList">TestList</a> constructor, but if you're already using the <a href="https://hackage.haskell.org/package/HUnit/docs/Test-HUnit-Base.html#v:-126-:">~:</a> operator, as I usually do (see below), then you just need a <code>Testable</code> instance, and it turns out that a list of <code>Testable</code> values is itself a <code>Testable</code> instance. This means that you can write a pure unit test and compose <code>~=?</code> like this:
+    </p>
+    <p>
+        <pre><span style="color:#a31515;">&quot;CLRS&nbsp;example&quot;</span>&nbsp;~:
+&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;p&nbsp;=&nbsp;[0,&nbsp;1,&nbsp;5,&nbsp;8,&nbsp;9,&nbsp;10,&nbsp;17,&nbsp;17,&nbsp;20,&nbsp;24,&nbsp;30]&nbsp;::&nbsp;[Int]
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(r,&nbsp;s)&nbsp;=&nbsp;cutRod&nbsp;p&nbsp;10
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;actualRevenue&nbsp;=&nbsp;Map.elems&nbsp;r
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;actualSizes&nbsp;=&nbsp;Map.elems&nbsp;s
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;expectedRevenue&nbsp;=&nbsp;[0,&nbsp;1,&nbsp;5,&nbsp;8,&nbsp;10,&nbsp;13,&nbsp;17,&nbsp;18,&nbsp;22,&nbsp;25,&nbsp;30]
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;expectedSizes&nbsp;=&nbsp;[1,&nbsp;2,&nbsp;3,&nbsp;2,&nbsp;2,&nbsp;6,&nbsp;1,&nbsp;2,&nbsp;3,&nbsp;10]
+&nbsp;&nbsp;<span style="color:blue;">in</span>&nbsp;[expectedRevenue&nbsp;~=?&nbsp;actualRevenue,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;expectedSizes&nbsp;~=?&nbsp;actualSizes]</pre>
+    </p>
+    <p>
+        This is a refactoring of the above test, now as a pure function, because it tests the pure variation of <code>cutRod</code>. Notice that the two assertions are simply returned as a list.
+    </p>
+    <p>
+        While this has enough syntactical elegance to satisfy me, it does have the disadvantage that it actually creates <em>two</em> test cases. One that runs with the first assertion, and one that executes with the second:
+    </p>
+    <p>
+        <pre>:CLRS example:
+  : [<span style="color: green;">OK</span>]
+  : [<span style="color: green;">OK</span>]</pre>
+    </p>
+    <p>
+        In most cases this is unlikely to be a problem, but it could be if the test performs a resource-intensive computation. Each assertion you add makes it run one more time.
+    </p>
+    <p>
+        A test like the one shown here is so 'small' that this is rarely much of an issue. On the other hand, a property-based testing library might stress a System Under Test more, so fortunately, QuickCheck assertions compose better than HUnit assertions.
+    </p>
+    <h3 id="63d7b7bb1e7a4155afe8f318c5f91fb5">
+        Composing QuickCheck assertions <a href="#63d7b7bb1e7a4155afe8f318c5f91fb5">#</a>
+    </h3>
+    <p>
+        The <code>===</code> operator has the (simplified) type <code>a -&gt; a -&gt; Property</code>. <a href="https://hoogle.haskell.org/">Hoogling</a> for a combinator with the type <code>Property -&gt; Property -&gt; Property</code> doesn't reveal anything useful, but fortunately it turns out that for running QuickCheck properties, all you really need is a <code>Testable</code> instance (not the same <code>Testable</code> as HUnit defines). And lo and behold! The <a href="https://hackage-content.haskell.org/package/QuickCheck/docs/Test-QuickCheck.html#v:.-38--38-.">.&amp;&amp;.</a> operator is just what we need. That, or the <a href="https://hackage-content.haskell.org/package/QuickCheck/docs/Test-QuickCheck.html#v:conjoin">conjoin</a> function, if you have more than two assertions to combine, as in this example:
+    </p>
+    <p>
+        <pre>testProperty&nbsp;<span style="color:#a31515;">&quot;cutRod&nbsp;returns&nbsp;correct&nbsp;arrays&quot;</span>&nbsp;$&nbsp;\&nbsp;p&nbsp;-&gt;&nbsp;<span style="color:blue;">do</span>
+&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;n&nbsp;=&nbsp;<span style="color:blue;">length</span>&nbsp;p
+&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;p&#39;&nbsp;=&nbsp;0&nbsp;:&nbsp;p&nbsp;&nbsp;<span style="color:green;">--&nbsp;Ensure&nbsp;the&nbsp;first&nbsp;element&nbsp;is&nbsp;0
+</span>
+&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;(r,&nbsp;s)&nbsp;::&nbsp;(Map&nbsp;Int&nbsp;Int,&nbsp;Map&nbsp;Int&nbsp;Int)&nbsp;=&nbsp;cutRod&nbsp;p&#39;&nbsp;n
+&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;actualRevenue&nbsp;=&nbsp;Map.elems&nbsp;r
+&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;actualSizes&nbsp;=&nbsp;Map.elems&nbsp;s
+ 
+&nbsp;&nbsp;conjoin&nbsp;[
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">length</span>&nbsp;actualRevenue&nbsp;===&nbsp;n&nbsp;+&nbsp;1,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">length</span>&nbsp;actualSizes&nbsp;===&nbsp;n,
+&nbsp;&nbsp;&nbsp;&nbsp;counterexample&nbsp;<span style="color:#a31515;">&quot;Sizes&nbsp;are&nbsp;not&nbsp;all&nbsp;in&nbsp;[0..n]&quot;</span>&nbsp;$
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">all</span>&nbsp;(\i&nbsp;-&gt;&nbsp;0&nbsp;&lt;=&nbsp;i&nbsp;&amp;&amp;&nbsp;i&nbsp;&lt;=&nbsp;n)&nbsp;actualSizes&nbsp;]</pre>
+    </p>
+    <p>
+        The <code>.&amp;&amp;.</code> operator is actually a bit more flexible than <code>conjoin</code>, but due to operator precedence and indentation rules, trying to chain those three assertions with <code>.&amp;&amp;.</code> is less elegant than using <code>conjoin</code>. In this case.
+    </p>
+    <h3 id="4d2bfeaad380487196478b194c9b840c">
+        Conclusion <a href="#4d2bfeaad380487196478b194c9b840c">#</a>
+    </h3>
+    <p>
+        In imperative languages, composing test assertions is as simple as writing one assertion after another. Since assertions are statements, and imperative languages allow you to sequence statements, this is such a trivial way to compose assertions that you've probably never given it much thought.
+    </p>
+    <p>
+        Pure programs, however, are not composed from statements, but rather from expressions. A pure assertion is an expression that returns a value, so if you want to compose two or more pure assertions, you need to figure out how to compose the values that the assertions return.
+    </p>
+    <p>
+        Ideally, assertions should compose as <a href="/2018/10/01/applicative-functors">applicative functors</a>, but they rarely do. Instead, you'll have to go looking for combinators that enable you to combine two or more of a test library's built-in assertions. In this article, you've seen how to compose assertions in HUnit and QuickCheck.
+    </p>
+</div>
