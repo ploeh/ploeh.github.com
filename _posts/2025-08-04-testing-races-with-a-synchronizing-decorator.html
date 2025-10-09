@@ -259,4 +259,73 @@ tags: [Unit Testing]
         </div>
         <div class="comment-date">2025-09-10 7:26 UTC</div>
     </div>
+
+    <div class="comment" id="4a1c7151b80b429aa27386ff2332ca29">
+        <div class="comment-author"><a href="/">Mark Seemann</a> <a href="#4a1c7151b80b429aa27386ff2332ca29">#</a></div>
+        <div class="comment-content">
+            <p>
+                Thank you for the example code. Obviously, you've made some assumptions about how this particular code base works, but often the devil is in the details, so when I finally had a bit of time on my hands, I decided to try out the feature on the real code base. After a bit of back and forth, I wrote this test:
+            </p>
+            <p>
+                <pre>[<span style="color:#2b91af;">Fact</span>]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">void</span>&nbsp;<span style="font-weight:bold;color:#74531f;">OverbookingAttemptsSerialize</span>()
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">now</span>&nbsp;=&nbsp;<span style="color:#2b91af;">DateTimeOffset</span>.UtcNow;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Gen</span>.<span style="color:#74531f;">Const</span>(()&nbsp;=&gt;&nbsp;(<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">RestaurantService</span>(),&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">ConcurrentBag</span>&lt;<span style="color:blue;">bool</span>&gt;()))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.<span style="font-weight:bold;color:#74531f;">SampleParallel</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Gen</span>.Int[1,&nbsp;10]
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.<span style="font-weight:bold;color:#74531f;">Operation</span>&lt;(<span style="color:#2b91af;">RestaurantService</span>,&nbsp;<span style="color:#2b91af;">ConcurrentBag</span>&lt;<span style="color:blue;">bool</span>&gt;)&gt;(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">async</span>&nbsp;(<span style="font-weight:bold;color:#1f377f;">t</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">q</span>)&nbsp;=&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">res</span>&nbsp;=&nbsp;<span style="font-weight:bold;color:#8f08c4;">await</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">t</span>.Item1.<span style="font-weight:bold;color:#74531f;">PostReservation</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">ReservationDtoBuilder</span>()
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.<span style="font-weight:bold;color:#74531f;">WithDate</span>(<span style="font-weight:bold;color:#1f377f;">now</span>.<span style="font-weight:bold;color:#74531f;">AddDays</span>(1).Date.<span style="font-weight:bold;color:#74531f;">AddHours</span>(18.5))
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.<span style="font-weight:bold;color:#74531f;">WithQuantity</span>(<span style="font-weight:bold;color:#1f377f;">q</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;.<span style="font-weight:bold;color:#74531f;">Build</span>());
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">t</span>.Item2.<span style="font-weight:bold;color:#74531f;">Add</span>(<span style="font-weight:bold;color:#1f377f;">res</span>.IsSuccessStatusCode);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;}),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">equal</span>:&nbsp;(<span style="font-weight:bold;color:#1f377f;">t1</span>,&nbsp;<span style="font-weight:bold;color:#1f377f;">t2</span>)&nbsp;=&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">t1</span>.Item2.<span style="font-weight:bold;color:#74531f;">SequenceEqual</span>(<span style="font-weight:bold;color:#1f377f;">t2</span>.Item2));
+}</pre>
+            </p>
+            <p>
+                An important part of the Restaurant REST API design is that clients receive correct responses when things go wrong. That's the motivation for including a <code>ConcurrentBag</code> as part of the state, recording whether the response indicates success or failure.
+            </p>
+            <p>
+                To my disappointment, even when the race bug is absent (i.e. when transaction control is present in the service), this test fails. Here's a typical output from a failing test:
+            </p>
+            <p>
+                <pre>Message: 
+&nbsp;&nbsp;&nbsp;&nbsp;CsCheck.CsCheckException&nbsp;:&nbsp;Set&nbsp;seed:&nbsp;&quot;0005Pq8wWlm1&quot;&nbsp;or&nbsp;-e&nbsp;CsCheck_Seed=0005Pq8wWlm1&nbsp;to&nbsp;reproduce&nbsp;(0&nbsp;shrinks,&nbsp;72&nbsp;skipped,&nbsp;100&nbsp;total).
+&nbsp;&nbsp;&nbsp;&nbsp;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Initial&nbsp;state:&nbsp;(Ploeh.Samples.Restaurants.RestApi.SqlIntegrationTests.RestaurantService,&nbsp;{})
+&nbsp;&nbsp;&nbsp;&nbsp;Sequential&nbsp;Operations:&nbsp;[]
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Parallel&nbsp;Operations:&nbsp;[Op0&nbsp;4,&nbsp;Op0&nbsp;1,&nbsp;Op0&nbsp;4]
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;On&nbsp;Threads:&nbsp;[0,&nbsp;1,&nbsp;0]
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Final&nbsp;state:&nbsp;(Ploeh.Samples.Restaurants.RestApi.SqlIntegrationTests.RestaurantService,&nbsp;{False,&nbsp;True,&nbsp;True})
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Linearized:&nbsp;[Op0&nbsp;4,&nbsp;Op0&nbsp;1,&nbsp;Op0&nbsp;4]&nbsp;-&gt;&nbsp;(Ploeh.Samples.Restaurants.RestApi.SqlIntegrationTests.RestaurantService,&nbsp;{False,&nbsp;False,&nbsp;False})
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;:&nbsp;[Op0&nbsp;1,&nbsp;Op0&nbsp;4,&nbsp;Op0&nbsp;4]&nbsp;-&gt;&nbsp;(Ploeh.Samples.Restaurants.RestApi.SqlIntegrationTests.RestaurantService,&nbsp;{False,&nbsp;False,&nbsp;False})
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;:&nbsp;[Op0&nbsp;4,&nbsp;Op0&nbsp;4,&nbsp;Op0&nbsp;1]&nbsp;-&gt;&nbsp;(Ploeh.Samples.Restaurants.RestApi.SqlIntegrationTests.RestaurantService,&nbsp;{False,&nbsp;False,&nbsp;False})
+</pre>
+            </p>
+            <p>
+                At first this is surprising, and upon further reflection, it may not be that surprising. Still, there are things that I don't understand.
+            </p>
+            <p>
+                Here's what's initially surprising: Implicit in this test is that the restaurant seats a maximum of 10 people a day. Thus, with 4, 1, and 4 seats being requested, it surprised me that <em>any</em> of these reservations were being declined. Still, all the linearized models have <code>{False,&nbsp;False,&nbsp;False}</code>; in other words, <em>no</em> reservations were accepted.
+            </p>
+            <p>
+                Then I remembered that this test is actually running on a real SQL Server database, and since I'm assuming that CsCheck has been running quite a few scenarios already, it actually makes sense that that particular day is already completely sold out. Does <em>72 skipped</em> indicate that there were 72 prior runs before this one? Or does it mean that CsCheck found a counterexample after 28 tries, and then decided to skip the remaining 72 runs?
+            </p>
+            <p>
+                In any case, even if it only did 27 prior runs, it seems likely that the date is already completely sold out. It then puzzles me that the final state is <code>{False,&nbsp;True,&nbsp;True}</code>. I honestly can't think of a good explanation of that, but perhaps you can?
+            </p>
+            <p>
+                In any case, I still think that I understand why this can't work as written above. The problem with filling up all reservations for a given date is the reason why I originally performed every attempt to provoke the race on a unique date. Is there a way to do that with CsCheck and <code>SampleParallel</code>?
+            </p>
+            <p>
+                Alternatively, one would need a way to tear down the persistent fixture (i.e. the database) after each run. I can't identify an API that enables me to do that, but perhaps I'm missing something. Is that option somehow available?
+            </p>
+        </div>
+        <div class="comment-date">2025-10-09 14:32 UTC</div>
+    </div>
 </div>
