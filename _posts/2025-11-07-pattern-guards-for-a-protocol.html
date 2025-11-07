@@ -1,0 +1,119 @@
+---
+layout: post
+title: "Pattern guards for a protocol"
+description: "A Haskell example."
+date: 2025-11-07 8:10 UTC
+tags: [Haskell, Code]
+---
+{% include JB/setup %}
+
+<div id="post">
+    <p>
+        <em>{{ page.description }}</em>
+    </p>
+    <p>
+        Recently, I was doing a <a href="https://www.haskell.org/">Haskell</a> project implementing a <a href="https://en.wikipedia.org/wiki/Cellular_automaton">cellular automaton</a> according to predefined rules. Specifically, the story was one of <a href="https://en.wikipedia.org/wiki/Darwin%27s_finches">Galápagos finches</a> meeting and deciding whether or not to groom each other for parasites, effectively playing out a round of <a href="https://en.wikipedia.org/wiki/Prisoner%27s_dilemma">prisoner's dilemma</a>.
+    </p>
+    <p>
+        Each finch is equipped with a particular strategy for repeated play. This strategy is implemented in a custom <a href="https://en.wikipedia.org/wiki/Domain-specific_language">domain-specific language</a> that enables each finch to remember past actions of other finches, and make decisions based on this memory.
+    </p>
+    <h3 id="873756586c264a01b5a2fcadca00ec86">
+        Meeting protocol <a href="#873756586c264a01b5a2fcadca00ec86">#</a>
+    </h3>
+    <p>
+        An evaluator runs over the code that implements each strategy, returning a free monad that embeds the possible actions a finch may take when meeting another finch.
+    </p>
+    <p>
+        The possible actions are defined by this <a href="https://en.wikipedia.org/wiki/Tagged_union">sum type</a>:
+    </p>
+    <p>
+        <pre><span style="color:blue;">data</span>&nbsp;EvalOp&nbsp;a
+&nbsp;&nbsp;=&nbsp;ErrorOp&nbsp;Error
+&nbsp;&nbsp;|&nbsp;MeetOp&nbsp;(FinchID&nbsp;-&gt;&nbsp;a)
+&nbsp;&nbsp;|&nbsp;GroomOp&nbsp;(Bool&nbsp;-&gt;&nbsp;a)
+&nbsp;&nbsp;|&nbsp;IgnoreOp&nbsp;(Bool&nbsp;-&gt;&nbsp;a)</pre>
+    </p>
+    <p>
+        When two finches <em>a</em> and <em>b</em> meet, they must interact according to a protocol.
+    </p>
+    <ul>
+        <li>Evaluate the strategy of the finch <em>a</em> up to the next effect, which must be a <code>MeetOp</code>.</li>
+        <li>Invoke the continuation of the <code>MeetOp</code> with the <code>finchID</code> of finch <em>b</em>.</li>
+        <li>Evaluate the strategy up to next effect, which must be <code>GroomOp</code> or <code>IgnoreOp</code>. This decides the behaviour of finch <em>a</em> during this meeting.</li>
+        <li>Similarly, determine the behaviour of finch <em>b</em>, using the <code>finchID</code> of finch <em>a</em>.</li>
+        <li>For each finch, invoke the continuation of the <code>GroomOp</code> or <code>IgnoreOp</code> with the behaviour of the other finch (<code>True</code> for grooming, <code>False</code> for ignoring), yielding two new <code>Strategy</code>s (sic).</li>
+        <li>The resulting <code>Strategy</code>s (sic) are then stored in the <code>Finch</code> objects for the next meeting of the finches.</li>
+    </ul>
+    <p>
+        If at any step a strategy does not produce one of the expected effects (or no effect at all), then the finch has behaved illegally. For example, if in step 1 the first effect is a <code>GroomOp</code>, then this is illegal.
+    </p>
+    <p>
+        This sounds rather complicated, and I was concerned that even though I could pattern-match against the <code>EvalOp</code> cases, I'd end up with duplicated and deeply indented code.
+    </p>
+    <h3 id="1c343de526674bd4b597c1952d514114">
+        Normal pattern matching <a href="#1c343de526674bd4b597c1952d514114">#</a>
+    </h3>
+    <p>
+        Worrying about duplication, I tried to see if I could isolate each finch's 'handshake' as a separate function. I was still concerned that using normal pattern matching would cause too much indentation, but subsequent experimentation shows that it in this case, it's not really that bad.
+    </p>
+    <p>
+        Ultimately, I went with <a href="https://wiki.haskell.org/Pattern_guard">pattern guards</a>, but I think that it may be more helpful to lead with an example of what the code would look like using plain vanilla pattern matching.
+    </p>
+    <p>
+        <pre><span style="color:#2b91af;">tryRun</span>&nbsp;<span style="color:blue;">::</span>&nbsp;<span style="color:blue;">EvalM</span>&nbsp;a&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">FinchID</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:#2b91af;">Maybe</span>&nbsp;(<span style="color:#2b91af;">Bool</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">EvalM</span>&nbsp;a,&nbsp;<span style="color:#2b91af;">Bool</span>)
+tryRun&nbsp;(Free&nbsp;(MeetOp&nbsp;nextAfterMeet))&nbsp;other&nbsp;=
+&nbsp;&nbsp;<span style="color:blue;">case</span>&nbsp;nextAfterMeet&nbsp;other&nbsp;<span style="color:blue;">of</span>
+&nbsp;&nbsp;&nbsp;&nbsp;(Free&nbsp;(GroomOp&nbsp;nextAfterGroom))&nbsp;-&gt;&nbsp;Just&nbsp;(nextAfterGroom,&nbsp;True)
+&nbsp;&nbsp;&nbsp;&nbsp;(Free&nbsp;(IgnoreOp&nbsp;nextAfterIgnore))&nbsp;-&gt;&nbsp;Just&nbsp;(nextAfterIgnore,&nbsp;False)
+&nbsp;&nbsp;&nbsp;&nbsp;_&nbsp;-&gt;&nbsp;Nothing
+tryRun&nbsp;_&nbsp;_&nbsp;=&nbsp;Nothing</pre>
+    </p>
+    <p>
+        Now that I write this article, I realize that I should have named the function <code>handshake</code>, but hindsight is twenty-twenty. In the moment, I went with <code>tryRun</code>, using the <code>try</code> prefix to indicate that this operation may fail, as also indicated by the <code>Maybe</code> return type. That naming convention is probably more idiomatic in <a href="https://fsharp.org/">F#</a>, but I digress.
+    </p>
+    <p>
+        As announced, that's not half as bad as I had originally feared. There's the beginning of <a href="https://wiki.c2.com/?ArrowAntiPattern">arrow code</a>, but I suppose you could also say that of any use of <code>if/then/else</code>. Imagine, however, that the protocol involved a few more steps, and you'd have something quite ugly at hand.
+    </p>
+    <p>
+        Another slight imperfection is the repetition of returning <code>Nothing</code>. Again, this code would not keep me up at night, but it just so happened that I originally thought that it would be worse, so I immediately cast about for alternatives.
+    </p>
+    <h3 id="35fc2dd4bc7c407f972a7f084d506f0d">
+        Using pattern guards <a href="#35fc2dd4bc7c407f972a7f084d506f0d">#</a>
+    </h3>
+    <p>
+        Originally, I thought that perhaps <a href="https://ghc.gitlab.haskell.org/ghc/doc/users_guide/exts/view_patterns.html">view patterns</a> would be suitable, but while looking around, I came across <a href="https://wiki.haskell.org/Pattern_guard">pattern guards</a> and thought: What's that?
+    </p>
+    <p>
+        This language feature has been around since 2010, but it's new to me. It's a good fit for the problem at hand, and that's how I actually wrote the <code>tryRun</code> function:
+    </p>
+    <p>
+        <pre><span style="color:#2b91af;">tryRun</span>&nbsp;<span style="color:blue;">::</span>&nbsp;<span style="color:blue;">EvalM</span>&nbsp;a&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">FinchID</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:#2b91af;">Maybe</span>&nbsp;(<span style="color:#2b91af;">Bool</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">EvalM</span>&nbsp;a,&nbsp;<span style="color:#2b91af;">Bool</span>)
+tryRun&nbsp;strategy&nbsp;other
+&nbsp;&nbsp;|&nbsp;(Free&nbsp;(MeetOp&nbsp;nextAfterMeet))&nbsp;&lt;-&nbsp;strategy
+&nbsp;&nbsp;,&nbsp;(Free&nbsp;(GroomOp&nbsp;nextAfterGroom))&nbsp;&lt;-&nbsp;nextAfterMeet&nbsp;other
+&nbsp;&nbsp;=&nbsp;Just&nbsp;(nextAfterGroom,&nbsp;True)
+tryRun&nbsp;strategy&nbsp;other
+&nbsp;&nbsp;|&nbsp;(Free&nbsp;(MeetOp&nbsp;nextAfterMeet))&nbsp;&lt;-&nbsp;strategy
+&nbsp;&nbsp;,&nbsp;(Free&nbsp;(IgnoreOp&nbsp;nextAfterIgnore))&nbsp;&lt;-&nbsp;nextAfterMeet&nbsp;other
+&nbsp;&nbsp;=&nbsp;Just&nbsp;(nextAfterIgnore,&nbsp;False)
+tryRun&nbsp;_&nbsp;_&nbsp;=&nbsp;Nothing</pre>
+    </p>
+    <p>
+        Now that I have the opportunity to compare the two alternatives, it's not clear that one is better than the other. You may even prefer the first, normal version.
+    </p>
+    <p>
+        The version using pattern guards has more lines of code, and code duplication in the repetition of the <code>|&nbsp;(Free&nbsp;(MeetOp&nbsp;nextAfterMeet))&nbsp;&lt;-&nbsp;strategy</code> pattern. On the other hand, we get rid of the duplicated <code>Nothing</code> return value. What is perhaps more interesting is that had the handshake protocol involved more steps, the pattern-guards version would remain flat, whereas the other version would require indentation.
+    </p>
+    <p>
+        To be honest, now that I write this article, the example has lost some of its initial lustre. Still, I learned about a Haskell language feature that I didn't know about, and thought I'd share the example.
+    </p>
+    <h3 id="6e8c2d18271344869e706eb6d3fa6db2">
+        Conclusion <a href="#6e8c2d18271344869e706eb6d3fa6db2">#</a>
+    </h3>
+    <p>
+        Most mature programming languages have so many features that a programmer may use a language for years, and still be unaware of useful alternatives. Haskell is the oldest language I use, and although I've programmed in it for a decade, I still learn new things.
+    </p>
+    <p>
+        In this article, you saw a simple example of using pattern guards. Perhaps you will find this language feature useful in your own code. Perhaps you already use it.
+    </p>
+</div>
