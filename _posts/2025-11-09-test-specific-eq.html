@@ -1,0 +1,381 @@
+---
+layout: post
+title: "Test-specific Eq"
+description: "Adding Eq instances for better assertions."
+date: 2025-11-09 18:08 UTC
+tags: [Haskell, Unit Testing]
+---
+{% include JB/setup %}
+
+<div id="post">
+    <p>
+        <em>{{ page.description }}</em>
+    </p>
+    <p>
+        Most well-written unit tests follow some variation of the <a href="https://xp123.com/3a-arrange-act-assert/">Arrange Act Assert</a> pattern. In the Assert phase, you may write a sequence of assertions that verify different aspects of what 'success' means. Even so, it boils down to this: You check that the <em>expected</em> outcome is equal to the <em>actual</em> outcome. Some testing frameworks like to turn the order around, but the idea remains the same. After all, <a href="https://en.wikipedia.org/wiki/Symmetric_relation">equality is symmetric</a>.
+    </p>
+    <p>
+        The ideal assertion is one that simply checks that <em>actual is equal to expected</em>. Some languages allow custom infix operators, in which case it's natural to define this fundamental assertion as an operator, such as <a href="https://hackage-content.haskell.org/package/tasty-hunit/docs/Test-Tasty-HUnit.html#v:-64--63--61-">@?=</a>.
+    </p>
+    <p>
+        Since this is <a href="https://www.haskell.org/">Haskell</a>, however, the <code>@?=</code> operator comes with type constraints. Specifically, what we compare must be an <code>Eq</code> instance. In other words, the type in question must support the <code>==</code> operator. What do you do when a type is no <code>Eq</code> instance?
+    </p>
+    <h3 id="cd497aa35e354cddb387a4da5c0d65b2">
+        No Eq <a href="#cd497aa35e354cddb387a4da5c0d65b2">#</a>
+    </h3>
+    <p>
+        In a recent article you saw how <a href="" hint="Tautological assertions are not always caused by aliasing">a complicated test induced a tautological assertion</a>. The main reason that the test was complicated was that the values involved were not <code>Eq</code> instances.
+    </p>
+    <p>
+        This got me thinking: Might <a href="http://xunitpatterns.com/test-specific%20equality.html">test-specific equality</a> help?
+    </p>
+    <p>
+        The easiest way to find out is to try. In this article, you'll see how that experiment turns out. First, however, you need a quick introduction to the problem space. The task at hand was to implement a <a href="https://en.wikipedia.org/wiki/Cellular_automaton">cellular automaton</a>, ostensibly modelling <a href="https://en.wikipedia.org/wiki/Darwin%27s_finches">Galápagos finches</a> meeting. When two finches encounter each other, they play out a game of <a href="https://en.wikipedia.org/wiki/Prisoner%27s_dilemma">Prisoner's Dilemma</a> according to a strategy implemented in a domain-specific language.
+    </p>
+    <p>
+        Specifically, a finch is modelled like this:
+    </p>
+    <p>
+        <pre><span style="color:blue;">data</span>&nbsp;Finch&nbsp;=&nbsp;Finch
+&nbsp;&nbsp;{&nbsp;finchID&nbsp;::&nbsp;Int,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">finchHP</span>&nbsp;<span style="color:blue;">::</span>&nbsp;<span style="color:blue;">HP</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">finchRoundsLeft</span>&nbsp;<span style="color:blue;">::</span>&nbsp;<span style="color:blue;">Rounds</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">--&nbsp;The&nbsp;colour&nbsp;is&nbsp;used&nbsp;for&nbsp;visualisation,&nbsp;but&nbsp;has&nbsp;no&nbsp;semantic&nbsp;significance.
+</span>&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">finchColour</span>&nbsp;<span style="color:blue;">::</span>&nbsp;<span style="color:blue;">Colour</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">--&nbsp;The&nbsp;current&nbsp;strategy.
+</span>&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">finchStrategy</span>&nbsp;<span style="color:blue;">::</span>&nbsp;<span style="color:blue;">Strategy</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">--&nbsp;The&nbsp;expression&nbsp;that&nbsp;is&nbsp;evaluated&nbsp;to&nbsp;produce&nbsp;the&nbsp;strategy.
+</span>&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">finchStrategyExp</span>&nbsp;<span style="color:blue;">::</span>&nbsp;<span style="color:blue;">Exp</span>
+&nbsp;&nbsp;}</pre>
+    </p>
+    <p>
+        The <code>Finch</code> data type is not an <code>Eq</code> instance. The reason is that <code>Strategy</code> is effectively a free monad over this functor:
+    </p>
+    <p>
+        <pre><span style="color:blue;">data</span>&nbsp;EvalOp&nbsp;a
+&nbsp;&nbsp;=&nbsp;ErrorOp&nbsp;Error
+&nbsp;&nbsp;|&nbsp;MeetOp&nbsp;(FinchID&nbsp;-&gt;&nbsp;a)
+&nbsp;&nbsp;|&nbsp;GroomOp&nbsp;(Bool&nbsp;-&gt;&nbsp;a)
+&nbsp;&nbsp;|&nbsp;IgnoreOp&nbsp;(Bool&nbsp;-&gt;&nbsp;a)</pre>
+    </p>
+    <p>
+        Since <code>EvalOp</code> is a <a href="https://en.wikipedia.org/wiki/Tagged_union">sum</a> of functions, it can't be an <code>Eq</code> instance, and this then applies transitively to <code>Finch</code>, as well as the <code>CellState</code> container that keeps track of each cell in the cellular grid:
+    </p>
+    <p>
+        <pre><span style="color:blue;">data</span>&nbsp;CellState&nbsp;=&nbsp;CellState
+&nbsp;&nbsp;{&nbsp;cellFinch&nbsp;::&nbsp;Maybe&nbsp;Finch,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">cellRNG</span>&nbsp;<span style="color:blue;">::</span>&nbsp;<span style="color:blue;">StdGen</span>
+&nbsp;&nbsp;}</pre>
+    </p>
+    <p>
+        An important part of working with this particular code base is that the API is given, and must not be changed.
+    </p>
+    <p>
+        Given these constraints and data types, is there a way to improve test assertions?
+    </p>
+    <h3 id="3b73b7b375c24f40ac22d6274d806a60">
+        Smelly tests <a href="#3b73b7b375c24f40ac22d6274d806a60">#</a>
+    </h3>
+    <p>
+        The lack of <code>Eq</code> instances makes it difficult to write simple assertions. The worst test I wrote is probably this, making use of a predefined example <code>Finch</code> value named <code>flipflop</code>:
+    </p>
+    <p>
+        <pre>testCase&nbsp;<span style="color:#a31515;">&quot;Cell&nbsp;1&nbsp;reproduces&quot;</span>&nbsp;$
+&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;cell1&nbsp;=&nbsp;Galapagos.CellState&nbsp;(Just&nbsp;flipflop)&nbsp;(mkStdGen&nbsp;0)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;cell2&nbsp;=&nbsp;Galapagos.CellState&nbsp;Nothing&nbsp;(mkStdGen&nbsp;6)&nbsp;<span style="color:green;">--&nbsp;seeded&nbsp;to&nbsp;reprod
+
+</span>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;actual&nbsp;=&nbsp;Galapagos.reproduce&nbsp;Galapagos.defaultParams&nbsp;(cell1,&nbsp;cell2)
+
+&nbsp;&nbsp;<span style="color:blue;">in</span>&nbsp;<span style="color:blue;">do</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">--&nbsp;Sanity&nbsp;check&nbsp;on&nbsp;first&nbsp;finch.&nbsp;Unfortunately,&nbsp;CellState&nbsp;is&nbsp;no&nbsp;Eq
+</span>&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">--&nbsp;instance,&nbsp;so&nbsp;we&nbsp;can&#39;t&nbsp;just&nbsp;compare&nbsp;the&nbsp;entire&nbsp;record.&nbsp;Instead,
+</span>&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">--&nbsp;using&nbsp;HP&nbsp;as&nbsp;a&nbsp;sample:
+</span>&nbsp;&nbsp;&nbsp;&nbsp;(Galapagos.finchHP&nbsp;&lt;$&gt;&nbsp;Galapagos.cellFinch&nbsp;(<span style="color:blue;">fst</span>&nbsp;actual))&nbsp;@?=&nbsp;Just&nbsp;20
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">--&nbsp;New&nbsp;finch&nbsp;should&nbsp;have&nbsp;HP&nbsp;from&nbsp;params:
+</span>&nbsp;&nbsp;&nbsp;&nbsp;(Galapagos.finchHP&nbsp;&lt;$&gt;&nbsp;Galapagos.cellFinch&nbsp;(<span style="color:blue;">snd</span>&nbsp;actual))&nbsp;@?=&nbsp;Just&nbsp;14
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">--&nbsp;New&nbsp;finch&nbsp;should&nbsp;have&nbsp;lifespan&nbsp;from&nbsp;params:
+</span>&nbsp;&nbsp;&nbsp;&nbsp;(Galapagos.finchRoundsLeft&nbsp;&lt;$&gt;&nbsp;Galapagos.cellFinch&nbsp;(<span style="color:blue;">snd</span>&nbsp;actual))&nbsp;@?=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Just&nbsp;23
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">--&nbsp;New&nbsp;finch&nbsp;should&nbsp;have&nbsp;same&nbsp;colour&nbsp;as&nbsp;parent:
+</span>&nbsp;&nbsp;&nbsp;&nbsp;(&nbsp;Galapagos.finchColour&nbsp;&lt;$&gt;&nbsp;Galapagos.cellFinch&nbsp;(<span style="color:blue;">snd</span>&nbsp;actual))&nbsp;@?=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Galapagos.finchColour&nbsp;&lt;$&gt;&nbsp;Galapagos.cellFinch&nbsp;cell1
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">--&nbsp;More&nbsp;assertions,&nbsp;described&nbsp;by&nbsp;their&nbsp;error&nbsp;messages:
+</span>&nbsp;&nbsp;&nbsp;&nbsp;(&nbsp;(Galapagos.finchID&nbsp;&lt;$&gt;&nbsp;Galapagos.cellFinch&nbsp;(<span style="color:blue;">fst</span>&nbsp;actual))&nbsp;/=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(Galapagos.finchID&nbsp;&lt;$&gt;&nbsp;Galapagos.cellFinch&nbsp;(<span style="color:blue;">snd</span>&nbsp;actual)))&nbsp;@?
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#a31515;">&quot;Finches&nbsp;have&nbsp;same&nbsp;ID,&nbsp;but&nbsp;they&nbsp;should&nbsp;be&nbsp;different.&quot;</span>
+&nbsp;&nbsp;&nbsp;&nbsp;(<span style="color:#2b91af;">(/=)</span>&nbsp;`on`&nbsp;Galapagos.cellRNG)&nbsp;cell2&nbsp;(<span style="color:blue;">snd</span>&nbsp;actual)&nbsp;@?
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#a31515;">&quot;New&nbsp;cell&nbsp;2&nbsp;should&nbsp;have&nbsp;an&nbsp;updated&nbsp;RNG.&quot;</span></pre>
+    </p>
+    <p>
+        As you can tell from the <a href="http://butunclebob.com/ArticleS.TimOttinger.ApologizeIncode">apologies</a> all these assertions leave something to be desired. The first assertion uses <code>finchHP</code> as a proxy for the entire finch in <code>cell1</code>, which is not supposed to change. Instead of an assertion for each of the first finch's attributes, the test 'hopes' that if <code>finchHP</code> didn't change, then so didn't the other values.
+    </p>
+    <p>
+        The test then proceeds to verify various fields of the new finch in <code>cell2</code>, checking them one by one, since the lack of <code>Eq</code> makes it impossible to simply check that the actual value is equal to the expected value.
+    </p>
+    <p>
+        In comparison, the test you saw in the previous article is almost pretty. It uses another example <code>Finch</code> value named <code>cheater</code>.
+    </p>
+    <p>
+        <pre>testCase&nbsp;<span style="color:#a31515;">&quot;Cell&nbsp;1&nbsp;does&nbsp;not&nbsp;reproduce&quot;</span>&nbsp;$
+&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;cell1&nbsp;=&nbsp;Galapagos.CellState&nbsp;(Just&nbsp;cheater)&nbsp;(mkStdGen&nbsp;0)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;cell2&nbsp;=&nbsp;Galapagos.CellState&nbsp;Nothing&nbsp;(mkStdGen&nbsp;1)&nbsp;<span style="color:green;">--&nbsp;seeded:&nbsp;no&nbsp;repr.
+</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;actual&nbsp;=&nbsp;Galapagos.reproduce&nbsp;Galapagos.defaultParams&nbsp;(cell1,&nbsp;cell2)
+ 
+&nbsp;&nbsp;<span style="color:blue;">in</span>&nbsp;<span style="color:blue;">do</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">--&nbsp;Sanity&nbsp;check&nbsp;that&nbsp;cell&nbsp;1&nbsp;remains,&nbsp;sampling&nbsp;on&nbsp;strategy:
+</span>&nbsp;&nbsp;&nbsp;&nbsp;(&nbsp;Galapagos.finchStrategyExp&nbsp;&lt;$&gt;&nbsp;Galapagos.cellFinch&nbsp;(<span style="color:blue;">fst</span>&nbsp;actual))&nbsp;@?=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Galapagos.finchStrategyExp&nbsp;&lt;$&gt;&nbsp;Galapagos.cellFinch&nbsp;cell1
+&nbsp;&nbsp;&nbsp;&nbsp;(&nbsp;Galapagos.finchHP&nbsp;&lt;$&gt;&nbsp;Galapagos.cellFinch&nbsp;(<span style="color:blue;">snd</span>&nbsp;actual))&nbsp;@?=&nbsp;Nothing</pre>
+    </p>
+    <p>
+        The apparent simplicity is mostly because at that time, I'd almost given up on more thorough testing. In this test, I chose <code>finchStrategyExp</code> as a proxy for each value, and 'hoped' that if these properties behaved as expected, other attributes would, too.
+    </p>
+    <p>
+        Given that I was following test-driven development and thus engaging in <a href="/2025/09/15/greyscale-box-test-driven-development">grey-box testing</a>, I had reason to believe that the implementation was correct if the test passes.
+    </p>
+    <p>
+        Still, those tests exhibit more than one code smell. Could test-specific equality be the answer?
+    </p>
+    <h3 id="0d24dbb0a6c144ff9cdbf7b146f2329a">
+        Test utilities for finches <a href="#0d24dbb0a6c144ff9cdbf7b146f2329a">#</a>
+    </h3>
+    <p>
+        The fundamental problem is that the <code>finchStrategy</code> field prevents <code>Finch</code> from being an <code>Eq</code> instance. Finding a way to compare <code>Strategy</code> values seems impractical. A more realistic course of action might be to compare all other fields. One option is to introduce a test-specific type with proper <code>Eq</code> and <code>Show</code> instances.
+    </p>
+    <p>
+        <pre><span style="color:blue;">data</span>&nbsp;FinchEq&nbsp;=&nbsp;FinchEq
+&nbsp;&nbsp;{&nbsp;feqID&nbsp;::&nbsp;Int
+&nbsp;&nbsp;,&nbsp;feqHP&nbsp;::&nbsp;Galapagos.HP
+&nbsp;&nbsp;,&nbsp;feqRoundsLeft&nbsp;::&nbsp;Galapagos.Rounds
+&nbsp;&nbsp;,&nbsp;feqColour&nbsp;::&nbsp;Galapagos.Colour
+&nbsp;&nbsp;,&nbsp;feqStrategyExp&nbsp;::&nbsp;Exp&nbsp;}
+&nbsp;&nbsp;<span style="color:blue;">deriving</span>&nbsp;(<span style="color:#2b91af;">Eq</span>,&nbsp;<span style="color:#2b91af;">Show</span>)</pre>
+    </p>
+    <p>
+        This data type only exists in the test code base. It has all the fields of <code>Finch</code>, except <code>finchStrategy</code>.
+    </p>
+    <p>
+        While I could use it as-is, it quickly turns out that a helper function to turn a <code>CellState</code> value into a <code>FinchEq</code> value would also be useful.
+    </p>
+    <p>
+        <pre><span style="color:#2b91af;">finchEq</span>&nbsp;<span style="color:blue;">::</span>&nbsp;<span style="color:blue;">Galapagos</span>.<span style="color:blue;">Finch</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">FinchEq</span>
+finchEq&nbsp;f&nbsp;=&nbsp;FinchEq
+&nbsp;&nbsp;{&nbsp;feqID&nbsp;=&nbsp;Galapagos.finchID&nbsp;f
+&nbsp;&nbsp;,&nbsp;feqHP&nbsp;=&nbsp;Galapagos.finchHP&nbsp;f
+&nbsp;&nbsp;,&nbsp;feqRoundsLeft&nbsp;=&nbsp;Galapagos.finchRoundsLeft&nbsp;f
+&nbsp;&nbsp;,&nbsp;feqColour&nbsp;=&nbsp;Galapagos.finchColour&nbsp;f
+&nbsp;&nbsp;,&nbsp;feqStrategyExp&nbsp;=&nbsp;Galapagos.finchStrategyExp&nbsp;f
+&nbsp;&nbsp;}
+ 
+<span style="color:#2b91af;">cellFinchEq</span>&nbsp;<span style="color:blue;">::</span>&nbsp;<span style="color:blue;">Galapagos</span>.<span style="color:blue;">CellState</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:#2b91af;">Maybe</span>&nbsp;<span style="color:blue;">FinchEq</span>
+cellFinchEq&nbsp;=&nbsp;<span style="color:blue;">fmap</span>&nbsp;finchEq&nbsp;.&nbsp;Galapagos.cellFinch</pre>
+    </p>
+    <p>
+        Finally, the System Under Test (the <code>reproduce</code> function) takes a tuple as input, and returns a tuple of the same type as output. To avoid some code duplication, it's practical to introduce a data type that can map over both components.
+    </p>
+    <p>
+        <pre><span style="color:blue;">newtype</span>&nbsp;Pair&nbsp;a&nbsp;=&nbsp;Pair&nbsp;(a,&nbsp;a)
+&nbsp;&nbsp;<span style="color:blue;">deriving</span>&nbsp;(<span style="color:#2b91af;">Eq</span>,&nbsp;<span style="color:#2b91af;">Show</span>,&nbsp;<span style="color:#2b91af;">Functor</span>)</pre>
+    </p>
+    <p>
+        This <code>newtype</code> wrapper makes it possible to map both the first and the second component of a pair (a two-tuple) using a single projection, since <code>Pair</code> is a <code>Functor</code> instance.
+    </p>
+    <p>
+        That's all the machinery required to rewrite the two tests shown above.
+    </p>
+    <h3 id="3aed5cd44da14648bff6b7113018ff2f">
+        Improving the first test <a href="#3aed5cd44da14648bff6b7113018ff2f">#</a>
+    </h3>
+    <p>
+        The first test may be rewritten as this:
+    </p>
+    <p>
+        <pre>testCase&nbsp;<span style="color:#a31515;">&quot;Cell&nbsp;1&nbsp;reproduces&quot;</span>&nbsp;$
+&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;cell1&nbsp;=&nbsp;Galapagos.CellState&nbsp;(Just&nbsp;flipflop)&nbsp;(mkStdGen&nbsp;0)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;cell2&nbsp;=&nbsp;Galapagos.CellState&nbsp;Nothing&nbsp;(mkStdGen&nbsp;6)&nbsp;<span style="color:green;">--&nbsp;seeded&nbsp;to&nbsp;reprod
+</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;actual&nbsp;=&nbsp;Galapagos.reproduce&nbsp;Galapagos.defaultParams&nbsp;(cell1,&nbsp;cell2)
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;expected&nbsp;=&nbsp;Just&nbsp;$&nbsp;finchEq&nbsp;$&nbsp;flipflop
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{&nbsp;Galapagos.finchID&nbsp;=&nbsp;-1142203427417426925&nbsp;<span style="color:green;">--&nbsp;From&nbsp;Character.&nbsp;Test
+</span>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;,&nbsp;Galapagos.finchHP&nbsp;=&nbsp;14
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;,&nbsp;Galapagos.finchRoundsLeft&nbsp;=&nbsp;23
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;}
+&nbsp;&nbsp;<span style="color:blue;">in</span>&nbsp;<span style="color:blue;">do</span>
+&nbsp;&nbsp;&nbsp;&nbsp;(cellFinchEq&nbsp;&lt;$&gt;&nbsp;Pair&nbsp;actual)&nbsp;@?=&nbsp;Pair&nbsp;(cellFinchEq&nbsp;cell1,&nbsp;expected)
+&nbsp;&nbsp;&nbsp;&nbsp;(<span style="color:#2b91af;">(/=)</span>&nbsp;`on`&nbsp;Galapagos.cellRNG)&nbsp;cell2&nbsp;(<span style="color:blue;">snd</span>&nbsp;actual)&nbsp;@?
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#a31515;">&quot;New&nbsp;cell&nbsp;2&nbsp;should&nbsp;have&nbsp;an&nbsp;updated&nbsp;RNG.&quot;</span></pre>
+    </p>
+    <p>
+        That's still a bit of code. If you're used to C# or <a href="https://www.java.com">Java</a> code, you may not bat an eyelid over a fifteen-line code block (that even has a few <a href="/2013/06/24/a-heuristic-for-formatting-code-according-to-the-aaa-pattern">blank lines</a>), but fifteen lines of Haskell code is still significant.
+    </p>
+    <p>
+        There are compound reasons for this. One is that the <code>Galapagos</code> module is a qualified import, which makes the code more verbose than it otherwise could have been. It doesn't help that I follow a strict rule of <a href="/2019/11/04/the-80-24-rule">staying within an 80-character line width</a>.
+    </p>
+    <p>
+        That said, this version of the test has stronger assertions than before. Notice that the first assertion compares two <code>Pair</code>s of <code>FinchEq</code> values. This means that all five comparable fields of each finch is compared against the expected value. Since the assertion compares two <code>Pair</code>s, that's ten comparisons in all. The previous test only made five comparisons on the finches.
+    </p>
+    <p>
+        The second assertion remains as before. It's there to ensure that the System Under Test (SUT) remembers to update its pseudo-random number generator.
+    </p>
+    <p>
+        Perhaps you wonder about the expected values. For the <code>finchID</code>, hopefully the comment gives a hint. I originally set this value to <code>0</code>, ran the test, observed the actual value, and used what I had observed. I could do that because I was refactoring an existing test that exercised an existing SUT, following the rules of <a href="/2025/11/03/empirical-characterization-testing">empirical Characterization Testing</a>.
+    </p>
+    <p>
+        The <code>finchID</code> values are in practice randomly generated numbers. These are notoriously awkward in test contexts, so I could also have excluded that field from <code>FinchEq</code>. Even so, I kept the field, because it's important to be able to verify that the new finch has a different <code>finchID</code> than the parent that begat it.
+    </p>
+    <h3 id="46f55878cf9d4b4a9a6c02c11986fd9c">
+        Derived values <a href="#46f55878cf9d4b4a9a6c02c11986fd9c">#</a>
+    </h3>
+    <p>
+        Where do the magic constants <code>14</code> and <code>23</code> come from? Although we could use comments to explain their source, another option is to use <a href="http://xunitpatterns.com/Derived%20Value.html">Derived Values</a> to explicitly document their origin:
+    </p>
+    <p>
+        <pre>testCase&nbsp;<span style="color:#a31515;">&quot;Cell&nbsp;1&nbsp;reproduces&quot;</span>&nbsp;$
+&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;cell1&nbsp;=&nbsp;Galapagos.CellState&nbsp;(Just&nbsp;flipflop)&nbsp;(mkStdGen&nbsp;0)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;cell2&nbsp;=&nbsp;Galapagos.CellState&nbsp;Nothing&nbsp;(mkStdGen&nbsp;6)&nbsp;<span style="color:green;">--&nbsp;seeded&nbsp;to&nbsp;reprod
+</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;actual&nbsp;=&nbsp;Galapagos.reproduce&nbsp;Galapagos.defaultParams&nbsp;(cell1,&nbsp;cell2)
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;expected&nbsp;=&nbsp;Just&nbsp;$&nbsp;finchEq&nbsp;$&nbsp;flipflop
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{&nbsp;Galapagos.finchID&nbsp;=&nbsp;-1142203427417426925&nbsp;<span style="color:green;">--&nbsp;From&nbsp;Character.&nbsp;Test
+</span>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;,&nbsp;Galapagos.finchHP&nbsp;=&nbsp;Galapagos.startHP&nbsp;Galapagos.defaultParams
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;,&nbsp;Galapagos.finchRoundsLeft&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Galapagos.lifespan&nbsp;Galapagos.defaultParams
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;}
+&nbsp;&nbsp;<span style="color:blue;">in</span>&nbsp;<span style="color:blue;">do</span>
+&nbsp;&nbsp;&nbsp;&nbsp;(cellFinchEq&nbsp;&lt;$&gt;&nbsp;Pair&nbsp;actual)&nbsp;@?=&nbsp;Pair&nbsp;(cellFinchEq&nbsp;cell1,&nbsp;expected)
+&nbsp;&nbsp;&nbsp;&nbsp;(<span style="color:#2b91af;">(/=)</span>&nbsp;`on`&nbsp;Galapagos.cellRNG)&nbsp;cell2&nbsp;(<span style="color:blue;">snd</span>&nbsp;actual)&nbsp;@?
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#a31515;">&quot;New&nbsp;cell&nbsp;2&nbsp;should&nbsp;have&nbsp;an&nbsp;updated&nbsp;RNG.&quot;</span></pre>
+    </p>
+    <p>
+        We now learn that the <code>finchHP</code> value originates from the <code>startHP</code> value of the <code>defaultParams</code>, and similarly for <code>finchRoundsLeft</code>.
+    </p>
+    <p>
+        To be honest, I'm not sure that this is an improvement. It makes the test more abstract, and if we wish that tests may serve as executable documentation, concrete example values may be easier to understand. Besides, this gets uncomfortably close to duplicating the actual implementation code contained in the SUT.
+    </p>
+    <p>
+        This variation only serves as an exploration of alternatives. I would strongly consider rolling this change back, and instead add some comments to the magic numbers.
+    </p>
+    <h3 id="21b8d21e41c14aa39050ee49a72e0b11">
+        Improving the second test <a href="#21b8d21e41c14aa39050ee49a72e0b11">#</a>
+    </h3>
+    <p>
+        The second test improves better.
+    </p>
+    <p>
+        <pre>testCase&nbsp;<span style="color:#a31515;">&quot;Cell&nbsp;1&nbsp;does&nbsp;not&nbsp;reproduce&quot;</span>&nbsp;$
+&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;cell1&nbsp;=&nbsp;Galapagos.CellState&nbsp;(Just&nbsp;cheater)&nbsp;(mkStdGen&nbsp;0)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;cell2&nbsp;=&nbsp;Galapagos.CellState&nbsp;Nothing&nbsp;(mkStdGen&nbsp;1)&nbsp;<span style="color:green;">--&nbsp;seeded:&nbsp;no&nbsp;repr.
+</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;actual&nbsp;=&nbsp;Galapagos.reproduce&nbsp;Galapagos.defaultParams&nbsp;(cell1,&nbsp;cell2)
+ 
+&nbsp;&nbsp;<span style="color:blue;">in</span>&nbsp;(cellFinchEq&nbsp;&lt;$&gt;&nbsp;Pair&nbsp;actual)&nbsp;@?=&nbsp;Pair&nbsp;(cellFinchEq&nbsp;cell1,&nbsp;Nothing)</pre>
+    </p>
+    <p>
+        Not only is it shorter, the assertion is much stronger. It achieves the ideal of verifying that the actual value is equal to the expected value, comparing five data fields on each of the two finches.
+    </p>
+    <h3 id="18c1f690d06d4722a99c0e18e2c66bf2">
+        Comparing cells <a href="#18c1f690d06d4722a99c0e18e2c66bf2">#</a>
+    </h3>
+    <p>
+        The <code>reproduce</code> function uses the pseudo-random number generators embedded in the <code>CellState</code> data type to decide whether a finch reproduces in a given round. Thus, the number generators change in deterministic, but by human cognition unpredictable, ways. It makes sense to exclude the generators from the assertions, apart from the above assertion that verifies the change itself.
+    </p>
+    <p>
+        Other functions in the <code>Galapagos</code> module also work on <code>CellState</code> values, but are entirely deterministic; that is, they don't make use of the pseudo-random number generators. One such function is <code>groom</code>, which models what happens when two finches meet and play out their game of Prisoner's Dilemma by deciding to groom the other for parasites, or not. The function has this type:
+    </p>
+    <p>
+        <pre><span style="color:#2b91af;">groom</span>&nbsp;<span style="color:blue;">::</span>&nbsp;<span style="color:blue;">Params</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;(<span style="color:blue;">CellState</span>,&nbsp;<span style="color:blue;">CellState</span>)&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;(<span style="color:blue;">CellState</span>,&nbsp;<span style="color:blue;">CellState</span>)</pre>
+    </p>
+    <p>
+        By specification, this function has no random behaviour, which means that we expect the number generators to stay the same. Even so, due to the lack of an <code>Eq</code> instance, comparing cells is difficult.
+    </p>
+    <p>
+        <pre>testCase&nbsp;<span style="color:#a31515;">&quot;Groom&nbsp;when&nbsp;right&nbsp;cell&nbsp;is&nbsp;empty&quot;</span>&nbsp;$
+&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;cell1&nbsp;=&nbsp;Galapagos.CellState&nbsp;(Just&nbsp;flipflop)&nbsp;(mkStdGen&nbsp;0)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;cell2&nbsp;=&nbsp;Galapagos.CellState&nbsp;Nothing&nbsp;(mkStdGen&nbsp;1)
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;actual&nbsp;=&nbsp;Galapagos.groom&nbsp;Galapagos.defaultParams&nbsp;(cell1,&nbsp;cell2)
+
+&nbsp;&nbsp;<span style="color:blue;">in</span>&nbsp;<span style="color:blue;">do</span>
+&nbsp;&nbsp;&nbsp;&nbsp;(&nbsp;Galapagos.finchHP&nbsp;&lt;$&gt;&nbsp;Galapagos.cellFinch&nbsp;(<span style="color:blue;">fst</span>&nbsp;actual))&nbsp;@?=
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Galapagos.finchHP&nbsp;&lt;$&gt;&nbsp;Galapagos.cellFinch&nbsp;cell1
+&nbsp;&nbsp;&nbsp;&nbsp;(&nbsp;Galapagos.finchHP&nbsp;&lt;$&gt;&nbsp;Galapagos.cellFinch&nbsp;(<span style="color:blue;">snd</span>&nbsp;actual))&nbsp;@?=&nbsp;Nothing</pre>
+    </p>
+    <p>
+        Instead of comparing cells, this test only considers the contents of each cell, and it only compares a single field, <code>finchHP</code>, as a proxy for comparing the more complete data structure.
+    </p>
+    <p>
+        With <code>FinchEq</code> we have a better way of comparing two finches, but we don't have to stop there. We may introduce another test-utility type that can compare cells.
+    </p>
+    <p>
+        <pre><span style="color:blue;">data</span>&nbsp;CellStateEq&nbsp;=&nbsp;CellStateEq
+&nbsp;&nbsp;{&nbsp;cseqFinch&nbsp;::&nbsp;Maybe&nbsp;FinchEq
+&nbsp;&nbsp;,&nbsp;cseqRNG&nbsp;::&nbsp;StdGen
+&nbsp;&nbsp;}
+&nbsp;&nbsp;<span style="color:blue;">deriving</span>&nbsp;(<span style="color:#2b91af;">Eq</span>,&nbsp;<span style="color:#2b91af;">Show</span>)</pre>
+    </p>
+    <p>
+        A helper function also turns out to be useful.
+    </p>
+    <p>
+        <pre><span style="color:#2b91af;">cellStateEq</span>&nbsp;<span style="color:blue;">::</span>&nbsp;<span style="color:blue;">Galapagos</span>.<span style="color:blue;">CellState</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">CellStateEq</span>
+cellStateEq&nbsp;cs&nbsp;=&nbsp;CellStateEq
+&nbsp;&nbsp;{&nbsp;cseqFinch&nbsp;=&nbsp;cellFinchEq&nbsp;cs
+&nbsp;&nbsp;,&nbsp;cseqRNG&nbsp;=&nbsp;Galapagos.cellRNG&nbsp;cs
+&nbsp;&nbsp;}</pre>
+    </p>
+    <p>
+        We can now rewrite the test to compare both cells in their entirety (minus the <code>finchStrategy</code>).
+    </p>
+    <p>
+        <pre>testCase&nbsp;<span style="color:#a31515;">&quot;Groom&nbsp;when&nbsp;right&nbsp;cell&nbsp;is&nbsp;empty&quot;</span>&nbsp;$
+&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;cell1&nbsp;=&nbsp;Galapagos.CellState&nbsp;(Just&nbsp;flipflop)&nbsp;(mkStdGen&nbsp;0)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;cell2&nbsp;=&nbsp;Galapagos.CellState&nbsp;Nothing&nbsp;(mkStdGen&nbsp;1)
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;actual&nbsp;=&nbsp;Galapagos.groom&nbsp;Galapagos.defaultParams&nbsp;(cell1,&nbsp;cell2)
+ 
+&nbsp;&nbsp;<span style="color:blue;">in</span>&nbsp;(cellStateEq&nbsp;&lt;$&gt;&nbsp;Pair&nbsp;actual)&nbsp;@?=&nbsp;cellStateEq&nbsp;&lt;$&gt;&nbsp;Pair&nbsp;(cell1,&nbsp;cell2)</pre>
+    </p>
+    <p>
+        Again, the test is both simpler and stronger.
+    </p>
+    <h3 id="13df780b2ce74b40b198e8b05fc0f721">
+        A fly in the ointment <a href="#13df780b2ce74b40b198e8b05fc0f721">#</a>
+    </h3>
+    <p>
+        Introducing <code>FinchEq</code> and <code>CellStateEq</code> allowed me to improve most of the tests, but a few annoying issues remain. The most illustrative example is this test of the core <code>groom</code> behaviour, which lets two example <code>Finch</code> values named <code>samaritan</code> and <code>cheater</code> interact.
+    </p>
+    <p>
+        <pre>testCase&nbsp;<span style="color:#a31515;">&quot;Groom&nbsp;two&nbsp;finches&quot;</span>&nbsp;$
+&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;cell1&nbsp;=&nbsp;Galapagos.CellState&nbsp;(Just&nbsp;samaritan)&nbsp;(mkStdGen&nbsp;0)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;cell2&nbsp;=&nbsp;Galapagos.CellState&nbsp;(Just&nbsp;cheater)&nbsp;(mkStdGen&nbsp;1)
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;actual&nbsp;=&nbsp;Galapagos.groom&nbsp;Galapagos.defaultParams&nbsp;(cell1,&nbsp;cell2)
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;expected&nbsp;=&nbsp;Just&nbsp;&lt;$&gt;&nbsp;Pair
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(&nbsp;finchEq&nbsp;$&nbsp;samaritan&nbsp;{&nbsp;Galapagos.finchHP&nbsp;=&nbsp;16&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;,&nbsp;finchEq&nbsp;$&nbsp;cheater&nbsp;{&nbsp;Galapagos.finchHP&nbsp;=&nbsp;13&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;)
+&nbsp;&nbsp;<span style="color:blue;">in</span>&nbsp;(cellFinchEq&nbsp;&lt;$&gt;&nbsp;Pair&nbsp;actual)&nbsp;@?=&nbsp;expected</pre>
+    </p>
+    <p>
+        This test ought to compare cells with <code>CellStateEq</code>, but only compares finches. The practical reason is that defining the <code>expected</code> value as a pair of cells entails embedding the expected finches in their respective cells. This is possible, but awkward, due to the nested nature of the data types.
+    </p>
+    <p>
+        It's possible to do something about that, too, but that's the topic for another article.
+    </p>
+    <h3 id="f6ff371e3106437195a3debe12c930a5">
+        Conclusion <a href="#f6ff371e3106437195a3debe12c930a5">#</a>
+    </h3>
+    <p>
+        If a test is difficult to write, it may be a symptom that the System Under Test (SUT) has an API which is difficult to use. When doing test-driven development you may want to reconsider the API. Is there a way to model the desired data and behaviour in such a way that the tests become simpler? If so, the API may improve in general.
+    </p>
+    <p>
+        Sometimes, however, you can't change the SUT API. Perhaps it's already given. Perhaps improving it would be a breaking change. Or perhaps you simply can't think of a better way.
+    </p>
+    <p>
+        An alternative to changing the SUT API is to introduce test utilities, such as types with test-specific equality. This is hardly better than improving the SUT API, but may be useful in those situations where the best option is unavailable.
+    </p>
+</div>
