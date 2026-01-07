@@ -1,0 +1,261 @@
+---
+layout: post
+title: "Filtering as domain logic"
+description: "Performance and correctness are two independent concerns with overlapping solutions."
+date: 2025-12-02 14:08 UTC
+tags: [Architecture, Software Design, Encapsulation, Design Patterns]
+image: "/content/binary/double-funnel-architecture.png"
+image_alt: "Two upside-down funnel connect the database with the application."
+---
+{% include JB/setup %}
+
+<div id="post">
+    <p>
+        <em>{{ page.description }}</em>
+    </p>
+    <p>
+        How do you design, implement, maintain, and test complex filter logic as part of out-of-process (e.g. database) queries?
+    </p>
+    <p>
+        One option is to implement parts of the filtering logic twice: Once as an easily-testable in-memory implementation to ensure correctness, and another, possibly simpler, query using the query language (usually, <a href="https://en.wikipedia.org/wiki/SQL">SQL</a>) of the data source.
+    </p>
+    <p>
+        Does this not imply duplication of effort? Yes, to a degree it does. Should you always do this? No, only when warranted. As usual, I present this idea as an option you may consider; a tool for your software design tool belt. You decide if it's useful in your particular context.
+    </p>
+    <h3 id="35c355ddcb294fe8b1969866c0ccbfc0">
+        Motivation <a href="#35c355ddcb294fe8b1969866c0ccbfc0">#</a>
+    </h3>
+    <p>
+        When extracting data from a data source, an application usually needs <em>some</em> of the data, but not all of it. If the software system in question has a certain size, the subset required for an operation is only a miniscule fraction of the entire database. For example, a user may want to see his or her latest order in a web shop, but the entire system contains millions of orders. Another example could be a system for managing help desk requests: Each supporter may need a dashboard of open cases assigned to him or her, but the system holds millions of tickets, and most of them are closed.
+    </p>
+    <p>
+        If a data store supports server-side querying, for example with SQL or <a href="https://en.wikipedia.org/wiki/Cypher_(query_language)">Cypher</a>, it's reasonable to let the data store itself do the filtering.
+    </p>
+    <p>
+        As anyone who has worked professionally with SQL can attest, SQL queries can become complicated. When this happens, you may become concerned with the correctness of a query. Does it include all the data it should? Does it exclude irrelevant data? If you later change a query, how can you verify that it still works as intended? How do you even version it?
+    </p>
+    <p>
+        Automated testing can address several of these concerns, but testing against a real database, while possible, tends to be cumbersome and slow. Do alternatives, or augmentations, exist?
+    </p>
+    <h3 id="a19c1ec099474e6c8bbf932ec8a9db21">
+        How it works <a href="#a19c1ec099474e6c8bbf932ec8a9db21">#</a>
+    </h3>
+    <p>
+        If a server-side query threatens to become too complicated, consider shifting some of the work to clients. You may retain some filtering logic in the server-side query, but only enough to keep performance good, and simple enough that you are no longer concerned about its correctness.
+    </p>
+    <p>
+        Implement the difficult filtering logic in a client-side library. Since you implement this part in a programming language of your choice, you can use any tool or technique available in that context to <a href="/2025/10/20/epistemology-of-software">ensure correctness</a>: Test-driven development, static code analysis, type checking, property-based testing, <a href="/2025/11/10/100-coverage-is-not-that-trivial">code coverage</a>, mutation testing, etc.
+    </p>
+    <p>
+        Using a funnel as a symbol of filtering, this diagram depicts the idea:
+    </p>
+    <p>
+        <img src="/content/binary/double-funnel-architecture.png" alt="Two upside-down funnel connect the database with the application." width="150">
+    </p>
+    <p>
+        Normally a funnel is only useful when the widest part faces up, but on the other hand, we usually depict application architectures with the database under the the application. You have to imagine data being 'sucked up' through the funnels.
+    </p>
+    <p>
+        In reality, the two filters will differ, but have overlapping functionality.
+    </p>
+    <p>
+        <img src="/content/binary/server-and-client-side-filters.png" alt="Two sets labelled service-side filter and client-side filter, with substantial intersection." width="200">
+    </p>
+    <p>
+        If based on a relational database, the server-side query will still hold table joins and column projections that are effectively irrelevant to the client-side Domain Model. On the other hand, while the server-side query may apply a rough filter, the more detailed selection of what is, and is not, included happens in the client.
+    </p>
+    <p>
+        The server-side query is defined using the query language of the data store, such as SQL or Cypher. The client-side query is part of the application code base, and written in the same programming language.
+    </p>
+    <h3 id="7deab4b58fc947a981c90692eb1c74c3">
+        When to use it <a href="#7deab4b58fc947a981c90692eb1c74c3">#</a>
+    </h3>
+    <p>
+        Only use this pattern if a server-side query becomes so complicated that you are concerned about its correctness, or if correctness is an essential part of a Domain Model's contract.
+    </p>
+    <p>
+        While it is <a href="/2025/04/28/song-recommendations-as-an-impureim-sandwich">conceptually possible to load the entire data store's data into memory</a>, this is often prohibitively expensive in terms of time and memory. It is often necessary to retain some filtering logic (e.g. one or more SQL <code>WHERE</code> clauses) on the server to pare down data to acceptable sizes. This implies a degree of duplicated logic, since the client-side filter shouldn't assume that any filtering has been applied.
+    </p>
+    <p>
+        Duplication comes with its own set of problems, even if this looks like <a href="/2026/01/05/coupling-from-a-big-o-perspective">the benign kind</a>. Alternatives include keeping all logic on the database server, which is viable if the logic is simple, or can be sufficiently simplified. Another alternative is to perform all filtering in the client, which may be an attractive solution if the entire data set is small.
+    </p>
+    <h3 id="cf56cc6f96e94c11a32e4183079dba28">
+        Encapsulation <a href="#cf56cc6f96e94c11a32e4183079dba28">#</a>
+    </h3>
+    <p>
+        If a Domain Model is composed of <a href="https://en.wikipedia.org/wiki/Pure_function">pure functions</a> data must be supplied as normal input arguments. In a more object-oriented style, data may arrive as <a href="http://xunitpatterns.com/indirect%20input.html">indirect input</a>. In both object-oriented and <a href="/2022/10/24/encapsulation-in-functional-programming">functional architecture, encapsulation is important</a>. This entails being explicit about invariants and pre- and postconditions; i.e. <em>contracts</em>.
+    </p>
+    <p>
+        To enforce preconditions, a Domain Model must ensure that input is correct. While it could choose to reject input if it contains 'too much' data, a <a href="https://martinfowler.com/bliki/TolerantReader.html">Tolerant Reader</a> should instead pare the data down to size. This implies that filtering should be part of a Domain Model's contract.
+    </p>
+    <p>
+        This further implies that a Domain Model becomes less vulnerable to changes in data access code.
+    </p>
+    <h3 id="8bf1dfdee19345ec83a378beb74ffe39">
+        Implementation details <a href="#8bf1dfdee19345ec83a378beb74ffe39">#</a>
+    </h3>
+    <p>
+        Server-side filtering (with e.g. SQL) is often difficult to test with sufficient rigour. The point of moving the complex filtering logic to the Domain Model is that this makes it easier to test, and thereby to maintain.
+    </p>
+    <p>
+        If no filtering takes place on the server, however, the entire data set of the system would have to be transmitted to, and filtered on, the client. This is usually too expensive, so some filtering must still take place at the data source. The whole point of this exercise is that the 'correct' filtering is too complicated to maintain as a server-side query, so whatever filtering still takes place on the server only happens for performance reasons, and can be simpler, as long as it's wider.
+    </p>
+    <p>
+        Specifically, the simplified server-side query can (and probably should) be wider, in the sense that it returns <em>more</em> data than is required for the correctness of the overall system. The client, receiving more data than strictly required, can perform more sophisticated (and testable) filtering.
+    </p>
+    <p>
+        The simplified filtering on the server must not, on the other hand, narrow the result set. If relevant data is left out at the source, the client has no chance to restore it, or even know that it exists.
+    </p>
+    <h3 id="03f340a6bd8d40999aaafe98dfb622fa">
+        Motivating example <a href="#03f340a6bd8d40999aaafe98dfb622fa">#</a>
+    </h3>
+    <p>
+        The code base that accompanies <a href="/2021/06/14/new-book-code-that-fits-in-your-head">Code That Fits in Your Head</a> contains an example. When a user attempts to make a restaurant reservation, the system must look at existing reservations on the same date to check whether it has a free table. Many restaurants operate with seating windows, and the logic involved in figuring out if a time slot is free is easy to get wrong. On top of that, the decision logic needs to take opening hours and last seating into account. The book, as well as the article <a href="/2020/01/27/the-maitre-d-kata">The Maître d' kata</a>, has more details.
+    </p>
+    <p>
+        Based on information about seating duration, opening hours, and so on, it seems as though it should be possible to form an exact SQL query that <em>only</em> returns existing reservations that overlap the new reservation. Even so, this struck me as error-prone. Instead, I decided to make input filtering part of the Domain Model.
+    </p>
+    <p>
+        The Domain Model in question, an immutable class named <code>MaitreD</code>, uses the <code>WillAccept</code> method to decide whether to accept a reservation request. Apart from the <code>candidate</code> reservation, it also takes as parameters <code>existingReservations</code> as well as the current time.
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">bool</span>&nbsp;<span style="font-weight:bold;color:#74531f;">WillAccept</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">DateTime</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">now</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">IEnumerable</span>&lt;<span style="color:#2b91af;">Reservation</span>&gt;&nbsp;<span style="font-weight:bold;color:#1f377f;">existingReservations</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Reservation</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">candidate</span>)</pre>
+    </p>
+    <p>
+        The function uses the <code>existingReservations</code> to filter so that only the relevant reservations are considered:
+    </p>
+    <p>
+        <pre><span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">seating</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Seating</span>(SeatingDuration,&nbsp;<span style="font-weight:bold;color:#1f377f;">candidate</span>.At);
+<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">relevantReservations</span>&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">existingReservations</span>.<span style="font-weight:bold;color:#74531f;">Where</span>(<span style="font-weight:bold;color:#1f377f;">seating</span>.<span style="font-weight:bold;color:#74531f;">Overlaps</span>);</pre>
+    </p>
+    <p>
+        As implied by this code snippet, a specialized Domain Model named <code>Seating</code> contains the actual filtering logic:
+    </p>
+    <p>
+        <pre><span style="color:blue;">public</span>&nbsp;<span style="color:blue;">bool</span>&nbsp;<span style="font-weight:bold;color:#74531f;">Overlaps</span>(<span style="color:#2b91af;">Reservation</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">otherReservation</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">if</span>&nbsp;(<span style="font-weight:bold;color:#1f377f;">otherReservation</span>&nbsp;<span style="color:blue;">is</span>&nbsp;<span style="color:blue;">null</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">throw</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">ArgumentNullException</span>(<span style="color:blue;">nameof</span>(<span style="font-weight:bold;color:#1f377f;">otherReservation</span>));
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">other</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Seating</span>(SeatingDuration,&nbsp;<span style="font-weight:bold;color:#1f377f;">otherReservation</span>.At);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;<span style="font-weight:bold;color:#74531f;">Overlaps</span>(<span style="font-weight:bold;color:#1f377f;">other</span>);
+}
+ 
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">bool</span>&nbsp;<span style="font-weight:bold;color:#74531f;">Overlaps</span>(<span style="color:#2b91af;">Seating</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">other</span>)
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">if</span>&nbsp;(<span style="font-weight:bold;color:#1f377f;">other</span>&nbsp;<span style="color:blue;">is</span>&nbsp;<span style="color:blue;">null</span>)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">throw</span>&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">ArgumentNullException</span>(<span style="color:blue;">nameof</span>(<span style="font-weight:bold;color:#1f377f;">other</span>));
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">return</span>&nbsp;Start&nbsp;<span style="font-weight:bold;color:#74531f;">&lt;</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">other</span>.End&nbsp;&amp;&amp;&nbsp;<span style="font-weight:bold;color:#1f377f;">other</span>.Start&nbsp;<span style="font-weight:bold;color:#74531f;">&lt;</span>&nbsp;End;
+}</pre>
+    </p>
+    <p>
+        Notice how the core implementation, the overload that takes another <code>Seating</code> object, implements a <a href="https://en.wikipedia.org/wiki/Binary_relation">binary relation</a>. To extrapolate from <a href="/ref/ddd">Domain-Driven Design</a>, whenever you arrive at 'proper' mathematics to describe the application domain, it's usually a sign that you've arrived at something fundamental.
+    </p>
+    <p>
+        The <code>Overlaps</code> functions are <code>public</code> and easy to unit test in their own right. Even so, in the code base that accompanies Code That Fits in Your Head, there are no test that directly exercise these functions, since they only grew out of refactoring the implementation of <code>MaitreD.WillAccept</code>, which is covered by many tests. Since the <code>Overlaps</code> functions only emerged as a result of test-driven development, they <a href="/2021/09/13/unit-testing-private-helper-methods">might as well have been private helper methods</a>, but I later needed them for verifying some unrelated test outcomes.
+    </p>
+    <p>
+        The filtering performed in <code>WillAccept</code> will throw away any reservations that don't overlap. Even if <code>existingReservations</code> contained the entire data set from the database, it would still be correct. Given, however, that there could be hundreds of thousands of reservations, it seems prudent to perform some coarse-grained filtering in the database.
+    </p>
+    <p>
+        The <code>ReservationsController</code> that calls <code>WillAccept</code> first queries the database, getting all the reservation on the relevant date.
+    </p>
+    <p>
+        <pre><span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">reservations</span>&nbsp;=&nbsp;<span style="font-weight:bold;color:#8f08c4;">await</span>&nbsp;Repository
+&nbsp;&nbsp;&nbsp;&nbsp;.<span style="font-weight:bold;color:#74531f;">ReadReservations</span>(<span style="font-weight:bold;color:#1f377f;">restaurant</span>.Id,&nbsp;<span style="font-weight:bold;color:#1f377f;">reservation</span>.At)
+&nbsp;&nbsp;&nbsp;&nbsp;.<span style="font-weight:bold;color:#74531f;">ConfigureAwait</span>(<span style="color:blue;">false</span>);</pre>
+    </p>
+    <p>
+        Now that I write this description, I realize this query, while wide in one sense, could actually be too narrow. None of my test restaurants have a last seating after midnight, but I wouldn't rule out that in certain cultures, that might be the case. If so, it's easy to widen the coarse-grained query to include reservations for the day before (for breakfast restaurants, perhaps) and the day after, assuming that no seating lasts more than 24 hours.
+    </p>
+    <p>
+        All that said, the point is that <code>ReadReservations(restaurant.Id, reservation.At)</code> (which is an extension method) performs a simple, coarse-grained query for reservations that may be relevant to consider, given the candidate reservation. This query should return a 'gross' data set that contains all relevant, but also some irrelevant, reservations, thereby keeping the query simple. An indeed, the actual database interaction is this parametrised query:
+    </p>
+    <p>
+        <pre><span style="color:blue;">SELECT</span>&nbsp;[PublicId]<span style="color:gray;">,</span>&nbsp;[At]<span style="color:gray;">,</span>&nbsp;[Name]<span style="color:gray;">,</span>&nbsp;[Email]<span style="color:gray;">,</span>&nbsp;[Quantity]
+<span style="color:blue;">FROM</span>&nbsp;[dbo]<span style="color:gray;">.</span>[Reservations]
+<span style="color:blue;">WHERE</span>&nbsp;[RestaurantId]&nbsp;<span style="color:gray;">=</span>&nbsp;@RestaurantId&nbsp;<span style="color:gray;">AND</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;@Min&nbsp;<span style="color:gray;">&lt;=</span>&nbsp;[At]&nbsp;<span style="color:gray;">AND</span>&nbsp;[At]&nbsp;<span style="color:gray;">&lt;=</span>&nbsp;@Max</pre>
+    </p>
+    <p>
+        This range query should be simple enough that a few integration tests should be sufficient to give you confidence that it works correctly.
+    </p>
+    <h3 id="83c3068d8d9e4aebaa4e5a8b3c0a1686">
+        Consequences <a href="#83c3068d8d9e4aebaa4e5a8b3c0a1686">#</a>
+    </h3>
+    <p>
+        The main benefit from a design like this is that it shifts some of the burden of correctness to the Domain Model, which is easier to test, maintain, and version than is typically the case for query languages. An added advantage is improved separation of concerns.
+    </p>
+    <p>
+        In practice, server-side filtering tends to mix two independent concerns: Performance and correctness. Filtering is important for performance, because the alternative is to transmit all rows to the client. Filtering is also important for correctness, because the code making use of the data should only consider data relevant to its purpose. Exclusive server-side filtering performs both of these tasks, thereby mixing concerns. Moving filtering for correctness to a Domain Model can make explicit that these are two separate concerns.
+    </p>
+    <p>
+        While a Domain Model can implement in-memory filtering, it can only deal with data that is too wide; that is, it can identify and remove superfluous data. If, on the other hand, the dataset passed to the Domain Model lacks relevant records, the Domain Model can't detect that. The above discussion about the reservation system contains a concrete discussion of such a problem. Thus, Domain-based filtering does not alleviate developers from the burden of ensuring that any server-side filtering is sufficiently permissible.
+    </p>
+    <p>
+        Another consequence of this design is that as server-side queries become more coarse-grained, this could increase potential cache hit ratios. If you somehow cache queries, when queries become more general, there will be less variation, and thus caches will need fewer entries that will statistically be hit more often. This applies to CQRS-style architectures, too.
+    </p>
+    <p>
+        Consider the restaurant reservation example, above. Since queries are only distinguished by date, you can easily cache query results by date, and all reservation requests for a given date may go through that cache. If, as a counter-example, all filtering took place in the database, a query for a reservation at 18:00 would be different from a query for 18:30, and so on. This would make a hypothetical cache bigger, and decrease the frequency of cache hits.
+    </p>
+    <h3 id="b94bae149c32415fa8708498c1c4cdbb">
+        Test evidence <a href="#b94bae149c32415fa8708498c1c4cdbb">#</a>
+    </h3>
+    <p>
+        When I originally decided that <code>WillAccept</code> should perform in-memory filtering, my motivation was one of correctness. I was concerned whether I could get the seating overlap detection correct without comprehensive testing, and I thought that it would be easier to test a function doing in-memory filtering than to drive all of this via integration tests involving a real <a href="https://en.wikipedia.org/wiki/Microsoft_SQL_Server">SQL Server</a> instance. (Not that I don't know how to do this. The code base accompanying the book has examples of tests that exercise the database. These tests are, however, more work to write and maintain, and they execute slower.)
+    </p>
+    <p>
+        As discussed in <a href="/2026/01/05/coupling-from-a-big-o-perspective">Coupling from a big-O perspective</a>, I much later realized that I actually had no test coverage of edge cases related to querying the database. It was only after attempting to write such a test that I realized that the design had the consequence that a marginal error in the database query had no impact on the correctness of the overall system. Here's that test:
+    </p>
+    <p>
+        <pre>[<span style="color:#2b91af;">Fact</span>]
+<span style="color:blue;">public</span>&nbsp;<span style="color:blue;">async</span>&nbsp;<span style="color:#2b91af;">Task</span>&nbsp;<span style="font-weight:bold;color:#74531f;">AttemptEdgeCaseBooking</span>()
+{
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">twentyFour7</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">Restaurant</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;247,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#a31515;">&quot;24/7&quot;</span>,
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">MaitreD</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">opensAt</span>:&nbsp;<span style="color:#2b91af;">TimeSpan</span>.<span style="color:#74531f;">FromHours</span>(0),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">lastSeating</span>:&nbsp;<span style="color:#2b91af;">TimeSpan</span>.<span style="color:#74531f;">FromHours</span>(0),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">seatingDuration</span>:&nbsp;<span style="color:#2b91af;">TimeSpan</span>.<span style="color:#74531f;">FromDays</span>(1),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">tables</span>:&nbsp;<span style="color:#2b91af;">Table</span>.<span style="color:#74531f;">Standard</span>(1)));
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">db</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">FakeDatabase</span>();
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">now</span>&nbsp;=&nbsp;<span style="color:#2b91af;">DateTime</span>.Now;
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">sut</span>&nbsp;=&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">ReservationsController</span>(
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">SystemClock</span>(),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">new</span>&nbsp;<span style="color:#2b91af;">InMemoryRestaurantDatabase</span>(<span style="font-weight:bold;color:#1f377f;">twentyFour7</span>),
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#1f377f;">db</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">r1</span>&nbsp;=&nbsp;<span style="color:#2b91af;">Some</span>.Reservation.<span style="font-weight:bold;color:#74531f;">WithDate</span>(<span style="font-weight:bold;color:#1f377f;">now</span>.<span style="font-weight:bold;color:#74531f;">AddDays</span>(3).Date);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;color:#8f08c4;">await</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">sut</span>.<span style="font-weight:bold;color:#74531f;">Post</span>(<span style="font-weight:bold;color:#1f377f;">twentyFour7</span>.Id,&nbsp;<span style="font-weight:bold;color:#1f377f;">r1</span>.<span style="font-weight:bold;color:#74531f;">ToDto</span>());
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">r2</span>&nbsp;=&nbsp;<span style="color:#2b91af;">Some</span>.Reservation.<span style="font-weight:bold;color:#74531f;">WithDate</span>(<span style="font-weight:bold;color:#1f377f;">now</span>.<span style="font-weight:bold;color:#74531f;">AddDays</span>(2).Date);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">var</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">ar</span>&nbsp;=&nbsp;<span style="font-weight:bold;color:#8f08c4;">await</span>&nbsp;<span style="font-weight:bold;color:#1f377f;">sut</span>.<span style="font-weight:bold;color:#74531f;">Post</span>(<span style="font-weight:bold;color:#1f377f;">twentyFour7</span>.Id,&nbsp;<span style="font-weight:bold;color:#1f377f;">r2</span>.<span style="font-weight:bold;color:#74531f;">ToDto</span>());
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#2b91af;">Assert</span>.<span style="color:#74531f;">IsAssignableFrom</span>&lt;<span style="color:#2b91af;">CreatedAtActionResult</span>&gt;(<span style="font-weight:bold;color:#1f377f;">ar</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">//&nbsp;More&nbsp;assertions&nbsp;could&nbsp;go&nbsp;here.</span>
+}</pre>
+    </p>
+    <p>
+        This test is an attempt to cover the edge case related to how the system queries the database, just like the Moq-based test shown in <a href="/2025/09/15/greyscale-box-test-driven-development">Greyscale-box test-driven development</a>. The idea is to create a reservation that just barely touches a reservation the following day, and thereby trigger a test failure when a change is made to the query, similar to how the Moq-based test fails. Even with a custom restaurant, I can't, however, get this test to fail, because of the Domain-based filtering, which keeps the system working correctly.
+    </p>
+    <p>
+        It was then that I realized that what I had inadvertently done was to strengthen the contract of <code>WillAccept</code>, compared to a more stereotypical design. Who knew test-driven development could lead to better encapsulation?
+    </p>
+    <h3 id="1ba293a2ce314f8291ea0310de461932">
+        Conclusion <a href="#1ba293a2ce314f8291ea0310de461932">#</a>
+    </h3>
+    <p>
+        Some queries may become so complicated that they are difficult to maintain. Bugs creep in, you address them, only to reanimate regressions. When this happens, consider moving the complicated parts of data filtering to the client, preferably to a Domain Model. This enables you to test the filtering logic with as much rigour as is required.
+    </p>
+    <p>
+        For small databases, you may read the entire dataset into memory, but usually you will need to retain some coarse-grained filtering on the database server.
+    </p>
+    <p>
+        This design, while more complicated than letting a query language like SQL handle all filtering, can lead to better encapsulation and separation of concerns.
+    </p>
+</div>
