@@ -1,0 +1,110 @@
+---
+layout: post
+title: "QuickCheck property: Monotonicity in items"
+description: "A testing dead end that felt appropriate at the time."
+date: 2026-09-28 11:27 UTC
+tags: [Haskell, Property-based Testing]
+image: "/content/binary/budget-monotonicity-in-items.png"
+image_alt: "Graph with items on the horizontal axis and nought and one on the vertical. A step function starts at one, but after twelve items drops to nought and stays there to the right of twelve items."
+---
+{% include JB/setup %}
+
+<div id="post">
+    <p>
+        <em>{{ page.description }}</em>
+    </p>
+    <p>
+        This article is one of a series on <a href="">finding properties for a budgeting kata</a>. I expect you to have read the previous articles in the series.
+    </p>
+    <p>
+        As I often do <a href="/2020/01/13/on-doing-katas">when I do katas</a>, I imposed some constraints in addition to 'just' solving the problem. I wanted to do test-driven development (TDD) with <a href="https://hackage.haskell.org/package/QuickCheck">QuickCheck</a> properties taking the place of individual test cases. I also desired to identify 'mathematical' or computer-science-like properties instead of (which is much easier) 'examples on steroids'. All this made me add the next property although, should I had followed the <a href="https://blog.cleancoder.com/uncle-bob/2013/05/27/TheTransformationPriorityPremise.html">transformation priority premise</a>, I should have chosen a property that would have prompted a change to the System Under Test.
+    </p>
+    <p>
+        This didn't happen here, but still I felt that it was worthwhile establishing this property as groundwork for the property I intended to add after this one.
+    </p>
+    <p>
+        The code is <a href="">available on GitHub</a>, in the commit <code>1051c2d</code>.
+    </p>
+    <h3 id="68f1d0d02e5f4a609522b25bfa389f36">
+        An Arbitrary instance for Budget <a href="#68f1d0d02e5f4a609522b25bfa389f36">#</a>
+    </h3>
+    <p>
+        So far, the properties I defined all constructed budgets from QuickCheck-generated bills. For this property, I wanted to be able to work with arbitrary budgets. As I also did with <code>Item</code>, I first <a href="/2019/09/02/naming-newtypes-for-quickcheck-arbitraries">added a newtype wrapper</a> for <code>Budget</code>:
+    </p>
+    <p>
+        <pre><span style="color:blue;">newtype</span>&nbsp;AnyBudget&nbsp;a&nbsp;=&nbsp;AnyBudget&nbsp;{&nbsp;getBudget&nbsp;::&nbsp;Budget&nbsp;a&nbsp;}&nbsp;<span style="color:blue;">deriving</span>&nbsp;(<span style="color:#2b91af;">Show</span>,&nbsp;<span style="color:#2b91af;">Eq</span>)</pre>
+    </p>
+    <p>
+        You can now give <code>AnyBudget</code> an <code>Arbitrary</code> instance.
+    </p>
+    <p>
+        <pre><span style="color:blue;">instance</span>&nbsp;(<span style="color:blue;">Arbitrary</span>&nbsp;a,&nbsp;<span style="color:blue;">Ord</span>&nbsp;a)&nbsp;<span style="color:blue;">=&gt;</span>&nbsp;<span style="color:blue;">Arbitrary</span>&nbsp;(<span style="color:blue;">AnyBudget</span>&nbsp;a)&nbsp;<span style="color:blue;">where</span>
+&nbsp;&nbsp;arbitrary&nbsp;=&nbsp;<span style="color:blue;">do</span>
+&nbsp;&nbsp;&nbsp;&nbsp;Positive&nbsp;tl&nbsp;&lt;-&nbsp;arbitrary
+&nbsp;&nbsp;&nbsp;&nbsp;cls&nbsp;&lt;-&nbsp;<span style="color:blue;">fmap</span>&nbsp;getPositive&nbsp;.&nbsp;Map.fromList&nbsp;&lt;$&gt;&nbsp;arbitrary
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;$&nbsp;AnyBudget&nbsp;$&nbsp;Budget&nbsp;tl&nbsp;cls
+&nbsp;&nbsp;shrink&nbsp;(AnyBudget&nbsp;(Budget&nbsp;tl&nbsp;cls))&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;[&nbsp;AnyBudget&nbsp;$&nbsp;Budget&nbsp;tl&#39;&nbsp;(<span style="color:blue;">fmap</span>&nbsp;getPositive&nbsp;.&nbsp;Map.fromList&nbsp;$&nbsp;cls&#39;)
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;(Positive&nbsp;tl&#39;,&nbsp;cls&#39;)&nbsp;&lt;-
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;shrink&nbsp;(Positive&nbsp;tl,&nbsp;Map.toList&nbsp;(<span style="color:blue;">fmap</span>&nbsp;Positive&nbsp;cls))
+&nbsp;&nbsp;&nbsp;&nbsp;]</pre>
+    </p>
+    <p>
+        Although <a href="https://www.haskell.org/">Haskell</a> syntax can be dense, there's not a lot going on. Each category limit is generated from some identifier and a <a href="https://hackage-content.haskell.org/package/QuickCheck/docs/Test-QuickCheck.html#t:Positive">Positive</a> <code>Int</code>. The <code>shrink</code> method is similar to <a href="" title-hint="QuickCheck property: Uncategorised bill">AnyItem</a>: Wrap both the total limit (<code>tl</code>) and the category limits (<code>cls</code>) in <code>Positive</code>, then shrink that tuple, and unwrap the values again.
+    </p>
+    <h3 id="761a4e9e9a3c4b07a3ad24358fcf00c4">
+        Monotonicity in items <a href="#761a4e9e9a3c4b07a3ad24358fcf00c4">#</a>
+    </h3>
+    <p>
+        A fundamental property of many functions is whether or not they are <a href="https://en.wikipedia.org/wiki/Monotonic_function">monotonic</a>. If you have a function that returns a complex object, such as a list of customers, the concept of monotonicity may not be meaningful, but when the return value is a simple value, it may. Even though the return type of <code>canAfford</code> is <code>Bool</code>, if we (as I think is intuitive) associate <code>False</code> with nought and <code>True</code> with one, we can meaningfully talk about monotonicity.
+    </p>
+    <p>
+        Consider a fixed sequence of items and a budget. You may begin with an empty bill, which should always be affordable. Then you pick the first item from your given sequence and add it to the bill. Perhaps the bill is still affordable. Then you take the second item and add it to the bill. Perhaps it's <em>still</em> affordable. Depending on the budget and the sequence of items, there will come an item that, when you add it, causes the bill to become unaffordable. After that, no matter how many more items you add, the bill will remain unaffordable.
+    </p>
+    <p>
+        <img src="/content/binary/budget-monotonicity-in-items.png" alt="Graph with items on the horizontal axis and nought and one on the vertical. A step function starts at one, but after twelve items drops to nought and stays there to the right of twelve items." width="600">
+    </p>
+    <p>
+        It may be that for a given budget and a sequence of items, only the empty bill is affordable, and adding even a single item immediately makes it unaffordable. Even so, for a given budget and sequence of items, the <code>canAfford</code> function is non-increasing in items. Or, as it turned out that I expressed the following property, <em>removing</em> an item can never make an affordable bill unaffordable. Removing an item means 'moving left' on the above graph. Once you're in the part of the graph where the bill is affordable, removing an item (i.e. going left) will never make the bill unaffordable.
+    </p>
+    <p>
+        This suggests a property like this:
+    </p>
+    <p>
+        <pre>testProperty&nbsp;<span style="color:#a31515;">&quot;Monotonocity:&nbsp;Removing&nbsp;item&nbsp;from&nbsp;affordable&nbsp;bill&nbsp;can&nbsp;never&nbsp;make&nbsp;it&nbsp;unaffordable&quot;</span>&nbsp;$&nbsp;\
+&nbsp;&nbsp;(AnyBudget&nbsp;(budget&nbsp;::&nbsp;Budget&nbsp;String))
+&nbsp;&nbsp;(<span style="color:blue;">fmap</span>&nbsp;getItem&nbsp;.&nbsp;getNonEmpty&nbsp;-&gt;&nbsp;bill&nbsp;::&nbsp;Bill&nbsp;String)&nbsp;-&gt;
+&nbsp;&nbsp;<span style="color:blue;">do</span>
+&nbsp;&nbsp;&nbsp;&nbsp;itemToRemove&nbsp;&lt;-&nbsp;elements&nbsp;bill
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;bill&#39;&nbsp;=&nbsp;<span style="color:blue;">filter</span>&nbsp;(/=&nbsp;itemToRemove)&nbsp;bill
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;actual&nbsp;=&nbsp;canAfford&nbsp;budget&nbsp;bill&#39;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;$&nbsp;counterexample&nbsp;(<span style="color:#a31515;">&quot;Modified&nbsp;bill:&nbsp;&quot;</span>&nbsp;++&nbsp;<span style="color:blue;">show</span>&nbsp;bill&#39;)&nbsp;$
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">not</span>&nbsp;(canAfford&nbsp;budget&nbsp;bill)&nbsp;||&nbsp;actual</pre>
+    </p>
+    <p>
+        Like previous properties this one also <a href="/2018/05/14/project-arbitraries-with-view-patterns">uses view patterns to pull the <code>bill</code> out of a list of <code>AnyItem</code> values</a>, but now this list is a <a href="https://hackage-content.haskell.org/package/QuickCheck/docs/Test-QuickCheck.html#t:NonEmptyList">NonEmptyList</a>. Likewise, pattern matching on <code>AnyBudget</code> makes <code>budget</code> a <code>Budget String</code>. The entire type for the lambda expression (everything after <code>$&nbsp;\</code> ) is
+    </p>
+    <p>
+        <pre><span style="color:blue;">AnyBudget</span>&nbsp;<span style="color:#2b91af;">String</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">NonEmptyList</span>&nbsp;(<span style="color:blue;">AnyItem</span>&nbsp;<span style="color:#2b91af;">String</span>)&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">Gen</span>&nbsp;<span style="color:blue;">Property</span></pre>
+    </p>
+    <p>
+        Since <code>bill</code> is guaranteed to be non-empty, it's safe to pick one of the items to remove. In fact, now that I think about it, the <code>filter</code> expression might actually remove more than one item, but that would only correspond to moving more than one step to the left on the above graph, so that's not consequential.
+    </p>
+    <p>
+        The assertion finally states that if the original <code>bill</code> was unaffordable, we can't really say anything, in which case the property automatically passes. If, on the other hand, that's not the case (i.e. the original <code>bill</code> was affordable), we also expect <code>actual</code> to be <code>True</code>.
+    </p>
+    <h3 id="f2371c2d126644699e0b45776b541b60">
+        Conclusion <a href="#f2371c2d126644699e0b45776b541b60">#</a>
+    </h3>
+    <p>
+        This property seems redundant, since it immediately passes. The incarnation of <code>canAfford</code> that exists so far already has the desired monotonicity property. I don't quite remember what I had in mind when I added this one, but I think that I thought that this property would become an underlying assumption for a later property, so it felt safer to add this one explicitly.
+    </p>
+    <p>
+        If nothing else, this introduced the concept of monotonicity, which the next property will also explore.
+    </p>
+    <p>
+        <strong>Next:</strong> QuickCheck property: Monotonicity in categories.
+    </p>
+</div>
