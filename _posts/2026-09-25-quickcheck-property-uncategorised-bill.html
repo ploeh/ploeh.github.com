@@ -1,0 +1,283 @@
+---
+layout: post
+title: "QuickCheck property: Uncategorised bill"
+description: "Initial API definition and a simple property."
+date: 2026-09-25 6:35 UTC
+tags: [Property-based Testing, Haskell]
+---
+{% include JB/setup %}
+
+<div id="post">
+    <p>
+        <em>{{ page.description }}</em>
+    </p>
+    <p>
+        This article is one of a series on <a href="">finding properties for a budgeting kata</a>. I expect you to have read the previous articles in the series.
+    </p>
+    <p>
+        In this article we get started by adding a first sketch of data structures and an initial, simple property.
+    </p>
+    <p>
+        The code is <a href="">available on GitHub</a>, in the commit <code>1f7aceb</code>.
+    </p>
+    <h3 id="39637a0f4bb44bb993ea47155cb92340">
+        Budget type <a href="#39637a0f4bb44bb993ea47155cb92340">#</a>
+    </h3>
+    <p>
+        My intent with the entire exercise is to follow a variation of test-driven development (TDD) that uses <a href="https://hackage.haskell.org/package/QuickCheck">QuickCheck</a> properties rather than static examples. Even so, <a href="https://www.haskell.org/">Haskell</a> is such a strongly typed language that I often start with a bit of type-driven development, sketching out how data types and functions may look. I did that here as well, starting with the budget.
+    </p>
+    <p>
+        <pre><span style="color:blue;">data</span>&nbsp;Budget&nbsp;a&nbsp;=&nbsp;Budget
+&nbsp;&nbsp;{&nbsp;totalLimit&nbsp;::&nbsp;Int
+&nbsp;&nbsp;,&nbsp;categoryLimits&nbsp;::&nbsp;Map&nbsp;a&nbsp;Int
+&nbsp;&nbsp;}&nbsp;<span style="color:blue;">deriving</span>&nbsp;(<span style="color:#2b91af;">Show</span>,&nbsp;<span style="color:#2b91af;">Eq</span>)</pre>
+    </p>
+    <p>
+        As I noted in the introduction article, this was my third attempt. Two previous attempts had taught me that it might be useful to be able to define the set of values from which category identifiers are picked by QuickCheck. <a href="https://gist.github.com/hwayne/e5a65b48ab50a2285de47cfc11fc955f">Hillel Wayne's examples use strings</a>, which seems quite natural. When, however, QuickCheck generates <code>String</code> values, it picks from an infinite set of values: <code>"a"</code>, <code>"fê</code>, <code>3_\g§ü:</code>, and unprintable things. The probability of generating two identical values in the same property is small, but sometimes, it turns out, that's exactly what we would like.
+    </p>
+    <p>
+        There are many ways you can tell QuickCheck to generate values by picking from a small set, such as the <a href="https://hackage-content.haskell.org/package/QuickCheck/docs/Test-QuickCheck.html#v:elements">elements</a> combinator. The problem with ad-hoc use of such a combinator, however, is that it doesn't support shrinking, and it turns out that for this particular kata, shrinking is indispensable.
+    </p>
+    <p>
+        As I also mentioned in the introduction, while being mature, QuickCheck also comes with some baggage. Perhaps the most prominent drawback is its lack of automatic shrinking. In order to support shrinking, you must define an <a href="https://hackage-content.haskell.org/package/QuickCheck/docs/Test-QuickCheck.html#t:Arbitrary">Arbitrary</a> instance, and this again means introducing a type.
+    </p>
+    <p>
+        As so many other Haskell libraries, QuickCheck relies quite heavily on types. If you need to define a type in order to control how values are generated, it might be easier to make a data structure polymorphic and then pick a useful type on a property-by-property basis. So with that in mind (and two botched attempts already behind me), I made <code>Budget</code> parametric in its category identifier type: The <code>categoryLimits</code> element is a map from some identifier of the type <code>a</code> to an <code>Int</code>. Since <code>a</code> could be <code>String</code>, this design still supports the specification.
+    </p>
+    <p>
+        This is a concession to better support testing, and ultimately, I'm not entirely sure that it helped that much. Ironically, there's some evidence that it might have been at least as useful to parametrize the limit itself, since <code>Int</code> also allows (at least) millions of distinct values.
+    </p>
+    <h3 id="850f2ac6cb974242bb347b5b23c91560">
+        Item and bill types <a href="#850f2ac6cb974242bb347b5b23c91560">#</a>
+    </h3>
+    <p>
+        In order to compare budgets to bills, we must also make each item in a bill polymorphic:
+    </p>
+    <p>
+        <pre><span style="color:green;">{-While&nbsp;the&nbsp;original&nbsp;problem&nbsp;specification&nbsp;has&nbsp;count&nbsp;and&nbsp;categories&nbsp;optional,
+&nbsp;&nbsp;we&nbsp;may&nbsp;deal&nbsp;with&nbsp;this&nbsp;in&nbsp;a&nbsp;hypothetical&nbsp;parsing&nbsp;step,&nbsp;setting&nbsp;count&nbsp;to&nbsp;1&nbsp;if
+&nbsp;&nbsp;missing,&nbsp;and&nbsp;likewise&nbsp;setting&nbsp;categories&nbsp;to&nbsp;the&nbsp;empty&nbsp;set&nbsp;if&nbsp;missing.-}</span>
+<span style="color:blue;">data</span>&nbsp;Item&nbsp;a&nbsp;=&nbsp;Item
+&nbsp;&nbsp;{&nbsp;itemCost&nbsp;::&nbsp;Int
+&nbsp;&nbsp;,&nbsp;itemCount&nbsp;::&nbsp;Int
+&nbsp;&nbsp;,&nbsp;itemCategories&nbsp;::&nbsp;Set&nbsp;a
+&nbsp;&nbsp;}&nbsp;<span style="color:blue;">deriving</span>&nbsp;(<span style="color:#2b91af;">Show</span>,&nbsp;<span style="color:#2b91af;">Eq</span>)</pre>
+    </p>
+    <p>
+        As is suggested by the comment, I didn't really feel like dealing with defining count and categories as optional. Both have natural default values, as the specification also defines. I did, in fact, for a time toy with making <code>Item</code> a <code>Monoid</code> instance, but while a lawful definition exists, it doesn't fit the business rules. You can't meaningfully combine two items with different category sets. Doing so would change the outcome of the decision algorithm.
+    </p>
+    <p>
+        A bill, then, is just a type alias for a list of items:
+    </p>
+    <p>
+        <pre><span style="color:blue;">type</span>&nbsp;Bill&nbsp;a&nbsp;=&nbsp;[Item&nbsp;a]</pre>
+    </p>
+    <p>
+        Those are all the data structures required for the kata.
+    </p>
+    <h3 id="b256c9803bfa4ff1849c051f1844fe23">
+        Functions <a href="#b256c9803bfa4ff1849c051f1844fe23">#</a>
+    </h3>
+    <p>
+        In addition to <code>Budget</code> and <code>Item</code> we also need at least a <code>canAfford</code> function. It turns out that a few auxiliary functions are also useful when writing the QuickCheck properties. For the first property, only this <code>billCost</code> function is in use, but later commits add a few more:
+    </p>
+    <p>
+        <pre><span style="color:#2b91af;">billCost</span>&nbsp;<span style="color:blue;">::</span>&nbsp;(<span style="color:blue;">Foldable</span>&nbsp;t,&nbsp;<span style="color:blue;">Functor</span>&nbsp;t)&nbsp;<span style="color:blue;">=&gt;</span>&nbsp;t&nbsp;(<span style="color:blue;">Item</span>&nbsp;a)&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:#2b91af;">Int</span>
+billCost&nbsp;bill&nbsp;=&nbsp;<span style="color:blue;">sum</span>&nbsp;$&nbsp;<span style="color:blue;">fmap</span>&nbsp;(liftA2&nbsp;<span style="color:#2b91af;">(*)</span>&nbsp;itemCost&nbsp;itemCount)&nbsp;bill</pre>
+    </p>
+    <p>
+        As I've previously given out, I <a href="/2024/11/04/pendulum-swing-no-haskell-type-annotation-by-default">often don't add a type declaration to functions</a>, and if you consult the Git repository, you will also see that <code>billCost</code> is unannotated. I only added the type annotation in post-production, in order to make reading this article a iota easier.
+    </p>
+    <p>
+        I did, however, add a type declaration to <code>canAfford</code>, because at first, in true TDD style, I left it unimplemented, and I needed to have enough of a type to prevent QuickCheck from complaining that it couldn't decide on which instance to pick. Or something.
+    </p>
+    <p>
+        <pre><span style="color:#2b91af;">canAfford</span>&nbsp;<span style="color:blue;">::</span>&nbsp;<span style="color:blue;">Budget</span>&nbsp;a&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">Bill</span>&nbsp;a&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:#2b91af;">Bool</span></pre>
+    </p>
+    <p>
+        The most important part of this declaration is that the type parameters for <code>Budget</code> and <code>Bill</code> must match.
+    </p>
+    <h3 id="a1b55fd6abe844a58b9371c06dced603">
+        An Arbitrary instance for Item <a href="#a1b55fd6abe844a58b9371c06dced603">#</a>
+    </h3>
+    <p>
+        To define properties, we need test data generators. As I mentioned in the introduction article, property-based testing involves a degree of boilerplate code. <a href="/2019/09/02/naming-newtypes-for-quickcheck-arbitraries">In order to avoid orphan instances, you can define a test-specific AnyItem newtype</a>.
+    </p>
+    <p>
+        <pre><span style="color:blue;">newtype</span>&nbsp;AnyItem&nbsp;a&nbsp;=&nbsp;AnyItem&nbsp;{&nbsp;getItem&nbsp;::&nbsp;Item&nbsp;a&nbsp;}&nbsp;<span style="color:blue;">deriving</span>&nbsp;(<span style="color:#2b91af;">Show</span>,&nbsp;<span style="color:#2b91af;">Eq</span>)</pre>
+    </p>
+    <p>
+        You can now give <code>AnyItem</code> an <code>Arbitrary</code> instance.
+    </p>
+    <p>
+        <pre><span style="color:blue;">instance</span>&nbsp;(<span style="color:blue;">Arbitrary</span>&nbsp;a,&nbsp;<span style="color:blue;">Ord</span>&nbsp;a)&nbsp;<span style="color:blue;">=&gt;</span>&nbsp;<span style="color:blue;">Arbitrary</span>&nbsp;(<span style="color:blue;">AnyItem</span>&nbsp;a)&nbsp;<span style="color:blue;">where</span>
+&nbsp;&nbsp;arbitrary&nbsp;=&nbsp;<span style="color:blue;">do</span>
+&nbsp;&nbsp;&nbsp;&nbsp;Positive&nbsp;cost&nbsp;&lt;-&nbsp;arbitrary
+&nbsp;&nbsp;&nbsp;&nbsp;Positive&nbsp;count&nbsp;&lt;-&nbsp;arbitrary
+&nbsp;&nbsp;&nbsp;&nbsp;AnyItem&nbsp;.&nbsp;Item&nbsp;cost&nbsp;count&nbsp;&lt;$&gt;&nbsp;arbitrary
+&nbsp;&nbsp;shrink&nbsp;(AnyItem&nbsp;(Item&nbsp;cost&nbsp;count&nbsp;categories))&nbsp;=
+&nbsp;&nbsp;&nbsp;&nbsp;[&nbsp;AnyItem&nbsp;$&nbsp;Item&nbsp;cost&#39;&nbsp;count&#39;&nbsp;categories&#39;
+&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;(Positive&nbsp;cost&#39;,&nbsp;Positive&nbsp;count&#39;,&nbsp;categories&#39;)&nbsp;&lt;-
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;shrink&nbsp;(Positive&nbsp;cost,&nbsp;Positive&nbsp;count,&nbsp;categories)
+&nbsp;&nbsp;&nbsp;&nbsp;]</pre>
+    </p>
+    <p>
+        I often dispense with defining the <code>shrink</code> method, but for the properties we'll see before we are done, shrinking turns out to be quite useful. Just like the <code>arbitrary</code> method composes <code>Arbitrary</code> instances for the three constituent values of <code>Item</code>, the <code>shrink</code> method uses the shrinkers associated with <code>Positive Int</code> and <code>Set a</code>, respectively. The only marginally complicated part is the wrapping and unwrapping of <a href="https://hackage-content.haskell.org/package/QuickCheck/docs/Test-QuickCheck.html#t:Positive">Positive</a>, making sure that both <code>itemCost</code> and <code>itemCount</code> stay greater than nought.
+    </p>
+    <h3 id="ecd045360e5f4888a96f164ee99f24a1">
+        Property <a href="#ecd045360e5f4888a96f164ee99f24a1">#</a>
+    </h3>
+    <p>
+        The first property that came immediately to mind was to consider the total limit. Regardless of all other rules, if the total cost of the bill exceeds the total budget, then the bill is not affordable. There are many ways you could express such a property, but I chose to do it like this:
+    </p>
+    <p>
+        <pre>testProperty&nbsp;<span style="color:#a31515;">&quot;Uncategorized&nbsp;bill&nbsp;is&nbsp;only&nbsp;determined&nbsp;by&nbsp;its&nbsp;cost&quot;</span>&nbsp;$&nbsp;\
+&nbsp;&nbsp;(<span style="color:blue;">fmap</span>&nbsp;getItem&nbsp;-&gt;&nbsp;bill&nbsp;::&nbsp;Bill&nbsp;String)&nbsp;(NonNegative&nbsp;lim)&nbsp;-&gt;
+&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;budget&nbsp;=&nbsp;Budget&nbsp;lim&nbsp;(mempty&nbsp;::&nbsp;Map&nbsp;String&nbsp;Int)
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;bill&#39;&nbsp;=&nbsp;(\i&nbsp;-&gt;&nbsp;i&nbsp;{&nbsp;itemCategories&nbsp;=&nbsp;mempty&nbsp;})&nbsp;&lt;$&gt;&nbsp;bill
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;actual&nbsp;=&nbsp;canAfford&nbsp;budget&nbsp;bill&#39;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;expected&nbsp;=&nbsp;billCost&nbsp;bill&#39;&nbsp;&lt;=&nbsp;lim
+&nbsp;&nbsp;<span style="color:blue;">in</span>&nbsp;counterexample&nbsp;(<span style="color:#a31515;">&quot;Budget:&nbsp;&quot;</span>&nbsp;++&nbsp;<span style="color:blue;">show</span>&nbsp;budget)&nbsp;$
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;counterexample&nbsp;(<span style="color:#a31515;">&quot;Bill:&nbsp;&quot;</span>&nbsp;++&nbsp;<span style="color:blue;">show</span>&nbsp;bill&#39;)&nbsp;$
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;expected&nbsp;===&nbsp;actual</pre>
+    </p>
+    <p>
+        As I usually do, I wrote this property (and the ones that follow) as inlined values in a test list, similarly to <a href="/2018/05/07/inlined-hunit-test-lists">how I do it with example-based tests</a>. I also <a href="/2018/05/14/project-arbitraries-with-view-patterns">used view patterns to pull the <code>bill</code> out of the list of <code>AnyItem</code> values</a> I've asked it to generate. The entire type for the lambda expression (everything after <code>$&nbsp;\</code> ) is
+    </p>
+    <p>
+        <pre>[<span style="color:blue;">AnyItem</span>&nbsp;<span style="color:#2b91af;">String</span>]&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">NonNegative</span>&nbsp;<span style="color:#2b91af;">Int</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">Property</span></pre>
+    </p>
+    <p>
+        That is, the property takes as input a list of <code>AnyItem String</code> and a <code>NonNegative Int</code>, and then defines the property as the <code>let</code>-<code>in</code> expression. Thanks to the magic of pattern matching and view patterns, <code>bill</code> is a <code>Bill String</code> and <code>lim</code> an <code>Int</code>.
+    </p>
+    <p>
+        The reason I had to annotate <code>bill</code> is because otherwise the entire property is parametrically polymorphic, and then QuickCheck doesn't know what to do.
+    </p>
+    <p>
+        Now that I'm writing this article, I think that I could have defined an even stronger property by just leaving <code>bill</code> be, instead of setting all <code>itemCategories</code> to the empty set. That would also have made the code simpler.
+    </p>
+    <p>
+        A stronger reservation I have against this property is that it temporarily defines the implementation as the <code>expected</code> value.
+    </p>
+    <h3 id="8b5522c49da94e33a1919ceb4f4eccf0">
+        Implementation <a href="#8b5522c49da94e33a1919ceb4f4eccf0">#</a>
+    </h3>
+    <p>
+        Not surprisingly, the simplest thing that passes all tests is this:
+    </p>
+    <p>
+        <pre><span style="color:#2b91af;">canAfford</span>&nbsp;<span style="color:blue;">::</span>&nbsp;<span style="color:blue;">Budget</span>&nbsp;a&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">Bill</span>&nbsp;a&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:#2b91af;">Bool</span>
+canAfford&nbsp;budget&nbsp;bill&nbsp;=&nbsp;billCost&nbsp;bill&nbsp;&lt;=&nbsp;totalLimit&nbsp;budget</pre>
+    </p>
+    <p>
+        Too close to the property for comfort.
+    </p>
+    <h3 id="33ecc195bf3a4e7c8604e88342d7b981">
+        Alternative properties <a href="#33ecc195bf3a4e7c8604e88342d7b981">#</a>
+    </h3>
+    <p>
+        When I made my first attempt at the kata, I approached the first property in a more traditional example-driven way. I first wrote one test to demonstrate that an affordable bill without categories is affordable:
+    </p>
+    <p>
+        <pre>testProperty&nbsp;<span style="color:#a31515;">&quot;Affordable&nbsp;uncategorized&nbsp;bill&quot;</span>&nbsp;$&nbsp;<span style="color:blue;">do</span>
+&nbsp;&nbsp;UncategorizedBill&nbsp;bill&nbsp;&lt;-&nbsp;arbitrary
+&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;cost&nbsp;=&nbsp;billCost&nbsp;bill
+&nbsp;&nbsp;NonNegative&nbsp;surplus&nbsp;&lt;-&nbsp;arbitrary
+&nbsp;&nbsp;categories&nbsp;&lt;-&nbsp;listOf&nbsp;(CategoryBudget&nbsp;&lt;$&gt;&nbsp;arbitrary&nbsp;&lt;*&gt;&nbsp;arbitrary)
+&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;budget&nbsp;=&nbsp;Budget&nbsp;(cost&nbsp;+&nbsp;surplus)&nbsp;categories
+ 
+&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;actual&nbsp;=&nbsp;canAfford&nbsp;budget&nbsp;bill
+ 
+&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;errMsg&nbsp;=&nbsp;<span style="color:#a31515;">&quot;budget:&nbsp;&quot;</span>&nbsp;++&nbsp;<span style="color:blue;">show</span>&nbsp;budget&nbsp;++&nbsp;<span style="color:#a31515;">&quot;,&nbsp;bill:&nbsp;&quot;</span>&nbsp;++&nbsp;<span style="color:blue;">show</span>&nbsp;bill
+&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;$&nbsp;counterexample&nbsp;errMsg&nbsp;actual</pre>
+    </p>
+    <p>
+        This property makes use of slightly different data definitions. You can see details in the <code>first-attempt</code> branch if you want.
+    </p>
+    <p>
+        The point is that this property explicitly constructs a <code>budget</code> such that the <code>bill</code> is always affordable. It therefore asserts that <code>actual</code> is <code>True</code>.
+    </p>
+    <p>
+        The corresponding implementation is, of course,
+    </p>
+    <p>
+        <pre><span style="color:#2b91af;">canAfford</span>&nbsp;<span style="color:blue;">::</span>&nbsp;<span style="color:blue;">Budget</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">Bill</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:#2b91af;">Bool</span>
+canAfford&nbsp;_&nbsp;_&nbsp;=&nbsp;True</pre>
+    </p>
+    <p>
+        Another property then explicitly checks the other <a href="https://en.wikipedia.org/wiki/Partition_of_a_set">partition</a>, which is when a bill without categories is always unaffordable.
+    </p>
+    <p>
+        <pre>testProperty&nbsp;<span style="color:#a31515;">&quot;Unaffordable&nbsp;uncategorized&nbsp;bill&quot;</span>&nbsp;$&nbsp;<span style="color:blue;">do</span>
+&nbsp;&nbsp;UncategorizedBill&nbsp;bill&nbsp;&lt;-&nbsp;arbitrary
+&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;cost&nbsp;=&nbsp;billCost&nbsp;bill
+&nbsp;&nbsp;Positive&nbsp;deficit&nbsp;&lt;-&nbsp;arbitrary
+&nbsp;&nbsp;categories&nbsp;&lt;-&nbsp;listOf&nbsp;(CategoryBudget&nbsp;&lt;$&gt;&nbsp;arbitrary&nbsp;&lt;*&gt;&nbsp;arbitrary)
+&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;budget&nbsp;=&nbsp;Budget&nbsp;(cost&nbsp;-&nbsp;deficit)&nbsp;categories
+ 
+&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;actual&nbsp;=&nbsp;canAfford&nbsp;budget&nbsp;bill
+ 
+&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;errMsg&nbsp;=&nbsp;<span style="color:#a31515;">&quot;budget:&nbsp;&quot;</span>&nbsp;++&nbsp;<span style="color:blue;">show</span>&nbsp;budget&nbsp;++&nbsp;<span style="color:#a31515;">&quot;,&nbsp;bill:&nbsp;&quot;</span>&nbsp;++&nbsp;<span style="color:blue;">show</span>&nbsp;bill
+&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;$&nbsp;counterexample&nbsp;errMsg&nbsp;$&nbsp;<span style="color:blue;">not</span>&nbsp;actual</pre>
+    </p>
+    <p>
+        This property explicitly constructs a <code>budget</code> so that it always makes the <code>bill</code> unaffordable. It then asserts <code>not actual</code>; that is, that <code>actual</code> is <code>False</code>.
+    </p>
+    <p>
+        Together with the previous property, this then leads to the implementation
+    </p>
+    <p>
+        <pre><span style="color:#2b91af;">canAfford</span>&nbsp;<span style="color:blue;">::</span>&nbsp;<span style="color:blue;">Budget</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">Bill</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:#2b91af;">Bool</span>
+canAfford&nbsp;budget&nbsp;bill&nbsp;=&nbsp;billCost&nbsp;bill&nbsp;&lt;=&nbsp;totalLimit&nbsp;budget</pre>
+    </p>
+    <p>
+        This test design avoids duplicating implementation code as test code, so why didn't I stay that course?
+    </p>
+    <p>
+        What I <em>don't</em> like about this approach is the test duplication. Notice how similar the two tests are. Some people might point out that tests may be <a href="http://blog.jayfields.com/2006/05/dry-code-damp-dsls.html">DAMP</a>, but as I've <a href="/2025/12/01/treat-test-code-like-production-code">already been over</a>, DRY and DAMP should be treated as an intersection rather than a dichotomy.
+    </p>
+    <p>
+        Even so, I can live with a small degree of duplication if it serves a purpose. After all, if we follow the <a href="https://en.wikipedia.org/wiki/Rule_of_three_(computer_programming)">rule of three</a>, we haven't even introduced a triplicate yet.
+    </p>
+    <p>
+        My problem with this duplication is rather that it seems to buy us nothing. Together, those two tests exhibits just as much 'knowledge' about the implementation than the single "Uncategorized bill is only determined by its cost" property does.
+    </p>
+    <p>
+        The "Affordable uncategorized bill" property knows (or rather, specifies) that it can go right to the limit of <code>billCost bill</code>. It can add <code>0</code>, or anything greater than <code>0</code>, to <code>billCost bill</code>, and <code>actual</code> will remain <code>True</code>.
+    </p>
+    <p>
+        Likewise, "Unaffordable uncategorized bill" knows (or, again, specifies) that it must subtract at least <code>1</code> from <code>billCost bill</code> for <code>actual</code> to become <code>False</code>.
+    </p>
+    <p>
+        Let <code>lim = cost + surplus</code> or <code>lim = cost - deficit</code>, respectively. You now have two tests that effectively say
+    </p>
+    <p>
+        <pre><span style="color:blue;">if</span>&nbsp;billCost&nbsp;bill&nbsp;&lt;=&nbsp;lim&nbsp;<span style="color:blue;">then</span>&nbsp;True&nbsp;<span style="color:blue;">else</span>&nbsp;False</pre>
+    </p>
+    <p>
+        which is just a long-winded way of saying
+    </p>
+    <p>
+        <pre>billCost&nbsp;bill&nbsp;&lt;=&nbsp;lim</pre>
+    </p>
+    <p>
+        which <a href="https://hackage.haskell.org/package/hlint">hlint</a> will also tell you.
+    </p>
+    <p>
+        So my reasoning is that the two alternative properties are effectively equivalent to the single "Uncategorized bill is only determined by its cost" property.
+    </p>
+    <p>
+        I'm still not blissful about duplicating production code as test code, but I take solace in the prediction that the implementation of <code>canAfford</code> is not going to stay that simple.
+    </p>
+    <h3 id="d3f1a721e01240a6bcb171a533527fe1">
+        Conclusion <a href="#d3f1a721e01240a6bcb171a533527fe1">#</a>
+    </h3>
+    <p>
+        In this article, you saw data definitions and an initial property to get started on the problem. The property is one of the simplest we are going to cover, but on the other hand, now that we have covered the data structures and the APIs, these will not change in any significant way. The next articles are more devoted to the properties being introduced.
+    </p>
+    <p>
+        <strong>Next:</strong> QuickCheck property: Forced category limit applies.
+    </p>
+</div>
