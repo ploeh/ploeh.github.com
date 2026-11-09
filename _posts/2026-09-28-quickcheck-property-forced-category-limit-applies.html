@@ -1,0 +1,164 @@
+---
+layout: post
+title: "QuickCheck property: Forced category limit applies"
+description: "A continued programming exercise using TDD with PBT."
+date: 2026-09-28 5:30 UTC
+tags: [Haskell, Property-based Testing]
+image: "/content/binary/item-budget-category-singleton-intersection.png"
+image_alt: "Set intersection of budget and item, sharing only the single category named a."
+---
+{% include JB/setup %}
+
+<div id="post">
+    <p>
+        <em>{{ page.description }}</em>
+    </p>
+    <p>
+        This article is one of a series on <a href="">finding properties for a budgeting kata</a>. I expect you to have read the previous articles in the series.
+    </p>
+    <p>
+        The first property specified that a bill doesn't exceed the total budget, and that's all there is to say about the total budget. All the complication lies in how category budgets are handled. In this article, we get started on that work, which will continue for another seven properties.
+    </p>
+    <p>
+        The code is <a href="">available on GitHub</a>, in the commit <code>aefa192</code>.
+    </p>
+    <h3 id="c3027148ebb142939405be8262dd27e0">
+        Per-category bounds <a href="#c3027148ebb142939405be8262dd27e0">#</a>
+    </h3>
+    <p>
+        My plan for this exercise was always to attempt it with test-driven development (TDD) using properties rather than singular examples. When doing TDD, I usually keep the <a href="https://blog.cleancoder.com/uncle-bob/2013/05/27/TheTransformationPriorityPremise.html">transformation priority premise</a> in mind: When given a choice between test cases, pick the one you predict will provoke the smallest change to the System Under Test.
+    </p>
+    <p>
+        Here, a good candidate may be a property specifying that for items that have no choice in which category to charge, the total cost of that category must not exceed the category limit. That description is dense, so let's unpack it. Each item in a bill comes with a set of categories. This set may be empty, a singleton, or contain multiple categories.
+    </p>
+    <p>
+        <pre>ghci&gt;&nbsp;Item&nbsp;1&nbsp;1&nbsp;Set.empty
+Item&nbsp;{itemCost&nbsp;=&nbsp;1,&nbsp;itemCount&nbsp;=&nbsp;1,&nbsp;itemCategories&nbsp;=&nbsp;fromList&nbsp;<span style="color:blue;">[]</span>}
+ghci&gt;&nbsp;Item&nbsp;1&nbsp;1&nbsp;$&nbsp;Set.singleton&nbsp;<span style="color:#a31515;">&quot;a&quot;</span>
+Item&nbsp;{itemCost&nbsp;=&nbsp;1,&nbsp;itemCount&nbsp;=&nbsp;1,&nbsp;itemCategories&nbsp;=&nbsp;fromList&nbsp;[<span style="color:#a31515;">&quot;a&quot;</span>]}
+ghci&gt;&nbsp;Item&nbsp;1&nbsp;1&nbsp;$&nbsp;Set.fromList&nbsp;[<span style="color:#a31515;">&quot;a&quot;</span>,&nbsp;<span style="color:#a31515;">&quot;d&quot;</span>]
+Item&nbsp;{itemCost&nbsp;=&nbsp;1,&nbsp;itemCount&nbsp;=&nbsp;1,&nbsp;itemCategories&nbsp;=&nbsp;fromList&nbsp;[<span style="color:#a31515;">&quot;a&quot;</span>,<span style="color:#a31515;">&quot;d&quot;</span>]}</pre>
+    </p>
+    <p>
+        Some or all of those categories may be 'unforced' or irrelevant categories. What matters is which categories are associated with limits in the budget. If the budget only comes with a limit for category "a", the first of the above examples has no category limit, and the two other items are uniquely constrained by the "a" limit. For the third example item, the "d" category is irrelevant, since there's no budget limit for "d".
+    </p>
+    <p>
+        Another way to put it: If the intersection between an item's categories and the budget category limits is a singleton, then the item is uniquely constrained by that category.
+    </p>
+    <p>
+        <img src="/content/binary/item-budget-category-singleton-intersection.png" alt="Set intersection of budget and item, sharing only the single category named a." width="200">
+    </p>
+    <p>
+        There could be more than a single item with the same intersection, but the sum of those items constitute the cost of that category, and (as long as the items are uniquely forced by a single category) that cost must not exceed the category limit.
+    </p>
+    <p>
+        Now that I write this explanation, I wonder whether I could have expressed a property like that, but here's the property that I actually wrote:
+    </p>
+    <p>
+        <pre>testProperty&nbsp;<span style="color:#a31515;">&quot;Forced&nbsp;category&nbsp;limit&nbsp;applies&quot;</span>&nbsp;$&nbsp;\
+&nbsp;&nbsp;(<span style="color:blue;">fmap</span>&nbsp;getItem&nbsp;.&nbsp;getNonEmpty&nbsp;-&gt;&nbsp;bill&nbsp;::&nbsp;Bill&nbsp;Char)
+&nbsp;&nbsp;(NonNegative&nbsp;catLim)&nbsp;-&gt;
+&nbsp;&nbsp;Set.unions&nbsp;(itemCategories&nbsp;&lt;$&gt;&nbsp;bill)&nbsp;/=&nbsp;mempty&nbsp;==&gt;
+&nbsp;&nbsp;<span style="color:blue;">do</span>
+&nbsp;&nbsp;&nbsp;&nbsp;cat&nbsp;&lt;-&nbsp;elements&nbsp;$&nbsp;Set.toList&nbsp;$&nbsp;Set.unions&nbsp;(itemCategories&nbsp;&lt;$&gt;&nbsp;bill)
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">--&nbsp;Force&nbsp;the&nbsp;selected&nbsp;category&nbsp;by&nbsp;making&nbsp;it&nbsp;the&nbsp;only&nbsp;category&nbsp;for&nbsp;those
+</span>&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:green;">--&nbsp;items&nbsp;that&nbsp;have&nbsp;it.
+</span>&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">let</span>&nbsp;bill&#39;&nbsp;=&nbsp;(\i&nbsp;-&gt;&nbsp;<span style="color:blue;">if</span>&nbsp;Set.member&nbsp;cat&nbsp;(itemCategories&nbsp;i)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">then</span>&nbsp;i&nbsp;{&nbsp;itemCategories&nbsp;=&nbsp;Set.singleton&nbsp;cat&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">else</span>&nbsp;i)&nbsp;&lt;$&gt;&nbsp;bill
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;budget&nbsp;=&nbsp;Budget&nbsp;(billCost&nbsp;bill&#39;)&nbsp;(Map.singleton&nbsp;cat&nbsp;catLim)
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;actual&nbsp;=&nbsp;canAfford&nbsp;budget&nbsp;bill&#39;
+ 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;expected&nbsp;=&nbsp;categoryCost&nbsp;cat&nbsp;bill&#39;&nbsp;&lt;=&nbsp;catLim
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:blue;">return</span>&nbsp;$&nbsp;counterexample&nbsp;(<span style="color:#a31515;">&quot;Budget:&nbsp;&quot;</span>&nbsp;++&nbsp;<span style="color:blue;">show</span>&nbsp;budget)&nbsp;$
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;counterexample&nbsp;(<span style="color:#a31515;">&quot;Bill:&nbsp;&quot;</span>&nbsp;++&nbsp;<span style="color:blue;">show</span>&nbsp;bill&#39;)&nbsp;$
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;expected&nbsp;===&nbsp;actual</pre>
+    </p>
+    <p>
+        Like the <a href="">previous property</a> this one also <a href="/2018/05/14/project-arbitraries-with-view-patterns">uses view patterns to pull the <code>bill</code> out of a list of <code>AnyItem</code> values</a>, but now this list is a <a href="https://hackage-content.haskell.org/package/QuickCheck/docs/Test-QuickCheck.html#t:NonEmptyList">NonEmptyList</a>. Likewise, pattern matching on <code>NonNegative</code> makes <code>catLim</code> an <code>Int</code>. The entire type for the lambda expression (everything after <code>$&nbsp;\</code> ) is
+    </p>
+    <p>
+        <pre><span style="color:blue;">NonEmptyList</span>&nbsp;(<span style="color:blue;">AnyItem</span>&nbsp;<span style="color:#2b91af;">Char</span>)&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">NonNegative</span>&nbsp;<span style="color:#2b91af;">Int</span>&nbsp;<span style="color:blue;">-&gt;</span>&nbsp;<span style="color:blue;">Property</span></pre>
+    </p>
+    <p>
+        Notice that I have now changed from <code>Bill String</code> to <code>Bill Char</code>. To be honest, I no longer remember why I did that, but it could be a remnant of an (uncommitted) attempt to constrain <a href="https://hackage.haskell.org/package/QuickCheck">QuickCheck</a>'s choice of categories, so as to increase the chance that it would occasionally create a <code>bill</code> where a category would span more than a single item. Given that <code>Char</code> is actually a Unicode character with more than a million possible values, this was probably naive.
+    </p>
+    <p>
+        The property uses <a href="https://hackage-content.haskell.org/package/QuickCheck/docs/Test-QuickCheck.html#v:-61--61--62-">the implication operator</a> <code>==&gt;</code> to make sure that the generated <code>bill</code> has at least one category on some item. It then picks one category from the set of all categories of the <code>bill</code>, and creates a modified <code>bill'</code> that replaces category sets with only that category for those items that originally included that category. For example, if <code>cat</code> is <code>'a'</code> then
+    </p>
+    <p>
+        <pre>Item&nbsp;1&nbsp;1&nbsp;$&nbsp;Set.fromList&nbsp;[<span style="color:#a31515;">'a'</span>,&nbsp;<span style="color:#a31515;">'d'</span>]</pre>
+    </p>
+    <p>
+        becomes
+    </p>
+    <p>
+        <pre>Item&nbsp;1&nbsp;1&nbsp;$&nbsp;Set.fromList&nbsp;[<span style="color:#a31515;">'a'</span>]</pre>
+    </p>
+    <p>
+        The property constructs a <code>budget</code> by setting a limit <code>catLim</code> only for the chosen category <code>cat</code>. Since <code>catLim</code> is any <code>NonNegative</code> number, this limit may or may not make the bill affordable. This limit, however, is the only deciding factor, since the <code>budget</code> is constructed with a total limit of <code>billCost bill'</code>; in other words, the total limit is always just permissive enough. Thus, the <code>expected</code> result is whether the <code>categoryCost</code> is less than or equal to <code>catLim</code>.
+    </p>
+    <h3 id="4aba62bd800941dca5923ece8bcf6b03">
+        A questionable API <a href="#4aba62bd800941dca5923ece8bcf6b03">#</a>
+    </h3>
+    <p>
+        I added the <code>categoryCost</code> function to the implementation code:
+    </p>
+    <p>
+        <pre>categoryCost&nbsp;cat&nbsp;=
+&nbsp;&nbsp;<span style="color:blue;">sum</span>&nbsp;.
+&nbsp;&nbsp;<span style="color:blue;">fmap</span>&nbsp;(liftA2&nbsp;<span style="color:#2b91af;">(*)</span>&nbsp;itemCost&nbsp;itemCount)&nbsp;.
+&nbsp;&nbsp;<span style="color:blue;">filter</span>&nbsp;(Set.member&nbsp;cat&nbsp;.&nbsp;itemCategories)</pre>
+    </p>
+    <p>
+        In retrospect, I'm not sure that this was a good idea, because one could argue that the cost of a category depends on how the final algorithm decides to distribute items among categories. For example, you could have a bill like this:
+    </p>
+    <p>
+        <pre>bill&nbsp;=&nbsp;[Item&nbsp;2&nbsp;1&nbsp;$&nbsp;Set.fromList&nbsp;[<span style="color:#a31515;">&#39;a&#39;</span>,&nbsp;<span style="color:#a31515;">&#39;c&#39;</span>],&nbsp;Item&nbsp;2&nbsp;1&nbsp;$&nbsp;Set.fromList&nbsp;[<span style="color:#a31515;">&#39;b&#39;</span>,&nbsp;<span style="color:#a31515;">&#39;c&#39;</span>]]</pre>
+    </p>
+    <p>
+        and a budget like this:
+    </p>
+    <p>
+        <pre>budget&nbsp;=&nbsp;Budget&nbsp;4&nbsp;$&nbsp;Map.fromList&nbsp;[(<span style="color:#a31515;">&#39;a&#39;</span>,&nbsp;2),&nbsp;(<span style="color:#a31515;">&#39;b&#39;</span>,&nbsp;2),&nbsp;(<span style="color:#a31515;">&#39;c&#39;</span>,&nbsp;1)]</pre>
+    </p>
+    <p>
+        A correct implementation of the decision algorithm would consider that bill affordable, because it can distribute the cost of the first item to the <code>'a'</code> category, and the second item to the <code>'b'</code> category. Effectively, the cost of category <code>'c'</code> for that <code>bill</code> is nought. Even so, that's not what <code>categoryCost</code> answers:
+    </p>
+    <p>
+        <pre>ghci&gt;&nbsp;categoryCost&nbsp;<span style="color:#a31515;">&#39;c&#39;</span>&nbsp;bill
+4</pre>
+    </p>
+    <p>
+        In a sense, you could argue that this is correct, because <code>categoryCost</code> doesn't take the budget into account. Thus, it's rather an indication of the maximum cost of that category. Perhaps I should have named the function <code>maxCategoryCost</code>.
+    </p>
+    <h3 id="8f861786dd9d4e349f7d47d092fc30a3">
+        The simplest thing that works <a href="#8f861786dd9d4e349f7d47d092fc30a3">#</a>
+    </h3>
+    <p>
+        Given the two properties so far, the simplest thing I could think of that passes all test cases is this:
+    </p>
+    <p>
+        <pre>canAfford&nbsp;budget&nbsp;bill&nbsp;=
+&nbsp;&nbsp;billCost&nbsp;bill&nbsp;&lt;=&nbsp;totalLimit&nbsp;budget&nbsp;&amp;&amp;
+&nbsp;&nbsp;<span style="color:blue;">all</span>
+&nbsp;&nbsp;&nbsp;&nbsp;(\(cat,&nbsp;lim)&nbsp;-&gt;&nbsp;categoryCost&nbsp;cat&nbsp;bill&nbsp;&lt;=&nbsp;lim)
+&nbsp;&nbsp;&nbsp;&nbsp;(Map.toList&nbsp;$&nbsp;categoryLimits&nbsp;budget)</pre>
+    </p>
+    <p>
+        It naively checks that for each budgeted category, the <code>categoryCost</code> must not exceed the the category limit. This is clearly incorrect, because it rejects, among many other examples, the <code>bill</code> and <code>budget</code> discussed above. More properties are needed.
+    </p>
+    <h3 id="491f5078d14e473cad0ce7343ba1ffc0">
+        Conclusion <a href="#491f5078d14e473cad0ce7343ba1ffc0">#</a>
+    </h3>
+    <p>
+        Attempting to do the <a href="https://gist.github.com/hwayne/e5a65b48ab50a2285de47cfc11fc955f">budgeting exercise</a> with TDD using QuickCheck properties, I added the first of many properties to describe the desired behaviour related to category limits. It specifies that if an item is unambiguously forced by a single category limit, then that limit must not be exceeded.
+    </p>
+    <p>
+        This property still feels a bit ad-hoc to me; as one of those 'examples on steroids' I've already discussed. Thus, I was keen to add something that sounded more like proper computer science.
+    </p>
+    <p>
+        <strong>Next:</strong> QuickCheck property: Monotonicity in items.
+    </p>
+</div>
